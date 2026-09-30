@@ -219,10 +219,6 @@ class NativeSongGPUInputs:
     slot_start: np.ndarray | None = None
     slot_count: np.ndarray | None = None
     base_fixed_stats_arr: np.ndarray | None = None
-    elite_count: int = 0
-    mutation_rate: float = 0.0
-    immigrant_rate: float = 0.0
-    tournament_k: int = 0
     init_heuristic_topk: Optional[np.ndarray] = None
     init_heuristic_k: int = 0
     init_heuristic_copies: int = 25

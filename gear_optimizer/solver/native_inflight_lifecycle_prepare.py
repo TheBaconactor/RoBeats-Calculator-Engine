@@ -10,7 +10,6 @@ from typing import Optional
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.solver.genetic_pipeline import GA_ELITISM, GA_MUTATION_RATE
 from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
 from gear_optimizer.solver.base_stats import build_stats_array
@@ -160,8 +159,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     init_heuristic_k = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HEURISTIC_K)
     init_heuristic_copies = 25
     from gear_optimizer.solver.genetic_pipeline import (
-        GA_IMMIGRANT_RATE,
-        GA_TOURNAMENT_K,
         build_ga_init_heuristic_topk,
     )
 
@@ -227,10 +224,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             slot_start=gpu_data["slot_start"],
             slot_count=gpu_data["slot_count"],
             base_fixed_stats_arr=np.asarray(base_fixed_stats_arr, dtype=np.int32),
-            elite_count=GA_ELITISM,
-            mutation_rate=GA_MUTATION_RATE,
-            immigrant_rate=GA_IMMIGRANT_RATE,
-            tournament_k=GA_TOURNAMENT_K,
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_k=int(init_heuristic_k),
             init_heuristic_copies=int(init_heuristic_copies),

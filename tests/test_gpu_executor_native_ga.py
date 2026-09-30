@@ -65,10 +65,6 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
                 "curves": curves,
                 "song_slot": "2",
                 "n_generations": "4",
-                "elite_count": "3",
-                "mutation_rate": "0.25",
-                "immigrant_rate": "0.05",
-                "tournament_k": "5",
                 "num_runs": "7",
                 "n_genomes": "128",
                 "init_heuristic_k": "9",
@@ -96,10 +92,6 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
     assert calls[0]["curves"] is curves
     assert calls[0]["song_slot"] == 2
     assert calls[0]["n_generations"] == 4
-    assert calls[0]["elite_count"] == 3
-    assert calls[0]["mutation_rate"] == 0.25
-    assert calls[0]["immigrant_rate"] == 0.05
-    assert calls[0]["tournament_k"] == 5
     assert calls[0]["num_runs"] == 7
     assert calls[0]["n_genomes"] == 128
     assert calls[0]["init_heuristic_k"] == 9

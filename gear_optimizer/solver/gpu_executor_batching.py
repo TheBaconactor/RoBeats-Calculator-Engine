@@ -423,10 +423,6 @@ def execute_gpu_native_ga_run(
     init_heuristic_copies = payload.get("init_heuristic_copies", 25)
     song_slot = int(payload.get("song_slot", 0) or 0)
     n_generations = int(payload.get("n_generations", 1) or 1)
-    elite_count = int(payload.get("elite_count", 2) or 2)
-    mutation_rate = float(payload.get("mutation_rate", 0.02) or 0.02)
-    immigrant_rate = float(payload.get("immigrant_rate", 0.0) or 0.0)
-    tournament_k = int(payload.get("tournament_k", 3) or 3)
     color_flags = payload.get("color_flags") or {}
     cfg_data = payload.get("cfg_data") or {}
     ga_seed = payload.get("ga_seed")
@@ -459,10 +455,6 @@ def execute_gpu_native_ga_run(
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_k=int(init_heuristic_k or 0),
             init_heuristic_copies=int(init_heuristic_copies or 0),
-            elite_count=elite_count,
-            mutation_rate=mutation_rate,
-            immigrant_rate=immigrant_rate,
-            tournament_k=tournament_k,
             color_flags=dict(color_flags),
             cfg_data=dict(cfg_data),
             ga_seed=int(ga_seed) if ga_seed is not None else None,

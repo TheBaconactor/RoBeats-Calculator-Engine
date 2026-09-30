@@ -404,10 +404,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     init_heuristic_topk: "np.ndarray | None" = None,
     init_heuristic_k: int = 0,
     init_heuristic_copies: int = 25,
-    elite_count: int = GA_ELITISM,
-    mutation_rate: float = GA_MUTATION_RATE,
-    immigrant_rate: float = 0.0,
-    tournament_k: int = 3,
     color_flags: dict | None = None,
     cfg_data: dict | None = None,
     ga_seed: int | None = None,
@@ -460,17 +456,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     if n_generations <= 0:
         n_generations = 1
 
-    elite_count = int(elite_count)
-    elite_count = max(0, elite_count)
-
-    tournament_k = int(tournament_k)
-    tournament_k = max(1, min(8, tournament_k))
-
-    mutation_rate = float(mutation_rate)
-    mutation_rate = max(0.0, min(1.0, mutation_rate))
-
-    immigrant_rate = float(immigrant_rate)
-    immigrant_rate = max(0.0, min(1.0, immigrant_rate))
+    # The GA's selection/variation policy is fixed (module constants).
+    elite_count = GA_ELITISM
+    tournament_k = GA_TOURNAMENT_K
+    mutation_rate = GA_MUTATION_RATE
+    immigrant_rate = GA_IMMIGRANT_RATE
 
     if initial_populations is not None:
         if not isinstance(initial_populations, np.ndarray):
