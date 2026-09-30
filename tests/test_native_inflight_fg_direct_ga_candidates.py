@@ -227,9 +227,8 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
         fg_results=(),
     )
 
-    # gpu_client is accepted but unused: the fused handoff prefetches NO owner
-    # BUILD/SCORE during prep (the owner already scored in the GA turn).
-    fg_pipeline.prepare_fg_job_sync(song, gpu_client=object())
+    # The fused handoff prefetches NO owner BUILD/SCORE during prep (the owner already scored in the GA turn).
+    fg_pipeline.prepare_fg_job_sync(song)
 
     assert song.runtime.fg.fg_response_frontier_plan is plan
     assert song.runtime.fg.cpu_fg_prep_s >= 0.0

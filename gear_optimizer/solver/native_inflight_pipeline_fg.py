@@ -13,7 +13,6 @@ from gear_optimizer.solver.fg_materialization_worker import (
     build_fg_materialization_request,
     materialize_fg_request,
 )
-from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import NativeSong
 
 if TYPE_CHECKING:
@@ -140,7 +139,6 @@ class NativeFGPipeline:
         song: NativeSong,
         prep_fn: Callable[..., Any],
         *,
-        gpu_client: GpuServiceClient | None,
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> bool:
         runtime = getattr(song, "runtime", song)
@@ -148,7 +146,7 @@ class NativeFGPipeline:
             return False
         song.runtime.fg.fg_dynamic_prep_done = False
         song.runtime.fg.fg_prep_submit_t0 = time.perf_counter()
-        runtime.fg.fg_prep_future = self.prep_executor.submit(prep_fn, song, gpu_client=gpu_client)
+        runtime.fg.fg_prep_future = self.prep_executor.submit(prep_fn, song)
         if register_future is not None:
             register_future(runtime.fg.fg_prep_future)
         self.prep_inflight.append(song)
@@ -229,7 +227,6 @@ class NativeFGPipeline:
         self,
         prep_fn: Callable[..., Any],
         *,
-        gpu_client: GpuServiceClient | None,
         max_new: int | None = None,
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> int:
@@ -251,12 +248,7 @@ class NativeFGPipeline:
                 continue
             if song.runtime.fg.fg_prep_future is not None:
                 continue
-            if self.start_prep(
-                song,
-                prep_fn,
-                gpu_client=gpu_client,
-                register_future=register_future,
-            ):
+            if self.start_prep(song, prep_fn, register_future=register_future):
                 started += 1
         return int(started)
 

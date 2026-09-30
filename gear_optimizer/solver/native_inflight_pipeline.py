@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
-from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_pipeline_fg import (
     NativeFGJobCompletion,
@@ -125,7 +124,7 @@ def prepare_ga_candidate_surface_for_fg(
     return selected, int(preselect_count), bool(hydrated)
 
 
-def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
+def prepare_fg_job_sync(song: NativeSong) -> None:
     cpu_t0 = thread_cpu_time_s()
     runtime = getattr(song, "runtime", song)
     t0 = time.perf_counter()

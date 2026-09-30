@@ -250,7 +250,7 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
         for song in songs:
             pipeline.queue(song)
 
-        def _prep(song, gpu_client=None):
+        def _prep(song):
             with lock:
                 started_keys.append(song.config.task_key)
             release.wait(timeout=2)
@@ -258,7 +258,6 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
         registered = []
         started = pipeline.start_pending_prep(
             _prep,
-            gpu_client=None,
             max_new=4,
             register_future=registered.append,
         )
@@ -272,7 +271,7 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
         assert set(started_keys) == {"song-0", "song-1"}
         assert pipeline.active_prep_count() == 2
         assert pipeline.has_active_prep() is True
-        assert pipeline.start_pending_prep(_prep, gpu_client=None, max_new=4) == 0
+        assert pipeline.start_pending_prep(_prep, max_new=4) == 0
         assert pipeline.pop_next(allow_not_ready=False) is None
 
         release.set()
@@ -281,7 +280,7 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
             song.runtime.fg.fg_dynamic_prep_done = True
 
         assert pipeline.pop_next(allow_not_ready=False) is songs[0]
-        assert pipeline.start_pending_prep(_prep, gpu_client=None, max_new=4) == 2
+        assert pipeline.start_pending_prep(_prep, max_new=4) == 2
     finally:
         release.set()
         pipeline.shutdown_fg(wait=True, cancel_futures=True)

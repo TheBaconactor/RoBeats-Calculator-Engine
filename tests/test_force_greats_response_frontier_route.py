@@ -257,7 +257,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
     )
     song.runtime.fg.fg_response_scoring_bundle = seen_bundle
 
-    stages.prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song)
 
     assert seen["plan_ga_n"] == 1
     assert seen["scoring_bundle"] is seen_bundle
@@ -304,7 +304,7 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
         song_slot=1,
     )
 
-    stages.prepare_fg_job_sync(song, gpu_client=object())
+    stages.prepare_fg_job_sync(song)
 
     assert song.runtime.fg.fg_response_frontier_plan == "raw-plan"
 
@@ -355,7 +355,7 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
         song_slot=1,
     )
 
-    stages.prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song)
 
     selected = song.runtime.decode.ga_candidates or []
     assert len(selected) == 2
@@ -412,7 +412,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
         song_slot=1,
     )
 
-    stages.prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song)
 
     assert seen == {"candidate_count": 77, "limit": 51}
     assert len(song.runtime.decode.ga_candidates or []) == 51
@@ -447,7 +447,7 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
     )
 
     with pytest.raises(RuntimeError, match="did not materialize the exact response frontier plan"):
-        stages.prepare_fg_job_sync(song, gpu_client=None)
+        stages.prepare_fg_job_sync(song)
 
 
 def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundle(monkeypatch):

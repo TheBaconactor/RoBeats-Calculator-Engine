@@ -325,7 +325,6 @@ def run_native_inflight_song_pipeline(
                 )
                 started_fg_prep = fg_pipeline.start_pending_prep(
                     prepare_fg_job_sync,
-                    gpu_client=gpu_client,
                     max_new=int(fg_prep_start_budget),
                     register_future=completion_tracker.register,
                 )
@@ -409,7 +408,6 @@ def run_native_inflight_song_pipeline(
                 fg_pipeline.queue(song)
                 started_fg_prep = fg_pipeline.start_pending_prep(
                     prepare_fg_job_sync,
-                    gpu_client=gpu_client,
                     max_new=1,
                     register_future=completion_tracker.register,
                 )
