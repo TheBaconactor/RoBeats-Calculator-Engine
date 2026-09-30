@@ -7,6 +7,8 @@ A pre-gem stat row is the song's fixed stats plus the loadout's gear/mini item s
 allocates the full FT/FF/PP/CM/FM/Overflow gem budget for the best score.
 """
 
+from collections.abc import Callable, Mapping, Sequence
+
 import numpy as np
 
 from ...core.color_flags import build_color_flags
@@ -16,15 +18,17 @@ from ..base_stats import build_stats_array, build_stats_dict, build_stats_list
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
 from ..timing_envelope import TimedSong
-from ...stats import apply_gems, gems
+from ...gamedata import Stats
+from ...stats import GEM_KINDS, apply_gems
+from .exact_rescore import score_stats_exact_batch, score_stats_fixed_timing_exact_batch
 
 def _color_flags(song: TimedSong, selected_color: str) -> dict[str, int]:
     return build_color_flags(song.chart.primary, song.chart.secondary, selected_color)
 
 
-def _gem_result(stats: dict[str, int], selected_color: str, solved) -> dict:
-    score, ft, ff, g_pp, g_cm, g_fm, g_ov = (int(v) for v in solved)
-    final_stats = apply_gems(stats, gems(pp=g_pp, cm=g_cm, fm=g_fm, ft=ft, ff=ff, element=g_ov), selected_color)
+def _gem_result(stats: dict[str, int], selected_color: str, allocation: tuple[int, ...], score: int) -> dict:
+    g_pp, g_cm, g_fm, ft, ff, g_ov = allocation
+    final_stats = apply_gems(stats, dict(zip(GEM_KINDS, allocation)), selected_color)
     gem_counts = build_gem_counts(g_pp, g_cm, g_fm, g_ov)
     return {
         "Score": score,
@@ -53,7 +57,8 @@ def solve_best_fever_combination_batch(stats_list, song: TimedSong, curves, *, s
     The whole base solve (timeline reuse + skyline + scoring) then runs once for all loadouts, and
     the batch warmstart keeps each loadout's combo sweep independent. ``stats_list`` is N pre-gem
     stat rows (song fixed stats + tier delta + gear/mini item stats). Returns one result dict
-    per input, in order: ``{Score, FT, FF, GemCounts, Stats, Selected Element, config}``. Each
+    per input, in order: ``{Score, FT, FF, GemCounts, Stats, Selected Element, config}``: the search's
+    allocation after ``exact_climb``, and ``Score`` its exact score at the song's timing. Each
     loadout's gem search is independent, so a loadout's result does not depend on the batch."""
     rows = [build_stats_dict(build_stats_list(s)) for s in (stats_list or [])]
     if not rows:
@@ -86,4 +91,65 @@ def solve_best_fever_combination_batch(stats_list, song: TimedSong, curves, *, s
         raise RuntimeError(
             f"batched base re-solve returned {len(gpu_results) if gpu_results else 0} results for {n} genomes"
         )
-    return [_gem_result(stats, selected_color, solved) for stats, solved in zip(rows, gpu_results, strict=True)]
+    searched = []
+    for solved in gpu_results:
+        _search_score, ft, ff, g_pp, g_cm, g_fm, g_ov = (int(v) for v in solved)
+        searched.append((g_pp, g_cm, g_fm, ft, ff, g_ov))
+    allocations, scores = exact_climb(rows, searched, selected_color, lambda stats: _exact_scores(stats, song, curves))
+    return [
+        _gem_result(stats, selected_color, allocation, score)
+        for stats, allocation, score in zip(rows, allocations, scores, strict=True)
+    ]
+
+
+def exact_climb(
+    rows: Sequence[Mapping[str, int]],
+    allocations: Sequence[tuple[int, ...]],
+    selected_color: str,
+    exact_scores: Callable[[list[Stats]], Sequence[int]],
+) -> tuple[list[tuple[int, ...]], list[int]]:
+    """Each row's allocation (per GEM_KINDS) hill-climbed with the exact scorer from the search's, and its exact score.
+
+    The search ranks allocations in float32 on MoltenVK and can stop one gem move short of the float64 optimum
+    (Kanpai (Hard): 66,023,473 where moving one element gem to Fever Fill Rate scores 66,024,847). Each step moves
+    one gem between kinds on every row where that strictly improves the exact score (the first best move), scoring
+    all rows' moves in one exact batch, until no row improves. ``rows`` are the pre-gem stats."""
+
+    def stats_of(i: int, allocation: tuple[int, ...]) -> Stats:
+        return apply_gems(rows[i], dict(zip(GEM_KINDS, allocation)), selected_color)
+
+    current = [tuple(int(g) for g in a) for a in allocations]
+    scores = [int(s) for s in exact_scores([stats_of(i, a) for i, a in enumerate(current)])]
+    active = range(len(current))
+    while active:
+        moves = [(i, m) for i in active for m in _one_gem_moves(current[i])]
+        best: dict[int, tuple[int, tuple[int, ...]]] = {}
+        for (i, m), s in zip(moves, exact_scores([stats_of(i, m) for i, m in moves]), strict=True):
+            if s > scores[i] and (i not in best or s > best[i][0]):
+                best[i] = (int(s), m)
+        for i, (s, m) in best.items():
+            scores[i], current[i] = s, m
+        active = sorted(best)
+    return current, scores
+
+
+def _one_gem_moves(allocation: tuple[int, ...]) -> list[tuple[int, ...]]:
+    """Every allocation one gem away: one gem moved from one kind to another (the budget is unchanged)."""
+    moves = []
+    for a, count in enumerate(allocation):
+        if count:
+            for b in range(len(allocation)):
+                if b != a:
+                    moved = list(allocation)
+                    moved[a] -= 1
+                    moved[b] += 1
+                    moves.append(tuple(moved))
+    return moves
+
+
+def _exact_scores(stats_rows: list[Stats], song: TimedSong, curves) -> list[int]:
+    """Exact (float64) base scores at the song's timing: zero_ms on the chart timeline, perfect_window on the
+    Perfect-window timing frontier."""
+    if song.mode == "zero_ms":
+        return score_stats_fixed_timing_exact_batch(stats_rows, song, curves)
+    return score_stats_exact_batch(stats_rows, song, curves)

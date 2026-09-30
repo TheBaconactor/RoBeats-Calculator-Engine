@@ -298,22 +298,6 @@ def resolve_tier_fg_force_batch(
     return [r["force"] for r in replays]
 
 
-def _exact_base_score_batch_for_mode(stats_rows: list, song: TimedSong, curves: StatCurves) -> list[int]:
-    """Timing-correct exact base rescore for a batch of resolved stat rows. ``zero_ms`` scores on
-    the fixed-0ms chart timeline; ``perfect_window`` scores on the Perfect-window timing frontier.
-    This is the ONLY timing-dependent step of the tier re-solve -- the gem search (build_candidate_
-    payload / the FG response frontier) reads timing from ``song`` and is timing-agnostic, so
-    one re-solve serves both modes by swapping this scorer."""
-    from ...solver.scoring.exact_rescore import score_stats_exact_batch, score_stats_fixed_timing_exact_batch
-
-    rows = list(stats_rows or [])
-    if not rows:
-        return []
-    if song.mode == "zero_ms":
-        return [int(s) for s in score_stats_fixed_timing_exact_batch(rows, song, curves)]
-    return [int(s) for s in score_stats_exact_batch(rows, song, curves)]
-
-
 def resolve_tier_base(
     *,
     fixed_song_stats: dict,
@@ -353,9 +337,9 @@ def resolve_tier_base_batch(
     The per-song serving path -- a full leaderboard re-solves in one skyline dispatch
     (``n_genomes=N``) instead of N sequential solves. ``fixed_song_stats`` is the shared
     tier-adjusted song fixed-stats row; ``loadouts`` is the list of N loadout item-stat rows. The
-    final exact rescore follows ``song.mode`` (zero_ms -> fixed-0ms; perfect_window -> the timing
-    frontier). Returns N ``(resolved_payload, score)`` in order. Each loadout's gem search is
-    independent, so a loadout's result does not depend on the batch it is solved in."""
+    score is the gem search's exact score at ``song``'s timing (zero_ms -> fixed-0ms; perfect_window
+    -> the timing frontier). Returns N ``(resolved_payload, score)`` in order. Each loadout's gem
+    search is independent, so a loadout's result does not depend on the batch it is solved in."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
 
     rows = list(loadouts or [])
@@ -370,15 +354,7 @@ def resolve_tier_base_batch(
     )
     if len(results) != len(rows):
         raise ValueError(f"batched tier base re-solve returned {len(results)} != {len(rows)} results")
-    resolved_stats_rows: list[dict] = []
-    for resolved in results:
-        rs = dict(resolved.get("Stats") or {})
-        if not rs:
-            raise ValueError("batched tier base re-solve returned no Stats")
-        resolved_stats_rows.append(rs)
-    scores = _exact_base_score_batch_for_mode(resolved_stats_rows, song, curves)
-    out = [(resolved, int(score)) for resolved, score in zip(results, scores, strict=True)]
-    return out
+    return [(resolved, int(resolved["Score"])) for resolved in results]
 
 
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
