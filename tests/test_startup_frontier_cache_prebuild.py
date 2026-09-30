@@ -933,7 +933,7 @@ def test_manifest_identity_hit_does_not_validate_payload(tmp_path: Path) -> None
     manifest_path.write_text(
         json.dumps(
             {
-                "schema": 1,
+                "schema": 2,
                 "version": "v1",
                 "entries": {
                     first_plan.key_by_norm_path[os.path.abspath(song_path).casefold()]: {

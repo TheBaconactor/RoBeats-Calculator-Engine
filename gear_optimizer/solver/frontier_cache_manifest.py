@@ -15,7 +15,10 @@ from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.array_signature import array_sig16
 
 logger = logging.getLogger(__name__)
-_SCHEMA = 1
+# Schema 2 keys an entry by the chart's CONTENT (schema 1 keyed its path + mtime, and every engine deploy
+# publishes the charts under a new frontier_server_sources/<revision> directory, so each restart missed every
+# entry and re-validated all 4,544 FG bundles: 465-608 s).
+_SCHEMA = 2
 _LOCK = threading.RLock()
 
 
@@ -54,15 +57,24 @@ def _path_identity(path_text: str) -> tuple[str, int, int] | None:
     return abs_path, int(mtime_ns), int(st.st_size)
 
 
+def _chart_identity(path_text: str) -> tuple[str, str] | None:
+    """(absolute path, digest of the chart's bytes), None when it cannot be read."""
+    try:
+        abs_path = os.path.abspath(str(path_text))
+        content = Path(abs_path).read_bytes()
+    except OSError as exc:
+        logger.debug("frontier_cache_manifest:_chart_identity: %s", exc)
+        return None
+    return abs_path, hashlib.blake2b(content, digest_size=16).hexdigest()
+
+
 def _manifest_key(
     *,
     cache_version: str,
     ref_sig_hex: str,
     stat_sig_hex: str | None,
     timing_mode: str,
-    abs_song_path: str,
-    mtime_ns: int,
-    file_size: int,
+    chart_digest: str,
 ) -> str:
     parts = [
         str(cache_version),
@@ -71,13 +83,7 @@ def _manifest_key(
     ]
     if stat_sig_hex is not None:
         parts.append(str(stat_sig_hex))
-    parts.extend(
-        (
-            str(abs_song_path).casefold(),
-            str(mtime_ns),
-            str(file_size),
-        )
-    )
+    parts.append(str(chart_digest))
     return hashlib.blake2b("|".join(parts).encode("utf-8"), digest_size=16).hexdigest()
 
 
@@ -104,13 +110,13 @@ def _load_manifest(path: Path, *, cache_version: str, version_field: str) -> dic
 
 
 def _save_manifest(path: Path, *, cache_version: str, version_field: str, entries: dict[str, dict]) -> None:
-    # Keys hash the chart's absolute path, so an entry whose chart is gone (a pruned publication
-    # snapshot, a finished job workspace) can never be looked up again. Legacy entries without a
-    # recorded song_path are dropped too.
+    # Keys hash the chart's content, so an entry stays useful while its (content-addressed) cache file exists,
+    # whichever directory the chart is published under; entries whose cache file is gone are dropped. An entry's
+    # song_path is informational (where the chart was when the entry was validated).
     entries = {
         key: entry
         for key, entry in entries.items()
-        if isinstance(entry.get("song_path"), str) and os.path.exists(entry["song_path"])
+        if isinstance(entry.get("cache_file"), str) and os.path.exists(entry["cache_file"])
     }
     payload = {
         "schema": _SCHEMA,
@@ -149,19 +155,17 @@ def build_manifest_plan(
     recorded_file_by_norm: dict[str, str] = {}
     updated_entries = 0
     for song_path in paths:
-        identity = _path_identity(song_path)
+        identity = _chart_identity(song_path)
         if identity is None:
             misses.append(song_path)
             continue
-        abs_path, mtime_ns, file_size = identity
+        abs_path, chart_digest = identity
         key = _manifest_key(
             cache_version=cache_version,
             ref_sig_hex=ref_sig_hex,
             stat_sig_hex=stat_sig_hex,
             timing_mode=timing_mode,
-            abs_song_path=abs_path,
-            mtime_ns=mtime_ns,
-            file_size=file_size,
+            chart_digest=chart_digest,
         )
         key_by_norm[normalize_manifest_path(abs_path)] = key
         entry = entries.get(key) or {}

@@ -51,7 +51,7 @@ def _seed_manifest_entry(song_path: Path, cache_path: Path, manifest_path: Path)
     manifest_path.write_text(
         json.dumps(
             {
-                "schema": 1,
+                "schema": 2,
                 _VERSION_FIELD: _CACHE_VERSION,
                 "entries": {
                     key: {
