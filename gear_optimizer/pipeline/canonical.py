@@ -28,11 +28,9 @@ from ..data.loadout_equivalence import (
     rotate_mini_groups_for_slot_display,
 )
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
-from ..helpers.song_helpers.fg_payload import strip_retired_fg_fields
 from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names
 from ..helpers.song_helpers.song_config import baseline_fixed_stats
 from ..helpers.song_helpers.team_buff_tiers import resolve_tier_fg_force_batch
-from ..solver.fg_response_scoring.physical_replay import validate_base_physical_replay
 from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats, total
@@ -196,22 +194,12 @@ def _fg_resolve(
 
 
 def _meta_score(stats: Mapping[str, int], song: TimedSong, curves: StatCurves) -> tuple[int, dict[str, Any] | None]:
+    """The exact score of the meta stats and, for perfect_window, the TimelineFrontier witness (the exact replay
+    validates it physically when it reconstructs it)."""
     if song.mode == "zero_ms":
         return int(score_stats_fixed_timing_exact(stats, song, curves)), None
     replay = score_stats_exact_with_timeline_trace(stats, song, curves)
-    timeline = replay.get("TimelineFrontier")
-    if not isinstance(timeline, Mapping):
-        raise ValueError(f"{song.chart.name}: the base replay selected no TimelineFrontier")
-    validate_base_physical_replay(
-        frontier_trace=timeline.get("frontier_trace") or (),
-        response_surface=timeline.get("response_surface") or (),
-        timestamps=song.chart.timestamps,
-        note_types=song.chart.note_types,
-        lanes=song.chart.lanes,
-        fill_count=int(timeline.get("fill_count", 0) or 0),
-        fever_duration_ms=float(timeline.get("fever_duration_ms", 0.0) or 0.0),
-    )
-    return int(replay["score"]), strip_retired_fg_fields(dict(timeline))[0]
+    return int(replay["score"]), replay["TimelineFrontier"]
 
 
 def _fg_trace(solved: SolvedFg, song: TimedSong) -> dict[str, Any]:
