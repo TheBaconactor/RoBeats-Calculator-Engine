@@ -84,6 +84,10 @@ _EARLY_GREAT_FLOOR_MS = float(_PERFECT_LOWER_MS) + float(_EARLY_GREAT_LOWER_EXTR
 _EARLY_GREAT_ONLY_UPPER_GAP_MS = 1.0
 
 
+class UnplayableTrace(ValueError):
+    """A trace whose judgments no legal hit timing realizes in the exact input order."""
+
+
 def _normalize_timing_mode(timing_mode: str) -> str:
     mode = str(timing_mode or "perfect_window").strip().lower()
     if mode not in _TIMING_MODES:
@@ -398,7 +402,7 @@ def _bounded_judgment_delta_ms(
         if feasible_lo <= feasible_hi:
             candidates.append(min(max(float(preferred_delta_ms), feasible_lo), feasible_hi))
     if not candidates:
-        raise ValueError(
+        raise UnplayableTrace(
             "note_graph: exact input order has no legal bounded hit "
             f"for note {j}'s {result} judgment"
         )

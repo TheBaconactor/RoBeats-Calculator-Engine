@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,7 +22,10 @@ from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
 
+from .note_graph import UnplayableTrace
 from .planner import FgResponseFrontierPreparedPlan
+
+logger = logging.getLogger(__name__)
 from .physical_replay import validate_force_greats_physical_replay
 
 
@@ -271,7 +275,8 @@ class FgResultReducer:
     ) -> list[tuple[SolvedLoadout, SolvedFg]]:
         """Every job's FG result with its validated replay, best FG score first (at most LOADOUTS_PER_SONG_LIMIT):
         the jobs with the best solve scores are materialized, then ranked by their exact surface scores. A result
-        stays whether or not it beats its paired base score (owner 09-30); the store ranks the FG board."""
+        stays whether or not it beats its paired base score (owner 09-30); the store ranks the FG board. A job whose
+        plan no legal hit timing plays keeps no FG result and the next job takes its place."""
         song = plan.song
         result_cache = FgResultReducer._result_cache(plan, prepared_results)
         solved_jobs = []
@@ -287,20 +292,29 @@ class FgResultReducer:
         song_inputs: Any | None = None
         trace_cache = FgTraceMaterializationCache()
         results: list[tuple[SolvedLoadout, SolvedFg]] = []
-        for job, result in solved_jobs[: int(LOADOUTS_PER_SONG_LIMIT)]:
+        for job, result in solved_jobs:
+            if len(results) == int(LOADOUTS_PER_SONG_LIMIT):
+                break
             if song_inputs is None:
                 song_inputs = song.fg_inputs
-            payload = materialize_force_payload_from_response_frontier(
-                eval_data={},
-                base_stats=job.base_stats,
-                paired_base_score=job.paired,
-                selected_element=job.selected,
-                result=result,
-                song=song,
-                curves=plan.curves,
-                trace_cache=trace_cache,
-                song_inputs=song_inputs,
-            )
+            try:
+                payload = materialize_force_payload_from_response_frontier(
+                    eval_data={},
+                    base_stats=job.base_stats,
+                    paired_base_score=job.paired,
+                    selected_element=job.selected,
+                    result=result,
+                    song=song,
+                    curves=plan.curves,
+                    trace_cache=trace_cache,
+                    song_inputs=song_inputs,
+                )
+            except UnplayableTrace as exc:
+                # The zero_ms FG model can pick a plan no hit timing plays (a held tail's Great between two Perfect
+                # presses of its own chord); until the FG model rewrite rules them out, drop that loadout's FG result
+                # rather than the whole song (owner 09-30).
+                logger.warning("%s: no FG result for %s, its plan is unplayable: %s", song.chart.name, job.loadout, exc)
+                continue
             results.append((job.loadout, solved_fg(payload, default_element=job.selected)))
         results.sort(key=lambda pair: pair[1].score, reverse=True)
         return results[: int(LOADOUTS_PER_SONG_LIMIT)]
