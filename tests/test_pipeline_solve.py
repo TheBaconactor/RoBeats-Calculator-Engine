@@ -177,7 +177,7 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
                              color_flags={"rush": True}, cfg_data={"selected_color": "rush"}, fg_gear_name_rank=5,
                              fg_mini_sig_id=6)
     song = SimpleNamespace(gpu_inputs=inputs, config=SimpleNamespace(ga_seed=7),
-                           runtime=SimpleNamespace(song_slot=0, ga=SimpleNamespace(ga_initial_populations=None),
+                           runtime=SimpleNamespace(song_slot=0,
                                                    fg=SimpleNamespace(fg_response_scoring_bundle=bundle)))
     abort = threading.Event()
 

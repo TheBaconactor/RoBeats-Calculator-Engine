@@ -199,7 +199,6 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
             slot_count=slot_count,
             base_fixed_stats_arr=base_fixed_stats_arr,
             n_generations=_N_GENERATIONS,
-            initial_populations=None,
             num_runs=_NUM_RUNS,
             n_genomes=_N_GENOMES,
             color_flags=color_flags,

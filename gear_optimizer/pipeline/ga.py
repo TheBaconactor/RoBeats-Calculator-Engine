@@ -21,7 +21,6 @@ def ga_payload(song: NativeSong) -> dict[str, Any]:
         "slot_start": song.gpu_inputs.slot_start,
         "slot_count": song.gpu_inputs.slot_count,
         "base_fixed_stats_arr": song.gpu_inputs.base_fixed_stats_arr,
-        "initial_populations": song.runtime.ga.ga_initial_populations,
         "num_runs": int(song.gpu_inputs.num_runs),
         "n_genomes": int(song.gpu_inputs.n_genomes),
         "init_heuristic_topk": song.gpu_inputs.init_heuristic_topk,

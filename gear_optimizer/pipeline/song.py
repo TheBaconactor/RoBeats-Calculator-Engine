@@ -54,11 +54,6 @@ class NativeSongGPUInputs:
 
 
 @dataclass
-class NativeSongGAState:
-    ga_initial_populations: Optional[list[Any]] = None
-
-
-@dataclass
 class NativeSongDecodeState:
     ga_candidates: Optional[list[JsonDict]] = None
     fg_surface_prepared: bool = False
@@ -90,7 +85,6 @@ class NativeSongDBState:
 @dataclass
 class NativeSongRuntimeState:
     song_slot: int = 0
-    ga: NativeSongGAState = field(default_factory=NativeSongGAState)
     decode: NativeSongDecodeState = field(default_factory=NativeSongDecodeState)
     fg: NativeSongFGState = field(default_factory=NativeSongFGState)
     db: NativeSongDBState = field(default_factory=NativeSongDBState)

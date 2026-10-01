@@ -198,7 +198,6 @@ def real_ga_run():
             slot_count=slot_count,
             base_fixed_stats_arr=base_fixed_stats_arr,
             n_generations=6,
-            initial_populations=None,
             num_runs=2,
             n_genomes=64,
             color_flags=color_flags,
