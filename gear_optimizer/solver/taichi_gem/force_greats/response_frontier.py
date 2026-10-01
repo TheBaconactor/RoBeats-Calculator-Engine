@@ -24,7 +24,7 @@ from .response_cache import (
     load_first_surface_scoring_patterns,
     load_response_frontier_scoring_bundle,
 )
-from .response_inner_host import _score_response_group_meta_cpu, _score_response_group_meta_gpu  # noqa: F401
+from .response_inner_host import _score_response_group_meta_cpu, _score_response_group_meta_gpu
 from .response_types import (
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
@@ -726,6 +726,54 @@ def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
     return pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
 
 
+def _score_packed_batch(batch: FgResponseFrontierPackedScoringBatch, scorer, owner: str) -> FgResponseFrontierOwnerResult:
+    """Score a finalized batch with `scorer` (the GPU or the CPU f64 inner gem search)."""
+    if fg_batch_stage(batch) is not FgBatchStage.SURFACES_PACKED:
+        raise RuntimeError(
+            f"FG response frontier {owner} owner score requires a finalized batch "
+            "(group rows built and scoring surfaces packed before submit)"
+        )
+    surface_pattern_ids = batch.scoring_surface_pattern_ids
+    surface_pattern_words = batch.scoring_surface_pattern_words
+    surface_counts = batch.scoring_surface_counts
+    surface_pattern_head_coeffs = batch.scoring_surface_pattern_head_coeffs
+    group_offsets = batch.scoring_group_offsets
+    group_lengths = batch.scoring_group_lengths
+    if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
+        batch.group_meta.shape[0]
+    ):
+        raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
+    if (
+        int(surface_pattern_ids.ndim) != 1
+        or int(surface_pattern_words.ndim) != 2
+        or int(surface_pattern_words.shape[1]) != 8
+        or int(surface_counts.ndim) != 2
+        or int(surface_counts.shape[1]) != 3
+        or int(surface_pattern_head_coeffs.ndim) != 2
+        or int(surface_pattern_head_coeffs.shape[1]) != 4
+    ):
+        raise ValueError("response frontier prepared scoring arrays have invalid shape")
+    inner_rows, _logical_surface_rows = scorer(
+        group_meta=batch.group_meta,
+        group_offsets=group_offsets,
+        group_lengths=group_lengths,
+        primary_color=batch.primary_color,
+        secondary_color=batch.secondary_color,
+        selected_color=batch.selected_color,
+        curves=batch.curves,
+        surface_pattern_ids=surface_pattern_ids,
+        surface_pattern_words=surface_pattern_words,
+        surface_counts=surface_counts,
+        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
+    )
+    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
+        raise ValueError(f"response frontier exact {owner} batch returned the wrong number of group results")
+    return FgResponseFrontierOwnerResult(
+        batch=batch,
+        inner_rows=np.asarray(inner_rows, dtype=np.int32),
+    )
+
+
 def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierOwnerResult:
@@ -741,50 +789,7 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
     """
     if sys.platform == "darwin":
         return score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
-    if fg_batch_stage(batch) is not FgBatchStage.SURFACES_PACKED:
-        raise RuntimeError(
-            "FG response frontier GPU owner score requires a finalized batch "
-            "(group rows built and scoring surfaces packed before submit)"
-        )
-    surface_pattern_ids = batch.scoring_surface_pattern_ids
-    surface_pattern_words = batch.scoring_surface_pattern_words
-    surface_counts = batch.scoring_surface_counts
-    surface_pattern_head_coeffs = batch.scoring_surface_pattern_head_coeffs
-    group_offsets = batch.scoring_group_offsets
-    group_lengths = batch.scoring_group_lengths
-    if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
-        batch.group_meta.shape[0]
-    ):
-        raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
-    if (
-        int(surface_pattern_ids.ndim) != 1
-        or int(surface_pattern_words.ndim) != 2
-        or int(surface_pattern_words.shape[1]) != 8
-        or int(surface_counts.ndim) != 2
-        or int(surface_counts.shape[1]) != 3
-        or int(surface_pattern_head_coeffs.ndim) != 2
-        or int(surface_pattern_head_coeffs.shape[1]) != 4
-    ):
-        raise ValueError("response frontier prepared scoring arrays have invalid shape")
-    inner_rows, _logical_surface_rows = _score_response_group_meta_gpu(
-        group_meta=batch.group_meta,
-        group_offsets=group_offsets,
-        group_lengths=group_lengths,
-        primary_color=batch.primary_color,
-        secondary_color=batch.secondary_color,
-        selected_color=batch.selected_color,
-        curves=batch.curves,
-        surface_pattern_ids=surface_pattern_ids,
-        surface_pattern_words=surface_pattern_words,
-        surface_counts=surface_counts,
-        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
-    )
-    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
-    return FgResponseFrontierOwnerResult(
-        batch=batch,
-        inner_rows=np.asarray(inner_rows, dtype=np.int32),
-    )
+    return _score_packed_batch(batch, _score_response_group_meta_gpu, "GPU")
 
 
 def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
@@ -794,50 +799,7 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
     arithmetic as the GPU owner, for the gems-fixed (zero_ms / total_budget == 0) on-demand
     serving shape: tiny per-request work where CPU doubles are lower-latency than emulating
     f64 on a GPU and parallelize across cores instead of serializing on the single GPU."""
-    if fg_batch_stage(batch) is not FgBatchStage.SURFACES_PACKED:
-        raise RuntimeError(
-            "FG response frontier CPU owner score requires a finalized batch "
-            "(group rows built and scoring surfaces packed before submit)"
-        )
-    surface_pattern_ids = batch.scoring_surface_pattern_ids
-    surface_pattern_words = batch.scoring_surface_pattern_words
-    surface_counts = batch.scoring_surface_counts
-    surface_pattern_head_coeffs = batch.scoring_surface_pattern_head_coeffs
-    group_offsets = batch.scoring_group_offsets
-    group_lengths = batch.scoring_group_lengths
-    if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
-        batch.group_meta.shape[0]
-    ):
-        raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
-    if (
-        int(surface_pattern_ids.ndim) != 1
-        or int(surface_pattern_words.ndim) != 2
-        or int(surface_pattern_words.shape[1]) != 8
-        or int(surface_counts.ndim) != 2
-        or int(surface_counts.shape[1]) != 3
-        or int(surface_pattern_head_coeffs.ndim) != 2
-        or int(surface_pattern_head_coeffs.shape[1]) != 4
-    ):
-        raise ValueError("response frontier prepared scoring arrays have invalid shape")
-    inner_rows, _logical_surface_rows = _score_response_group_meta_cpu(
-        group_meta=batch.group_meta,
-        group_offsets=group_offsets,
-        group_lengths=group_lengths,
-        primary_color=batch.primary_color,
-        secondary_color=batch.secondary_color,
-        selected_color=batch.selected_color,
-        curves=batch.curves,
-        surface_pattern_ids=surface_pattern_ids,
-        surface_pattern_words=surface_pattern_words,
-        surface_counts=surface_counts,
-        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
-    )
-    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact CPU batch returned the wrong number of group results")
-    return FgResponseFrontierOwnerResult(
-        batch=batch,
-        inner_rows=np.asarray(inner_rows, dtype=np.int32),
-    )
+    return _score_packed_batch(batch, _score_response_group_meta_cpu, "CPU")
 
 
 def score_prepared_force_greats_response_frontier_batch_cpu_sync(
