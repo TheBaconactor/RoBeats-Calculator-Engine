@@ -1,4 +1,4 @@
-"""Reads and writes of the results database (schema.VERSION)."""
+"""Reads and writes of the results database (store.tables)."""
 
 from __future__ import annotations
 
@@ -19,17 +19,9 @@ from .records import (
     decode_meta,
     decode_names,
     decode_trace,
-    encode_fg,
-    encode_groups,
-    encode_meta,
-    encode_names,
 )
+from .tables import COLUMNS, ROW_COLUMNS, insert_rows, truncate_wal
 
-_COLUMNS = (
-    "song_name, team_buff, loadout_hash, gear, minis, primary_color, secondary_color, mini_ascension, score,"
-    " fg_score, meta_board, fg_board, meta_updated, meta_seq, meta_result, fg_updated, fg_seq, fg_result"
-)
-_ROW_COLUMNS = _COLUMNS + ", meta_trace, fg_trace"
 _BOARDS = {"meta": ("meta_board", META_ORDER), "fg": ("fg_board", FG_ORDER)}
 
 
@@ -107,7 +99,7 @@ def song_digest(conn: sqlite3.Connection, song: str) -> str:
     """A digest of every stored byte of a song's rows: it changes exactly when the song's rows change."""
     digest = hashlib.sha256()
     rows = conn.execute(
-        f"SELECT {_ROW_COLUMNS} FROM loadouts WHERE song_name = ? ORDER BY team_buff, loadout_hash", (song,)
+        f"SELECT {ROW_COLUMNS} FROM loadouts WHERE song_name = ? ORDER BY team_buff, loadout_hash", (song,)
     )
     for row in rows:
         for value in row:
@@ -116,7 +108,7 @@ def song_digest(conn: sqlite3.Connection, song: str) -> str:
 
 
 def load_rows(conn: sqlite3.Connection, song: str, tier: str) -> list[Row]:
-    rows = conn.execute(f"SELECT {_ROW_COLUMNS} FROM loadouts WHERE song_name = ? AND team_buff = ?", (song, tier))
+    rows = conn.execute(f"SELECT {ROW_COLUMNS} FROM loadouts WHERE song_name = ? AND team_buff = ?", (song, tier))
     return [Row(_loadout(r), r["meta_trace"], r["fg_trace"]) for r in rows]
 
 
@@ -143,7 +135,7 @@ def store_results(
     except BaseException:
         conn.rollback()
         raise
-    schema.truncate_wal(conn)
+    truncate_wal(conn)
 
 
 def promote(source: str | os.PathLike[str], target: str | os.PathLike[str], song: str, tier: str) -> None:
@@ -164,16 +156,6 @@ def promote(source: str | os.PathLike[str], target: str | os.PathLike[str], song
         conn.close()
 
 
-def insert_rows(conn: sqlite3.Connection, rows: Iterable[Row]) -> None:
-    conn.executemany(
-        f"INSERT INTO loadouts ({_ROW_COLUMNS}) VALUES ({_marks(range(20))})", (_values(row) for row in rows)
-    )
-
-
-def insert_song(conn: sqlite3.Connection, song: str, last_updated_at: float) -> None:
-    conn.execute("INSERT INTO songs (name, last_updated) VALUES (?, ?)", (song, last_updated_at))
-
-
 def _touch_song(conn: sqlite3.Connection, song: str, now: float) -> None:
     conn.execute(
         "INSERT INTO songs (name, last_updated) VALUES (?, ?)"
@@ -186,7 +168,7 @@ def _board_rows(
     conn: sqlite3.Connection, board: str, songs: Collection[str] | None, tier: str
 ) -> Iterator[sqlite3.Row]:
     column, order = _BOARDS[board]
-    base = f"SELECT {_COLUMNS} FROM loadouts WHERE team_buff = ? AND {column} = 1"
+    base = f"SELECT {COLUMNS} FROM loadouts WHERE team_buff = ? AND {column} = 1"
     if songs is None:
         yield from conn.execute(f"{base} ORDER BY song_name, {order}", (tier,))
         return
@@ -214,32 +196,6 @@ def _loadout(row: sqlite3.Row) -> Loadout:
         fg=None if row["fg_result"] is None else decode_fg(row["fg_result"], row["fg_updated"], row["fg_seq"]),
         on_meta=bool(row["meta_board"]),
         on_fg=bool(row["fg_board"]),
-    )
-
-
-def _values(row: Row) -> tuple:
-    x = row.loadout
-    return (
-        x.song,
-        x.tier,
-        x.loadout_hash,
-        encode_names(x.gear),
-        encode_groups(x.minis),
-        x.primary,
-        x.secondary,
-        x.mini_ascension,
-        x.score,
-        x.fg_score,
-        int(x.on_meta),
-        int(x.on_fg),
-        None if x.meta is None else x.meta.updated,
-        None if x.meta is None else x.meta.seq,
-        None if x.meta is None else encode_meta(x.meta),
-        None if x.fg is None else x.fg.updated,
-        None if x.fg is None else x.fg.seq,
-        None if x.fg is None else encode_fg(x.fg),
-        row.meta_trace,
-        row.fg_trace,
     )
 
 

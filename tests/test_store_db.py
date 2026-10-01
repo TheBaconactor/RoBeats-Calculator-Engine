@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from gear_optimizer.store import db, schema
+from gear_optimizer.store import db, schema, tables
 from tests.store_support import boards, fg_row, meta_row, result
 
 
@@ -17,7 +17,7 @@ def test_a_writer_creates_the_current_schema_and_a_reader_requires_it(tmp_path):
     path = tmp_path / "results.db"
     schema.connect(path, write=True).close()
     reader = schema.connect(path)
-    assert schema.user_version(reader) == schema.VERSION
+    assert tables.user_version(reader) == tables.VERSION
     reader.close()
     other = tmp_path / "other.db"
     sqlite3.connect(other).execute("PRAGMA user_version = 7").connection.close()
@@ -64,7 +64,7 @@ def test_sql_board_order_matches_the_python_order_on_ties(conn):
         fg_row("f2", 95, 200, updated=5, seq=5),
     ]
     conn.execute("INSERT INTO songs VALUES ('Song A', 1)")
-    db.insert_rows(conn, rows)
+    tables.insert_rows(conn, rows)
     conn.commit()
     got = db.load_boards(conn, "Song A", "T5")
     assert (got.meta, got.fg) == boards(rows)
@@ -166,7 +166,7 @@ def test_a_reader_on_the_log_delays_the_truncation_only_briefly(tmp_path):
     reader.execute("SELECT COUNT(*) FROM loadouts").fetchone()  # holds a read snapshot
     t0 = time.monotonic()
     db.store_results(conn, "Song A", "T5", [result("b", 120)])
-    assert time.monotonic() - t0 < schema.TRUNCATE_WAIT_MS / 1000 + 1.0
+    assert time.monotonic() - t0 < tables.TRUNCATE_WAIT_MS / 1000 + 1.0
     assert (tmp_path / "results.db-wal").stat().st_size > 0  # the reader kept the log
     reader.rollback()
     reader.close()

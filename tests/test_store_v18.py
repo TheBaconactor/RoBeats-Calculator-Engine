@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from gear_optimizer.gamedata import MINI_ASCENSION_VERSION
-from gear_optimizer.store import db, schema, v18
+from gear_optimizer.store import db, schema, tables, v18
 from tests.store_support import V18Writer
 
 ST = [85, 71, 69, 76, 18, 0, 716, 30, 78, 167]
@@ -196,7 +196,7 @@ def test_an_unknown_stored_key_stops_the_migration_and_changes_nothing(tmp_path)
     conn = sqlite3.connect(path)
     with pytest.raises(ValueError, match="meta details keys"):
         v18.migrate(conn)
-    assert schema.user_version(conn) == 18
+    assert tables.user_version(conn) == 18
     assert conn.execute("SELECT COUNT(*) FROM team_buff_loadouts").fetchone()[0] == 1
     assert "loadouts" not in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 

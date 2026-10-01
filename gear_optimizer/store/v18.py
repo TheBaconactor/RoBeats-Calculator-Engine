@@ -20,7 +20,7 @@ from ..gamedata import STATS
 from ..helpers.song_helpers.fg_payload import strip_retired_fg_fields
 from .boards import Row
 from .records import SURFACE_SIZE, FgResult, Loadout, MetaResult, encode_trace
-from .schema import VERSION, create_tables
+from .tables import VERSION, create_tables, insert_rows, insert_song
 
 # details_json of the meta board.
 _META_KEYS = {"FT", "FF", "st", "gc", "se", "pc", "sc", "TimelineFrontier", "ForceGreats"}
@@ -156,8 +156,6 @@ def migrate(
         # The old songs table moves aside so the new one is created under its own name (same DDL as a fresh DB).
         conn.execute("ALTER TABLE songs RENAME TO songs_v18")
         create_tables(conn)
-        from .db import insert_rows, insert_song
-
         for name, updated in song_rows:
             if songs is not None and name not in songs:
                 continue
