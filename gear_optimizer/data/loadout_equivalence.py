@@ -13,11 +13,11 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Any, List
 
-from ..core.utils import safe_int
 from ..gamedata import Mini, SongMini
 
 # (primary, secondary, selected) -> (the song-mini map it was built from, signature -> names). The entry keeps
 # that map alive, so the identity check can never match a different, later map.
+_SIGNATURE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
 _MINI_SIG_TO_NAMES_CACHE: dict[tuple[str, str, str], tuple[Mapping[str, Mini | SongMini], dict[tuple[Any, ...], list[str]]]] = {}
 
 
@@ -39,7 +39,7 @@ def representative_mini_names(groups: list[list[str]]) -> list[str]:
             continue
 
         key = tuple(g)
-        seen = int(group_counts.get(key, 0) or 0)
+        seen = group_counts.get(key, 0)
         group_counts[key] = seen + 1
 
         preferred = g[seen % len(g)]
@@ -51,6 +51,16 @@ def representative_mini_names(groups: list[list[str]]) -> list[str]:
         reps.append(choice)
         used.add(choice)
     return reps
+
+
+def _normalized_groups(groups: list[list[str]]) -> list[list[str]]:
+    """Each non-empty group as its sorted unique stripped names (empty names and groups dropped)."""
+    normalized: list[list[str]] = []
+    for g0 in groups or []:
+        g = [n for n in (str(x).strip() for x in g0 or [] if x is not None) if n]
+        if g:
+            normalized.append(sorted(set(g)))
+    return normalized
 
 
 def rotate_mini_groups_for_slot_display(groups: list[list[str]]) -> list[list[str]]:
@@ -65,24 +75,7 @@ def rotate_mini_groups_for_slot_display(groups: list[list[str]]) -> list[list[st
 
     This preserves determinism while keeping the full variant set in each slot group.
     """
-
-    if not groups:
-        return []
-
-    # Normalize shape: drop empties, strip strings, and keep per-group sorted unique names.
-    normalized: list[list[str]] = []
-    for g0 in groups:
-        if not g0:
-            continue
-        g = [str(x).strip() for x in g0 if x is not None]
-        g = [n for n in g if n]
-        if not g:
-            continue
-        normalized.append(sorted(set(g)))
-
-    if not normalized:
-        return []
-
+    normalized = _normalized_groups(groups)
     reps = representative_mini_names(normalized)
     rotated: list[list[str]] = []
     for g, rep in zip(normalized, reps):
@@ -117,24 +110,7 @@ def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str
     This is a display-layer transformation only; it does not change the underlying
     equivalence model.
     """
-
-    if not groups:
-        return []
-
-    # Ensure consistent shape: drop empties, strip strings, and keep per-group sorted unique names.
-    normalized: list[list[str]] = []
-    for g0 in groups:
-        if not g0:
-            continue
-        g = [str(x).strip() for x in g0 if x is not None]
-        g = [n for n in g if n]
-        if not g:
-            continue
-        normalized.append(sorted(set(g)))
-
-    if not normalized:
-        return []
-
+    normalized = _normalized_groups(groups)
     counts: Counter[tuple[str, ...]] = Counter(tuple(g) for g in normalized)
     reps = representative_mini_names(normalized)
 
@@ -146,6 +122,7 @@ def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str
         else:
             out.append(g)
     return out
+
 
 def effective_mini_signature(
     mini_stats: Mapping[str, int],
@@ -161,17 +138,10 @@ def effective_mini_signature(
     - Only elemental stats that can matter for this song context:
       primary, secondary, selected (duplicates allowed; caller may canonicalize)
     """
-    pp = safe_int((mini_stats or {}).get("Perfect Points", 0), 0)
-    cm = safe_int((mini_stats or {}).get("Combo Multiplier", 0), 0)
-    fm = safe_int((mini_stats or {}).get("Fever Multiplier", 0), 0)
-    ft = safe_int((mini_stats or {}).get("Fever Time", 0), 0)
-    ff = safe_int((mini_stats or {}).get("Fever Fill Rate", 0), 0)
-
-    p_val = safe_int((mini_stats or {}).get(primary_color, 0), 0) if primary_color else 0
-    s_val = safe_int((mini_stats or {}).get(secondary_color, 0), 0) if secondary_color else 0
-    sel_val = safe_int((mini_stats or {}).get(selected_color, 0), 0) if selected_color else 0
-
-    return (pp, cm, fm, ft, ff, p_val, s_val, sel_val)
+    return (
+        *(mini_stats.get(stat, 0) for stat in _SIGNATURE_STATS),
+        *(mini_stats.get(color, 0) if color else 0 for color in (primary_color, secondary_color, selected_color)),
+    )
 
 
 def effective_mini_signature_for_name(
@@ -202,7 +172,7 @@ def minis_signature_to_names_map(
     This lets persistence populate mini variant groups deterministically from Minis.csv
     (instead of relying on the GA to have explored both names).
     """
-    key = (str(primary_color), str(secondary_color), str(selected_color))
+    key = (primary_color, secondary_color, selected_color)
     cached = _MINI_SIG_TO_NAMES_CACHE.get(key)
     if cached is not None and cached[0] is minis_by_name:
         return cached[1]
@@ -211,9 +181,7 @@ def minis_signature_to_names_map(
     for name, mini in minis_by_name.items():
         sig = effective_mini_signature(mini.stats, primary_color, secondary_color, selected_color)
         sig_to_names.setdefault(sig, []).append(name)
-
-    for sig, names in list(sig_to_names.items()):
-        sig_to_names[sig] = sorted(set(names))
+    sig_to_names = {sig: sorted(set(names)) for sig, names in sig_to_names.items()}
 
     if len(_MINI_SIG_TO_NAMES_CACHE) >= 8:
         _MINI_SIG_TO_NAMES_CACHE.clear()
@@ -281,8 +249,7 @@ def canonical_minis_groups_from_names(
         group = [n for n in group if n]
         if not group:
             continue
-        for _ in range(int(sig_counts[sig] or 0)):
-            out.append(group)
+        out.extend([group] * sig_counts[sig])
     return out
 
 
