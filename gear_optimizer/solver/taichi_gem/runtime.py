@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 from ...core.output import (
     restore_native_stdio,
     restore_stderr,
@@ -611,3 +611,20 @@ def reset_taichi(*, reason: str | None = None) -> None:
             logger.warning("[Taichi] reset failed", exc_info=True)
 
         _ti_initialized = False
+
+
+# Module state built on the runtime above `fields` (device-derived caches, warmup flags) registers its reset here on
+# import; api.initialization.hard_reset_taichi runs them after resetting the runtime and the fields. Keyed by the
+# function's qualified name, so a re-imported module replaces its reset instead of adding a second one.
+_HARD_RESET_HOOKS: dict[str, Callable[[], None]] = {}
+
+
+def on_hard_reset(reset: Callable[[], None]) -> Callable[[], None]:
+    """Decorator: run `reset` on every hard reset of the Taichi runtime."""
+    _HARD_RESET_HOOKS[f"{reset.__module__}.{reset.__qualname__}"] = reset
+    return reset
+
+
+def run_hard_reset_hooks() -> None:
+    for reset in list(_HARD_RESET_HOOKS.values()):
+        reset()

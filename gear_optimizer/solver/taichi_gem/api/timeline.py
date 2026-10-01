@@ -40,6 +40,8 @@ from ..fields import (
 from .. import fields
 from ..kernel_loader import get_kernels
 
+from ..runtime import on_hard_reset
+from .ga_eval_cache import reset_ga_evaluation_cache
 from .initialization import ensure_ready
 
 
@@ -146,8 +148,6 @@ def _upload_timeline_frontier_payload_slot(
     Vulkan that is a large forced download plus a large upload. These prefix kernels
     update only the active slot.
     """
-    from .ga_operations import reset_ga_evaluation_cache
-
     reset_ga_evaluation_cache()
     source_slot_i = int(source_slot_i)
     song_slot_i = int(song_slot_i)
@@ -959,6 +959,7 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
     )
 
 
+@on_hard_reset
 def reset_timeline_state() -> None:
     """Reset module-level timeline upload caches after `ti.reset()`."""
     global _gpu_timeline_song_id_by_slot

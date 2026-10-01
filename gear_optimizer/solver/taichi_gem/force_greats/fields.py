@@ -1,18 +1,16 @@
 """Minimal ForceGreats field/runtime stubs for response-frontier production FG."""
 from __future__ import annotations
 
+from ..runtime import on_hard_reset
+
 _response_frontier_warmed = False
 
 
+@on_hard_reset
 def reset_fields_state() -> None:
     """Reset module-level warmup state after `ti.reset()`."""
     global _response_frontier_warmed
     _response_frontier_warmed = False
-
-
-def reset_force_greats_api_state() -> None:
-    """Public reset hook for Taichi hard-reset paths."""
-    reset_fields_state()
 
 
 def ensure_ready_with_warmup() -> None:

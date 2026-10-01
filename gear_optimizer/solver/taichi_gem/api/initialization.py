@@ -16,7 +16,8 @@ from gear_optimizer.core.array_signature import arrays_sig16
 from ..runtime import init_taichi, is_initialized
 from .. import fields
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-from ..runtime import reset_taichi as _reset_taichi_runtime
+from ..runtime import reset_taichi as _reset_taichi_runtime, run_hard_reset_hooks
+from .ga_eval_cache import reset_ga_evaluation_cache
 from ..fields import (
     GRID_SIZE,
     ensure_fields_allocated,
@@ -95,13 +96,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     _reset_taichi_runtime(reason=reason)
 
     # Clear all Taichi field allocation state (fields are invalid after reset)
-    from ..fields import reset_fields_state as _reset_fields_state
-
-    _reset_fields_state()
-
-    from ..force_greats.fields import reset_fields_state as _reset_fg_fields_state
-
-    _reset_fg_fields_state()
+    fields.reset_fields_state()
 
     # Clear API-level caches that assume device state exists
     _ref_loaded = False
@@ -110,17 +105,8 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
     _TIMING_RESPONSE_COMBO_CACHE = {"key": None, "n_combos": 0}
 
-    from .timeline import reset_timeline_state as _reset_timeline_state
-
-    _reset_timeline_state()
-
-    from ..force_greats.fields import reset_force_greats_api_state as _reset_fg_api_state
-
-    _reset_fg_api_state()
-
-    from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
-
-    _reset_ga_caches()
+    # Then the state the modules above the fields registered (timeline, GA upload caches, FG warmup).
+    run_hard_reset_hooks()
 
 
 def _ensure_ftff_combo_tables(
@@ -288,9 +274,6 @@ def load_curves(curves: StatCurves):
     global _ref_loaded, _last_curves_sig
 
     ensure_fields_allocated()
-
-    from .ga_operations import reset_ga_evaluation_cache
-
     reset_ga_evaluation_cache()
     f32 = curves.f32
     fields.ref_pp_field.from_numpy(f32["Perfect Points"])

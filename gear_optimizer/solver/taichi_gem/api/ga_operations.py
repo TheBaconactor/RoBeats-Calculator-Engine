@@ -8,31 +8,13 @@ This module provides GPU-side GA operators (selection, crossover, mutation, eval
 These functions are called from the GPU executor's native in-flight path.
 """
 from __future__ import annotations
-from types import SimpleNamespace
 import numpy as np
-try:
-    from .. import fields
-    from ..fields import MAX_EVALS_PER_DISPATCH
-    from ..kernel_loader import get_kernels
-    from .initialization import ensure_ready, _ensure_ftff_combo_tables
-except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test path
-    if exc.name != "taichi":
-        raise
-    fields = SimpleNamespace(
-        MAX_EVALS_PER_DISPATCH=8_388_608,  # keep in sync with fields.MAX_EVALS_PER_DISPATCH (CPU-only import shim)
-        MAX_GENOMES=4608,  # keep in sync with fields.MAX_GENOMES (CPU-only import shim)
-        MAX_GA_RUNS=128,
-        MAX_GA_RUN_GENOMES=1024,
-        ITEM_STAT_DIM=10,
-        ga_eval_cache_key=None,
-    )
-    MAX_EVALS_PER_DISPATCH = int(fields.MAX_EVALS_PER_DISPATCH)
-    def ensure_ready(*_args, **_kwargs):
-        raise RuntimeError("Taichi is not installed")
-    def _ensure_ftff_combo_tables(*_args, **_kwargs):
-        raise RuntimeError("Taichi is not installed")
-    def get_kernels():
-        return SimpleNamespace()
+from .. import fields
+from ..fields import MAX_EVALS_PER_DISPATCH
+from ..kernel_loader import get_kernels
+from ..runtime import on_hard_reset
+from .ga_eval_cache import reset_ga_evaluation_cache, use_ga_evaluation_context
+from .initialization import ensure_ready, _ensure_ftff_combo_tables
 from gear_optimizer.chart import Chart
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.timing_envelope import TimedSong
@@ -163,17 +145,9 @@ def _ga_eval_budget() -> int:
     return int(MAX_EVALS_PER_DISPATCH)
 kernels = get_kernels()
 _FG_EFFECTIVE_TABLES_CACHE: dict = {"sig": None, "rank_id": None, "sig_id": None}
-_GA_EVAL_CONTEXT: tuple | None = None
 
 
-def reset_ga_evaluation_cache() -> None:
-    """Discard results when a batch, reference table, or timeline is replaced."""
-    global _GA_EVAL_CONTEXT
-    _GA_EVAL_CONTEXT = None
-    if fields.ga_eval_cache_key is not None:
-        fields.ga_eval_cache_key.fill(0)
-
-
+@on_hard_reset
 def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
     global _FG_EFFECTIVE_TABLES_CACHE
@@ -516,15 +490,11 @@ def ga_evaluate_prepared_population(
     max_ff_gems_i = int(total_budget_i) if max_ff_gems_global is None else int(max_ff_gems_global)
     max_ft_gems_i = max(0, min(int(total_budget_i), int(max_ft_gems_i)))
     max_ff_gems_i = max(0, min(int(total_budget_i), int(max_ff_gems_i)))
-    global _GA_EVAL_CONTEXT
-    context = (
+    use_ga_evaluation_context((
         total_budget_i, gem_scale_fever_i, song_slot_i, max_ft_gems_i, max_ff_gems_i,
         int(is_p_ft), int(is_s_ft), int(is_p_ff), int(is_s_ff), int(is_p_pp), int(is_s_pp),
         int(is_p_cm), int(is_s_cm), int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
-    )
-    if context != _GA_EVAL_CONTEXT:
-        reset_ga_evaluation_cache()
-        _GA_EVAL_CONTEXT = context
+    ))
     n_combos = _ensure_ftff_combo_tables(
         total_budget_i,
         max_ft_gems=max_ft_gems_i,
