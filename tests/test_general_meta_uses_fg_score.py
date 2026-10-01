@@ -53,7 +53,8 @@ def test_general_meta_counts_top1_by_effective_fg_score():
 
     minis_by_name = minis_from_dicts({name: {"Name": name} for name in target_minis})
 
-    results = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
+    by_song = {name: [row for row in all_loadouts if row["song_name"] == name] for name in ("Song A", "Song B")}
+    results = find_most_common_loadout(songs, by_song, minis_by_name)
 
     assert results
     top = results[0]

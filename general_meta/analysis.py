@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from collections.abc import Mapping
@@ -11,23 +12,20 @@ from collections.abc import Mapping
 from gear_optimizer.core.gem_defs import extract_gem_totals
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.gamedata import Gear, Mini, ascended_mini_stats
-from gear_optimizer.core.utils import safe_int as _safe_int
 
 _ELEMENT_ORDER: Tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 _GENERAL_META_EXCLUDED_RANK_DIFFICULTIES = frozenset({"Easy"})
+_GEM_KEYS = ("PP", "CM", "FM", "FT", "FF", "Element")  # the order of GemTotals.as_tuple()
+
+
+def _scores(row: dict) -> tuple[int, int]:
+    """(base score, FG score) of a stored row (a missing score counts as 0)."""
+    return row.get("score") or 0, row.get("fg_score") or 0
 
 
 def _effective_score(loadout: dict) -> int:
-    """
-    Return the score GeneralMeta should use for ranking.
-
-    When ForceGreats is enabled, `fg_score` can exceed the base `score` for the
-    same gear+mini set. GeneralMeta should treat the best achievable score as
-    the max of these fields.
-    """
-    score = int(loadout.get("score") or 0)
-    fg_score = int(loadout.get("fg_score") or 0)
-    return max(score, fg_score)
+    """The row's best achievable score: its FG score when Force Greats beat the base score."""
+    return max(_scores(loadout))
 
 
 def _song_name(song: dict) -> str:
@@ -126,21 +124,18 @@ def _pick_representative_variant(variants: Counter) -> Tuple[Any, ...]:
     tied = [variant for variant, count in variants.items() if count == max_count]
     return min(tied)
 
+
 def _row_mode(row: dict) -> str:
-    return "fg" if _safe_int(row.get("fg_score")) > _safe_int(row.get("score")) else "meta"
+    score, fg_score = _scores(row)
+    return "fg" if fg_score > score else "meta"
 
 
 def _row_mode_score(row: dict, mode: str) -> int:
-    return _safe_int(row.get("fg_score" if mode == "fg" else "score"))
+    return _scores(row)[1 if mode == "fg" else 0]
 
 
 def _rank_index_for_song_mode(rows: list[dict], target: dict, mode: str) -> int | None:
-    ranked = [
-        row
-        for row in rows
-        if _row_mode_score(row, mode) > 0
-        and (mode != "fg" or _safe_int(row.get("fg_score")) > _safe_int(row.get("score")))
-    ]
+    ranked = [row for row in rows if _row_mode_score(row, mode) > 0 and (mode != "fg" or _row_mode(row) == "fg")]
     ranked.sort(
         key=lambda row: (
             -_row_mode_score(row, mode),
@@ -162,22 +157,22 @@ def _rank_index_for_song_mode(rows: list[dict], target: dict, mode: str) -> int 
 def _song_win_entry(row: dict, *, mode: str, rank_index: int | None, team_buff: str | None = None) -> dict:
     song_name = str(row.get("song_name") or "").strip()
     loadout_hash = str(row.get("loadout_hash") or "").strip()
-    score = _row_mode_score(row, mode)
+    score, fg_score = _scores(row)
     out = {
         "song_id": song_name,
         "song_name": song_name,
         "mode": mode,
-        "score": score,
-        "base_score": _safe_int(row.get("score")),
-        "fg_score": _safe_int(row.get("fg_score")),
+        "score": _row_mode_score(row, mode),
+        "base_score": score,
+        "fg_score": fg_score,
     }
     if team_buff:
-        out["team_buff"] = str(team_buff)
+        out["team_buff"] = team_buff
     if loadout_hash:
         out["loadout_hash"] = loadout_hash
     if rank_index is not None:
-        out["rank_index"] = int(rank_index)
-        out["rank"] = int(rank_index) + 1
+        out["rank_index"] = rank_index
+        out["rank"] = rank_index + 1
     return out
 
 
@@ -203,77 +198,47 @@ def _minis_keys_from_groups(mini_groups: object) -> tuple[tuple[str, ...], tuple
     return rep_key, variant_key
 
 
-def _groups_from_variant_key(variant_key: tuple[tuple[str, ...], ...]) -> list[list[str]]:
-    return [list(g) for g in (variant_key or ())]
+@dataclass
+class _SetWins:
+    """What one gear + mini-effect set won in a category."""
+
+    rows: list[dict] = field(default_factory=list)  # its winning rows in ranked (non-Easy) songs
+    all_rows: list[dict] = field(default_factory=list)  # its winning rows in every song (the gem/score averages)
+    variants: Counter = field(default_factory=Counter)  # mini variant groups of the ranked wins
+    song_wins: list[dict] = field(default_factory=list)
 
 
-def find_most_common_loadout(
+def _category_wins(
     songs: List[dict],
-    all_loadouts: List[dict],
+    loadouts_by_song: Mapping[str, list],
     minis_by_name: Mapping[str, Mini],
-    top_n: Optional[int] = 1,
-    *,
-    loadouts_by_song: Optional[Dict[str, list]] = None,
-    gears_by_name: Optional[Mapping[str, Gear]] = None,
-) -> List[dict]:
-    """
-    Find the most frequently appearing gear+mini SETs for songs in this category.
-    Then look up existing DB entries that use each SET to get pre-optimized gems.
-    """
-    songs_by_name = {
-        name: song
-        for song in songs
-        if (name := _song_name(song))
-    }
-    song_names = set(songs_by_name)
-    ranked_song_names = {
-        name
-        for name, song in songs_by_name.items()
-        if _is_general_meta_ranked_song(song)
-    }
+    gears_by_name: Optional[Mapping[str, Gear]],
+) -> dict[tuple, _SetWins]:
+    """Each song's best row (by effective score), grouped by its gear set + mini effect signature."""
+    songs_by_name = {name: song for song in songs if (name := _song_name(song))}
     relevant_elements = _relevant_elements_for_category(songs)
     signature_songs = tuple(sorted(songs_by_name.values(), key=_song_name))
-    signature_cache: dict[tuple[str, ...], Tuple[Any, ...]] = {}
-
-    if loadouts_by_song is None:
-        loadouts_by_song = {}
-        for loadout in all_loadouts:
-            name = loadout["song_name"]
-            if name in song_names:
-                loadouts_by_song.setdefault(name, []).append(loadout)
-
-    wins: Counter = Counter()
-    loadout_rows: Dict[Tuple[Any, ...], List[dict]] = {}
-    aggregate_loadout_rows: Dict[Tuple[Any, ...], List[dict]] = {}
-    mini_variants: Dict[Tuple[Any, ...], Counter] = {}
-    song_win_rows: Dict[Tuple[Any, ...], List[dict]] = {}
-
-    for song_name in sorted(song_names):
-        loadouts = (loadouts_by_song or {}).get(song_name, [])
+    signatures: dict[tuple[str, ...], Tuple[Any, ...]] = {}
+    sets: dict[tuple, _SetWins] = {}
+    for song_name in sorted(songs_by_name):
+        loadouts = loadouts_by_song.get(song_name)
         if not loadouts:
             continue
-
         best = max(loadouts, key=_effective_score)
-        mode = _row_mode(best)
-        gears = list(best.get("gear") or [])
         rep_names, variant_key = _minis_keys_from_groups(best.get("mini_groups"))
-        sig = signature_cache.get(rep_names)
-        if sig is None:
-            sig = _mini_set_effect_signature(rep_names, minis_by_name, relevant_elements, signature_songs)
-            signature_cache[rep_names] = sig
-
-        if gears_by_name:
-            ordered_gears = sort_gears_by_slot(list(gears), gears_by_name)
-        else:
-            ordered_gears = sorted(gears)
-        loadout_key = (tuple(ordered_gears), sig)
-        aggregate_loadout_rows.setdefault(loadout_key, []).append(best)
-
-        if song_name in ranked_song_names:
-            wins[loadout_key] += 1
-            loadout_rows.setdefault(loadout_key, []).append(best)
-            mini_variants.setdefault(loadout_key, Counter())[variant_key] += 1
-            song_win_rows.setdefault(loadout_key, []).append(
+        if rep_names not in signatures:
+            signatures[rep_names] = _mini_set_effect_signature(
+                rep_names, minis_by_name, relevant_elements, signature_songs
+            )
+        gears = list(best.get("gear") or [])
+        ordered_gears = sort_gears_by_slot(gears, gears_by_name) if gears_by_name else sorted(gears)
+        won = sets.setdefault((tuple(ordered_gears), signatures[rep_names]), _SetWins())
+        won.all_rows.append(best)
+        if _is_general_meta_ranked_song(songs_by_name[song_name]):
+            mode = _row_mode(best)
+            won.rows.append(best)
+            won.variants[variant_key] += 1
+            won.song_wins.append(
                 _song_win_entry(
                     best,
                     mode=mode,
@@ -281,84 +246,60 @@ def find_most_common_loadout(
                     team_buff=str(best.get("team_buff") or "").strip() or None,
                 )
             )
+    return sets
 
-    if not wins:
-        return []
 
-    ranked = sorted(wins.items(), key=lambda kv: (-kv[1], kv[0]))
+def _peak_songs(rows: list[dict], *, fg: bool) -> list[str]:
+    """The songs among `rows` won by Force Greats (fg) or by the base score (not fg)."""
+    return sorted(
+        {str(r.get("song_name") or "") for r in rows if (r.get("song_name") or "").strip() and (_row_mode(r) == "fg") == fg}
+    )
 
-    results: List[dict] = []
-    for idx, (key, count) in enumerate(ranked):
-        if top_n is not None and idx >= int(top_n):
-            break
-        gears, _sig = key
-        loadout_key = _loadout_key_fingerprint(tuple(gears), tuple(_sig))
-        rows = loadout_rows.get(key, [])
-        aggregate_rows = aggregate_loadout_rows.get(key, rows)
-        peak_in_songs_meta = sorted(
-            {
-                str(r.get("song_name") or "")
-                for r in rows
-                if (r.get("song_name") or "").strip() and int(r.get("score") or 0) >= int(r.get("fg_score") or 0)
-            }
-        )
-        peak_in_songs_fg = sorted(
-            {
-                str(r.get("song_name") or "")
-                for r in rows
-                if (r.get("song_name") or "").strip() and int(r.get("fg_score") or 0) > int(r.get("score") or 0)
-            }
-        )
-        peak_in_songs = sorted(set(peak_in_songs_meta) | set(peak_in_songs_fg))
-        song_wins = sorted(
-            song_win_rows.get(key) or [],
-            key=lambda item: (str(item.get("song_name") or ""), str(item.get("mode") or "")),
-        )
 
-        # Representative mini variant (preserves per-mini group variants).
-        variants = mini_variants.get(key) or Counter()
-        chosen_variant = _pick_representative_variant(variants)
-        gem_sums = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
-        avg_score = 0
-        for row in aggregate_rows:
-            avg_score += int(_effective_score(row))
-            try:
-                details = json.loads(row.get("details_json") or "{}")
-            except Exception:
-                details = {}
-            totals = extract_gem_totals(details)
-            gem_sums["PP"] += int(totals.pp)
-            gem_sums["CM"] += int(totals.cm)
-            gem_sums["FM"] += int(totals.fm)
-            gem_sums["FT"] += int(totals.ft)
-            gem_sums["FF"] += int(totals.ff)
-            gem_sums["Element"] += int(totals.element)
+def _set_summary(rank: int, key: tuple, won: _SetWins) -> dict:
+    gears, signature = key
+    gem_sums = dict.fromkeys(_GEM_KEYS, 0)
+    for row in won.all_rows:
+        totals = extract_gem_totals(json.loads(row.get("details_json") or "{}"))
+        for gem, count in zip(_GEM_KEYS, totals.as_tuple()):
+            gem_sums[gem] += count
+    denom = len(won.all_rows)
+    peak_in_songs_meta = _peak_songs(won.rows, fg=False)
+    peak_in_songs_fg = _peak_songs(won.rows, fg=True)
+    return {
+        "rank": rank,
+        "loadout_key": _loadout_key_fingerprint(gears, signature),
+        "gear_names": list(gears),
+        "mini_groups": [list(group) for group in _pick_representative_variant(won.variants)],
+        "peak_in_songs": sorted(set(peak_in_songs_meta) | set(peak_in_songs_fg)),
+        "peak_in_songs_meta": peak_in_songs_meta,
+        "peak_in_songs_fg": peak_in_songs_fg,
+        "song_wins": sorted(won.song_wins, key=lambda item: (str(item.get("song_name") or ""), str(item.get("mode") or ""))),
+        "songs_with_set": len(won.rows),
+        "win_frequency": len(won.rows),
+        "avg_score": int(sum(_effective_score(row) for row in won.all_rows) / denom),
+        "avg_gems": (
+            _round_mean_gems_to_total(gem_sums, denom, total=90)
+            if sum(gem_sums.values()) > 0
+            else dict.fromkeys(gem_sums, 0)
+        ),
+    }
 
-        denom = max(1, len(aggregate_rows))
-        avg_score = int(avg_score / denom)
-        if sum(int(v) for v in gem_sums.values()) <= 0:
-            avg_gems = {k: 0 for k in gem_sums}
-        else:
-            avg_gems = _round_mean_gems_to_total(gem_sums, denom, total=90)
 
-        results.append(
-            {
-                "rank": idx + 1,
-                "loadout_key": loadout_key,
-                "gear_names": list(gears),
-                "mini_groups": _groups_from_variant_key(tuple(chosen_variant) if chosen_variant else ()),
-                "peak_in_songs": peak_in_songs,
-                "peak_in_songs_meta": peak_in_songs_meta,
-                "peak_in_songs_fg": peak_in_songs_fg,
-                "song_wins": song_wins,
-                "songs_with_set": len(rows),
-                "win_frequency": count,
-                "avg_score": avg_score,
-                "avg_gems": avg_gems,
-            }
-        )
-
-    return results
+def find_most_common_loadout(
+    songs: List[dict],
+    loadouts_by_song: Mapping[str, list],
+    minis_by_name: Mapping[str, Mini],
+    *,
+    gears_by_name: Optional[Mapping[str, Gear]] = None,
+) -> List[dict]:
+    """
+    The gear + mini sets that win this category's songs, most ranked (non-Easy) wins first, with their gems and
+    scores averaged over every song they win (Easy included).
+    """
+    sets = _category_wins(songs, loadouts_by_song, minis_by_name, gears_by_name)
+    ranked = sorted(((key, won) for key, won in sets.items() if won.rows), key=lambda kv: (-len(kv[1].rows), kv[0]))
+    return [_set_summary(rank, key, won) for rank, (key, won) in enumerate(ranked, start=1)]
 
 
 def sort_gears_by_slot(gear_names: List[str], gears_by_name: Mapping[str, Gear]) -> List[str]:
@@ -391,36 +332,26 @@ def _round_mean_gems_to_total(gem_sums: Dict[str, int], denom: int, *, total: in
     - the vector is as close as possible to the true mean,
     - the sum is exact (no 89/91 gem artifacts from independent rounding).
     """
-    denom = max(1, int(denom))
-    keys = ("PP", "CM", "FM", "FT", "FF", "Element")
+    keys = _GEM_KEYS
+    means: Dict[str, float] = {k: gem_sums.get(k, 0) / denom for k in keys}
+    floors: Dict[str, int] = {k: math.floor(means[k]) for k in keys}
 
-    means: Dict[str, float] = {k: float(int(gem_sums.get(k, 0) or 0)) / denom for k in keys}
-    floors: Dict[str, int] = {k: int(math.floor(means[k])) for k in keys}
-
-    current_total = sum(floors.values())
-    remaining = int(total) - current_total
+    remaining = total - sum(floors.values())
     if remaining == 0:
         return floors
 
-    def sort_key_for_add(k: str) -> tuple[float, float, int]:
-        frac = means[k] - floors[k]
-        return (frac, means[k], keys.index(k))
-
-    def sort_key_for_sub(k: str) -> tuple[float, float, int]:
-        frac = means[k] - floors[k]
-        # Prefer subtracting from smallest fractional part / smallest mean, while staying >= 0.
-        return (frac, means[k], keys.index(k))
+    def remainder_order(k: str) -> tuple[float, float, int]:
+        # Largest fractional part (then mean) gains a gem first; the smallest loses one first.
+        return (means[k] - floors[k], means[k], keys.index(k))
 
     if remaining > 0:
-        order = sorted(keys, key=sort_key_for_add, reverse=True)
-        for k in order:
+        for k in sorted(keys, key=remainder_order, reverse=True):
             if remaining <= 0:
                 break
             floors[k] += 1
             remaining -= 1
     else:
-        order = sorted(keys, key=sort_key_for_sub)
-        for k in order:
+        for k in sorted(keys, key=remainder_order):
             if remaining >= 0:
                 break
             if floors[k] <= 0:
@@ -428,32 +359,29 @@ def _round_mean_gems_to_total(gem_sums: Dict[str, int], denom: int, *, total: in
             floors[k] -= 1
             remaining += 1
 
-    # If float error or weird inputs leave us off by a few, repair deterministically.
-    if remaining != 0:
-        repair_keys = list(keys)
-        i = 0
-        while remaining != 0 and i < 10_000:
-            k = repair_keys[i % len(repair_keys)]
-            if remaining > 0:
-                floors[k] += 1
-                remaining -= 1
-            else:
-                if floors[k] > 0:
-                    floors[k] -= 1
-                    remaining += 1
-            i += 1
+    # Sums far from `total` (rows without a full gem set) leave a remainder: spread it round-robin.
+    i = 0
+    while remaining != 0 and i < 10_000:
+        k = keys[i % len(keys)]
+        if remaining > 0:
+            floors[k] += 1
+            remaining -= 1
+        elif floors[k] > 0:
+            floors[k] -= 1
+            remaining += 1
+        i += 1
 
     return floors
 
 
 def format_gem_counts(avg_gems: Dict[str, int]) -> Dict[str, int]:
     return {
-        "Perfect Points": int(avg_gems.get("PP", 0) or 0),
-        "Combo Multiplier": int(avg_gems.get("CM", 0) or 0),
-        "Fever Multiplier": int(avg_gems.get("FM", 0) or 0),
-        "Fever Time": int(avg_gems.get("FT", 0) or 0),
-        "Fever Fill Rate": int(avg_gems.get("FF", 0) or 0),
-        "Element": int(avg_gems.get("Element", 0) or 0),
+        "Perfect Points": avg_gems["PP"],
+        "Combo Multiplier": avg_gems["CM"],
+        "Fever Multiplier": avg_gems["FM"],
+        "Fever Time": avg_gems["FT"],
+        "Fever Fill Rate": avg_gems["FF"],
+        "Element": avg_gems["Element"],
     }
 
 

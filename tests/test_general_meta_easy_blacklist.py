@@ -47,11 +47,7 @@ def test_general_meta_ranks_by_non_easy_peaks_but_keeps_easy_gems_in_average():
     }
 
     results = find_most_common_loadout(
-        songs,
-        [],
-        minis_from_dicts({"Mini": {"Name": "Mini"}, "Easy Mini": {"Name": "Easy Mini"}}),
-        top_n=None,
-        loadouts_by_song=loadouts_by_song,
+        songs, loadouts_by_song, minis_from_dicts({"Mini": {"Name": "Mini"}, "Easy Mini": {"Name": "Easy Mini"}})
     )
 
     assert [result["gear_names"] for result in results] == [sorted(rank_one_gears)]
