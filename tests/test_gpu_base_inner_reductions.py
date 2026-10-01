@@ -88,7 +88,6 @@ def _compare(
             0,
             53,
             53,
-            True,
             False,
             0,
         )

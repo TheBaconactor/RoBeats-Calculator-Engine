@@ -187,7 +187,6 @@ def ga_pack_fg_candidates_table_segmented_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
 ):
     """
     Pack a compact GA->FG candidate table into `ga_fg_candidates_packed`.
@@ -366,7 +365,6 @@ def ga_pack_fg_candidates_table_segmented_kernel(
                 is_p_ov,
                 is_s_ov,
                 song_slot,
-                use_exact_inner_solver,
             )
             _write_fg_candidate_row_from_genome(
                 table_slot,

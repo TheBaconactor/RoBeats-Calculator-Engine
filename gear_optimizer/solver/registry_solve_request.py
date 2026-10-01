@@ -21,7 +21,6 @@ class RegistrySolveRequest:
     total_budget: int = GEM_BUDGET
     gem_scale_fever: int = STAT_GEM_GAIN_FEVER
     song_slot: int = 0
-    use_exact_inner_solver: bool = True
     max_ft_gems_global: int | None = None
     max_ff_gems_global: int | None = None
     timing_response_combo_ft: Any | None = None
@@ -32,10 +31,6 @@ class RegistrySolveRequest:
     timing_response_cache_key: Any | None = None
     score_cull_threshold: int | None = None
     score_only: bool = False
-
-    def __post_init__(self) -> None:
-        if not bool(self.use_exact_inner_solver):
-            raise ValueError("RegistrySolveRequest requires exact inner GPU solving.")
 
 
 def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
@@ -68,7 +63,6 @@ def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
             total_budget=int(request.total_budget),
             gem_scale_fever=int(request.gem_scale_fever),
             song_slot=int(request.song_slot),
-            use_exact_inner_solver=bool(request.use_exact_inner_solver),
             max_ft_gems_global=request.max_ft_gems_global,
             max_ff_gems_global=request.max_ff_gems_global,
             timing_response_combo_ft=request.timing_response_combo_ft,

@@ -449,7 +449,6 @@ def ga_evaluate_prepared_population(
     is_s_fm: int = 0,
     is_p_ov: int = 0,
     is_s_ov: int = 0,
-    use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
 ) -> None:
@@ -480,9 +479,6 @@ def ga_evaluate_prepared_population(
         raise ValueError(
             f"n_genomes out of range: {n_genomes} (MAX_GENOMES={int(fields.MAX_GENOMES)})"
         )
-    use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
-    if use_exact_inner_solver_i == 0:
-        raise ValueError("GA evaluation requires exact inner GPU solving.")
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
@@ -546,7 +542,6 @@ def ga_evaluate_prepared_population(
             int(is_p_ov),
             int(is_s_ov),
             song_slot_i,
-            use_exact_inner_solver_i,
         )
         kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
         offset += int(chunk_len)
@@ -597,7 +592,6 @@ def ga_refresh_scores_and_update_runs_best(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
 ) -> None:
     """
     Lightweight live-score refresh for packed multi-run GA execution.
@@ -635,7 +629,6 @@ def ga_refresh_scores_and_update_runs_best(
         int(is_p_ov),
         int(is_s_ov),
         int(song_slot),
-        int(bool(use_exact_inner_solver)),
     )
 def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     *,
@@ -658,7 +651,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
     mutation_rate: float = 0.02,
     immigrant_rate: float = 0.0,
     tournament_k: int = 3,
@@ -714,7 +706,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         int(is_p_ov),
         int(is_s_ov),
         int(song_slot),
-        int(bool(use_exact_inner_solver)),
         int(n_islands),
         int(elites_per_island),
         int(tournament_k),
@@ -827,7 +818,6 @@ def ga_pack_fg_candidates_table_segmented(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
 ) -> None:
     """
     Pack a compact GA->FG candidate table for packed multi-run execution.
@@ -872,7 +862,6 @@ def ga_pack_fg_candidates_table_segmented(
         int(is_p_ov),
         int(is_s_ov),
         int(song_slot),
-        int(bool(use_exact_inner_solver)),
     )
 def ga_download_fg_selected_payload(
     *,

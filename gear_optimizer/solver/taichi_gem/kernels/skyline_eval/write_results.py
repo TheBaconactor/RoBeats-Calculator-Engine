@@ -144,7 +144,6 @@ def _materialize_best_combo_stats(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
 ) -> ti.types.vector(7, ti.i32):
     ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
     ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
@@ -207,7 +206,6 @@ def _materialize_best_combo_stats(
                 is_p_ov,
                 is_s_ov,
                 song_slot,
-                use_exact_inner_solver,
                 False,
             )
             score = uncached[0]
@@ -235,7 +233,6 @@ def _materialize_best_combo_stats(
             is_p_ov,
             is_s_ov,
             song_slot,
-            use_exact_inner_solver,
             False,
         )
         score = uncached[0]
@@ -280,7 +277,6 @@ def skyline_write_best_results_from_key_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
 ):
     """
     Finalize best (ft, ff, gem counts) per genome from chunk_best_key.
@@ -311,7 +307,6 @@ def skyline_write_best_results_from_key_kernel(
             is_p_ov,
             is_s_ov,
             song_slot,
-            use_exact_inner_solver,
         )
         _write_materialized_result(genome_idx, combo_idx, result_stats)
 

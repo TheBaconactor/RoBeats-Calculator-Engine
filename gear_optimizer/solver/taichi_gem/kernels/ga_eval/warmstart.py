@@ -28,7 +28,6 @@ def ga_find_best_combo_warmstart_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),  # retained ABI flag; production requires exact inner solving
 ):
     """
     GPU-parallel exact per-(genome, FT/FF) evaluation over COMPACTED unique rows.
@@ -145,7 +144,6 @@ def ga_find_best_combo_warmstart_kernel(
                 base_ff_stat,
                 max_ft_gems,
                 max_ff_gems,
-                use_exact_inner_solver,
                 False,
                 cull_threshold,
             )

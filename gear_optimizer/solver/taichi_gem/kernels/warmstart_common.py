@@ -40,7 +40,6 @@ def solve_combo_warmstart_preloaded(
     base_ff_stat: ti.i32,
     max_ft_gems: ti.i32,
     max_ff_gems: ti.i32,
-    use_exact_inner_solver: ti.template(),
     use_timing_response_antichain: ti.template(),
     score_cull_threshold: ti.i32,
 ) -> ti.types.vector(5, ti.i32):

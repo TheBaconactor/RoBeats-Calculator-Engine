@@ -109,7 +109,6 @@ def skyline_evaluate_population(
     is_s_fm: int = 0,
     is_p_ov: int = 0,
     is_s_ov: int = 0,
-    use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
     timing_response_combo_ft: np.ndarray | None = None,
@@ -146,9 +145,6 @@ def skyline_evaluate_population(
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
-    use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
-    if use_exact_inner_solver_i == 0:
-        raise ValueError("Skyline evaluation requires exact inner GPU solving.")
 
     kernels.skyline_aggregate_and_init_best_kernel(
         n_genomes,
@@ -251,7 +247,6 @@ def skyline_evaluate_population(
             int(is_p_ov),
             int(is_s_ov),
             song_slot_i,
-            use_exact_inner_solver_i,
             0,
             int(bool(use_timing_response_antichain)),
             int(score_cull_threshold_i),
@@ -275,7 +270,6 @@ def skyline_evaluate_population(
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
         song_slot=song_slot_i,
-        use_exact_inner_solver=bool(use_exact_inner_solver_i),
         materialize_mode=materialize_mode,
     )
 
@@ -298,7 +292,6 @@ def _skyline_materialize_population_results(
     is_p_ov: int,
     is_s_ov: int,
     song_slot: int,
-    use_exact_inner_solver: bool,
     materialize_mode: str,
 ) -> None:
     if materialize_mode == "none":
@@ -325,7 +318,6 @@ def _skyline_materialize_population_results(
         int(is_p_ov),
         int(is_s_ov),
         int(song_slot),
-        int(bool(use_exact_inner_solver)),
     )
 
     if materialize_mode == "results_only":

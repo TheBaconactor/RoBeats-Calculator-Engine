@@ -35,7 +35,6 @@ def _materialize_best_combo_stats(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
 ) -> ti.types.vector(7, ti.i32):
     ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
     ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
@@ -58,7 +57,6 @@ def _materialize_best_combo_stats(
         is_p_ov,
         is_s_ov,
         song_slot,
-        use_exact_inner_solver,
         True,
     )
     score: ti.i32 = uncached[0]
@@ -85,7 +83,6 @@ def _refresh_live_score_from_chunk_state(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
 ):
     combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
     if combo_idx < 0:
@@ -125,7 +122,6 @@ def ga_refresh_scores_and_update_runs_best_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
 ):
     """
     Lightweight live-score refresh:
@@ -153,7 +149,6 @@ def ga_refresh_scores_and_update_runs_best_kernel(
             is_p_ov,
             is_s_ov,
             song_slot,
-            use_exact_inner_solver,
         )
     for r in range(n_runs):
         start_offset: ti.i32 = r * n_genomes_per_run
@@ -188,6 +183,5 @@ def ga_refresh_scores_and_update_runs_best_kernel(
                     is_p_ov,
                     is_s_ov,
                     song_slot,
-                    use_exact_inner_solver,
                 )
                 _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)

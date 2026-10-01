@@ -566,7 +566,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
     n_islands: ti.i32,
     elites_per_island: ti.i32,
     tournament_k: ti.i32,
@@ -622,7 +621,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
             is_p_ov,
             is_s_ov,
             song_slot,
-            use_exact_inner_solver,
         )
     for r in range(n_runs_i):
         start_offset: ti.i32 = r * n_genomes_per_run_i
@@ -657,7 +655,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
                     is_p_ov,
                     is_s_ov,
                     song_slot,
-                    use_exact_inner_solver,
                 )
                 _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)
     _ga_next_generation_full_runs_impl(

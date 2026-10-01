@@ -222,7 +222,6 @@ def _make_exhaustive_reference_kernel():
                     base_ff_stat,
                     max_ft_gems,
                     max_ff_gems,
-                    True,
                     False,
                     0,
                 )

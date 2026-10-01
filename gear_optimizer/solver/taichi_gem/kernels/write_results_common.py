@@ -26,7 +26,6 @@ def solve_best_combo_uncached(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
     rescore_result: ti.template(),
 ) -> ti.types.vector(5, ti.i32):
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
