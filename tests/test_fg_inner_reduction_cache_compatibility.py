@@ -12,6 +12,8 @@ PARALLEL_CPU_SEARCH_VERSION = "fg-response-frontier-visible-first-v31+logic-260f
 REWRITE_STAGE1_VERSION = "fg-response-frontier-visible-first-v31+logic-529c17599261"
 REWRITE_STAGE2_VERSION = "fg-response-frontier-visible-first-v31+logic-fc7fff0f4398"
 REWRITE_STAGE5_VERSION = "fg-response-frontier-visible-first-v31+logic-8c948e5e17d3"
+REWRITE_STAGE7_VERSION = "fg-response-frontier-visible-first-v31+logic-806c8cda331e"
+REWRITE_R5_VERSION = "fg-response-frontier-visible-first-v31+logic-b59710681424"
 
 
 @pytest.mark.parametrize(
@@ -32,6 +34,13 @@ REWRITE_STAGE5_VERSION = "fg-response-frontier-visible-first-v31+logic-8c948e5e1
         (PARALLEL_CPU_SEARCH_VERSION, REWRITE_STAGE5_VERSION),
         (REDUCED_VERSION, REWRITE_STAGE5_VERSION),
         (PREVIOUS_VERSION, REWRITE_STAGE5_VERSION),
+        (REWRITE_STAGE7_VERSION, REWRITE_R5_VERSION),
+        (REWRITE_STAGE5_VERSION, REWRITE_R5_VERSION),
+        (REWRITE_STAGE2_VERSION, REWRITE_R5_VERSION),
+        (REWRITE_STAGE1_VERSION, REWRITE_R5_VERSION),
+        (PARALLEL_CPU_SEARCH_VERSION, REWRITE_R5_VERSION),
+        (REDUCED_VERSION, REWRITE_R5_VERSION),
+        (PREVIOUS_VERSION, REWRITE_R5_VERSION),
     ],
 )
 def test_inner_reductions_reuse_exact_persisted_frontiers(tmp_path, monkeypatch, persisted_version, current_version):

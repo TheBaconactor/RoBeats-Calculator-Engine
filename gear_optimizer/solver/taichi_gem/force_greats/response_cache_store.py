@@ -79,6 +79,20 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Engine rewrite R5 (FG builder plumbing: head/region tables as tuples, never-read parameters gone, one inner
+    # scoring kernel, shared head-basis loop and activation-edge helper) changes no producer logic: the complete
+    # bundles of the 40-chart sample (both timing modes) built by this code are byte-identical, one to one per chart
+    # and timing mode, to the deployed 806c8cda331e producer's builds (gates r5/g1-g4). Ratify the deployed version
+    # and its ratified predecessors (non-transitive).
+    "fg-response-frontier-visible-first-v31+logic-b59710681424": (
+        "fg-response-frontier-visible-first-v31+logic-806c8cda331e",
+        "fg-response-frontier-visible-first-v31+logic-8c948e5e17d3",
+        "fg-response-frontier-visible-first-v31+logic-fc7fff0f4398",
+        "fg-response-frontier-visible-first-v31+logic-529c17599261",
+        "fg-response-frontier-visible-first-v31+logic-260f7b254d34",
+        "fg-response-frontier-visible-first-v31+logic-d73bd8aab735",
+        "fg-response-frontier-visible-first-v31+logic-60e33a1d805f",
+    ),
     # Engine rewrite stage 7 (owner 09-30): note_graph raises a typed UnplayableTrace where it finds no legal hit
     # timing for a trace, so the FG reducer drops that one loadout's FG result instead of failing the song.
     # note_graph.py is a conservative fingerprint input the cached V31 producer does not import: the complete
