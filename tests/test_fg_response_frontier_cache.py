@@ -265,7 +265,7 @@ def test_fg_response_frontier_payload_reads_legacy_fixed_sidecars(tmp_path: Path
     for generated, legacy in zip(generated_sidecars, legacy_sidecars, strict=True):
         os.replace(generated, legacy)
     _remove_npz_array(first.disk_path, _SURFACE_GENERATION_ARRAY_NAME)
-    assert store.fg_response_cache_file_is_complete(first.disk_path, stat_keys=((0, 0),))
+    assert store._payload_file_info_if_complete(Path(first.disk_path), ((0, 0),)) is not None
 
     response_cache.reset_fg_response_frontier_payload_cache()
     restored = response_cache.build_or_load_response_frontier_payload(
@@ -681,8 +681,9 @@ def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> N
     _write_song(second_path)
 
     representatives, duplicates = _dedupe_paths_by_response_bundle_key(
-        (str(first_path), str(second_path)),
+        [str(first_path), str(second_path)],
         _curves(),
+        "perfect_window",
     )
 
     # Representatives carry the note count from the same parse pass (admission weight input).
@@ -2304,7 +2305,6 @@ def _other_song():
 
 
 def test_ensure_response_frontier_cache_releases_song_memory_after_cold_build(monkeypatch) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
@@ -2325,6 +2325,7 @@ def test_ensure_response_frontier_cache_releases_song_memory_after_cold_build(mo
         store._payload_memory.put(a_bundle, object())
         store._payload_memory.put(a_payload, object())
         store._payload_memory.put(b_bundle, object())
+        return SimpleNamespace(cache_source="built", elapsed_ms=1.0, disk_path=Path("bundle.npz"))
 
     monkeypatch.setattr(
         response_cache,
@@ -2334,7 +2335,7 @@ def test_ensure_response_frontier_cache_releases_song_memory_after_cold_build(mo
     monkeypatch.setattr(response_cache, "build_or_load_response_frontier_payload", _fake_build)
     store.reset_fg_response_frontier_payload_cache()
     try:
-        prebuild.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
+        response_cache.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
 
         assert built == [((3, 5),)]
         assert a_bundle not in store._payload_memory
@@ -2345,7 +2346,6 @@ def test_ensure_response_frontier_cache_releases_song_memory_after_cold_build(mo
 
 
 def test_ensure_response_frontier_cache_warm_hit_keeps_memos(monkeypatch) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
@@ -2356,7 +2356,7 @@ def test_ensure_response_frontier_cache_warm_hit_keeps_memos(monkeypatch) -> Non
     monkeypatch.setattr(
         response_cache,
         "fg_response_frontier_payload_cache_info",
-        lambda *_args, **_kwargs: SimpleNamespace(cache_source="disk"),
+        lambda *_args, **_kwargs: SimpleNamespace(cache_source="disk", disk_path=Path("bundle.npz")),
     )
     monkeypatch.setattr(
         response_cache,
@@ -2371,14 +2371,13 @@ def test_ensure_response_frontier_cache_warm_hit_keeps_memos(monkeypatch) -> Non
     store.reset_fg_response_frontier_payload_cache()
     try:
         store._scoring_bundle_memory.put(a_bundle, object())
-        prebuild.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
+        response_cache.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
         assert a_bundle in store._scoring_bundle_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
 
 
 def test_ensure_response_frontier_cache_releases_on_build_failure(monkeypatch) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_payload_cache_key
@@ -2400,7 +2399,7 @@ def test_ensure_response_frontier_cache_releases_on_build_failure(monkeypatch) -
     store.reset_fg_response_frontier_payload_cache()
     try:
         with pytest.raises(ValueError, match="simulated cold build failure"):
-            prebuild.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
+            response_cache.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
         assert a_payload not in store._payload_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()

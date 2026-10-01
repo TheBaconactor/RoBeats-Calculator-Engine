@@ -6,10 +6,9 @@ import time
 from typing import TextIO
 
 from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.solver.fg_response_frontier_cache_prebuild import run_fg_response_frontier_cache_prebuild
-from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
-    run_timeline_frontier_cache_prebuild,
-)
+from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FG_RESPONSE_FRONTIER_PREBUILD
+from gear_optimizer.solver.frontier_cache import prebuild_frontier_cache
+from gear_optimizer.solver.timeline_frontier_cache_prebuild import TIMELINE_FRONTIER_PREBUILD
 from gear_optimizer.solver.timing_envelope import TIMING_MODES
 
 logger = logging.getLogger(__name__)
@@ -62,7 +61,8 @@ def run_startup_cpu_work(
         stream.flush()
         logger.info(verify_message)
     timeline_t0 = time.perf_counter()
-    timeline_summary = run_timeline_frontier_cache_prebuild(
+    timeline_summary = prebuild_frontier_cache(
+        TIMELINE_FRONTIER_PREBUILD,
         song_queue=queue_items,
         curves=curves,
         data_root=data_root,
@@ -72,7 +72,8 @@ def run_startup_cpu_work(
     timeline_elapsed_ms = float((time.perf_counter() - timeline_t0) * 1000.0)
     _announce_cache_summary(stream, label="Timeline frontier cache", summary=timeline_summary, elapsed_ms=timeline_elapsed_ms)
     fg_t0 = time.perf_counter()
-    fg_summary = run_fg_response_frontier_cache_prebuild(
+    fg_summary = prebuild_frontier_cache(
+        FG_RESPONSE_FRONTIER_PREBUILD,
         song_queue=queue_items,
         curves=curves,
         data_root=data_root,

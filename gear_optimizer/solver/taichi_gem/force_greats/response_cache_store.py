@@ -14,6 +14,7 @@ from typing import Iterable
 import numpy as np
 from numpy.lib import format as np_format
 
+from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.frontier_cache import FrontierCache, MemoryLru, write_atomically
 
@@ -21,6 +22,7 @@ from .response_cache_keys import (
     _fg_response_disk_cache_dir,
     _fg_response_disk_cache_path,
     _fg_response_cache_version,
+    fg_response_frontier_bundle_cache_key,
 )
 from .response_cache_patterns import (
     SURFACE_PATTERN_COLUMNS,
@@ -37,6 +39,7 @@ from .response_cache_types import (
     FgResponseFrontierCachePayload,
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
+    all_response_stat_keys,
     normalize_fg_response_stat_keys,
 )
 from .response_types import FgResponseFrontierResult
@@ -514,16 +517,6 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "fg-response-frontier-visible-first-v30+logic-a6d09c0280bd",
     ),
 }
-
-
-FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
-    name="fg_response",
-    log_label="[FGResponseCache]",
-    directory=_fg_response_disk_cache_dir,
-    file_path=_fg_response_disk_cache_path,
-    version=_fg_response_cache_version,
-    predecessors=_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS,
-)
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):
@@ -1185,12 +1178,28 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
         return None
 
 
-def fg_response_cache_file_is_complete(cache_file: str | Path, *, stat_keys: Iterable[tuple[int, int]]) -> bool:
+def fg_response_cache_file_is_complete(cache_file: str | Path) -> bool:
+    """A complete bundle of a compatible version covering every FT/FF stat key."""
     try:
         path = Path(cache_file)
     except TypeError:
         return False
-    return _payload_file_info_if_complete(path, stat_keys) is not None
+    return _payload_file_info_if_complete(path, all_response_stat_keys()) is not None
+
+
+FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
+    name="fg_response",
+    log_label="[FGResponseCache]",
+    directory=_fg_response_disk_cache_dir,
+    file_path=_fg_response_disk_cache_path,
+    version=_fg_response_cache_version,
+    predecessors=_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS,
+    is_complete=fg_response_cache_file_is_complete,
+    song_key=fg_response_frontier_bundle_cache_key,
+    manifest_name="fg_response_manifest_v1.json",
+    manifest_version_field="cache_version",
+    manifest_stat_signature=bytes(array_sig16(np.asarray(all_response_stat_keys(), dtype=np.int32).reshape(-1))).hex(),
+)
 
 
 def _payload_disk_info_if_complete(

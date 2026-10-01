@@ -37,7 +37,10 @@ if __name__ == "__main__":
         frontier_prebuild_worker_count,
         logical_core_count,
     )
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import _init_prebuild_worker
+    from gear_optimizer.solver.frontier_cache import init_prebuild_worker
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+        configure_force_greats_response_first_frontier_threads,
+    )
 
     w = frontier_prebuild_worker_count()
     expected_mask = 0
@@ -45,7 +48,9 @@ if __name__ == "__main__":
         expected_mask |= 1 << cpu
     print(f"workers: {w}  expected mask: 0x{expected_mask:X}")
     with cf.ProcessPoolExecutor(
-        max_workers=w, initializer=_init_prebuild_worker, initargs=({}, (), 1, w)
+        max_workers=w,
+        initializer=init_prebuild_worker,
+        initargs=({}, configure_force_greats_response_first_frontier_threads, 1),
     ) as ex:
         results = list(ex.map(_report_affinity, range(w * 4)))
 

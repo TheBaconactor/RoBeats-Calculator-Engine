@@ -42,14 +42,16 @@ def _solve_fixed_timing_response_results(
         return []
 
     total_budget = int(total_budget)
-    from ..fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_song
     from ..taichi_gem.force_greats.response_frontier import (
         prepare_force_greats_response_frontier_scoring_batch,
         required_response_stat_keys_for_scoring_batch,
         score_prepared_force_greats_response_frontier_batch_cpu_sync,
         score_prepared_force_greats_response_frontier_batch_sync,
     )
-    from ..taichi_gem.force_greats.response_cache import load_response_frontier_scoring_bundle
+    from ..taichi_gem.force_greats.response_cache import (
+        ensure_response_frontier_cache_for_song,
+        load_response_frontier_scoring_bundle,
+    )
 
     # The chart-only bundle is distinct from perfect_window and is prebuilt for the catalog at
     # optimizer startup. Build only the FT/FF cells this exact batch can address: base FT/FF plus
@@ -173,7 +175,7 @@ def build_fixed_timing_fg_replays(
             replays.append({"surface": result.surface, "force": force})
         return replays
     finally:
-        # Same contract as fg_response_frontier_cache_prebuild.build_fg_response_frontier_cache_for_path:
+        # Same contract as response_cache.ensure_response_frontier_cache_for_song:
         # drop this song's scoring-bundle, slim-metadata, lazy-frontier and cold-miss payload memo
         # tiers (long-lived ranked/API processes never sweep them otherwise); the next access
         # re-opens them from disk.

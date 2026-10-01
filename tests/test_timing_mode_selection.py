@@ -36,16 +36,11 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
     class Summary:
         total = completed = failures = built = disk = memory = 0
 
-    def fake_timeline(**kwargs):
-        calls["timeline"].append(tuple(kwargs["timing_modes"]))
+    def fake_prebuild(prebuild, **kwargs):
+        calls[{"timeline": "timeline", "fg_response": "fg"}[prebuild.cache.name]].append(tuple(kwargs["timing_modes"]))
         return Summary()
 
-    def fake_fg(**kwargs):
-        calls["fg"].append(tuple(kwargs["timing_modes"]))
-        return Summary()
-
-    monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", fake_timeline)
-    monkeypatch.setattr(cpu_work_manager, "run_fg_response_frontier_cache_prebuild", fake_fg)
+    monkeypatch.setattr(cpu_work_manager, "prebuild_frontier_cache", fake_prebuild)
     cpu_work_manager.run_startup_cpu_work(
         song_queue=["chart.txt"],
         curves={},

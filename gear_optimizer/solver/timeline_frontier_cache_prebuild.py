@@ -1,432 +1,91 @@
+"""The timeline frontier cache's startup prebuild: missing charts build in a RAM-capped recycling process pool.
+
+The driver (manifest, build lock, recording) is frontier_cache.prebuild_frontier_cache.
+"""
+
 from __future__ import annotations
 
 import concurrent.futures
-import logging
-import os
-import time
-from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
-from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.settings import DIFFICULTIES, paths
+from gear_optimizer.core.cpu_affinity import frontier_prebuild_intra_worker_threads, timeline_prebuild_worker_count
 from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
-from gear_optimizer.solver.frontier_cache_manifest import (
-    _ref_axes_signature,
-    apply_manifest_results as _shared_apply_manifest_results,
-    build_manifest_plan as _shared_build_manifest_plan,
+from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.solver.frontier_cache import (
+    FrontierCacheBuildResult,
+    FrontierCacheManifestPlan,
+    FrontierCachePrebuild,
+    PrebuildTally,
+    build_frontier_cache_for_chart,
+    init_prebuild_worker,
+    prebuild_worker_curves,
 )
-from gear_optimizer.core.cpu_affinity import (
-    frontier_prebuild_intra_worker_threads,
-    init_process_pool_worker_band,
-    timeline_prebuild_worker_count,
+from gear_optimizer.solver.taichi_gem.api.timeline import (
+    TIMELINE_FRONTIER_CACHE,
+    build_or_load_timeline_frontier_payload,
+    timeline_frontier_payload_cache_info,
 )
-from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.timeline_exact_frontier import configure_timeline_pair_build_threads
-from gear_optimizer.solver.timing_envelope import TIMING_MODES
+from gear_optimizer.solver.timing_envelope import TimedSong
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class TimelineFrontierCacheBuildResult:
-    path: str
-    source: str
-    build_ms: float
-    cache_file: str
-
-
-@dataclass(frozen=True)
-class TimelineFrontierCachePrebuildSummary:
-    total: int = 0
-    completed: int = 0
-    failures: int = 0
-    built: int = 0
-    disk: int = 0
-    memory: int = 0
-    elapsed_ms: float = 0.0
-
-
-_PREBUILD_WORKER_CURVES: StatCurves | None = None
-_MANIFEST_FILE_NAME = "manifest_v1.json"
+# Release native/NumPy allocator high-water before a full-pool worker reaches the heavy chart tail. Persistent
+# workers exhausted commit after ~2,216 successes and then failed allocations as small as 1 MiB on the production
+# 2,249-song pool.
 _TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER = 64
 
 
-def _init_prebuild_worker(curves: StatCurves, pair_build_threads: int, total_workers: int) -> None:
-    init_process_pool_worker_band(int(total_workers))
-    configure_timeline_pair_build_threads(max(1, int(pair_build_threads)))
-    global _PREBUILD_WORKER_CURVES
-    _PREBUILD_WORKER_CURVES = curves
-
-
-def _build_timeline_frontier_cache_for_path_shared(
-    song_path_text: str,
-    timing_mode: str = "perfect_window",
-) -> TimelineFrontierCacheBuildResult:
-    shared = _PREBUILD_WORKER_CURVES
-    if shared is None:
-        raise RuntimeError("prebuild worker was not initialized with stat curves")
-    return build_timeline_frontier_cache_for_path(song_path_text, shared, timing_mode=timing_mode)
-
-
-def iter_timeline_frontier_cache_song_paths(
-    data_root: str | os.PathLike[str] | None = None,
-    difficulties: Iterable[str] = DIFFICULTIES,
-) -> list[str]:
-    root = Path(data_root) if data_root else paths().data_dir
-    charts: list[Path] = []
-    for difficulty in difficulties:
-        folder = root / str(difficulty)
-        if folder.exists():
-            charts.extend(path for path in folder.rglob("*.txt") if path.is_file())
-    return [str(path) for path in sorted(charts, key=lambda item: str(item).lower())]
-
-
-def ordered_frontier_cache_song_paths(
-    *,
-    queue_paths: Iterable[str],
-    data_root: str | os.PathLike[str] | None = None,
-) -> list[str]:
-    ordered: list[str] = []
-    seen: set[str] = set()
-
-    def add(path_text: str) -> None:
-        path = str(path_text or "").strip()
-        if not path:
-            return
-        key = os.path.abspath(path).casefold()
-        if key in seen:
-            return
-        seen.add(key)
-        ordered.append(path)
-
-    for path in queue_paths:
-        add(path)
-    if ordered:
-        return ordered
-    for path in iter_timeline_frontier_cache_song_paths(data_root=data_root):
-        add(path)
-    return ordered
-
-
-def _manifest_path() -> Path:
-    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
-
-    return TIMELINE_FRONTIER_CACHE.directory() / _MANIFEST_FILE_NAME
-
-
-def _cache_version() -> str:
-    from gear_optimizer.solver.taichi_gem.api.timeline import _FRONTIER_DISK_CACHE_VERSION
-
-    return str(_FRONTIER_DISK_CACHE_VERSION)
-
-
-def _derived_frontier_cache_file(
-    song_path: str,
-    curves: StatCurves,
-    *,
-    timing_mode: str = "perfect_window",
-) -> str | None:
-    """Parse one chart and return the cache file its CURRENT frontier key derives (drift probe)."""
-    from gear_optimizer.chart import load_chart
-    from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_payload_cache_info
-    from gear_optimizer.solver.timing_envelope import time_song
-
-    song = time_song(load_chart(Path(song_path)), timing_mode)
-    return str(
-        timeline_frontier_payload_cache_info(song, curves).disk_path
-    )
-
-
-def _build_manifest_plan(
-    song_paths: Iterable[str],
-    curves: StatCurves,
-    *,
-    timing_mode: str = "perfect_window",
-    persist_validated_entries: bool = True,
-):
-    from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_cache_file_is_complete
-
-    return _shared_build_manifest_plan(
-        song_paths,
-        manifest_path=_manifest_path(),
-        cache_version=_cache_version(),
-        version_field="frontier_version",
-        ref_sig_hex=_ref_axes_signature(curves),
-        timing_mode=timing_mode,
-        cache_file_validator=timeline_frontier_cache_file_is_complete,
-        derived_cache_file_fn=lambda song_path: _derived_frontier_cache_file(
-            song_path, curves, timing_mode=timing_mode
-        ),
-        persist_validated_entries=persist_validated_entries,
-    )
-
-
-def _apply_manifest_results(*, plan, results: Iterable[object]) -> int:
-    from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_cache_file_is_complete
-
-    return _shared_apply_manifest_results(
-        plan=plan,
-        manifest_path=_manifest_path(),
-        cache_version=_cache_version(),
-        version_field="frontier_version",
-        results=results,
-        cache_file_validator=timeline_frontier_cache_file_is_complete,
-    )
-
-
-def build_timeline_frontier_cache_for_path(
-    song_path_text: str,
-    curves: StatCurves,
-    *,
-    timing_mode: str = "perfect_window",
-) -> TimelineFrontierCacheBuildResult:
-    from gear_optimizer.chart import load_chart
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        timeline_frontier_payload_cache_info,
-    )
-    from gear_optimizer.solver.timing_envelope import time_song
-
-    song_path = Path(song_path_text)
-    song = time_song(load_chart(Path(song_path)), timing_mode)
-    cache_info = timeline_frontier_payload_cache_info(song, curves)
-    if cache_info.cache_source in {"disk", "memory"}:
-        return TimelineFrontierCacheBuildResult(
-            path=str(song_path),
-            source=str(cache_info.cache_source),
-            build_ms=0.0,
-            cache_file=str(cache_info.disk_path),
-        )
+def _ensure_timeline_frontier_cache(song: TimedSong, curves: StatCurves) -> tuple[str, float, Path]:
+    info = timeline_frontier_payload_cache_info(song, curves)
+    if info.cache_source in {"disk", "memory"}:
+        return info.cache_source, 0.0, info.disk_path
     result = build_or_load_timeline_frontier_payload(song, curves)
-    return TimelineFrontierCacheBuildResult(
-        path=str(song_path),
-        source=str(result.cache_source),
-        build_ms=float(result.elapsed_ms),
-        cache_file=str(result.disk_path),
+    return result.cache_source, result.elapsed_ms, result.disk_path
+
+
+def _build_timeline_chart(chart_path: str, timing_mode: str) -> FrontierCacheBuildResult:
+    return build_frontier_cache_for_chart(
+        chart_path, prebuild_worker_curves(), timing_mode, _ensure_timeline_frontier_cache
     )
 
 
-def _run_missing_timeline_prebuild(
-    paths: list[str],
-    curves: StatCurves,
-    *,
-    timing_mode: str = "perfect_window",
-) -> tuple[TimelineFrontierCachePrebuildSummary, list[TimelineFrontierCacheBuildResult]]:
-    if not paths:
-        return TimelineFrontierCachePrebuildSummary(total=0), []
-    t0 = time.perf_counter()
-    source_counts: Counter[str] = Counter()
-    failures = 0
-    completed = 0
-    results: list[TimelineFrontierCacheBuildResult] = []
-    if len(paths) == 1:
-        path = str(paths[0])
+def _build_timeline_songs(song_paths: list[str], curves: StatCurves, timing_mode: str) -> PrebuildTally:
+    tally = PrebuildTally(TIMELINE_FRONTIER_CACHE, len(song_paths), progress_every=25)
+    if len(song_paths) == 1:
         try:
-            if timing_mode == "perfect_window":
-                result = build_timeline_frontier_cache_for_path(path, curves)
-            else:
-                result = build_timeline_frontier_cache_for_path(
-                    path, curves, timing_mode=timing_mode
-                )
+            result = build_frontier_cache_for_chart(song_paths[0], curves, timing_mode, _ensure_timeline_frontier_cache)
         except Exception as exc:
-            failures = 1
-            logger.warning("[TimelineCache] Failed to prebuild %s: %s", path, exc)
+            tally.fail(song_paths[0], exc)
         else:
-            completed = 1
-            results.append(result)
-            source_counts[result.source] += 1
-        elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
-        return (
-            TimelineFrontierCachePrebuildSummary(
-                total=int(len(paths)),
-                completed=int(completed),
-                failures=int(failures),
-                built=int(source_counts.get("built", 0)),
-                disk=int(source_counts.get("disk", 0)),
-                memory=int(source_counts.get("memory", 0)),
-                elapsed_ms=elapsed_ms,
-            ),
-            results,
-        )
+            tally.add(result)
+        return tally
     worker_count = timeline_prebuild_worker_count()
-    pair_build_threads = frontier_prebuild_intra_worker_threads(worker_count)
     with BoundedRecyclingProcessPool(
         max_workers=worker_count,
-        initializer=_init_prebuild_worker,
-        initargs=(curves, int(pair_build_threads), int(worker_count)),
-        # Release native/NumPy allocator high-water before a full-pool worker reaches the heavy
-        # chart tail. Persistent workers exhausted commit after ~2,216 successes and then failed
-        # allocations as small as 1 MiB on the production 2,249-song pool.
+        initializer=init_prebuild_worker,
+        initargs=(curves, configure_timeline_pair_build_threads, frontier_prebuild_intra_worker_threads(worker_count)),
         max_tasks_per_worker=_TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER,
     ) as executor:
-        futures = {
-            (
-                executor.submit(_build_timeline_frontier_cache_for_path_shared, path)
-                if timing_mode == "perfect_window"
-                else executor.submit(_build_timeline_frontier_cache_for_path_shared, path, timing_mode)
-            ): path
-            for path in paths
-        }
+        futures = {executor.submit(_build_timeline_chart, path, timing_mode): path for path in song_paths}
         for future in concurrent.futures.as_completed(futures):
-            path = futures[future]
             try:
                 result = future.result()
             except Exception as exc:
-                failures += 1
-                logger.warning("[TimelineCache] Failed to prebuild %s: %s", path, exc)
+                tally.fail(futures[future], exc)
                 continue
-            completed += 1
-            results.append(result)
-            source_counts[result.source] += 1
-            if completed == 1 or completed % 25 == 0:
-                logger.info(
-                    "[TimelineCache] %s/%s complete (built=%s disk=%s memory=%s, latest=%s %.1fms)",
-                    completed,
-                    len(futures),
-                    int(source_counts.get("built", 0)),
-                    int(source_counts.get("disk", 0)),
-                    int(source_counts.get("memory", 0)),
-                    result.source,
-                    float(result.build_ms),
-                )
-    elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
-    summary = TimelineFrontierCachePrebuildSummary(
-        total=int(len(paths)),
-        completed=int(completed),
-        failures=int(failures),
-        built=int(source_counts.get("built", 0)),
-        disk=int(source_counts.get("disk", 0)),
-        memory=int(source_counts.get("memory", 0)),
-        elapsed_ms=elapsed_ms,
-    )
-    logger.info(
-        "[TimelineCache] Exact frontier prebuild ready: completed=%s/%s failures=%s built=%s disk=%s memory=%s elapsed=%.1fs",
-        completed,
-        len(paths),
-        failures,
-        int(source_counts.get("built", 0)),
-        int(source_counts.get("disk", 0)),
-        int(source_counts.get("memory", 0)),
-        elapsed_ms / 1000.0,
-    )
-    return summary, results
+            tally.add(result)
+            tally.log_progress(result)
+    tally.log_ready()
+    return tally
 
 
-def _run_timeline_frontier_cache_prebuild_for_mode(
-    *,
-    song_queue: Iterable[tuple],
-    curves: StatCurves,
-    data_root: str | os.PathLike[str] | None = None,
-    build_missing: bool = True,
-    timing_mode: str = "perfect_window",
-) -> TimelineFrontierCachePrebuildSummary:
-    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
-
-    started = time.perf_counter()
-    queue_paths = [str(item[0]) for item in song_queue if isinstance(item, tuple) and item]
-    paths = ordered_frontier_cache_song_paths(queue_paths=queue_paths, data_root=data_root)
-    if not paths:
-        return TimelineFrontierCachePrebuildSummary(total=0)
-
-    # Fully recorded cache hits are readers, not builders. Probe without mutating the manifest so
-    # they never wait behind an unrelated deployment prebuild that owns the single-builder lock.
-    # Complete derived hits absent from the manifest enter the lock once below to persist metadata.
-    optimistic_plan = _build_manifest_plan(
-        paths,
-        curves,
-        timing_mode=timing_mode,
-        persist_validated_entries=False,
-    )
-    if not optimistic_plan.missing_paths and int(optimistic_plan.validated_entry_count) == 0:
-        return TimelineFrontierCachePrebuildSummary(
-            total=int(optimistic_plan.total_paths),
-            completed=int(optimistic_plan.hit_count),
-            disk=int(optimistic_plan.hit_count),
-            elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-        )
-
-    # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
-    # below -- which now fast-hits everything this process wrote -- instead of duplicating the build.
-    with FrontierBuildLock(TIMELINE_FRONTIER_CACHE.directory(), label="timeline"):
-        manifest_plan = _build_manifest_plan(paths, curves, timing_mode=timing_mode)
-        manifest_hits = int(manifest_plan.hit_count)
-        if manifest_hits > 0:
-            logger.info(
-                "[TimelineCache] Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
-                manifest_hits,
-                int(manifest_plan.total_paths),
-            )
-
-        TIMELINE_FRONTIER_CACHE.remove_temp_files()
-
-        if not manifest_plan.missing_paths:
-            return TimelineFrontierCachePrebuildSummary(
-                total=int(manifest_plan.total_paths),
-                completed=int(manifest_hits),
-                disk=int(manifest_hits),
-                elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-            )
-
-        if not build_missing:
-            missing_count = len(manifest_plan.missing_paths)
-            logger.error(
-                "[TimelineCache] Frontier server publication is missing %s required song cache(s).",
-                missing_count,
-            )
-            return TimelineFrontierCachePrebuildSummary(
-                total=int(manifest_plan.total_paths),
-                completed=int(manifest_hits),
-                failures=int(missing_count),
-                disk=int(manifest_hits),
-                elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-            )
-
-        run_summary, results = _run_missing_timeline_prebuild(
-            list(manifest_plan.missing_paths), curves, timing_mode=timing_mode
-        )
-        _apply_manifest_results(plan=manifest_plan, results=results)
-        elapsed_ms = float((time.perf_counter() - started) * 1000.0)
-        combined = TimelineFrontierCachePrebuildSummary(
-            total=int(manifest_plan.total_paths),
-            completed=int(manifest_hits + run_summary.completed),
-            failures=int(run_summary.failures),
-            built=int(run_summary.built),
-            disk=int(manifest_hits + run_summary.disk),
-            memory=int(run_summary.memory),
-            elapsed_ms=elapsed_ms,
-        )
-        return combined
+def _maintain_timeline_cache(
+    _plan: FrontierCacheManifestPlan, _build_missing: bool, _authorize_destructive_rotation: bool
+) -> None:
+    TIMELINE_FRONTIER_CACHE.remove_temp_files()
 
 
-def run_timeline_frontier_cache_prebuild(
-    *,
-    song_queue: Iterable[tuple],
-    curves: StatCurves,
-    data_root: str | os.PathLike[str] | None = None,
-    build_missing: bool = True,
-    timing_modes: Iterable[str] = TIMING_MODES,
-) -> TimelineFrontierCachePrebuildSummary:
-    """Prebuild timeline frontiers for each requested timing model."""
-    started = time.perf_counter()
-    queue_items = list(song_queue or [])
-    summaries = [
-        _run_timeline_frontier_cache_prebuild_for_mode(
-            song_queue=queue_items,
-            curves=curves,
-            data_root=data_root,
-            build_missing=build_missing,
-            timing_mode=str(mode or "").strip().lower(),
-        )
-        for mode in timing_modes
-    ]
-    return TimelineFrontierCachePrebuildSummary(
-        total=sum(int(summary.total) for summary in summaries),
-        completed=sum(int(summary.completed) for summary in summaries),
-        failures=sum(int(summary.failures) for summary in summaries),
-        built=sum(int(summary.built) for summary in summaries),
-        disk=sum(int(summary.disk) for summary in summaries),
-        memory=sum(int(summary.memory) for summary in summaries),
-        elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-    )
+TIMELINE_FRONTIER_PREBUILD = FrontierCachePrebuild(
+    cache=TIMELINE_FRONTIER_CACHE,
+    build_songs=_build_timeline_songs,
+    maintain=_maintain_timeline_cache,
+)

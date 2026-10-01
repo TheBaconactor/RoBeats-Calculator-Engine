@@ -202,7 +202,6 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
 
 
 def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypatch):
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild
     from gear_optimizer.solver.fg_response_scoring import fixed_timing
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_frontier
 
@@ -220,11 +219,7 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
         seen["prepare_bundle"] = kwargs["scoring_bundle"]
         return object()
 
-    monkeypatch.setattr(
-        fg_response_frontier_cache_prebuild,
-        "ensure_response_frontier_cache_for_song",
-        _ensure,
-    )
+    monkeypatch.setattr(response_cache, "ensure_response_frontier_cache_for_song", _ensure)
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _load)
     monkeypatch.setattr(response_frontier, "prepare_force_greats_response_frontier_scoring_batch", _prepare)
     monkeypatch.setattr(

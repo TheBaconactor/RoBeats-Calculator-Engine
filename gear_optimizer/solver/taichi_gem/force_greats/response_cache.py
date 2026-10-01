@@ -66,6 +66,7 @@ __all__ = [
     "FgResponseFrontierScoringBundle",
     "_FG_RESPONSE_CACHE_VERSION",
     "build_or_load_response_frontier_payload",
+    "ensure_response_frontier_cache_for_song",
     "compress_cache_dir_sidecars",
     "fg_response_frontier_bundle_cache_key",
     "fg_response_frontier_geometry_cache_key",
@@ -634,3 +635,30 @@ def build_or_load_response_frontier_payload(
         long_notes=int(payload.long_notes),
         frontier_count=int(len(payload.frontiers)),
     )
+
+
+def ensure_response_frontier_cache_for_song(
+    song: TimedSong,
+    curves: StatCurves,
+    *,
+    stat_keys: Iterable[tuple[int, int]] | None = None,
+) -> tuple[str, float, Path]:
+    """Make sure the song's bundle with `stat_keys` (default: every FT/FF key) is on disk; returns (cache source,
+    build ms, bundle file).
+
+    The candidate-independent bundle is keyed by the song's timing, so a chart-only (zero_ms) song has its own
+    bundle, distinct from the perfect_window one. A hit costs a metadata + sidecar-header probe: it skips
+    build_or_load's per-row object materialization (seconds on heavy bundles), which no caller of this needs (scoring
+    reads the slim bundle + sidecars). A miss builds the requested cells, publishes them, then releases the song's
+    memory tiers: build_or_load pins the merged bundle and request payload (~1 GB of frontier rows on heavy charts)
+    in the process-wide payload tier, and nothing here reads them; the bundle re-opens from disk where it is needed.
+    """
+    keys = tuple(stat_keys) if stat_keys is not None else all_response_stat_keys()
+    cache_info = fg_response_frontier_payload_cache_info(song, curves, stat_keys=keys)
+    if cache_info.cache_source in {"disk", "memory"}:
+        return cache_info.cache_source, 0.0, cache_info.disk_path
+    try:
+        result = build_or_load_response_frontier_payload(song, curves, stat_keys=keys)
+    finally:
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(song, curves))
+    return result.cache_source, result.elapsed_ms, result.disk_path

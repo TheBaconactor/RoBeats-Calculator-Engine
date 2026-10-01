@@ -429,6 +429,10 @@ TIMELINE_FRONTIER_CACHE = FrontierCache(
     file_path=lambda cache_key: content_addressed_path(_frontier_disk_cache_dir(), cache_key),
     version=lambda: _FRONTIER_DISK_CACHE_VERSION,
     predecessors=_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS,
+    is_complete=timeline_frontier_cache_file_is_complete,
+    song_key=_song_cache_key,
+    manifest_name="manifest_v1.json",
+    manifest_version_field="frontier_version",
 )
 
 
