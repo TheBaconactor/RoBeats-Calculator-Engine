@@ -452,7 +452,6 @@ def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dic
         "last_note_time": chart.last_note_time,
         "ref_ft": curves.f32["Fever Time"],
         "ref_ff": curves.f32["Fever Fill Rate"],
-        "note_types": chart.note_types,
         "perfect_candidates": perfect_candidates,
         "perfect_floor": perfect_floor,
         "lanes": lanes,

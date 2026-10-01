@@ -1309,14 +1309,13 @@ def _surface_counts_from_sidecars(row_sidecar: Path, pattern_sidecar: Path) -> t
     return row_count, pattern_count
 
 
-def load_first_surface_scoring_rows(
+def _surface_sidecar_memmaps(
     cache_key: tuple,
-    ranges: Iterable[tuple[int, int]],
-    *,
-    surface_generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
-    bundle_path: str | Path | None = None,
+    surface_generation: str | None | object,
+    bundle_path: str | Path | None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    normalized = _normalize_surface_ranges(ranges)
+    """The row and pattern sidecars of a bundle generation as read-only memmaps, checked against their counts: the
+    bundle's metadata for an unspecified generation, else the sidecar headers."""
     if surface_generation is _UNSPECIFIED_SURFACE_GENERATION:
         surface_row_count, surface_pattern_count, resolved_generation, resolved_bundle_path = (
             _surface_counts_for_key(cache_key)
@@ -1333,17 +1332,25 @@ def load_first_surface_scoring_rows(
             bundle_path=bundle_path,
         )
         surface_row_count, surface_pattern_count = _surface_counts_from_sidecars(row_sidecar, pattern_sidecar)
-    row_count = sum(int(count) for _start, count in normalized)
-    row_refs = np.empty((int(row_count), SURFACE_ROW_COLUMNS), dtype=np.uint32)
     row_memmap = _open_surface_sidecar_memmap(
         row_sidecar, columns=SURFACE_ROW_COLUMNS, dtype=np.dtype(np.uint32), row_count=surface_row_count
     )
     pattern_memmap = _open_surface_sidecar_memmap(
-        pattern_sidecar,
-        columns=SURFACE_PATTERN_COLUMNS,
-        dtype=np.dtype(np.uint32),
-        row_count=surface_pattern_count,
+        pattern_sidecar, columns=SURFACE_PATTERN_COLUMNS, dtype=np.dtype(np.uint32), row_count=surface_pattern_count
     )
+    return row_memmap, pattern_memmap
+
+
+def load_first_surface_scoring_rows(
+    cache_key: tuple,
+    ranges: Iterable[tuple[int, int]],
+    *,
+    surface_generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
+    bundle_path: str | Path | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    normalized = _normalize_surface_ranges(ranges)
+    row_memmap, pattern_memmap = _surface_sidecar_memmaps(cache_key, surface_generation, bundle_path)
+    row_refs = np.empty((sum(count for _start, count in normalized), SURFACE_ROW_COLUMNS), dtype=np.uint32)
     # Slice-copy out of the read-only memmaps into freshly-owned contiguous arrays so the returned
     # arrays never alias a memmap (which could be evicted/closed across songs).
     _gather_surface_ranges(row_memmap, ranges=normalized, out=row_refs)
@@ -1365,37 +1372,10 @@ def load_first_surface_scoring_patterns(
     ties retain the producer's original first-row priority.
     """
     normalized = _normalize_surface_ranges(ranges)
-    if surface_generation is _UNSPECIFIED_SURFACE_GENERATION:
-        surface_row_count, surface_pattern_count, resolved_generation, resolved_bundle_path = (
-            _surface_counts_for_key(cache_key)
-        )
-        row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(
-            cache_key,
-            generation=resolved_generation,
-            bundle_path=resolved_bundle_path,
-        )
-    else:
-        row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(
-            cache_key,
-            generation=surface_generation,
-            bundle_path=bundle_path,
-        )
-        surface_row_count, surface_pattern_count = _surface_counts_from_sidecars(row_sidecar, pattern_sidecar)
-    row_count = sum(int(count) for _start, count in normalized)
+    row_memmap, pattern_memmap = _surface_sidecar_memmaps(cache_key, surface_generation, bundle_path)
+    row_count = sum(count for _start, count in normalized)
     surface_pattern_ids = np.empty((int(row_count),), dtype=np.int32)
     surface_counts = np.empty((int(row_count), 3), dtype=np.int32)
-    row_memmap = _open_surface_sidecar_memmap(
-        row_sidecar,
-        columns=SURFACE_ROW_COLUMNS,
-        dtype=np.dtype(np.uint32),
-        row_count=surface_row_count,
-    )
-    pattern_memmap = _open_surface_sidecar_memmap(
-        pattern_sidecar,
-        columns=SURFACE_PATTERN_COLUMNS,
-        dtype=np.dtype(np.uint32),
-        row_count=surface_pattern_count,
-    )
     # Split each row-ref block straight into the int32 id/count outputs (no N x 4 staging copy).
     out_cursor = 0
     for start, count in normalized:
@@ -1408,7 +1388,7 @@ def load_first_surface_scoring_patterns(
         out_cursor += int(count)
     if out_cursor != int(row_count):
         raise ValueError("FG response surface gather produced the wrong row count")
-    unique_ids = _dense_rank_pattern_ids_inplace(surface_pattern_ids, int(surface_pattern_count))
+    unique_ids = _dense_rank_pattern_ids_inplace(surface_pattern_ids, int(pattern_memmap.shape[0]))
     selected_patterns = np.ascontiguousarray(pattern_memmap[unique_ids], dtype=np.uint32)
     pattern_words, pattern_coeffs = unpack_surface_patterns(selected_patterns)
     return surface_pattern_ids, surface_counts, pattern_words, pattern_coeffs
