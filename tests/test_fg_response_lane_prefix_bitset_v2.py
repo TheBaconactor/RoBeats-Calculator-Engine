@@ -7,6 +7,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
     activation_schedule_witnesses_weighted_lane_aware,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    HitTimes,
     _numba_activation_reachable_contiguous_run,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
@@ -98,10 +99,10 @@ def _exact_surface_query(*args) -> bool:
             args[0],
             args[1],
             args[3],
-            args[4],
+            HitTimes(args[4],
             args[5],
             args[6],
-            args[7],
+            args[7]),
             args[8],
             args[9],
             args[10],
@@ -337,10 +338,10 @@ def test_exact_surface_query_rejects_nonfinite_denominator(denom: float) -> None
             40,
             float(timestamps[40]),
             timestamps,
-            perfect_floor,
+            HitTimes(perfect_floor,
             perfect_candidates,
             great_floor,
-            great_candidates,
+            great_candidates),
             lanes,
             denom,
             0,
@@ -598,10 +599,10 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
         action_k,
         denom,
         timestamps,
-        timestamps - np.float32(0.08),
+        rb.HitTimes(timestamps - np.float32(0.08),
         timestamps + np.float32(0.08),
         timestamps - np.float32(0.19),
-        timestamps + np.float32(0.19),
+        timestamps + np.float32(0.19)),
         lanes,
         token_ids,
     )

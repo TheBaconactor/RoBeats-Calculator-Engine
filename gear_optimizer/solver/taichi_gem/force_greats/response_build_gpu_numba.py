@@ -52,6 +52,16 @@ RegionTables = namedtuple(
         "region_great_end_by_hit",
     ],
 )
+# One packet queue's back-segment arrays (alpha, packet offsets, Great-activation bounds, lengths, arenas).
+PacketQueue = namedtuple(
+    "PacketQueue",
+    ["back_alpha", "back_pk_off", "back_ag_start", "back_ag_end", "back_len", "back_pk_arenas", "back_ag_arenas"],
+)
+# The Perfect / Great floor and candidate hit times of every note (the reachability and region-core checks).
+HitTimes = namedtuple(
+    "HitTimes",
+    ["perfect_floor_timestamps", "perfect_candidate_timestamps", "great_floor_timestamps", "great_candidate_timestamps"],
+)
 _HEAD_BASIS_FEVER_LO = 0
 _HEAD_BASIS_FEVER_HI = 1
 _HEAD_BASIS_GREAT_LO = 2
@@ -478,10 +488,7 @@ def _numba_region2_k_scan_stop(action_count: int, fever_fill_denom: float) -> in
 def _numba_exact_surface_signature_lane_prefix_reachable(
     activation_index: int,
     activation_hit_timestamp: float,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
+    hit_times,
     lanes,
     section_start: int,
     section_end: int,
@@ -498,6 +505,7 @@ def _numba_exact_surface_signature_lane_prefix_reachable(
     chart-order prefix.  This packed DP decides the exact pair ``(event count, Great count)``;
     full lane-ID equality owns identity and hashes are not involved.
     """
+    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
     a = int(activation_index)
     start = int(section_start)
     end = int(section_end)
@@ -649,10 +657,7 @@ def _numba_activation_reachable_contiguous_run(
     activation_index: int,
     activation_hit_timestamp: float,
     timestamps,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
+    hit_times,
     lanes,
     fever_fill_denom: float,
     section_start: int,
@@ -661,6 +666,7 @@ def _numba_activation_reachable_contiguous_run(
     great_count: int,
     activation_great_i: int,
 ) -> bool:
+    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
     a = int(activation_index)
     start = int(section_start)
     end = int(section_end)
@@ -762,10 +768,7 @@ def _numba_activation_reachable_contiguous_run(
         _numba_exact_surface_signature_lane_prefix_reachable(
             int(a),
             float(h_a),
-            perfect_floor_timestamps,
-            perfect_candidate_timestamps,
-            great_floor_timestamps,
-            great_candidate_timestamps,
+            hit_times,
             lanes,
             int(start),
             int(end),
@@ -785,13 +788,11 @@ def _numba_minimal_reachable_region_great_end(
     run_start: int,
     raw_fever_fill: float,
     timestamps,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
+    hit_times,
     lanes,
     n: int,
 ):
+    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
     a = int(activation)
     hit_hi = great_candidate_timestamps[a]
     max_great_end = int(a) + 1
@@ -813,10 +814,7 @@ def _numba_minimal_reachable_region_great_end(
             int(a),
             float(hit),
             timestamps,
-            perfect_floor_timestamps,
-            perfect_candidate_timestamps,
-            great_floor_timestamps,
-            great_candidate_timestamps,
+            hit_times,
             lanes,
             float(raw_fever_fill),
             int(section_start),
@@ -887,10 +885,7 @@ def _numba_region_run_core_for_offset(
     k: int,
     raw_fever_fill: float,
     timestamps,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
+    hit_times,
     lanes,
 ):
     """The rt-independent core of a region-run candidate: fill crossing, minimal reachable region
@@ -901,6 +896,7 @@ def _numba_region_run_core_for_offset(
     Returns ``(activation, great_end, is_great, perfect_valid, activation_hit_token,
     perfect_hit_token, valid)``. Tokens are selected alongside the exact producer hit and resolve
     to that value through the song-owned intern table."""
+    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
     run_start = int(section_start) + int(offset)
     activation, is_great = _numba_fill_crossing_run(
         int(section_start), int(run_start), int(k), float(raw_fever_fill), int(n)
@@ -915,10 +911,7 @@ def _numba_region_run_core_for_offset(
             int(run_start),
             float(raw_fever_fill),
             timestamps,
-            perfect_floor_timestamps,
-            perfect_candidate_timestamps,
-            great_floor_timestamps,
-            great_candidate_timestamps,
+            hit_times,
             lanes,
             int(n),
         )
@@ -963,10 +956,7 @@ def _numba_region_run_core_for_offset(
         int(activation),
         float(perfect_hit),
         timestamps,
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
+        hit_times,
         lanes,
         float(raw_fever_fill),
         int(section_start),
@@ -1076,15 +1066,13 @@ def _numba_region_run_edge_for_offset(
     k: int,
     raw_fever_fill: float,
     timestamps,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
+    hit_times,
     lanes,
     hit_token_to_id,
     perfect_end_by_hit,
     great_end_by_hit,
 ):
+    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
     (
         activation,
         great_end,
@@ -1101,10 +1089,7 @@ def _numba_region_run_edge_for_offset(
             int(k),
             float(raw_fever_fill),
             timestamps,
-            perfect_floor_timestamps,
-            perfect_candidate_timestamps,
-            great_floor_timestamps,
-            great_candidate_timestamps,
+            hit_times,
             lanes,
         )
     )
@@ -1163,10 +1148,7 @@ def _numba_build_region_core_table(
     action_k,
     raw_fever_fill: float,
     timestamps,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
+    hit_times,
     lanes,
     hit_token_to_id,
 ):
@@ -1186,6 +1168,7 @@ def _numba_build_region_core_table(
     perfect_hit_ids, perfect_valids)`` with ``starts`` of length ``n + 2``. Hit IDs resolve
     through the song-owned exact value universe and remove repeated float64 timestamps from every
     table row."""
+    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
     if int(lanes.shape[0]) != int(n):
         raise ValueError("FG region-core lane rows must match n")
     denom = float(raw_fever_fill)
@@ -1252,10 +1235,7 @@ def _numba_build_region_core_table(
                         int(k),
                         float(raw_fever_fill),
                         timestamps,
-                        perfect_floor_timestamps,
-                        perfect_candidate_timestamps,
-                        great_floor_timestamps,
-                        great_candidate_timestamps,
+                        hit_times,
                         lanes,
                     )
                 )
@@ -4036,13 +4016,7 @@ def _numba_packet_queue_push_back(
     family_idx: int,
     seg_base: int,
     seg_limit: int,
-    back_alpha,
-    back_pk_off,
-    back_ag_start,
-    back_ag_end,
-    back_len,
-    back_pk_arenas,
-    back_ag_arenas,
+    packet_queue,
 ) -> None:
     """Flat twin of the retired List-based push_back. The packet occupies back-packet-arena
     rows [pk_start, pk_end), already written at the arena cursor by the caller; callers
@@ -4050,6 +4024,7 @@ def _numba_packet_queue_push_back(
     aggregate is ``union(old_top, packet)``: fresh unions land at the aggregate-arena cursor,
     an old-top alias shares the old range, and a packet alias (or the empty-back seed, which
     the List version aliased by reference) is materialized with identical content."""
+    back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
     f = int(family_idx)
     base = int(seg_base)
     count = int(back_len[f])
@@ -4119,14 +4094,9 @@ def _numba_packet_queue_push_activation(
     family_idx: int,
     seg_base: int,
     seg_limit: int,
-    back_alpha,
-    back_pk_off,
-    back_ag_start,
-    back_ag_end,
-    back_len,
-    back_pk_arenas,
-    back_ag_arenas,
+    packet_queue,
 ):
+    back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
     if int(activation) < 100 or int(activation) >= int(n):
         return
     if int(prefix_perfect_valid[int(activation)]) == 0:
@@ -4191,13 +4161,7 @@ def _numba_packet_queue_push_activation(
         int(family_idx),
         int(seg_base),
         int(seg_limit),
-        back_alpha,
-        back_pk_off,
-        back_ag_start,
-        back_ag_end,
-        back_len,
-        back_pk_arenas,
-        back_ag_arenas,
+        packet_queue,
     )
 
 
@@ -4222,14 +4186,9 @@ def _numba_region2_packet_queue_push_activation(
     family_idx: int,
     seg_base: int,
     seg_limit: int,
-    back_alpha,
-    back_pk_off,
-    back_ag_start,
-    back_ag_end,
-    back_len,
-    back_pk_arenas,
-    back_ag_arenas,
+    packet_queue,
 ):
+    back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
     region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
     if int(activation) < 100 or int(activation) >= int(n):
         return
@@ -4307,10 +4266,8 @@ def _numba_region2_packet_queue_push_activation(
                 int(k),
                 float(raw_fever_fill),
                 timestamps,
-                perfect_floor_timestamps,
-                perfect_candidate_timestamps,
-                great_floor_timestamps,
-                great_candidate_timestamps,
+                HitTimes(perfect_floor_timestamps, perfect_candidate_timestamps,
+                         great_floor_timestamps, great_candidate_timestamps),
                 lanes,
                 hit_token_to_id,
                 region_perfect_end_by_hit,
@@ -4376,13 +4333,7 @@ def _numba_region2_packet_queue_push_activation(
         int(family_idx),
         int(seg_base),
         int(seg_limit),
-        back_alpha,
-        back_pk_off,
-        back_ag_start,
-        back_ag_end,
-        back_len,
-        back_pk_arenas,
-        back_ag_arenas,
+        packet_queue,
     )
 
 
@@ -4598,6 +4549,10 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     back_len = np.zeros(max(1, int(family_count)), dtype=np.int64)
     back_pk_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
     back_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
+    packet_queue = PacketQueue(
+        back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len,
+        back_pk_arenas, back_ag_arenas,
+    )
     front_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
     for _family_idx in range(int(family_count)):
         back_pk_arenas.append(np.empty((64, 3), dtype=np.int64))
@@ -4629,6 +4584,10 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     region_back_len = np.zeros(max(1, int(region_family_count)), dtype=np.int64)
     region_back_pk_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
     region_back_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
+    region_packet_queue = PacketQueue(
+        region_back_alpha, region_back_pk_off, region_back_ag_start, region_back_ag_end, region_back_len,
+        region_back_pk_arenas, region_back_ag_arenas,
+    )
     region_front_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
     for _family_idx in range(int(region_family_count)):
         region_back_pk_arenas.append(np.empty((64, 3), dtype=np.int64))
@@ -4688,13 +4647,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                     int(family_idx),
                     int(seg_off[int(family_idx)]),
                     int(seg_off[int(family_idx) + 1]),
-                    back_alpha,
-                    back_pk_off,
-                    back_ag_start,
-                    back_ag_end,
-                    back_len,
-                    back_pk_arenas,
-                    back_ag_arenas,
+                    packet_queue,
                 )
                 push_state -= 1
             next_push_state_by_family[int(family_idx)] = int(state_i) - 1
@@ -4742,13 +4695,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         int(family_idx),
                         int(region_seg_off[int(family_idx)]),
                         int(region_seg_off[int(family_idx) + 1]),
-                        region_back_alpha,
-                        region_back_pk_off,
-                        region_back_ag_start,
-                        region_back_ag_end,
-                        region_back_len,
-                        region_back_pk_arenas,
-                        region_back_ag_arenas,
+                        region_packet_queue,
                     )
                     push_state -= 1
                 next_push_state_by_region_family[int(family_idx)] = int(state_i) - 1
@@ -5775,10 +5722,7 @@ def _numba_trace_edge_action_arrays(
                 a,
                 cap,
                 timestamps,
-                perfect_floor_timestamps,
-                perfect_ts,
-                great_floor_timestamps,
-                great_ts,
+                HitTimes(perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts),
                 lanes,
                 denom,
                 int(section_start),
@@ -5837,10 +5781,7 @@ def _numba_trace_edge_action_arrays(
                 a,
                 cap2,
                 timestamps,
-                perfect_floor_timestamps,
-                perfect_ts,
-                great_floor_timestamps,
-                great_ts,
+                HitTimes(perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts),
                 lanes,
                 denom,
                 int(section_start),

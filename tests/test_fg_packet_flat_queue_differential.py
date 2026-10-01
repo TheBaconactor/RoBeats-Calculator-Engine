@@ -237,13 +237,13 @@ class FlatPacketQueues:
             int(family),
             base,
             limit,
-            self.back_alpha,
+            rb.PacketQueue(self.back_alpha,
             self.back_pk_off,
             self.back_ag_start,
             self.back_ag_end,
             self.back_len,
             self.back_pk_arenas,
-            self.back_ag_arenas,
+            self.back_ag_arenas),
         )
 
     def full_state(self, family: int):

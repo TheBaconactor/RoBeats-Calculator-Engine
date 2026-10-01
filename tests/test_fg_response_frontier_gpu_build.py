@@ -405,10 +405,10 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
         action_k,
         4.0,
         timestamps,
-        timestamps - np.float32(0.04),
+        response_build_gpu_numba.HitTimes(timestamps - np.float32(0.04),
         perfect_hi,
         timestamps - np.float32(0.09),
-        great_hi,
+        great_hi),
         np.arange(12, dtype=np.int32),
         hit_token_to_id,
     )
@@ -978,10 +978,10 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                     int(k),
                     float(raw_fever_fill),
                     timestamps,
-                    perfect_floor,
+                    rb.HitTimes(perfect_floor,
                     perfect_candidates,
                     great_floor,
-                    great_candidates,
+                    great_candidates),
                     lanes,
                     hit_token_to_id,
                     perfect_end_by_hit,
@@ -1197,6 +1197,7 @@ def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
     counts the early-Great band produces -- must get its OWN slot and decode back exactly, with no
     aliasing onto a phantom cell."""
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _numba_touch_body_candidate,
     )
 
@@ -1242,6 +1243,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
     stays inside pair_size (205), so the pre-existing pair-size guard does NOT catch it -- only the
     dedicated radix guard does."""
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _numba_touch_body_candidate,
     )
 
@@ -1851,6 +1853,7 @@ def test_fg_response_exact_fill_runs_reject_negative_offsets() -> None:
 
 def test_fg_response_interval_successor_skips_removed_indices() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _numba_successor_find,
         _numba_successor_remove,
     )
@@ -1876,6 +1879,7 @@ def test_fg_response_interval_successor_skips_removed_indices() -> None:
 
 def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         RegionTables,
         _numba_build_prefix_activation_hit_tables,
         _numba_first_frontier_reachability_prepass,
@@ -2032,6 +2036,7 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
         activation_schedule_witnesses_weighted_lane_aware,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _numba_activation_reachable_contiguous_run,
         _numba_region2_k_scan_stop,
         _numba_region2_offset_for_count,
@@ -2118,10 +2123,10 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
                 activation,
                 float(hit),
                 timestamps,
-                perfect_floor,
+                HitTimes(perfect_floor,
                 perfect_candidates,
                 great_floor,
-                great_candidates,
+                great_candidates),
                 lanes,
                 denom,
                 section_start,
@@ -2353,6 +2358,7 @@ def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
     from numba.typed import List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _NUMBA_SURFACE_TYPE,
         _numba_reduce,
     )
@@ -2372,6 +2378,7 @@ def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> N
     from numba.typed import List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _NUMBA_SURFACE_TYPE,
         _numba_reduce,
         _numba_reduce_pattern_runs,
@@ -2463,6 +2470,7 @@ def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> N
 
 def test_fg_response_same_end_head_edge_prune_keeps_different_end_edges() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _numba_append_head_edge_to_end_chains,
     )
 
@@ -2517,6 +2525,7 @@ def _ordered_rows_digest(value) -> str:
 class _BodyReducerDifferentialHarness:
     def __init__(self, *, pair_mod: int = 33, normal_great_capacity: int = 65) -> None:
         from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+            HitTimes,
             _numba_reduce_touched_body_pairs,
             _numba_touch_body_candidate,
         )
@@ -2668,6 +2677,7 @@ def test_fg_response_fused_body_reduce_matches_retired_randomized_production_sha
 class _ChainedRegionBucketHarness:
     def __init__(self, *, end_capacity: int = 32) -> None:
         from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+            HitTimes,
             _numba_append_head_edge_to_end_chains,
         )
 
@@ -2782,6 +2792,7 @@ def test_fg_response_chained_region_duplicate_is_first_wins_without_cursor_growt
 
 def test_fg_response_region_structural_dominance_low_high_word_contracts() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _numba_surface_structurally_dominates,
     )
     from tests.retired_fg_frontier_semantics import (
@@ -3034,6 +3045,7 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
     from numba.typed import Dict, List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         HeadTables,
         RegionTables,
         _NUMBA_HEAD_SCORES_TYPE,
@@ -3162,6 +3174,7 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
     from numba.typed import Dict, List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         HeadTables,
         RegionTables,
         _NUMBA_HEAD_SCORES_TYPE,
@@ -3303,6 +3316,7 @@ def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix()
     from numba.typed import Dict, List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _NUMBA_HEAD_SCORES_TYPE,
         _NUMBA_HEAD_SCORE_MATRIX_TYPE,
         _NUMBA_SURFACE_TYPE,
@@ -3369,6 +3383,7 @@ def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
     from numba.typed import List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        HitTimes,
         _NUMBA_SURFACE_TYPE,
         _numba_append_branch_a_body_prefix_surface,
         _numba_reduce,
