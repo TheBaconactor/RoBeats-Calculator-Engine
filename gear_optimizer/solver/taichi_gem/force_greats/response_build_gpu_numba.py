@@ -1,3 +1,5 @@
+from collections import namedtuple
+
 import numpy as np
 from numba import njit, types
 from numba.typed import Dict, List
@@ -28,6 +30,28 @@ _NUMBA_HEAD_BASIS_TYPE = types.Tuple((
 # checks would recompute from the basis; caching them cannot change any comparison outcome).
 _NUMBA_HEAD_SCORES_TYPE = types.float64[::1]
 _NUMBA_HEAD_SCORE_MATRIX_TYPE = types.float64[:, ::1]
+# The tables a candidate append reads: the body-tail surface arrays and the head-state frontier arena (rows in
+# `head_pool`, addressed per state by head_state_start / head_state_count) for the first `head_limit` states.
+HeadTables = namedtuple(
+    "HeadTables",
+    ["body_values", "body_starts", "body_counts", "head_pool", "head_state_start", "head_state_count", "head_limit"],
+)
+# The first-frontier build's action-region tables (per region, and per interned region hit), passed together.
+RegionTables = namedtuple(
+    "RegionTables",
+    [
+        "region_starts",
+        "region_offsets",
+        "region_activations",
+        "region_great_ends",
+        "region_is_greats",
+        "region_act_hit_ids",
+        "region_perfect_hit_ids",
+        "region_perfect_valids",
+        "region_perfect_end_by_hit",
+        "region_great_end_by_hit",
+    ],
+)
 _HEAD_BASIS_FEVER_LO = 0
 _HEAD_BASIS_FEVER_HI = 1
 _HEAD_BASIS_GREAT_LO = 2
@@ -1280,19 +1304,11 @@ def _numba_mark_region_entries_for_section(
     reachable,
     n: int,
     section_start: int,
-    region_starts,
-    region_offsets,
-    region_activations,
-    region_great_ends,
-    region_is_greats,
-    region_act_hit_ids,
-    region_perfect_hit_ids,
-    region_perfect_valids,
-    region_perfect_end_by_hit,
-    region_great_end_by_hit,
+    region,
 ) -> int:
     """rt-finish + reachability marking for every valid region core of one section row. Returns
     the max early-Great extension width, exactly like the per-candidate marking it replaces."""
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
     max_width = 0
     for idx in range(int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])):
         _activation, edge_e, _run_start, _great_end, _activation_great_idx, eg_e, valid = (
@@ -1448,16 +1464,7 @@ def _numba_first_frontier_reachability_prepass(
     real_fever_time: float,
     real_time_idx: int,
     use_forced_great_timing_i: int,
-    region_starts,
-    region_offsets,
-    region_activations,
-    region_great_ends,
-    region_is_greats,
-    region_act_hit_ids,
-    region_perfect_hit_ids,
-    region_perfect_valids,
-    region_perfect_end_by_hit,
-    region_great_end_by_hit,
+    region,
     perfect_floor_timestamps,
     great_floor_timestamps,
     perfect_successor,
@@ -1590,16 +1597,7 @@ def _numba_first_frontier_reachability_prepass(
                 reachable,
                 int(n),
                 0,
-                region_starts,
-                region_offsets,
-                region_activations,
-                region_great_ends,
-                region_is_greats,
-                region_act_hit_ids,
-                region_perfect_hit_ids,
-                region_perfect_valids,
-                region_perfect_end_by_hit,
-                region_great_end_by_hit,
+                region,
             ),
         )
 
@@ -1688,16 +1686,7 @@ def _numba_first_frontier_reachability_prepass(
                     reachable,
                     int(n),
                     int(state_i) + 1,
-                    region_starts,
-                    region_offsets,
-                    region_activations,
-                    region_great_ends,
-                    region_is_greats,
-                    region_act_hit_ids,
-                    region_perfect_hit_ids,
-                    region_perfect_valids,
-                    region_perfect_end_by_hit,
-                    region_great_end_by_hit,
+                    region,
                 ),
             )
     return reachable, int(max_eg_width)
@@ -1708,19 +1697,14 @@ def _numba_append_edge_tail(
     generated,
     edge,
     end_e: int,
-    body_values,
-    body_starts,
-    body_counts,
-    head_pool,
-    head_state_start,
-    head_state_count,
-    head_limit: int,
+    head,
 ) -> int:
     """Append `edge` joined with the tail frontier at state `end_e`, dispatching to the body /
     terminal / head-frontier tail exactly like the inline Perfect-edge append. Used for the
     issue-#44 early-Great extended edges (which can land in any of the three regions). Head-state
     tail frontiers live in the flat (cap, 7) uint64 `head_pool` arena addressed by the
     head_state_start/head_state_count CSR (rows stored in retained-frontier order)."""
+    body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit = head
     if int(end_e) >= 100:
         return _numba_append_body_tail_array_surfaces(
             generated, edge, body_values, body_starts, body_counts, int(end_e)
@@ -2275,13 +2259,7 @@ def _numba_emit_early_great_edges(
     activation_great_idx: int,
     great_floor_timestamps,
     real_fever_time: float,
-    body_values,
-    body_starts,
-    body_counts,
-    head_pool,
-    head_state_start,
-    head_state_count,
-    head_limit: int,
+    head,
     lo_pos: int,
     hi_pos: int,
     min_surfaces: int,
@@ -2316,13 +2294,7 @@ def _numba_emit_early_great_edges(
                 generated_score_matrix_count,
                 edge_eg,
                 int(end_e),
-                body_values,
-                body_starts,
-                body_counts,
-                head_pool,
-                head_state_start,
-                head_state_count,
-                int(head_limit),
+                head,
                 int(lo_pos),
                 int(hi_pos),
                 int(min_surfaces),
@@ -2453,13 +2425,7 @@ def _numba_prereduce_edge_tails(
     mask_head,
     edge,
     end_e: int,
-    body_values,
-    body_starts,
-    body_counts,
-    head_pool,
-    head_state_start,
-    head_state_count,
-    head_limit: int,
+    head,
 ):
     """Dispatch twin of `_numba_append_edge_tail` feeding the same-mask pre-reducer: the
     body / terminal / head-frontier tail composition and enumeration order are identical,
@@ -2467,6 +2433,7 @@ def _numba_prereduce_edge_tails(
     tails combine masks via `_numba_combine` exactly like the append path. Returns the
     (possibly regrown) reducer state plus the RAW candidate count (dropped candidates
     included), preserving the caller's generated-surfaces accounting."""
+    body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit = head
     raw = 0
     if int(end_e) >= 100:
         count = int(body_counts[int(end_e)])
@@ -2553,24 +2520,9 @@ def _numba_emit_region2_head_edges(
     pending_ends,
     n: int,
     section_start: int,
-    region_starts,
-    region_offsets,
-    region_activations,
-    region_great_ends,
-    region_is_greats,
-    region_act_hit_ids,
-    region_perfect_hit_ids,
-    region_perfect_valids,
-    region_perfect_end_by_hit,
-    region_great_end_by_hit,
+    region,
     use_forced_great_timing_i: int,
-    body_values,
-    body_starts,
-    body_counts,
-    head_pool,
-    head_state_start,
-    head_state_count,
-    head_limit: int,
+    head,
     lo_pos: int,
     hi_pos: int,
     min_surfaces: int,
@@ -2585,6 +2537,7 @@ def _numba_emit_region2_head_edges(
     # _numba_append_same_end_head_edge_to_chain); node rows are call-local (cursor restarts at
     # 0), and the drain below resets every touched end's head/tail to -1, so the tables come
     # back clean for the next call without an O(n) sweep.
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
     if int(use_forced_great_timing_i) == 0:
         return generated, generated_scores, 0, int(bounded_mode), node_surface, node_next
     added_total = 0
@@ -2679,13 +2632,7 @@ def _numba_emit_region2_head_edges(
                         generated_score_matrix_count,
                         edge,
                         int(end_e),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         int(lo_pos),
                         int(hi_pos),
                         int(min_surfaces),
@@ -2702,13 +2649,7 @@ def _numba_emit_region2_head_edges(
                         mask_head,
                         edge,
                         int(end_e),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                     )
                 )
                 raw_unbounded_len += int(raw_added)
@@ -3235,16 +3176,11 @@ def _numba_append_edge_tail_bounded(
     score_matrix_count,
     edge,
     end_e: int,
-    body_values,
-    body_starts,
-    body_counts,
-    head_pool,
-    head_state_start,
-    head_state_count,
-    head_limit: int,
+    head,
     lo_pos: int,
     hi_pos: int,
 ):
+    body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit = head
     count = 0
     cand_scores = np.empty(16, dtype=np.float64)
     eligible = np.empty(8, dtype=np.uint8)
@@ -3350,13 +3286,7 @@ def _numba_append_head_generated_candidate(
     generated_score_matrix_count,
     edge,
     end_e: int,
-    body_values,
-    body_starts,
-    body_counts,
-    head_pool,
-    head_state_start,
-    head_state_count,
-    head_limit: int,
+    head,
     lo_pos: int,
     hi_pos: int,
     min_surfaces: int,
@@ -3371,13 +3301,7 @@ def _numba_append_head_generated_candidate(
             generated_score_matrix_count,
             edge,
             int(end_e),
-            body_values,
-            body_starts,
-            body_counts,
-            head_pool,
-            head_state_start,
-            head_state_count,
-            int(head_limit),
+            head,
             int(lo_pos),
             int(hi_pos),
         )
@@ -3386,13 +3310,7 @@ def _numba_append_head_generated_candidate(
         generated,
         edge,
         int(end_e),
-        body_values,
-        body_starts,
-        body_counts,
-        head_pool,
-        head_state_start,
-        head_state_count,
-        int(head_limit),
+        head,
     )
     generated, generated_scores, bounded_mode = _numba_maybe_promote_head_generated_with_scores(
         generated,
@@ -4322,16 +4240,7 @@ def _numba_region2_packet_queue_push_activation(
     great_floor_timestamps,
     lanes,
     hit_token_to_id,
-    region_starts,
-    region_offsets,
-    region_activations,
-    region_great_ends,
-    region_is_greats,
-    region_act_hit_ids,
-    region_perfect_hit_ids,
-    region_perfect_valids,
-    region_perfect_end_by_hit,
-    region_great_end_by_hit,
+    region,
     family_idx: int,
     seg_base: int,
     seg_limit: int,
@@ -4343,6 +4252,7 @@ def _numba_region2_packet_queue_push_activation(
     back_pk_arenas,
     back_ag_arenas,
 ):
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
     if int(activation) < 100 or int(activation) >= int(n):
         return
     k = (2 * int(activation_offset)) + int(defect) + 1
@@ -4665,6 +4575,18 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     bit_stamps,
     bit_stamp_value: int,
 ):
+    region = RegionTables(
+        region_starts,
+        region_offsets,
+        region_activations,
+        region_great_ends,
+        region_is_greats,
+        region_act_hit_ids,
+        region_perfect_hit_ids,
+        region_perfect_valids,
+        region_perfect_end_by_hit,
+        region_great_end_by_hit,
+    )
     body_values = np.empty((1024, 3), dtype=np.uint64)
     body_starts = np.zeros(int(n) + 1, dtype=np.int32)
     body_counts = np.zeros(int(n) + 1, dtype=np.int32)
@@ -4858,16 +4780,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         great_floor_timestamps,
                         lanes,
                         region_hit_token_to_id,
-                        region_starts,
-                        region_offsets,
-                        region_activations,
-                        region_great_ends,
-                        region_is_greats,
-                        region_act_hit_ids,
-                        region_perfect_hit_ids,
-                        region_perfect_valids,
-                        region_perfect_end_by_hit,
-                        region_great_end_by_hit,
+                        region,
                         int(family_idx),
                         int(region_seg_off[int(family_idx)]),
                         int(region_seg_off[int(family_idx) + 1]),
@@ -5060,6 +4973,18 @@ def _first_frontier_from_precomputed_end_indices_numba(
     bit_epoch_in: int,
     branch_a_epoch_in: int,
 ):
+    region = RegionTables(
+        region_starts,
+        region_offsets,
+        region_activations,
+        region_great_ends,
+        region_is_greats,
+        region_act_hit_ids,
+        region_perfect_hit_ids,
+        region_perfect_valids,
+        region_perfect_end_by_hit,
+        region_great_end_by_hit,
+    )
     reachable, max_eg_width = _numba_first_frontier_reachability_prepass(
         int(n),
         int(action_count),
@@ -5082,16 +5007,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
         float(real_fever_time),
         int(real_time_idx),
         int(use_forced_great_timing_i),
-        region_starts,
-        region_offsets,
-        region_activations,
-        region_great_ends,
-        region_is_greats,
-        region_act_hit_ids,
-        region_perfect_hit_ids,
-        region_perfect_valids,
-        region_perfect_end_by_hit,
-        region_great_end_by_hit,
+        region,
         perfect_floor_timestamps,
         great_floor_timestamps,
         ws_perfect_successor,
@@ -5222,6 +5138,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
     head_pool_cursor = 0
     head_state_start = np.zeros(max(1, int(head_limit)), dtype=np.int64)
     head_state_count = np.zeros(max(1, int(head_limit)), dtype=np.int64)
+    head = HeadTables(body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit)
     # Region-2 same-end bucket scratch, reused across every _numba_emit_region2_head_edges call
     # of this build: chained node store + per-end head/tail tables + first-seen end order. The
     # emit drain resets every touched end to -1, so no per-call clearing is needed.
@@ -5292,13 +5209,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         generated_score_matrix_count,
                         edge,
                         int(edge_e),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         int(state_i),
                         int(head_limit),
                         int(head_filter_min),
@@ -5324,13 +5235,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         -1,
                         great_floor_timestamps,
                         float(real_fever_time),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         int(state_i),
                         int(head_limit),
                         int(head_filter_min),
@@ -5378,13 +5283,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         generated_score_matrix_count,
                         activation_edge,
                         int(activation_e),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         int(state_i),
                         int(head_limit),
                         int(head_filter_min),
@@ -5409,13 +5308,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         int(activation),
                         great_floor_timestamps,
                         float(real_fever_time),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         int(state_i),
                         int(head_limit),
                         int(head_filter_min),
@@ -5437,24 +5330,9 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 region_pending_ends,
                 int(n),
                 int(state_i) + 1,
-                region_starts,
-                region_offsets,
-                region_activations,
-                region_great_ends,
-                region_is_greats,
-                region_act_hit_ids,
-                region_perfect_hit_ids,
-                region_perfect_valids,
-                region_perfect_end_by_hit,
-                region_great_end_by_hit,
+                region,
                 int(use_forced_great_timing_i),
-                body_values,
-                body_starts,
-                body_counts,
-                head_pool,
-                head_state_start,
-                head_state_count,
-                int(head_limit),
+                head,
                 int(state_i),
                 int(head_limit),
                 int(head_filter_min),
@@ -5471,6 +5349,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
             _numba_reduce(generated), int(state_i), int(head_limit), int(head_filter_min)
         )
         head_pool = _numba_u64_rows_ensure(head_pool, int(head_pool_cursor), len(frontier))
+        head = HeadTables(body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit)  # the arena may have regrown
         head_state_start[int(state_i)] = int(head_pool_cursor)
         head_state_count[int(state_i)] = len(frontier)
         for frontier_idx in range(len(frontier)):
@@ -5738,24 +5617,9 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 region_pending_ends,
                 int(n),
                 0,
-                region_starts,
-                region_offsets,
-                region_activations,
-                region_great_ends,
-                region_is_greats,
-                region_act_hit_ids,
-                region_perfect_hit_ids,
-                region_perfect_valids,
-                region_perfect_end_by_hit,
-                region_great_end_by_hit,
+                region,
                 int(use_forced_great_timing_i),
-                body_values,
-                body_starts,
-                body_counts,
-                head_pool,
-                head_state_start,
-                head_state_count,
-                int(head_limit),
+                head,
                 0,
                 int(head_limit),
                 int(head_filter_min),
@@ -5812,13 +5676,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         first_generated_score_matrix_count,
                         edge,
                         int(edge_e),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         0,
                         int(head_limit),
                         int(head_filter_min),
@@ -5843,13 +5701,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         -1,
                         great_floor_timestamps,
                         float(real_fever_time),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         0,
                         int(head_limit),
                         int(head_filter_min),
@@ -5897,13 +5749,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         first_generated_score_matrix_count,
                         activation_edge,
                         int(activation_e),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         0,
                         int(head_limit),
                         int(head_filter_min),
@@ -5928,13 +5774,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         int(fill),
                         great_floor_timestamps,
                         float(real_fever_time),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        head_pool,
-                        head_state_start,
-                        head_state_count,
-                        int(head_limit),
+                        head,
                         0,
                         int(head_limit),
                         int(head_filter_min),
@@ -5956,24 +5796,9 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 region_pending_ends,
                 int(n),
                 0,
-                region_starts,
-                region_offsets,
-                region_activations,
-                region_great_ends,
-                region_is_greats,
-                region_act_hit_ids,
-                region_perfect_hit_ids,
-                region_perfect_valids,
-                region_perfect_end_by_hit,
-                region_great_end_by_hit,
+                region,
                 int(use_forced_great_timing_i),
-                body_values,
-                body_starts,
-                body_counts,
-                head_pool,
-                head_state_start,
-                head_state_count,
-                int(head_limit),
+                head,
                 0,
                 int(head_limit),
                 int(head_filter_min),
