@@ -129,43 +129,35 @@ def pin_to_performance_cores() -> None:
         mask, p_logical = found
         _apply_affinity_mask(mask)
         logger.info("CPU: pinned to %d performance cores %s, EcoQoS throttling off.", len(p_logical), p_logical)
-    except Exception as e:  # fail-safe: scheduling is an optimization, never block startup
-        logger.debug("pin_to_performance_cores skipped: %s", e)
+    except Exception:  # Windows API boundary: pinning is an optimization and never blocks startup
+        logger.warning("CPU: P-core pinning failed; running unpinned", exc_info=True)
 
 
 def usable_core_count() -> int:
-    """Logical processors this process may actually run on. After pin_to_performance_cores() this is
-    the P-core count (so worker/thread budgets size to the cores in use, not all logical CPUs);
-    falls back to os.cpu_count()."""
-    import os
-
+    """Logical processors this process may run on: on Windows the affinity mask's CPUs (the P-cores after
+    pin_to_performance_cores), elsewhere all of them. Read by tools/dev/verify_pcore_pin.py."""
     if sys.platform == "win32":
-        try:
-            import ctypes
-            from ctypes import wintypes
+        import ctypes
+        from ctypes import wintypes
 
-            k = ctypes.WinDLL("kernel32", use_last_error=True)
-            k.GetCurrentProcess.restype = wintypes.HANDLE
-            k.GetProcessAffinityMask.restype = wintypes.BOOL
-            k.GetProcessAffinityMask.argtypes = [
-                wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t),
-            ]
-            pm = ctypes.c_size_t(0)
-            sm = ctypes.c_size_t(0)
-            if k.GetProcessAffinityMask(k.GetCurrentProcess(), ctypes.byref(pm), ctypes.byref(sm)):
-                n = bin(pm.value).count("1")
-                if n > 0:
-                    return n
-        except Exception:
-            pass
-    return max(1, int(os.cpu_count() or 1))
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GetCurrentProcess.restype = wintypes.HANDLE
+        k.GetProcessAffinityMask.restype = wintypes.BOOL
+        k.GetProcessAffinityMask.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t),
+        ]
+        pm = ctypes.c_size_t(0)
+        sm = ctypes.c_size_t(0)
+        if k.GetProcessAffinityMask(k.GetCurrentProcess(), ctypes.byref(pm), ctypes.byref(sm)) and pm.value:
+            return bin(pm.value).count("1")
+    return logical_core_count()
 
 
 def logical_core_count() -> int:
     """Total logical processors on the machine (all P + E), regardless of the current affinity mask."""
     import os
 
-    return max(1, int(os.cpu_count() or 1))
+    return os.cpu_count() or 1
 
 
 FRONTIER_PREBUILD_RESERVED_CPU_COUNT = 1
@@ -180,13 +172,10 @@ def _frontier_prebuild_cpu_indices_from_efficiency(
     Windows exposes per-logical-CPU EfficiencyClass; lower values are weaker. On platforms without
     comparable affinity metadata, reserve the highest logical index as the stable spare CPU.
     """
-    ncpu = max(1, int(ncpu))
     if ncpu <= FRONTIER_PREBUILD_RESERVED_CPU_COUNT:
         return list(range(ncpu))
     if cores:
-        valid = sorted(
-            {int(logical): int(efficiency) for logical, efficiency in cores if 0 <= int(logical) < ncpu}.items()
-        )
+        valid = sorted({logical: efficiency for logical, efficiency in cores if 0 <= logical < ncpu}.items())
         if valid:
             min_efficiency = min(efficiency for _, efficiency in valid)
             reserved = max(logical for logical, efficiency in valid if efficiency == min_efficiency)
@@ -202,8 +191,8 @@ def frontier_prebuild_logical_cpu_indices() -> list[int]:
     if sys.platform == "win32":
         try:
             cores = _windows_logical_cpu_efficiency_classes()
-        except Exception:
-            cores = None
+        except Exception:  # Windows API boundary: fall back to reserving the highest logical CPU
+            logger.warning("CPU: reading efficiency classes failed; reserving the highest CPU", exc_info=True)
     return _frontier_prebuild_cpu_indices_from_efficiency(cores, logical_core_count())
 
 
@@ -216,18 +205,11 @@ def pin_frontier_prebuild_worker() -> None:
     """Pin THIS frontier prebuild worker to the FULL frontier CPU set (all logical CPUs minus the
     reserved weakest one), lift priority out of background, and clear EcoQoS throttling.
 
-    This replaces the per-worker contiguous core BANDS this function grew up as. Bands assumed all
-    max_workers siblings are simultaneously active and identical; the memory-weighted admission
-    scheduler broke that -- live concurrency varies with per-song weight (a few multi-thread giant
-    builds vs many single-thread light builds), and with max_workers ~= CPU count the bands
-    degenerated to 1 logical CPU per worker, timesharing each giant's reducer threads on a single
-    CPU while 2/3 of the machine idled (observed live on the i9-13900K, 2026-07-09: 9 giants x 2
-    threads -> P 67% / E 8% / total 37%). The historical rationale for bands -- the hybrid
-    scheduler parking background workers on E-cores -- does not apply to these workers: they run
-    ABOVE_NORMAL with EcoQoS cleared, and re-masking the same live workers to the full frontier
-    set held P 61% / E 63% / total 60% (= 18 runnable threads / 31 CPUs) with no parking over
-    sustained sampling on the same box. Affinity masks are Windows-only here; other platforms
-    leave placement to the OS."""
+    Every worker gets the whole set, not a band of its own: live concurrency varies with each song's
+    memory weight (a few multi-threaded giant builds or many single-threaded light ones), so fixed bands
+    leave CPUs idle while a giant's reducer threads timeshare one CPU. Running ABOVE_NORMAL with EcoQoS
+    cleared keeps the scheduler from parking the workers on E-cores. Affinity masks are Windows-only
+    here; other platforms leave placement to the OS."""
     if sys.platform != "win32":
         return
     try:
@@ -243,20 +225,15 @@ def pin_frontier_prebuild_worker() -> None:
             mask |= 1 << cpu
         _apply_affinity_mask(mask)
         logger.debug("CPU: frontier worker pinned to full frontier CPU set (%d CPUs), EcoQoS off.", len(cpus))
-    except Exception as e:  # fail-safe: scheduling is an optimization, never block the build
-        logger.debug("pin_frontier_prebuild_worker skipped: %s", e)
+    except Exception:  # Windows API boundary: pinning is an optimization and never blocks the build
+        logger.warning("CPU: frontier worker pinning failed; running unpinned", exc_info=True)
 
 
 # Per-worker available-RAM budget for the timeline cold build, whose per-song builds peak modestly
-# and uniformly (~1.5 GB/worker). Keep measured headroom and a system reserve: using every byte
-# reported available admitted 26 persistent workers on the 64 GB/no-pagefile production host, then
-# late heavy charts failed even 1 MiB allocations after allocator high-water accumulated. The FG
-# response-frontier cold build is NOT sized this way: its per-song peak spans ~1.7-8 GB commit
-# (median chart vs EXTENDED CUT giants) and it schedules heaviest-first, so any flat constant
-# either over-commits on giants (4.0 GB/worker admitted 12 workers x ~7 GB measured commit ->
-# 2026-07-09 system-wide commit exhaustion + hard crash) or wastes cores on the light tail. FG
-# concurrency is owned by the per-song memory-weighted admission scheduler in
-# fg_response_frontier_cache_prebuild.py.
+# and uniformly (~1.5 GB/worker), plus a system reserve: sizing by every available byte let late heavy
+# charts fail allocations on a 64 GB host without a pagefile. The FG response-frontier cold build is
+# not sized this way (its per-song peak spans ~1.7-8 GB): its memory-weighted admission scheduler in
+# fg_response_frontier_cache_prebuild.py sizes it per song.
 TIMELINE_PREBUILD_GB_PER_WORKER = 1.75
 TIMELINE_PREBUILD_SYSTEM_RESERVE_GB = 8.0
 
@@ -268,23 +245,13 @@ def frontier_prebuild_worker_count() -> int:
 
 def frontier_prebuild_intra_worker_threads(worker_count: int) -> int:
     """Reducer / pair-build threads owned by each frontier prebuild worker."""
-    return max(1, frontier_prebuild_cpu_count() // max(1, int(worker_count)))
-
-
-def _ram_capped_prebuild_worker_count(gb_per_worker: float, *, system_reserve_gb: float = 0.0) -> int:
-    """Core-derived worker count, capped so concurrent workers fit in currently-available RAM at
-    ``gb_per_worker`` each."""
-    import psutil
-
-    available_gb = float(psutil.virtual_memory().available) / 1e9
-    worker_budget_gb = max(0.0, available_gb - max(0.0, float(system_reserve_gb)))
-    workers = min(frontier_prebuild_worker_count(), max(1, int(worker_budget_gb / max(0.1, float(gb_per_worker)))))
-    return max(1, workers)
+    return max(1, frontier_prebuild_cpu_count() // worker_count)
 
 
 def timeline_prebuild_worker_count() -> int:
-    """Timeline workers admitted inside the measured envelope with no-pagefile headroom."""
-    return _ram_capped_prebuild_worker_count(
-        TIMELINE_PREBUILD_GB_PER_WORKER,
-        system_reserve_gb=TIMELINE_PREBUILD_SYSTEM_RESERVE_GB,
-    )
+    """Timeline workers: the frontier CPU budget, capped to what fits in the available RAM after the system reserve
+    at the measured per-worker peak (at least one)."""
+    import psutil
+
+    budget_gb = max(0.0, psutil.virtual_memory().available / 1e9 - TIMELINE_PREBUILD_SYSTEM_RESERVE_GB)
+    return min(frontier_prebuild_worker_count(), max(1, int(budget_gb / TIMELINE_PREBUILD_GB_PER_WORKER)))
