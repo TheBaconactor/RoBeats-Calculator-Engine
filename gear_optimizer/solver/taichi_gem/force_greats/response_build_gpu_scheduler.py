@@ -289,7 +289,6 @@ def _build_region_table(
         action_k_arr,
         float(table_key[0]),
         context.timestamps,
-        context.candidate_high_delta_max,
         context.perfect_floor_timestamps,
         context.perfect_candidate_timestamps,
         context.great_floor_timestamps,

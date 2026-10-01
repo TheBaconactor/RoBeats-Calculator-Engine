@@ -405,7 +405,6 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
         action_k,
         4.0,
         timestamps,
-        0.1,
         timestamps - np.float32(0.04),
         perfect_hi,
         timestamps - np.float32(0.09),
@@ -979,7 +978,6 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                     int(k),
                     float(raw_fever_fill),
                     timestamps,
-                    0.190001,
                     perfect_floor,
                     perfect_candidates,
                     great_floor,
@@ -1283,10 +1281,8 @@ def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> 
     )
 
     hit, lo, hi = _centered_hit_window_for_exit(
-        timestamps,
         3,
         0,
-        15.46399974822998,
         15.46399974822998,
         15.504000663757324,
         58.48316925859451,
@@ -1992,9 +1988,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         actual_reachable, actual_width = _numba_first_frontier_reachability_prepass(
             int(common["n"]),
             int(common["action_count"]),
-            common["later_fill"],
             common["first_fill"],
-            common["later_activation_forced"],
             common["first_activation_forced"],
             perfect_run_starts,
             perfect_run_ends,
@@ -2012,7 +2006,6 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
             int(common["real_time_idx"]),
             int(common["use_forced_great_timing_i"]),
             common["region_starts"],
-            common["region_offsets"],
             common["region_activations"],
             common["region_great_ends"],
             common["region_is_greats"],

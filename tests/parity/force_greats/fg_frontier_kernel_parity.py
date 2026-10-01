@@ -1,12 +1,5 @@
-"""Parity harness for the FG first-frontier construction kernel.
-
-Builds byte-identical inputs to the production Numba kernel
-``_first_frontier_from_precomputed_end_indices_numba`` for a single
-``(raw_fever_fill, non_fever_base, real_fever_time)`` geometry, by reusing the
-exact production prep functions (action table -> compaction -> end-index
-precompute). The Numba kernel is the bit-exact parity oracle that the Vulkan
-port must reproduce.
-"""
+"""The FG first-frontier kernel's inputs for one ``(raw_fever_fill, non_fever_base, real_fever_time)`` geometry,
+built with the production prep functions (action table -> compaction -> end-index precompute)."""
 
 from __future__ import annotations
 
@@ -26,8 +19,6 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute
     _precompute_end_indices,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-    _HEAD_FILTER_MIN_SURFACES,
-    _first_frontier_from_precomputed_end_indices_numba,
     _numba_build_prefix_activation_hit_tables,
 )
 
@@ -157,32 +148,3 @@ def build_kernel_args(
         "real_time_idx": int(real_time_index[0]),
         "use_forced_great_timing_i": 1 if bool(use_forced_great_timing) else 0,
     }
-
-
-def numba_first_frontier(args: dict[str, Any]):
-    """Run the parity ORACLE (Numba kernel) -> (out[m,7] uint64, 4 int counters)."""
-    return _first_frontier_from_precomputed_end_indices_numba(
-        int(args["n"]),
-        int(args["action_count"]),
-        float(args["raw_fever_fill"]),
-        args["action_k"],
-        args["later_fill"],
-        args["first_fill"],
-        args["later_forced"],
-        args["first_forced"],
-        args["later_activation_forced"],
-        args["first_activation_forced"],
-        args["timestamps"],
-        args["perfect_candidate_timestamps"],
-        args["great_candidate_timestamps"],
-        args["perfect_floor_timestamps"],
-        args["great_floor_timestamps"],
-        args["lanes"],
-        args["timestamp_end_idx"],
-        args["perfect_end_idx"],
-        args["great_end_idx"],
-        args["great_floor_end_idx"],
-        int(args["real_time_idx"]),
-        int(args["use_forced_great_timing_i"]),
-        int(_HEAD_FILTER_MIN_SURFACES),
-    )
