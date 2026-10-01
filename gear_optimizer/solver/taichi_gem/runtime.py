@@ -1,14 +1,8 @@
-"""
-Taichi Runtime - Initialization and configuration for GPU backend.
-
-This module handles:
-- Taichi initialization with the Vulkan backend
-- Environment variable configuration (kernel profiler, block dim)
-- Global initialization state
-"""
+"""The Taichi runtime: Vulkan device selection, initialization, the runtime lock, reset and its hooks."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import struct
@@ -21,10 +15,6 @@ from typing import Callable, Iterator
 from ...core.output import quiet_stdio
 from gear_optimizer import settings
 
-# ============================================================================
-# INITIALIZATION STATE
-# ============================================================================
-
 _ti_initialized = False
 # Whether THIS process has ever completed a Taichi materialization. Distinct from
 # `_ti_initialized`, which `reset_taichi()` clears: the GLFW/Cocoa context that the first
@@ -32,19 +22,12 @@ _ti_initialized = False
 # main-thread requirement. See `_assert_darwin_main_thread_materialization()`.
 _ti_materialized_once = False
 _ti_lock = threading.RLock()
-_printed_vulkan_device_hint = False
 _offline_cache_dir: str | None = None
 logger = logging.getLogger(__name__)
 
-
-def _taichi_verbose_enabled() -> bool:
-    # Keep Taichi banners in explicit verbose mode only.
-    return settings.output_enabled()
-
-
 # Taichi prints a version banner at import time. On Windows, spawned child processes can inherit an invalid console
 # handle that makes print() raise OSError [WinError 1]; quiet_stdio covers both Python-level and native writes.
-with quiet_stdio(not _taichi_verbose_enabled()):
+with quiet_stdio(not settings.output_enabled()):
     import taichi as ti  # noqa: E402
 
 
@@ -64,9 +47,8 @@ def _assert_darwin_main_thread_materialization() -> None:
 
     Raising here converts that unrecoverable trap into an ordinary exception the caller can shed
     on. Hosts that want in-process GPU on darwin materialize on the main thread first (see
-    ``app.py::_materialize_gpu_runtime_on_main_thread`` and the RoBeatsMeta API's startup hook);
-    once that has run, ``init_taichi()`` short-circuits on ``_ti_initialized`` and every thread
-    proceeds normally.
+    ``app.py::_materialize_gpu_runtime_on_main_thread``); once that has run, ``init_taichi()``
+    short-circuits on ``_ti_initialized`` and every thread proceeds normally.
 
     Scoped to the first materialization only: the GLFW context is process-global and refcounted,
     so a ``reset_taichi()`` recovery re-init does not necessarily re-enter GLFW init. That path
@@ -90,9 +72,8 @@ def _assert_darwin_main_thread_materialization() -> None:
 def taichi_runtime_lock() -> threading.RLock:
     """The lock that serializes access to Taichi's global runtime state.
 
-    "Keep GPU ownership single" is a solver invariant, but it was only enforced for init/reset.
     Anything that allocates SNode trees or launches kernels against the module-level scratch
-    fields is the same global state: two threads inside it interleave FieldsBuilder placement
+    fields is global state: two threads inside it interleave FieldsBuilder placement
     (``TaichiRuntimeError: Field builder ... is not finalized``) and, worse, share per-candidate
     scratch, so a surviving pair of requests can read each other's rows. Callers outside the
     optimizer's own single-GPU-thread executor -- including host applications that call FG
@@ -103,20 +84,12 @@ def taichi_runtime_lock() -> threading.RLock:
     return _ti_lock
 
 
-
-
 @contextmanager
-def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interval_sec: float = 0.01) -> Iterator[None]:
-    """
-    Best-effort cross-process file lock (Windows + POSIX).
-
-    This is intentionally lightweight and only used for Taichi offline-cache
-    warmup coordination during startup.
-    """
+def _file_lock(lock_path: Path, *, timeout_sec: float | None = None) -> Iterator[None]:
+    """Cross-process exclusive file lock (Windows + POSIX); waits forever when `timeout_sec` is None."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
-    timeout = None if timeout_sec is None else max(0.0, float(timeout_sec))
-    deadline = time.monotonic() + timeout if timeout is not None else None
+    deadline = None if timeout_sec is None else time.monotonic() + max(0.0, float(timeout_sec))
     try:
         if os.name == "nt":
             import msvcrt
@@ -136,7 +109,7 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
                 except OSError:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
-                    time.sleep(max(0.001, float(poll_interval_sec)))
+                    time.sleep(0.01)
         else:
             import fcntl
 
@@ -150,7 +123,7 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
                         raise
                     if time.monotonic() >= deadline:
                         raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
-                    time.sleep(max(0.001, float(poll_interval_sec)))
+                    time.sleep(0.01)
         yield
     finally:
         try:
@@ -169,216 +142,107 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
 
 
 @contextmanager
-def offline_cache_lock(
-    *,
-    timeout_sec: float | None = None,
-    poll_interval_sec: float = 0.01,
-) -> Iterator[str]:
-    """
-    Cross-process lock keyed by the current Taichi offline-cache directory.
-
-    Yields the resolved offline cache directory path.
-    """
-    cache_dir = str(_offline_cache_dir or _get_offline_cache_dir() or "").strip()
-    if not cache_dir:
-        # Nothing to lock; still yield a stable string for callers.
-        yield ""
-        return
-    lock_path = Path(cache_dir) / ".metafinder_offline_cache.lock"
-    with _file_lock(lock_path, timeout_sec=timeout_sec, poll_interval_sec=poll_interval_sec):
+def offline_cache_lock(*, timeout_sec: float | None = None) -> Iterator[str]:
+    """Cross-process lock keyed by the Taichi offline-cache directory, which it yields."""
+    cache_dir = _offline_cache_dir or _get_offline_cache_dir()
+    with _file_lock(Path(cache_dir) / ".metafinder_offline_cache.lock", timeout_sec=timeout_sec):
         yield cache_dir
 
-def _clamp_block_dim(x: int) -> int:
-    # Conservative clamp; GPU backends typically like 64-512.
-    if x < 1:
-        return 1
-    if x > 1024:
-        return 1024
-    return x
 
+def _vulkan_device_types() -> list[int]:
+    """Each Vulkan physical device's VkPhysicalDeviceType, in device-index order; empty without a system Vulkan
+    loader (macOS reaches the GPU through Taichi's MoltenVK)."""
+    import ctypes
 
-def _detect_backend() -> tuple:
-    """
-    Return the production GPU backend.
+    try:
+        lib = ctypes.WinDLL("vulkan-1.dll") if os.name == "nt" else ctypes.CDLL("libvulkan.so.1")  # noqa: S404
+    except OSError:
+        return []
 
-    Returns:
-        tuple: (taichi_arch, backend_name)
-    """
-    return ti.vulkan, "Vulkan"
-
-
-def _maybe_set_vulkan_visible_device() -> None:
-    """
-    Optional Vulkan device selection for hybrid/dual-GPU systems.
-
-    Taichi's Vulkan backend will pick a default device if multiple adapters are present.
-    You can force a specific device index (as seen by Taichi) via:
-      - `TAICHI_VULKAN_VISIBLE_DEVICE=1`
-    Or ask RoBeats Calculator Engine to auto-select the first discrete GPU via:
-      - `TAICHI_VULKAN_VISIBLE_DEVICE=discrete`
-
-    Notes:
-    - This must run before `ti.init()`.
-    - We intentionally only accept simple comma-separated integer lists to avoid
-      crashing Taichi with unexpected strings.
-    """
-
-    def _enumerate_vulkan_physical_devices() -> list[dict[str, object]]:
-        import ctypes
-
-        try:
-            if os.name == "nt":
-                lib = ctypes.WinDLL("vulkan-1.dll")  # noqa: S404
-            else:
-                lib = ctypes.CDLL("libvulkan.so.1")  # noqa: S404
-        except OSError:
-            return []  # No system Vulkan loader (macOS: Taichi reaches the GPU through MoltenVK).
-
-        VK_SUCCESS = 0
-        VK_STRUCTURE_TYPE_APPLICATION_INFO = 0
-        VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
-
-        VkInstance = ctypes.c_void_p
-        VkPhysicalDevice = ctypes.c_void_p
-
-        class VkApplicationInfo(ctypes.Structure):
-            _fields_ = [
-                ("sType", ctypes.c_uint32),
-                ("pNext", ctypes.c_void_p),
-                ("pApplicationName", ctypes.c_char_p),
-                ("applicationVersion", ctypes.c_uint32),
-                ("pEngineName", ctypes.c_char_p),
-                ("engineVersion", ctypes.c_uint32),
-                ("apiVersion", ctypes.c_uint32),
-            ]
-
-        class VkInstanceCreateInfo(ctypes.Structure):
-            _fields_ = [
-                ("sType", ctypes.c_uint32),
-                ("pNext", ctypes.c_void_p),
-                ("flags", ctypes.c_uint32),
-                ("pApplicationInfo", ctypes.c_void_p),
-                ("enabledLayerCount", ctypes.c_uint32),
-                ("ppEnabledLayerNames", ctypes.c_void_p),
-                ("enabledExtensionCount", ctypes.c_uint32),
-                ("ppEnabledExtensionNames", ctypes.c_void_p),
-            ]
-
-        vkCreateInstance = lib.vkCreateInstance
-        vkCreateInstance.restype = ctypes.c_int32
-        vkCreateInstance.argtypes = [
-            ctypes.POINTER(VkInstanceCreateInfo),
-            ctypes.c_void_p,
-            ctypes.POINTER(VkInstance),
+    class VkApplicationInfo(ctypes.Structure):
+        _fields_ = [
+            ("sType", ctypes.c_uint32),
+            ("pNext", ctypes.c_void_p),
+            ("pApplicationName", ctypes.c_char_p),
+            ("applicationVersion", ctypes.c_uint32),
+            ("pEngineName", ctypes.c_char_p),
+            ("engineVersion", ctypes.c_uint32),
+            ("apiVersion", ctypes.c_uint32),
         ]
 
-        vkDestroyInstance = lib.vkDestroyInstance
-        vkDestroyInstance.restype = None
-        vkDestroyInstance.argtypes = [VkInstance, ctypes.c_void_p]
+    class VkInstanceCreateInfo(ctypes.Structure):
+        _fields_ = [
+            ("sType", ctypes.c_uint32),
+            ("pNext", ctypes.c_void_p),
+            ("flags", ctypes.c_uint32),
+            ("pApplicationInfo", ctypes.c_void_p),
+            ("enabledLayerCount", ctypes.c_uint32),
+            ("ppEnabledLayerNames", ctypes.c_void_p),
+            ("enabledExtensionCount", ctypes.c_uint32),
+            ("ppEnabledExtensionNames", ctypes.c_void_p),
+        ]
 
-        vkEnumeratePhysicalDevices = lib.vkEnumeratePhysicalDevices
-        vkEnumeratePhysicalDevices.restype = ctypes.c_int32
-        vkEnumeratePhysicalDevices.argtypes = [VkInstance, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+    create_instance = lib.vkCreateInstance
+    create_instance.restype = ctypes.c_int32
+    create_instance.argtypes = [ctypes.POINTER(VkInstanceCreateInfo), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    destroy_instance = lib.vkDestroyInstance
+    destroy_instance.restype = None
+    destroy_instance.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    enumerate_devices = lib.vkEnumeratePhysicalDevices
+    enumerate_devices.restype = ctypes.c_int32
+    enumerate_devices.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+    device_properties = lib.vkGetPhysicalDeviceProperties
+    device_properties.restype = None
+    device_properties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
-        vkGetPhysicalDeviceProperties = lib.vkGetPhysicalDeviceProperties
-        vkGetPhysicalDeviceProperties.restype = None
-        vkGetPhysicalDeviceProperties.argtypes = [VkPhysicalDevice, ctypes.c_void_p]
-
-        app = VkApplicationInfo(
-            sType=VK_STRUCTURE_TYPE_APPLICATION_INFO,
-            pNext=None,
-            pApplicationName=b"robeats-metafinder",
-            applicationVersion=1,
-            pEngineName=b"metafinder",
-            engineVersion=1,
-            apiVersion=0,
-        )
-        ci = VkInstanceCreateInfo(
-            sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            pNext=None,
-            flags=0,
-            pApplicationInfo=ctypes.cast(ctypes.pointer(app), ctypes.c_void_p),
-            enabledLayerCount=0,
-            ppEnabledLayerNames=None,
-            enabledExtensionCount=0,
-            ppEnabledExtensionNames=None,
-        )
-
-        inst = VkInstance()
-        res = int(vkCreateInstance(ctypes.byref(ci), None, ctypes.byref(inst)))
-        if res != VK_SUCCESS or not inst:
+    # sType 0/1 = VK_STRUCTURE_TYPE_APPLICATION_INFO / VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO; 0 = VK_SUCCESS.
+    app = VkApplicationInfo(
+        sType=0, pApplicationName=b"robeats-metafinder", applicationVersion=1, pEngineName=b"metafinder", engineVersion=1
+    )
+    create_info = VkInstanceCreateInfo(sType=1, pApplicationInfo=ctypes.cast(ctypes.pointer(app), ctypes.c_void_p))
+    instance = ctypes.c_void_p()
+    if create_instance(ctypes.byref(create_info), None, ctypes.byref(instance)) != 0 or not instance:
+        return []
+    try:
+        count = ctypes.c_uint32(0)
+        if enumerate_devices(instance, ctypes.byref(count), None) != 0 or count.value <= 0:
             return []
+        devices = (ctypes.c_void_p * count.value)()
+        if enumerate_devices(instance, ctypes.byref(count), ctypes.cast(devices, ctypes.c_void_p)) != 0:
+            return []
+        types = []
+        for device in devices:
+            properties = ctypes.create_string_buffer(4096)
+            device_properties(device, ctypes.cast(properties, ctypes.c_void_p))
+            # VkPhysicalDeviceProperties starts apiVersion, driverVersion, vendorID, deviceID, deviceType.
+            types.append(struct.unpack_from("<I", properties.raw, 16)[0])
+        return types
+    finally:
+        destroy_instance(instance, None)
 
-        try:
-            count = ctypes.c_uint32(0)
-            res = int(vkEnumeratePhysicalDevices(inst, ctypes.byref(count), None))
-            if res != VK_SUCCESS or int(count.value) <= 0:
-                return []
-            n = int(count.value)
-            arr = (VkPhysicalDevice * n)()
-            res = int(vkEnumeratePhysicalDevices(inst, ctypes.byref(count), ctypes.cast(arr, ctypes.c_void_p)))
-            if res != VK_SUCCESS:
-                return []
 
-            out: list[dict[str, object]] = []
-            for i in range(n):
-                buf = ctypes.create_string_buffer(4096)
-                vkGetPhysicalDeviceProperties(arr[i], ctypes.cast(buf, ctypes.c_void_p))
+def _select_vulkan_device() -> None:
+    """Point Taichi's Vulkan backend at a device before ti.init().
 
-                # VkPhysicalDeviceProperties starts with:
-                # apiVersion, driverVersion, vendorID, deviceID, deviceType, ...
-                api_v, drv_v, vendor_id, device_id, device_type = struct.unpack_from("<IIIII", buf.raw, 0)
-
-                name_raw = bytes(buf.raw[20 : 20 + 256])
-                name = name_raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
-                out.append(
-                    {
-                        "index": int(i),
-                        "name": str(name),
-                        "device_type": int(device_type),
-                        "vendor_id": int(vendor_id),
-                        "device_id": int(device_id),
-                        "api_version": int(api_v),
-                        "driver_version": int(drv_v),
-                    }
-                )
-            return out
-        finally:
-            vkDestroyInstance(inst, None)
-
-    def _pick_first_discrete_index(devs: list[dict[str, object]]) -> int | None:
-        # VkPhysicalDeviceType: 2 = DISCRETE_GPU
-        for d in devs:
-            if int(d.get("device_type", -1) or -1) == 2:
-                return int(d.get("index", 0) or 0)
-        return None
-
+    TAICHI_VULKAN_VISIBLE_DEVICE takes device indices ("1", "0,1"; anything else is ignored with a warning). Unset,
+    "discrete", "dgpu" or "auto" select the first discrete GPU on hybrid/dual-GPU boxes, where Taichi's default
+    device may be the integrated one.
+    """
     raw = settings.vulkan_device()
-    auto_discrete = (not raw) or (raw.strip().lower() in {"discrete", "dgpu", "auto"})
-
-    target = ""
+    auto_discrete = not raw or raw.lower() in {"discrete", "dgpu", "auto"}
     if auto_discrete:
-        devs = _enumerate_vulkan_physical_devices()
-        idx = _pick_first_discrete_index(devs)
-        if idx is None:
+        # VkPhysicalDeviceType 2 = VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+        discrete = next((index for index, kind in enumerate(_vulkan_device_types()) if kind == 2), None)
+        if discrete is None:
             if raw:
                 logger.warning("[Taichi] TAICHI_VULKAN_VISIBLE_DEVICE=%s: no discrete GPU found; using the default", raw)
             return
-        target = str(idx)
-        os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = target
-    else:
-        # Allow: "0", "1", "0,1"
-        ok = True
-        for tok in raw.split(","):
-            tok = tok.strip()
-            if not tok.isdigit():
-                ok = False
-                break
-        if not ok:
-            logger.warning("[Taichi] Ignoring invalid TAICHI_VULKAN_VISIBLE_DEVICE=%r", raw)
-            return
+        target = os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = str(discrete)
+    elif all(token.strip().isdigit() for token in raw.split(",")):
         target = raw
-
+    else:
+        logger.warning("[Taichi] Ignoring invalid TAICHI_VULKAN_VISIBLE_DEVICE=%r", raw)
+        return
     try:
         import taichi._lib.core as ti_core
 
@@ -390,97 +254,51 @@ def _maybe_set_vulkan_visible_device() -> None:
         logger.warning("[Taichi] Could not select Vulkan device %s", target, exc_info=True)
 
 
-def _maybe_print_vulkan_device_hint() -> None:
-    """
-    Best-effort hint for hybrid/dual-GPU systems where Taichi may pick an iGPU by default.
-
-    We don't have a portable way to enumerate adapters from Taichi's public API, so we only
-    suggest the existing env var and avoid changing behavior automatically.
-    """
-    global _printed_vulkan_device_hint
-    if _printed_vulkan_device_hint:
-        return
-    _printed_vulkan_device_hint = True
-    if settings.vulkan_device():
-        return
-    logger.debug(
-        "[Taichi] Tip: on hybrid/dual-GPU systems, set TAICHI_VULKAN_VISIBLE_DEVICE=discrete "
-        "(or a specific index like 1) to force the discrete GPU."
-    )
-
-
 def get_block_dim() -> int:
-    # Hardwired (was TAICHI_BLOCK_DIM): 256 is the benchmark-validated default for this
-    # workload; _clamp_block_dim keeps the Vulkan [1,1024] dispatch bound.
-    return _clamp_block_dim(256)
+    """The GPU block size: 256 is the benchmark-validated choice for these kernels (Vulkan allows 1..1024)."""
+    return 256
 
 
 def _get_offline_cache_dir() -> str:
-    """
-    Return a stable on-disk cache directory for Taichi's offline cache.
-
-    Keeping this inside the repo `bin/` avoids writing into user profile
-    locations and makes cache cleanup straightforward.
-    """
-
-    def _read_taichi_gem_signature_short(repo_root: str) -> str:
-        """
-        Compute a stable signature for the Taichi kernel sources.
-
-        Why not git HEAD?
-        - Using HEAD invalidates the cache on every commit, even for doc-only changes,
-          causing repeated ~minute-long Taichi/Vulkan warmup compiles.
-        - Hashing the Taichi sources invalidates only when the kernel-related code changes,
-          while still avoiding reuse of stale caches after kernel edits.
-        """
-        import hashlib
-
-        taichi_root = os.path.join(repo_root, "gear_optimizer", "solver", "taichi_gem")
-        if not os.path.isdir(taichi_root):
-            return "nogit"
-
-        # Hash file contents for stability across git checkouts (mtime changes are noisy on Windows).
-        h = hashlib.blake2b(digest_size=16)
-        paths: list[str] = []
-        for root, dirs, files in os.walk(taichi_root):
-            dirs[:] = [d for d in dirs if d != "__pycache__"]
-            for f in files:
-                if not f.endswith(".py"):
-                    continue
-                paths.append(os.path.join(root, f))
-        for abs_path in sorted(paths):
-            rel = os.path.relpath(abs_path, repo_root).replace("\\", "/")
-            h.update(rel.encode("utf-8", errors="replace"))
-            with open(abs_path, "rb") as fp:
-                for chunk in iter(lambda: fp.read(64 * 1024), b""):
-                    h.update(chunk)
-        return h.hexdigest()[:12]
-
-    # `.../gear_optimizer/solver/taichi_gem/runtime.py` -> repo root is 3 levels up.
+    """<engine>/bin/taichi_cache/v2/ti_<version>/<key>, created; the key hashes the taichi_gem sources (paths and
+    contents), so only a change there (not every commit) pays the ~minute Vulkan warm-up compile."""
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-    cache_schema = "v2"
+    taichi_root = os.path.join(repo_root, "gear_optimizer", "solver", "taichi_gem")
+    sources = sorted(
+        os.path.join(root, name) for root, _dirs, files in os.walk(taichi_root) for name in files if name.endswith(".py")
+    )
+    digest = hashlib.blake2b(digest_size=16)
+    for path in sources:
+        digest.update(os.path.relpath(path, repo_root).replace("\\", "/").encode("utf-8", errors="replace"))
+        with open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(64 * 1024), b""):
+                digest.update(chunk)
     raw_ver = getattr(ti, "__version__", "unknown") or "unknown"
     if isinstance(raw_ver, tuple):
         raw_ver = ".".join(str(x) for x in raw_ver)
-    ti_ver = str(raw_ver)
-    ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in ti_ver).replace(".", "_")
-    cache_key = _read_taichi_gem_signature_short(repo_root)
-    cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", cache_key)
+    ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in str(raw_ver)).replace(".", "_")
+    cache_dir = os.path.join(repo_root, "bin", "taichi_cache", "v2", f"ti_{ti_ver}", digest.hexdigest()[:12])
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
 
-def _init_taichi_quietly(init_kwargs: dict, *, force_verbose: bool = False) -> None:
-    """Run `ti.init()` without leaking backend banners to the console."""
-    with quiet_stdio(not (force_verbose or _taichi_verbose_enabled())):
+def _init_taichi_quietly(init_kwargs: dict) -> None:
+    """`ti.init()` without its console banners. Windows reports ERROR_INVALID_FUNCTION (1) when a library queries
+    console properties (terminal size/mode) while stdout/stderr are redirected: retry once with them attached."""
+    try:
+        with quiet_stdio(not settings.output_enabled()):
+            ti.init(**init_kwargs)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1 or settings.output_enabled():
+            raise
         ti.init(**init_kwargs)
 
 
 def init_taichi():
     """
-    Initialize Taichi with auto-detected GPU backend.
+    Initialize Taichi on the Vulkan backend, once per process.
 
-    Called once by gpu_executor.py on the GPU thread, or lazily on first use.
+    Called by gpu_executor.py on the GPU thread, or lazily on first use.
     Uses f32 precision for performance (sufficient for score accuracy).
     """
     global _ti_initialized
@@ -490,15 +308,10 @@ def init_taichi():
         if _ti_initialized:
             return
         _assert_darwin_main_thread_materialization()
-        block_dim = get_block_dim()
-        arch, backend_name = _detect_backend()
-
-        if arch == ti.vulkan:
-            _maybe_set_vulkan_visible_device()
-            _maybe_print_vulkan_device_hint()
-
+        _select_vulkan_device()
+        _offline_cache_dir = _get_offline_cache_dir()
         init_kwargs = dict(
-            arch=arch,
+            arch=ti.vulkan,
             default_fp=ti.f32,
             default_ip=ti.i32,
             # Cross-vendor determinism: the per-note score is floor(f32*f32) (kernels_helpers
@@ -511,42 +324,26 @@ def init_taichi():
             # bit-identical across Metal and Vulkan and the pick is deterministic. Stays on GPU
             # (search remains batched); negligible cost for this add/mul arithmetic.
             fast_math=False,
-            default_gpu_block_dim=block_dim,
-            # Huge win for repeated runs: avoid recompiling kernels each process.
-            # This does not change algorithm results; it only caches compiled kernels on disk.
+            default_gpu_block_dim=get_block_dim(),
+            # Compiled kernels persist on disk across processes (no recompiles; results unchanged).
             offline_cache=True,
-            offline_cache_file_path=_get_offline_cache_dir(),
+            offline_cache_file_path=_offline_cache_dir,
         )
-        _offline_cache_dir = str(init_kwargs.get("offline_cache_file_path") or "").strip() or None
-
-        # Some Windows/Vulkan stacks are sensitive to concurrent Taichi/Vulkan initialization across
-        # multiple spawned processes (dual-process in-flight). Serialize `ti.init()` per offline-cache
-        # directory to avoid races in the Vulkan loader/driver and on-disk cache setup.
-        def _init_with_winerror_retry(kwargs: dict) -> None:
-            try:
-                _init_taichi_quietly(kwargs)
-            except OSError as exc:
-                # Windows ERROR_INVALID_FUNCTION (1) is commonly surfaced when a library attempts to query
-                # console properties (e.g., terminal size/mode) while stdout/stderr are redirected. In that
-                # case, retry once without stdio suppression so Taichi can perform any console checks.
-                if int(getattr(exc, "winerror", 0) or 0) == 1 and not _taichi_verbose_enabled():
-                    _init_taichi_quietly(kwargs, force_verbose=True)
-                    return
-                raise
-
+        # ti.init() is serialized per offline-cache directory across processes: some Windows/Vulkan stacks race in
+        # the loader/driver and the on-disk cache setup when several processes initialize at once.
         try:
-            with offline_cache_lock(timeout_sec=None):
-                _init_with_winerror_retry(init_kwargs)
+            with offline_cache_lock():
+                _init_taichi_quietly(init_kwargs)
         except Exception:
             # The offline kernel cache only saves compile time: retry once without it.
             logger.warning("[Taichi] Init with the offline kernel cache failed; retrying without it", exc_info=True)
             init_kwargs.pop("offline_cache", None)
             init_kwargs.pop("offline_cache_file_path", None)
-            with offline_cache_lock(timeout_sec=None):
-                _init_with_winerror_retry(init_kwargs)
+            with offline_cache_lock():
+                _init_taichi_quietly(init_kwargs)
         _ti_initialized = True
         _ti_materialized_once = True
-        logger.debug("[Taichi] Initialized with %s backend - f32 precision (block_dim=%s)", backend_name, block_dim)
+        logger.debug("[Taichi] Initialized with the Vulkan backend - f32 precision (block_dim=%s)", get_block_dim())
 
 
 def reset_taichi(*, reason: str | None = None) -> None:
