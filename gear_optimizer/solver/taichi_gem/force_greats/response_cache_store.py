@@ -6,10 +6,8 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 import uuid
 import zipfile
-from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable
 
@@ -17,7 +15,7 @@ import numpy as np
 from numpy.lib import format as np_format
 
 from gear_optimizer.rules import MAX_STAT
-from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
+from gear_optimizer.solver.frontier_cache import FrontierCache, MemoryLru, write_atomically
 
 from .response_cache_keys import (
     _fg_response_disk_cache_dir,
@@ -33,9 +31,6 @@ from .response_cache_patterns import (
     unpack_surface_patterns,
 )
 from .response_cache_types import (
-    _BUNDLE_ARRAY_CACHE_MAX,
-    _MEMORY_CACHE_MAX,
-    _PAYLOAD_CACHE_MAX,
     _SCORING_BUNDLE_ARRAY_NAMES,
     _SURFACE_BUNDLE_PATH_ARRAY_NAME,
     _SURFACE_GENERATION_ARRAY_NAME,
@@ -48,15 +43,14 @@ from .response_types import FgResponseFrontierResult
 
 logger = logging.getLogger(__name__)
 
-_frontier_cache: OrderedDict[tuple, FgResponseFrontierResult] = OrderedDict()
-_payload_cache: OrderedDict[tuple, FgResponseFrontierCachePayload] = OrderedDict()
-_bundle_array_cache: OrderedDict[tuple, dict[str, np.ndarray]] = OrderedDict()
-_scoring_bundle_cache: OrderedDict[tuple, FgResponseFrontierScoringBundle] = OrderedDict()
-_frontier_cache_last_access: dict[tuple, float] = {}
-_payload_cache_last_access: dict[tuple, float] = {}
-_bundle_array_cache_last_access: dict[tuple, float] = {}
-_scoring_bundle_cache_last_access: dict[tuple, float] = {}
-_frontier_cache_lock = threading.RLock()
+# The memory tiers, keyed like the files (version, song key, FT/FF axes signatures, then a stat key, a stat-key
+# tuple or the bundle marker): frontiers materialized per stat key, merged bundles and request payloads of builds,
+# bundles' slim metadata arrays, and their scoring views. A bundle's metadata is hydrated at prep and read again at
+# its GA turn; entries are ~0.2-1MB (metadata members only, never the surface pools).
+_geometry_frontier_memory: MemoryLru[FgResponseFrontierResult] = MemoryLru(4096)
+_payload_memory: MemoryLru[FgResponseFrontierCachePayload] = MemoryLru(8)
+_bundle_array_memory: MemoryLru[dict[str, np.ndarray]] = MemoryLru(40)
+_scoring_bundle_memory: MemoryLru[FgResponseFrontierScoringBundle] = MemoryLru(40)
 _RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
 _response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
 _NPZ_FAST_COMPRESS_LEVEL = 1
@@ -522,78 +516,14 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-def fg_response_compatible_cache_versions() -> tuple[str, ...]:
-    """Current version followed by explicitly ratified, byte-compatible predecessors."""
-    current = _fg_response_cache_version()
-    predecessors = _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS.get(current, ())
-    return (current, *predecessors)
-
-
-def _cache_key_with_version(cache_key: tuple, version: str) -> tuple:
-    key = tuple(cache_key)
-    if not key:
-        raise ValueError("FG response cache key must contain a version")
-    return (str(version), *key[1:])
-
-
-def resolve_fg_response_bundle_path(cache_key: tuple) -> Path:
-    """Resolve the canonical current path or an exact compatible predecessor path.
-
-    Writes always target ``_fg_response_disk_cache_path(cache_key)``. This resolver is read-only and
-    only considers a predecessor when the caller owns the current full cache key and the current
-    content-addressed file is absent. Full NPZ/sidecar validation still gates every cache hit.
-    """
-    current_path = _fg_response_disk_cache_path(cache_key)
-    if current_path.exists():
-        return current_path
-    key = tuple(cache_key)
-    current = _fg_response_cache_version()
-    if not key or str(key[0]) != current:
-        return current_path
-    for predecessor in fg_response_compatible_cache_versions()[1:]:
-        predecessor_path = _fg_response_disk_cache_path(_cache_key_with_version(key, predecessor))
-        if predecessor_path.exists():
-            return predecessor_path
-    return current_path
-
-
-def _fg_response_cache_version_is_compatible(version: str) -> bool:
-    return str(version) in fg_response_compatible_cache_versions()
-
-
-def _purged_version_marker_value() -> str:
-    return "\n".join(fg_response_compatible_cache_versions())
-
-
-def _memory_cache_get_locked(
-    cache: OrderedDict,
-    last_access: dict[tuple, float],
-    cache_key: tuple,
-):
-    cached = cache.get(cache_key)
-    if cached is None:
-        return None
-    moment = time.monotonic()
-    cache.move_to_end(cache_key)
-    last_access[cache_key] = moment
-    return cached
-
-
-def _memory_cache_put_locked(
-    cache: OrderedDict,
-    last_access: dict[tuple, float],
-    cache_key: tuple,
-    value,
-    *,
-    max_entries: int,
-) -> None:
-    moment = time.monotonic()
-    cache[cache_key] = value
-    cache.move_to_end(cache_key)
-    last_access[cache_key] = moment
-    while len(cache) > int(max_entries):
-        stale_key, _stale_value = cache.popitem(last=False)
-        last_access.pop(stale_key, None)
+FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
+    name="fg_response",
+    log_label="[FGResponseCache]",
+    directory=_fg_response_disk_cache_dir,
+    file_path=_fg_response_disk_cache_path,
+    version=_fg_response_cache_version,
+    predecessors=_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS,
+)
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):
@@ -683,7 +613,7 @@ def _surface_sidecar_paths_for_key(
     generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
     bundle_path: str | Path | None = None,
 ) -> tuple[Path, Path]:
-    resolved_path = resolve_fg_response_bundle_path(cache_key) if bundle_path is None else Path(bundle_path)
+    resolved_path = FG_RESPONSE_FRONTIER_CACHE.serving_path(cache_key) if bundle_path is None else Path(bundle_path)
     return _surface_sidecar_paths(resolved_path, generation=generation)
 
 
@@ -698,12 +628,6 @@ def _remove_fg_response_bundle_files(bundle_path: Path) -> int:
             continue
         removed += 1
     return removed
-
-
-def _live_fg_response_bundle_path(
-    bundle_path: Path,
-) -> Path | None:
-    return bundle_path if bundle_path.exists() else None
 
 
 def _surface_sidecar_files(directory: Path) -> tuple[Path, ...]:
@@ -816,7 +740,7 @@ def compress_cache_dir_sidecars() -> None:
     no-op because no general filesystem-transparent compressor exists there. This is an external
     filesystem boundary and never changes cache semantics or the logic fingerprint.
     """
-    directory = _fg_response_disk_cache_dir()
+    directory = FG_RESPONSE_FRONTIER_CACHE.directory()
     if not directory.exists():
         return
     if sys.platform == "win32":
@@ -840,11 +764,12 @@ def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
     than guessed at, and if any unlink fails (e.g. a locked file) the marker remains unwritten so the
     next authorized prebuild retries instead of stranding the file.
     """
-    directory = _fg_response_disk_cache_dir()
+    directory = FG_RESPONSE_FRONTIER_CACHE.directory()
     if not directory.exists():
         return 0
-    compatible = frozenset(fg_response_compatible_cache_versions())
-    marker_value = _purged_version_marker_value()
+    compatible_versions = FG_RESPONSE_FRONTIER_CACHE.compatible_versions()
+    compatible = frozenset(compatible_versions)
+    marker_value = "\n".join(compatible_versions)
     marker = directory / _PURGED_VERSION_MARKER
     try:
         if marker.read_text(encoding="utf-8").strip() == marker_value:
@@ -890,24 +815,19 @@ def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
 
 
 def _save_surface_sidecar_atomic(path: Path, array: np.ndarray) -> None:
-    """Write `array` as an uncompressed C-order .npy via tmp + os.replace.
+    """Write `array` atomically as an uncompressed C-order .npy.
 
     Uncompressed at the numpy layer so the reader can `np.load(..., mmap_mode="r")` and page rows
     lazily; on-disk size is reclaimed by the bulk NTFS pass at prebuild-end (see
     `compress_cache_dir_sidecars`), which keeps the bytes small while preserving the memmap path.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp")
-    try:
+    contiguous = np.ascontiguousarray(array)
+
+    def write(tmp: Path) -> None:
         with open(tmp, "wb") as handle:
-            np_format.write_array(handle, np.ascontiguousarray(array), allow_pickle=False)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            Path(tmp).unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise
+            np_format.write_array(handle, contiguous, allow_pickle=False)
+
+    write_atomically(path, write)
 
 
 def _surface_sidecar_header(path: Path) -> tuple[tuple[int, ...], np.dtype] | None:
@@ -1018,11 +938,7 @@ def _persisted_packed_frontier_metadata(
 
 
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
-    if frontier_cache_is_ephemeral():
-        return None
-    with _frontier_cache_lock:
-        frontier = _memory_cache_get_locked(_frontier_cache, _frontier_cache_last_access, cache_key)
-        return frontier if isinstance(frontier, FgResponseFrontierResult) else None
+    return _geometry_frontier_memory.get(cache_key)
 
 
 def _frontier_is_complete(frontier: FgResponseFrontierResult | None) -> bool:
@@ -1032,49 +948,12 @@ def _frontier_is_complete(frontier: FgResponseFrontierResult | None) -> bool:
 def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
     if not frontier.first_frontier:
         raise ValueError("FG response frontier cache requires first-frontier surfaces")
-    if frontier_cache_is_ephemeral():
-        return
-    with _frontier_cache_lock:
-        _memory_cache_put_locked(
-            _frontier_cache,
-            _frontier_cache_last_access,
-            cache_key,
-            frontier,
-            max_entries=_MEMORY_CACHE_MAX,
-        )
-
-
-def _payload_memory_get(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
-    if frontier_cache_is_ephemeral():
-        return None
-    with _frontier_cache_lock:
-        payload = _memory_cache_get_locked(_payload_cache, _payload_cache_last_access, cache_key)
-        return payload if isinstance(payload, FgResponseFrontierCachePayload) else None
-
-
-def _payload_memory_put(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
-    if frontier_cache_is_ephemeral():
-        return
-    with _frontier_cache_lock:
-        _memory_cache_put_locked(
-            _payload_cache,
-            _payload_cache_last_access,
-            cache_key,
-            payload,
-            max_entries=_PAYLOAD_CACHE_MAX,
-        )
+    _geometry_frontier_memory.put(cache_key, frontier)
 
 
 def reset_fg_response_frontier_payload_cache() -> None:
-    with _frontier_cache_lock:
-        _frontier_cache.clear()
-        _frontier_cache_last_access.clear()
-        _payload_cache.clear()
-        _payload_cache_last_access.clear()
-        _bundle_array_cache.clear()
-        _bundle_array_cache_last_access.clear()
-        _scoring_bundle_cache.clear()
-        _scoring_bundle_cache_last_access.clear()
+    for memory in (_geometry_frontier_memory, _payload_memory, _bundle_array_memory, _scoring_bundle_memory):
+        memory.clear()
 
 
 def release_fg_response_song_memory(bundle_key: tuple) -> int:
@@ -1082,7 +961,7 @@ def release_fg_response_song_memory(bundle_key: tuple) -> int:
 
     Called once a song's FG scoring is complete: the ~0.5-1.5 GB surface pool it loaded is no
     longer needed for the rest of this run, so drop it from every memory tier instead of letting
-    it sit until the entry-count LRU (`_MEMORY_CACHE_MAX`/`_BUNDLE_ARRAY_CACHE_MAX`) evicts it.
+    it sit until the tier's entry-count LRU evicts it.
     Without this the surfaces accumulate one-per-scored-song and
     trip the memory guard after only a few dozen songs. Lossless: any later access rebuilds from
     the on-disk bundle.
@@ -1097,98 +976,73 @@ def release_fg_response_song_memory(bundle_key: tuple) -> int:
     prefix = tuple(bundle_key[:-1])
     if not prefix:
         return 0
-    n = len(prefix)
-    removed = 0
-    with _frontier_cache_lock:
-        for cache, last_access in (
-            (_scoring_bundle_cache, _scoring_bundle_cache_last_access),
-            (_bundle_array_cache, _bundle_array_cache_last_access),
-            (_frontier_cache, _frontier_cache_last_access),
-            (_payload_cache, _payload_cache_last_access),
-        ):
-            stale = [key for key in cache if key[:n] == prefix]
-            for key in stale:
-                cache.pop(key, None)
-                last_access.pop(key, None)
-                removed += 1
-    return removed
+    return sum(
+        memory.pop_prefix(prefix)
+        for memory in (_scoring_bundle_memory, _bundle_array_memory, _geometry_frontier_memory, _payload_memory)
+    )
 
 
 def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
     from .response_cache_serde import _pack_frontiers
     from .response_inner_host import _precompute_surface_head_coeffs
 
-    path = _fg_response_disk_cache_path(cache_key)
+    path = FG_RESPONSE_FRONTIER_CACHE.file_path(cache_key)
     surface_generation = uuid.uuid4().hex
     row_sidecar, pattern_sidecar = _surface_sidecar_paths(path, generation=surface_generation)
-    tmp: Path | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz")
-        frontiers = payload.frontiers
-        frontier_id_by_object = {id(frontier): idx for idx, frontier in enumerate(frontiers)}
-        sorted_items = sorted(payload.frontier_by_key.items())
-        packed_frontiers = _pack_frontiers(frontiers)
-        first_surface_pool = np.ascontiguousarray(
-            np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
-        )
-        surface_row_count = int(first_surface_pool.shape[0])
-        stat_keys = np.asarray([key for key, _frontier in sorted_items], dtype=np.int32)
-        first_surface_head_len = min(int(payload.total_notes), 100)
-        # Pattern identity is established from every exact mask word before coefficient work.
-        # Head coefficients depend only on those words plus head_len, so computing them for the
-        # unique table is identical to computing N logical rows and selecting each pattern's first
-        # row, while deleting the N x 4 int32 + uint16 coefficient staging arrays.
-        first_surface_rows, first_surface_pattern_words = intern_surface_row_words(first_surface_pool)
-        first_surface_pattern_coeffs = _precompute_surface_head_coeffs(
-            first_surface_pattern_words,
-            head_len=int(first_surface_head_len),
-        )
-        first_surface_patterns = pack_surface_patterns(
-            first_surface_pattern_words,
-            first_surface_pattern_coeffs,
-        )
-        surface_pattern_count = int(first_surface_patterns.shape[0])
-        # Publish immutable generation sidecars first, then atomically replace the sole metadata
-        # pointer. Readers that already opened the old metadata keep resolving the old immutable
-        # files; an interruption before the final replace leaves that generation fully readable.
-        _save_surface_sidecar_atomic(row_sidecar, first_surface_rows)
-        _save_surface_sidecar_atomic(pattern_sidecar, first_surface_patterns)
-        _save_npz_fast_compressed(
-            tmp,
-            {
-                "version": np.asarray(_fg_response_cache_version()),
-                _SURFACE_GENERATION_ARRAY_NAME: np.asarray(surface_generation),
-                "stat_keys": np.asfortranarray(_as_uint8_exact("FG response stat keys", stat_keys)),
-                "frontier_ids": np.asarray(
-                    [frontier_id_by_object[id(frontier)] for _key, frontier in sorted_items],
-                    dtype=np.int32,
-                ),
-                "raw_fill_by_ff": np.asarray(payload.raw_fill_by_ff, dtype=np.float64),
-                "non_fever_base_by_ff": np.asarray(payload.non_fever_base_by_ff, dtype=np.int32),
-                "real_time_by_ft": np.asarray(payload.real_time_by_ft, dtype=np.float64),
-                "total_notes": np.asarray(int(payload.total_notes), dtype=np.int32),
-                "long_notes": np.asarray(int(payload.long_notes), dtype=np.int32),
-                "use_forced_great_timing": np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
-                "first_surface_head_len": _as_uint8_exact(
-                    "FG response first surface head length",
-                    np.asarray(int(first_surface_head_len), dtype=np.int32),
-                ),
-                **_persisted_packed_frontier_metadata(
-                    packed_frontiers,
-                    surface_row_count=surface_row_count,
-                    surface_pattern_count=surface_pattern_count,
-                ),
-            },
-        )
-        tmp.replace(path)
-    except Exception:
-        if tmp is not None:
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
-        raise
+    frontiers = payload.frontiers
+    frontier_id_by_object = {id(frontier): idx for idx, frontier in enumerate(frontiers)}
+    sorted_items = sorted(payload.frontier_by_key.items())
+    packed_frontiers = _pack_frontiers(frontiers)
+    first_surface_pool = np.ascontiguousarray(
+        np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
+    )
+    surface_row_count = int(first_surface_pool.shape[0])
+    stat_keys = np.asarray([key for key, _frontier in sorted_items], dtype=np.int32)
+    first_surface_head_len = min(int(payload.total_notes), 100)
+    # Pattern identity is established from every exact mask word before coefficient work.
+    # Head coefficients depend only on those words plus head_len, so computing them for the
+    # unique table is identical to computing N logical rows and selecting each pattern's first
+    # row, while deleting the N x 4 int32 + uint16 coefficient staging arrays.
+    first_surface_rows, first_surface_pattern_words = intern_surface_row_words(first_surface_pool)
+    first_surface_pattern_coeffs = _precompute_surface_head_coeffs(
+        first_surface_pattern_words,
+        head_len=int(first_surface_head_len),
+    )
+    first_surface_patterns = pack_surface_patterns(
+        first_surface_pattern_words,
+        first_surface_pattern_coeffs,
+    )
+    surface_pattern_count = int(first_surface_patterns.shape[0])
+    # Publish immutable generation sidecars first, then atomically replace the sole metadata
+    # pointer. Readers that already opened the old metadata keep resolving the old immutable
+    # files; an interruption before the final replace leaves that generation fully readable.
+    _save_surface_sidecar_atomic(row_sidecar, first_surface_rows)
+    _save_surface_sidecar_atomic(pattern_sidecar, first_surface_patterns)
+    metadata = {
+        "version": np.asarray(FG_RESPONSE_FRONTIER_CACHE.version()),
+        _SURFACE_GENERATION_ARRAY_NAME: np.asarray(surface_generation),
+        "stat_keys": np.asfortranarray(_as_uint8_exact("FG response stat keys", stat_keys)),
+        "frontier_ids": np.asarray(
+            [frontier_id_by_object[id(frontier)] for _key, frontier in sorted_items],
+            dtype=np.int32,
+        ),
+        "raw_fill_by_ff": np.asarray(payload.raw_fill_by_ff, dtype=np.float64),
+        "non_fever_base_by_ff": np.asarray(payload.non_fever_base_by_ff, dtype=np.int32),
+        "real_time_by_ft": np.asarray(payload.real_time_by_ft, dtype=np.float64),
+        "total_notes": np.asarray(int(payload.total_notes), dtype=np.int32),
+        "long_notes": np.asarray(int(payload.long_notes), dtype=np.int32),
+        "use_forced_great_timing": np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
+        "first_surface_head_len": _as_uint8_exact(
+            "FG response first surface head length",
+            np.asarray(int(first_surface_head_len), dtype=np.int32),
+        ),
+        **_persisted_packed_frontier_metadata(
+            packed_frontiers,
+            surface_row_count=surface_row_count,
+            surface_pattern_count=surface_pattern_count,
+        ),
+    }
+    write_atomically(path, lambda tmp: _save_npz_fast_compressed(tmp, metadata))
 
 
 def _save_npz_fast_compressed(path: Path, arrays: dict[str, np.ndarray]) -> None:
@@ -1207,13 +1061,13 @@ def _save_npz_fast_compressed(path: Path, arrays: dict[str, np.ndarray]) -> None
 def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     from .response_cache_serde import _unpack_frontiers
 
-    path = _live_fg_response_bundle_path(resolve_fg_response_bundle_path(cache_key))
+    path = FG_RESPONSE_FRONTIER_CACHE.readable_path(cache_key)
     if path is None:
         return None
     try:
         with np.load(path, allow_pickle=False) as data:
             version = str(data["version"].item())
-            if not _fg_response_cache_version_is_compatible(version):
+            if version not in FG_RESPONSE_FRONTIER_CACHE.compatible_versions():
                 return None
             surface_generation = _surface_generation_from_bundle_data(data)
             row_sidecar, pattern_sidecar = _surface_sidecar_paths(path, generation=surface_generation)
@@ -1255,8 +1109,7 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
 
 def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) -> tuple[int, int, int] | None:
     requested = set(normalize_fg_response_stat_keys(keys))
-    path = _live_fg_response_bundle_path(path)
-    if path is None:
+    if not path.exists():
         return None
     required = {"version", *_SCORING_BUNDLE_ARRAY_NAMES}
     legacy_required = required - {_SURFACE_GENERATION_ARRAY_NAME}
@@ -1269,7 +1122,7 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
             if files not in (required, legacy_required):
                 return None
             version = str(data["version"].item())
-            if not _fg_response_cache_version_is_compatible(version):
+            if version not in FG_RESPONSE_FRONTIER_CACHE.compatible_versions():
                 return None
             surface_generation = _surface_generation_from_bundle_data(data)
             row_sidecar, pattern_sidecar = _surface_sidecar_paths(path, generation=surface_generation)
@@ -1344,29 +1197,26 @@ def _payload_disk_info_if_complete(
     cache_key: tuple,
     keys: Iterable[tuple[int, int]],
 ) -> tuple[int, int, int] | None:
-    return _payload_file_info_if_complete(resolve_fg_response_bundle_path(cache_key), keys)
+    return _payload_file_info_if_complete(FG_RESPONSE_FRONTIER_CACHE.serving_path(cache_key), keys)
 
 
 def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dict[str, np.ndarray]:
     requested = tuple(dict.fromkeys(str(name) for name in names))
     if not requested:
         raise ValueError("FG response frontier bundle array request was empty")
-    ephemeral = frontier_cache_is_ephemeral()
     snapshot_names = tuple(
         dict.fromkeys((*requested, _SURFACE_GENERATION_ARRAY_NAME, _SURFACE_BUNDLE_PATH_ARRAY_NAME))
     )
-    if not ephemeral:
-        with _frontier_cache_lock:
-            cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
-            if cached is not None and all(name in cached for name in snapshot_names):
-                return {name: cached[name] for name in requested}
-    bundle_path = resolve_fg_response_bundle_path(cache_key)
-    path = _live_fg_response_bundle_path(bundle_path)
+    cached = _bundle_array_memory.get(cache_key)
+    if cached is not None and all(name in cached for name in snapshot_names):
+        return {name: cached[name] for name in requested}
+    path = FG_RESPONSE_FRONTIER_CACHE.readable_path(cache_key)
     if path is None:
-        raise ValueError(f"FG response frontier bundle cache is missing: {bundle_path}")
+        missing_path = FG_RESPONSE_FRONTIER_CACHE.file_path(cache_key)
+        raise ValueError(f"FG response frontier bundle cache is missing: {missing_path}")
     with np.load(path, allow_pickle=False) as data:
         version = str(data["version"].item())
-        if not _fg_response_cache_version_is_compatible(version):
+        if version not in FG_RESPONSE_FRONTIER_CACHE.compatible_versions():
             raise ValueError("FG response frontier bundle cache version is invalid")
         missing = [
             name
@@ -1384,26 +1234,18 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         }
         loaded[_SURFACE_GENERATION_ARRAY_NAME] = np.asarray(surface_generation or "")
         loaded[_SURFACE_BUNDLE_PATH_ARRAY_NAME] = np.asarray(str(path))
-    if ephemeral:
-        return {name: loaded[name] for name in requested}
-    with _frontier_cache_lock:
-        cached = _bundle_array_cache.get(cache_key)
-        cached_generation = None
-        if cached is not None and _SURFACE_GENERATION_ARRAY_NAME in cached:
-            cached_generation = _normalize_surface_generation(cached[_SURFACE_GENERATION_ARRAY_NAME])
-        cached_path = None
-        if cached is not None and _SURFACE_BUNDLE_PATH_ARRAY_NAME in cached:
-            cached_path = str(np.asarray(cached[_SURFACE_BUNDLE_PATH_ARRAY_NAME]).item())
-        if cached is None or cached_generation != surface_generation or cached_path != str(path):
-            cached = {}
-            _bundle_array_cache[cache_key] = cached
-        cached.update(loaded)
-        _bundle_array_cache_last_access[cache_key] = time.monotonic()
-        while len(_bundle_array_cache) > int(_BUNDLE_ARRAY_CACHE_MAX):
-            stale_key, _stale_value = _bundle_array_cache.popitem(last=False)
-            _bundle_array_cache_last_access.pop(stale_key, None)
-        _bundle_array_cache.move_to_end(cache_key)
-        return {name: cached[name] for name in requested}
+    # Arrays read from the same file generation join the cached ones; any other file replaces them.
+    cached = _bundle_array_memory.get(cache_key)
+    if (
+        cached is not None
+        and _SURFACE_GENERATION_ARRAY_NAME in cached
+        and _SURFACE_BUNDLE_PATH_ARRAY_NAME in cached
+        and _normalize_surface_generation(cached[_SURFACE_GENERATION_ARRAY_NAME]) == surface_generation
+        and str(np.asarray(cached[_SURFACE_BUNDLE_PATH_ARRAY_NAME]).item()) == str(path)
+    ):
+        loaded = {**cached, **loaded}
+    _bundle_array_memory.put(cache_key, loaded)
+    return {name: loaded[name] for name in requested}
 
 
 def _normalize_surface_ranges(ranges: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
@@ -1572,29 +1414,5 @@ def load_first_surface_scoring_patterns(
 
 
 def _invalidate_bundle_array_views(bundle_key: tuple) -> None:
-    with _frontier_cache_lock:
-        _bundle_array_cache.pop(bundle_key, None)
-        _bundle_array_cache_last_access.pop(bundle_key, None)
-        _scoring_bundle_cache.pop(bundle_key, None)
-        _scoring_bundle_cache_last_access.pop(bundle_key, None)
-
-
-def _scoring_bundle_memory_get(bundle_key: tuple) -> FgResponseFrontierScoringBundle | None:
-    if frontier_cache_is_ephemeral():
-        return None
-    with _frontier_cache_lock:
-        cached = _memory_cache_get_locked(_scoring_bundle_cache, _scoring_bundle_cache_last_access, bundle_key)
-        return cached if isinstance(cached, FgResponseFrontierScoringBundle) else None
-
-
-def _scoring_bundle_memory_put(bundle_key: tuple, scoring_bundle: FgResponseFrontierScoringBundle) -> None:
-    if frontier_cache_is_ephemeral():
-        return
-    with _frontier_cache_lock:
-        _memory_cache_put_locked(
-            _scoring_bundle_cache,
-            _scoring_bundle_cache_last_access,
-            bundle_key,
-            scoring_bundle,
-            max_entries=_BUNDLE_ARRAY_CACHE_MAX,
-        )
+    _bundle_array_memory.pop(bundle_key)
+    _scoring_bundle_memory.pop(bundle_key)

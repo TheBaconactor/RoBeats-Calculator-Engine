@@ -55,7 +55,7 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
     monkeypatch.setattr(timeline, "build_timeline_frontier_grid_payload", _build)
     monkeypatch.setattr(
         timeline,
-        "_save_frontier_payload_to_disk",
+        "_save_frontier_payload",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("warmup must not persist")),
     )
     monkeypatch.setattr(timeline, "precompute_timeline_gpu", _upload)

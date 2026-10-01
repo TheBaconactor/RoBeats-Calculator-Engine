@@ -51,7 +51,7 @@ def test_inner_reductions_reuse_exact_persisted_frontiers(tmp_path, monkeypatch,
         _song(), _varying_ref_arrays(), stat_keys=keys,
     )
 
-    assert response_cache_store.resolve_fg_response_bundle_path(scoring.cache_key) == previous_path
+    assert response_cache_store.FG_RESPONSE_FRONTIER_CACHE.serving_path(scoring.cache_key) == previous_path
     assert response_cache_store.purge_stale_version_cache_files() == 0
     assert previous_path.exists()
 
@@ -60,4 +60,4 @@ def test_inner_reduction_cache_ratification_does_not_cover_future_changes(monkey
     changed_version = REDUCED_VERSION + "-changed-producer"
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", changed_version)
 
-    assert response_cache_store.fg_response_compatible_cache_versions() == (changed_version,)
+    assert response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions() == (changed_version,)

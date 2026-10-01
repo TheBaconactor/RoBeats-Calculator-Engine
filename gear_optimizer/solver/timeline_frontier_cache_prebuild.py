@@ -111,9 +111,9 @@ def ordered_frontier_cache_song_paths(
 
 
 def _manifest_path() -> Path:
-    from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
+    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
 
-    return _frontier_disk_cache_dir() / _MANIFEST_FILE_NAME
+    return TIMELINE_FRONTIER_CACHE.directory() / _MANIFEST_FILE_NAME
 
 
 def _cache_version() -> str:
@@ -174,19 +174,6 @@ def _apply_manifest_results(*, plan, results: Iterable[object]) -> int:
         results=results,
         cache_file_validator=timeline_frontier_cache_file_is_complete,
     )
-
-
-def cleanup_timeline_frontier_cache_temp_files(cache_dir: str | os.PathLike[str] | None = None) -> int:
-    from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
-
-    root = Path(cache_dir) if cache_dir is not None else _frontier_disk_cache_dir()
-    if not root.exists():
-        return 0
-    removed = 0
-    for path in root.glob("*.tmp.npz"):
-        path.unlink(missing_ok=True)
-        removed += 1
-    return int(removed)
 
 
 def build_timeline_frontier_cache_for_path(
@@ -335,7 +322,7 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
     build_missing: bool = True,
     timing_mode: str = "perfect_window",
 ) -> TimelineFrontierCachePrebuildSummary:
-    from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
+    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
 
     started = time.perf_counter()
     queue_paths = [str(item[0]) for item in song_queue if isinstance(item, tuple) and item]
@@ -362,7 +349,7 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
 
     # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
     # below -- which now fast-hits everything this process wrote -- instead of duplicating the build.
-    with FrontierBuildLock(_frontier_disk_cache_dir(), label="timeline"):
+    with FrontierBuildLock(TIMELINE_FRONTIER_CACHE.directory(), label="timeline"):
         manifest_plan = _build_manifest_plan(paths, curves, timing_mode=timing_mode)
         manifest_hits = int(manifest_plan.hit_count)
         if manifest_hits > 0:
@@ -372,9 +359,7 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
                 int(manifest_plan.total_paths),
             )
 
-        removed_tmp = cleanup_timeline_frontier_cache_temp_files()
-        if int(removed_tmp) > 0:
-            logger.info("[TimelineCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
+        TIMELINE_FRONTIER_CACHE.remove_temp_files()
 
         if not manifest_plan.missing_paths:
             return TimelineFrontierCachePrebuildSummary(

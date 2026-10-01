@@ -768,7 +768,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     # bundles do not contain the exact cross-lane activation schedule witness.
     current_version = "fg-response-frontier-visible-first-v30+logic-6126c01d035d"
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
-    compatible_versions = response_cache_store.fg_response_compatible_cache_versions()
+    compatible_versions = response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()
     assert compatible_versions[0] == current_version
     assert compatible_versions[1:] == (
         "fg-response-frontier-visible-first-v30+logic-87b79fd8a257",
@@ -811,7 +811,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
 
     assert reused.cache_source == "disk"
     assert Path(reused.disk_path) == legacy_path
-    assert response_cache_store.resolve_fg_response_bundle_path(scoring.cache_key) == legacy_path
+    assert response_cache_store.FG_RESPONSE_FRONTIER_CACHE.serving_path(scoring.cache_key) == legacy_path
     assert response_cache_store.purge_stale_version_cache_files() == 0
     assert legacy_path.exists()
 
@@ -821,7 +821,7 @@ def test_current_fg_payload_cleanup_reuses_issue161_frontier_bytes() -> None:
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
     assert current_version == "fg-response-frontier-visible-first-v31+logic-6d2c269a5b07"
-    assert response_cache_store.fg_response_compatible_cache_versions() == (
+    assert response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions() == (
         current_version,
         "fg-response-frontier-visible-first-v31+logic-41f36c4647fe",
         "fg-response-frontier-visible-first-v31+logic-3e63488abfec",
@@ -838,8 +838,8 @@ def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
     response_cache.reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
     current_version = "fg-response-frontier-visible-first-v31+logic-31fb6828e146"
-    monkeypatch.setattr(response_cache_store, "_fg_response_cache_version", lambda: current_version)
-    predecessor = response_cache_store.fg_response_compatible_cache_versions()[1]
+    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    predecessor = response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()[1]
 
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", predecessor)
     legacy = response_cache.build_or_load_response_frontier_payload(
@@ -873,7 +873,7 @@ def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
 
     assert reused.cache_source == "disk"
     assert Path(reused.disk_path) == legacy_path
-    assert response_cache_store.resolve_fg_response_bundle_path(scoring.cache_key) == legacy_path
+    assert response_cache_store.FG_RESPONSE_FRONTIER_CACHE.serving_path(scoring.cache_key) == legacy_path
     assert response_cache_store.purge_stale_version_cache_files() == 0
     assert legacy_path.exists()
 
@@ -919,7 +919,7 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     _plant("stale_b", "fg-response-frontier-legacy-v2")
     _plant("stale_c", "fg-response-frontier-legacy-v1", sidecars=False)  # sidecars already evicted
     _plant("current", _FG_RESPONSE_CACHE_VERSION)
-    compatible_predecessors = store.fg_response_compatible_cache_versions()[1:]
+    compatible_predecessors = store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()[1:]
     for index, compatible_predecessor in enumerate(compatible_predecessors):
         _plant(f"compatible_{index}", compatible_predecessor)
     _plant("noversion", None)  # missing version field: must be kept, never guessed stale
@@ -954,7 +954,7 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     assert {p.name for p in tmp_path.iterdir()} == expected_names
     assert (
         (tmp_path / store._PURGED_VERSION_MARKER).read_text(encoding="utf-8").strip()
-        == store._purged_version_marker_value()
+        == "\n".join(store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions())
     )
     # The marker gates the rescan: a second call short-circuits without re-reading bundles.
     assert store.purge_stale_version_cache_files() == 0
@@ -1275,7 +1275,7 @@ def test_fg_response_frontier_failed_publish_keeps_previous_generation_readable(
         stat_keys=((0, 0),),
     )
     bundle_key = response_cache.fg_response_frontier_bundle_cache_key(_song(), _varying_ref_arrays())
-    bundle_path = response_cache.resolve_fg_response_bundle_path(bundle_key)
+    bundle_path = store.FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)
     previous_sidecars = store._surface_sidecar_paths(bundle_path)
     previous_bundle = store._load_payload(bundle_key)
     assert previous_bundle is not None
@@ -2166,24 +2166,24 @@ def test_release_fg_response_song_memory_evicts_only_target_song():
     store.reset_fg_response_frontier_payload_cache()
     try:
         # Values are placeholders: release() evicts purely by tuple-prefix, not value type.
-        store._scoring_bundle_cache[a_bundle] = object()
-        store._scoring_bundle_cache[b_bundle] = object()
-        store._bundle_array_cache[a_bundle] = {}
-        store._frontier_cache[a_geo] = object()
-        store._frontier_cache[b_geo] = object()
-        store._payload_cache[a_payload] = object()
+        store._scoring_bundle_memory.put(a_bundle, object())
+        store._scoring_bundle_memory.put(b_bundle, object())
+        store._bundle_array_memory.put(a_bundle, {})
+        store._geometry_frontier_memory.put(a_geo, object())
+        store._geometry_frontier_memory.put(b_geo, object())
+        store._payload_memory.put(a_payload, object())
 
         removed = store.release_fg_response_song_memory(a_bundle)
 
         # Song A: scoring bundle + slim metadata + frontier + payload = 4 entries.
         assert removed == 4
-        assert a_bundle not in store._scoring_bundle_cache
-        assert a_bundle not in store._bundle_array_cache
-        assert a_geo not in store._frontier_cache
-        assert a_payload not in store._payload_cache
+        assert a_bundle not in store._scoring_bundle_memory
+        assert a_bundle not in store._bundle_array_memory
+        assert a_geo not in store._geometry_frontier_memory
+        assert a_payload not in store._payload_memory
         # Song B is a different prefix and must survive untouched.
-        assert b_bundle in store._scoring_bundle_cache
-        assert b_geo in store._frontier_cache
+        assert b_bundle in store._scoring_bundle_memory
+        assert b_geo in store._geometry_frontier_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
 
@@ -2322,9 +2322,9 @@ def test_ensure_response_frontier_cache_releases_song_memory_after_cold_build(mo
 
     def _fake_build(song, curves, *, stat_keys):
         built.append(tuple(stat_keys))
-        store._payload_cache[a_bundle] = object()
-        store._payload_cache[a_payload] = object()
-        store._payload_cache[b_bundle] = object()
+        store._payload_memory.put(a_bundle, object())
+        store._payload_memory.put(a_payload, object())
+        store._payload_memory.put(b_bundle, object())
 
     monkeypatch.setattr(
         response_cache,
@@ -2337,9 +2337,9 @@ def test_ensure_response_frontier_cache_releases_song_memory_after_cold_build(mo
         prebuild.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
 
         assert built == [((3, 5),)]
-        assert a_bundle not in store._payload_cache
-        assert a_payload not in store._payload_cache
-        assert b_bundle in store._payload_cache
+        assert a_bundle not in store._payload_memory
+        assert a_payload not in store._payload_memory
+        assert b_bundle in store._payload_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
 
@@ -2370,9 +2370,9 @@ def test_ensure_response_frontier_cache_warm_hit_keeps_memos(monkeypatch) -> Non
     )
     store.reset_fg_response_frontier_payload_cache()
     try:
-        store._scoring_bundle_cache[a_bundle] = object()
+        store._scoring_bundle_memory.put(a_bundle, object())
         prebuild.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
-        assert a_bundle in store._scoring_bundle_cache
+        assert a_bundle in store._scoring_bundle_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
 
@@ -2388,7 +2388,7 @@ def test_ensure_response_frontier_cache_releases_on_build_failure(monkeypatch) -
     a_payload = fg_response_frontier_payload_cache_key(song, ref_a, [(3, 5)])
 
     def _failing_build(*_args, **_kwargs):
-        store._payload_cache[a_payload] = object()
+        store._payload_memory.put(a_payload, object())
         raise ValueError("simulated cold build failure")
 
     monkeypatch.setattr(
@@ -2401,7 +2401,7 @@ def test_ensure_response_frontier_cache_releases_on_build_failure(monkeypatch) -
     try:
         with pytest.raises(ValueError, match="simulated cold build failure"):
             prebuild.ensure_response_frontier_cache_for_song(song, ref_a, stat_keys=((3, 5),))
-        assert a_payload not in store._payload_cache
+        assert a_payload not in store._payload_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
 
@@ -2415,16 +2415,16 @@ def _seed_fixed_timing_song_memos(store, song, refs, other_song) -> tuple[list[t
 
     a_bundle = fg_response_frontier_bundle_cache_key(song, refs)
     seeded = [
-        (store._scoring_bundle_cache, a_bundle),
-        (store._bundle_array_cache, a_bundle),
-        (store._frontier_cache, fg_response_frontier_geometry_cache_key(song, refs, ft_stat=3, ff_stat=5)),
-        (store._payload_cache, fg_response_frontier_payload_cache_key(song, refs, [(3, 5)])),
+        (store._scoring_bundle_memory, a_bundle),
+        (store._bundle_array_memory, a_bundle),
+        (store._geometry_frontier_memory, fg_response_frontier_geometry_cache_key(song, refs, ft_stat=3, ff_stat=5)),
+        (store._payload_memory, fg_response_frontier_payload_cache_key(song, refs, [(3, 5)])),
     ]
     for cache, key in seeded:
-        cache[key] = object()
+        cache.put(key, object())
     b_bundle = fg_response_frontier_bundle_cache_key(other_song, refs)
     assert a_bundle[:-1] != b_bundle[:-1]
-    store._scoring_bundle_cache[b_bundle] = object()
+    store._scoring_bundle_memory.put(b_bundle, object())
     return seeded, b_bundle
 
 
@@ -2457,7 +2457,7 @@ def test_fixed_timing_fg_replays_release_song_memory_on_failure(monkeypatch) -> 
         assert len(seeded) == 4
         for cache, key in seeded:
             assert key not in cache
-        assert other[0] in store._scoring_bundle_cache
+        assert other[0] in store._scoring_bundle_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
 
@@ -2498,6 +2498,6 @@ def test_fixed_timing_fg_replays_release_song_memory_on_success(monkeypatch) -> 
         assert replays == [{"surface": "surface-0", "force": {"paired_base": 100}}]
         for cache, key in seeded:
             assert key not in cache
-        assert other[0] in store._scoring_bundle_cache
+        assert other[0] in store._scoring_bundle_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()

@@ -154,13 +154,6 @@ _FG_DP_SOURCES = (
 _FG_RESPONSE_CACHE_VERSION = (
     f"{_FG_RESPONSE_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_FG_DP_SOURCES)}"
 )
-_MEMORY_CACHE_MAX = 4096
-_PAYLOAD_CACHE_MAX = 8
-# Sized to cover the native in-flight prep window (prep_limit tops out around 36): a
-# bundle's slim metadata arrays are hydrated at prep and re-read at the fused GA turn
-# 10-30 songs later; a 2-entry LRU thrashed and forced an owner-thread npz re-open per
-# song. Entries are ~0.2-1MB (metadata members only, never the surface pools).
-_BUNDLE_ARRAY_CACHE_MAX = 40
 _BUNDLE_KEY_MARKER = "all-stat-keys"
 _SURFACE_GENERATION_ARRAY_NAME = "surface_generation"
 _SURFACE_BUNDLE_PATH_ARRAY_NAME = "_surface_bundle_path"

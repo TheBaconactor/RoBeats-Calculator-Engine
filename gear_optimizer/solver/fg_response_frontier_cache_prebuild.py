@@ -57,14 +57,12 @@ def _maintain_fg_response_frontier_cache_under_lock(
     *, authorize_destructive_rotation: bool = False
 ) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        cleanup_fg_response_frontier_cache_temp_files,
         compress_cache_dir_sidecars,
         purge_stale_version_cache_files,
     )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
-    removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
-    if int(removed_tmp) > 0:
-        logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
+    FG_RESPONSE_FRONTIER_CACHE.remove_temp_files()
 
     removed_stale = purge_stale_version_cache_files(
         authorize_rotation=bool(authorize_destructive_rotation)
@@ -312,9 +310,9 @@ def _build_fg_response_frontier_cache_for_path_shared(
     )
 
 def _manifest_path() -> Path:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import _fg_response_disk_cache_dir
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
-    return _fg_response_disk_cache_dir() / _MANIFEST_FILE_NAME
+    return FG_RESPONSE_FRONTIER_CACHE.directory() / _MANIFEST_FILE_NAME
 
 
 def _cache_version() -> str:
@@ -337,11 +335,11 @@ def _derived_bundle_cache_file(
     """Parse one chart and return the cache file its CURRENT bundle key derives (drift probe)."""
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import resolve_fg_response_bundle_path
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
     from gear_optimizer.solver.timing_envelope import time_song
 
     song = time_song(load_chart(Path(song_path)), timing_mode)
-    return str(resolve_fg_response_bundle_path(fg_response_frontier_bundle_cache_key(song, curves)))
+    return str(FG_RESPONSE_FRONTIER_CACHE.serving_path(fg_response_frontier_bundle_cache_key(song, curves)))
 
 
 def _manifest_records_current_cache_version() -> bool:
@@ -786,10 +784,8 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
     build_missing: bool = True,
     timing_mode: str = "perfect_window",
 ) -> FgResponseFrontierCachePrebuildSummary:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        _fg_response_disk_cache_dir,
-        compress_cache_dir_sidecars,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import compress_cache_dir_sidecars
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
     started = time.perf_counter()
     stat_keys = all_response_stat_keys()
@@ -820,7 +816,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
     # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
     # below -- which now fast-hits everything this process wrote -- instead of duplicating the
     # multi-GB cold build and multiplying peak RAM.
-    with FrontierBuildLock(_fg_response_disk_cache_dir(), label="fg_response"):
+    with FrontierBuildLock(FG_RESPONSE_FRONTIER_CACHE.directory(), label="fg_response"):
         manifest_plan = _build_manifest_plan(
             paths, curves, stat_keys=stat_keys, timing_mode=timing_mode
         )

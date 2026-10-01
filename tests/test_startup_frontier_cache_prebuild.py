@@ -415,10 +415,6 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
         "FrontierBuildLock",
         _unexpected_lock,
     )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
     compression_calls = 0
 
     def _compress() -> None:
@@ -497,10 +493,6 @@ def test_complete_manifest_skips_maintenance_with_uncompressed_sidecars(
 
     monkeypatch.setattr(prebuild, "FrontierBuildLock", _unexpected_lock)
     monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
-    monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
         lambda **_kwargs: 0,
     )
@@ -560,10 +552,6 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
     monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
     monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: False)
     monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
         lambda **_kwargs: 0,
@@ -630,10 +618,6 @@ def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkey
     monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
     monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
     monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
         lambda **_kwargs: 0,
