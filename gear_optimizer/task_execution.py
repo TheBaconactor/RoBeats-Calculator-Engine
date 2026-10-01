@@ -28,7 +28,7 @@ class TaskExecutionMixin:
                     completed = int(self._runtime_completed_count or 0)
                     total = int(self._runtime_total_count or 0)
                     if total <= 0:
-                        total = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
+                        total = len(tasks)
                     self._last_completed_tasks = max(0, int(completed))
                     self._last_total_tasks = max(0, int(total))
                 except (TypeError, ValueError):
@@ -51,7 +51,7 @@ class TaskExecutionMixin:
             if not tasks:
                 return
 
-            total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
+            total_tasks = len(tasks)
 
             post_queue = None
             post_proc = None

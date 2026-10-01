@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,8 +38,6 @@ class FgMaterializationRequest:
 @dataclass(frozen=True, slots=True)
 class FgMaterializationResult:
     results: tuple[tuple[SolvedLoadout, SolvedFg], ...]  # every evaluated FG result, best FG score first
-    wall_seconds: float
-    cpu_seconds: float
 
 
 def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
@@ -98,15 +95,9 @@ def materialize_fg_request(request: FgMaterializationRequest) -> FgMaterializati
 
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
-    wall_t0 = time.perf_counter()
-    cpu_t0 = time.process_time()
     try:
         results = FgResponseScoringService.materialize_from_owner_score_map(request.plan, request.owner_score_map)
-        return FgMaterializationResult(
-            results=tuple(results),
-            wall_seconds=max(0.0, time.perf_counter() - wall_t0),
-            cpu_seconds=max(0.0, time.process_time() - cpu_t0),
-        )
+        return FgMaterializationResult(results=tuple(results))
     finally:
         # Geometry/frontier memo entries are useful only inside this song's materialization.
         # Drop them before the worker accepts another song so a long live run stays bounded.

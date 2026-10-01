@@ -248,7 +248,6 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
         meta_secondary_color="Flow",
         db_key="song-db-key",
         minis_by_name={},
-        effective_difficulty="Hard",
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -296,7 +295,6 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
         meta_secondary_color="Flow",
         db_key="song-db-key",
         minis_by_name={},
-        effective_difficulty="Hard",
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -347,7 +345,6 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
         meta_secondary_color="Flow",
         db_key="song-db-key",
         minis_by_name={},
-        effective_difficulty="Hard",
         registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
@@ -404,7 +401,6 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
         meta_secondary_color="Flow",
         db_key="song-db-key",
         minis_by_name={},
-        effective_difficulty="Hard",
         registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
@@ -439,7 +435,6 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
         meta_secondary_color="Flow",
         db_key="song-db-key",
         minis_by_name={},
-        effective_difficulty="Hard",
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -482,7 +477,6 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
         meta_secondary_color="Flow",
         db_key="song-db-key",
         minis_by_name={},
-        effective_difficulty="Hard",
         registry=None,
         curves=synthetic_curves({}),
     )
@@ -490,7 +484,6 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
     stages.prepare_fg_static_sync(song)
 
     assert song.runtime.fg.fg_response_scoring_bundle is bundle
-    assert song.runtime.fg.fg_static_prep_done is True
     assert seen == {"session_prune": 1, "stat_keys": canonical_keys}
 
 

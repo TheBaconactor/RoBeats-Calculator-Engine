@@ -201,7 +201,6 @@ class QueueTaskCoordinator:
             task_diff: str,
             *,
             repeat_ctx: dict | None = None,
-            repeat_bundle: dict | None = None,
         ) -> None:
             repeat_index = 0
             repeat_total = 0
@@ -213,9 +212,6 @@ class QueueTaskCoordinator:
                 seed_raw = repeat_ctx.get("ga_seed")
                 ga_seed = int(seed_raw) if seed_raw is not None else None
                 extras.append(repeat_ctx)
-            if repeat_bundle is not None:
-                repeat_total = int(repeat_bundle.get("repeat_total") or repeat_total or 0)
-                extras.append(repeat_bundle)
             job = SongJob(
                 file_path=fp,
                 song_name=str(found_song_name or ""),
@@ -223,8 +219,6 @@ class QueueTaskCoordinator:
                 repeat_index=max(0, int(repeat_index)),
                 repeat_total=max(0, int(repeat_total)),
                 ga_seed=ga_seed,
-                repeat_bundle=repeat_bundle is not None,
-                queue_source="app_prepare_tasks",
             )
             tasks.append(task_tuple_from_job_context(job, run_context, *extras))
 

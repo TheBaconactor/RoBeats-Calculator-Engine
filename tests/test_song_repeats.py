@@ -2,7 +2,6 @@ from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.settings import RunSettings
 from gear_optimizer.domain.jobs import (
     TASK_FIXED_FIELD_COUNT,
-    extract_repeat_bundle,
     extract_repeat_context,
     task_queue_label,
 )

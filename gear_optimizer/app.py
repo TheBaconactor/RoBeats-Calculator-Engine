@@ -18,9 +18,6 @@ from gear_optimizer.core.memory import (
     restart_process_for_memory_guard,
     MEMORY_GUARD_RESUME_FILE,
 )
-from gear_optimizer.domain.jobs import (
-    effective_task_count,
-)
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
 from gear_optimizer.client_update import update_and_restart_client
@@ -262,8 +259,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 gears,
                 minis,
             )
-            queued_tasks = self._effective_total_tasks(tasks)
-            self._start_progress(queued_tasks)
+            self._start_progress(len(tasks))
             self._execute_tasks(tasks, memory_resume_tracker)
             memory_guard_restart = self._memory_guard_restart_needed(memory_resume_tracker)
         except KeyboardInterrupt:
@@ -362,16 +358,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         minis,
     ):
         return self._queue_task_coordinator().prepare_tasks(song_queue, run, curves, gears, minis)
-
-    @staticmethod
-    def _effective_total_tasks(tasks: list) -> int:
-        """
-        Compute the logical "task" count used for progress + throughput.
-        - Non-bundled repeats: each queued tuple is already one task => `len(tasks)`.
-        - Bundled repeats: each queued tuple expands into N repeat runs;
-          count those runs so the UI doesn't look stuck at 0 until the entire bundle completes.
-        """
-        return effective_task_count(tasks)
 
     def _fatal_gpu_errors_enabled(self) -> bool:
         return settings.service_mode()

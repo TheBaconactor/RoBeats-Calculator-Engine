@@ -52,7 +52,6 @@ def run_ga(song: Any, executor: Any) -> dict:
 
     song.runtime.song_slot = _GA_SLOT
     try:
-        InflightGAPipeline.prepare_submit(song)
         return executor.call(_ga_turn, InflightGAPipeline.build_payload(song), executor.abort_requested)
     finally:
         song.runtime.song_slot = 0
@@ -74,7 +73,6 @@ def finish_song(song: Any, ga_result: Any, progress_tracker=None) -> SongSolve:
     InflightGAPipeline.store_decode_result(song, decode_ga_payload_sync(song, ga_result))
     try:
         prepare_fg_job_sync(song)
-        song.runtime.fg.fg_dynamic_prep_done = True
         apply_fg_materialization_result(song, materialize_fg_request(build_fg_materialization_request(song)),
                                         progress_tracker=progress_tracker)
     finally:

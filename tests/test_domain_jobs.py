@@ -3,8 +3,6 @@ import pytest
 from gear_optimizer.domain.jobs import (
     TASK_FIXED_FIELD_COUNT,
     TaskIndex,
-    effective_task_count,
-    extract_repeat_bundle,
     extract_repeat_context,
     seed_plan_from_song_job,
     task_ga_seed,
@@ -63,8 +61,6 @@ def test_task_tuple_to_song_job_preserves_queue_identity_and_repeat_metadata():
     assert job.repeat_index == 2
     assert job.repeat_total == 3
     assert job.ga_seed == 987
-    assert job.repeat_bundle is False
-    assert job.queue_source == "legacy_task_tuple"
 
 
 def test_seed_plan_from_song_job_preserves_repeat_label_and_seed():
@@ -125,24 +121,6 @@ def test_repeat_helpers_are_the_single_legacy_tuple_contract():
     assert extract_repeat_context(task) is repeat_ctx
     assert task_queue_label(task) == "Fake Song (Hard) by Tester (Run 3/4)"
     assert task_ga_seed(task) == 456
-
-
-def test_bundle_helpers_count_logical_repeats_without_materializing_work():
-    bundle = {
-        "repeat_bundle": True,
-        "repeat_total": 3,
-        "runs": [
-            {"repeat_index": 1, "repeat_total": 3, "ga_seed": 101},
-            {"repeat_index": 2, "repeat_total": 3, "ga_seed": 202},
-            {"repeat_index": 3, "repeat_total": 3, "ga_seed": 303},
-        ],
-    }
-    task = _legacy_task(bundle)
-
-    assert extract_repeat_bundle(task) is bundle
-    assert task_tuple_to_song_job(task).repeat_bundle is True
-    assert task_tuple_to_song_job(task).repeat_total == 3
-    assert effective_task_count([task, _legacy_task()]) == 4
 
 
 def test_short_legacy_tuple_is_rejected_at_the_adapter_boundary():

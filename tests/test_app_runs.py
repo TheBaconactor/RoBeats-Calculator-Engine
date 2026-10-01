@@ -18,7 +18,6 @@ def _make_minimal_app() -> GearOptimizerApp:
     app._stop_post_processor = lambda _queue, _proc: True  # every song stored
     app._set_runtime_progress_counts = lambda **_kwargs: None
     app._progress_event = lambda **_kwargs: None
-    app._effective_total_tasks = lambda tasks: len(tasks or [])
     return app
 
 
@@ -107,15 +106,21 @@ def test_a_gpu_timeout_ends_the_run(monkeypatch):
         _make_minimal_app()._run_sequential(_build_tasks(), completed_songs=set(), memory_resume_tracker=None)
 
 
-def test_configure_execution_prewarms_native_ga():
+def test_configure_execution_sizes_the_ga_buffers_and_starts_the_gpu_executor(monkeypatch):
+    from gear_optimizer.solver import gpu_executor
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
+    started = []
+    # No real GPU: a started executor would keep initializing Taichi after the test, racing later tests' resets.
+    monkeypatch.setattr(gpu_executor, "get_gpu_executor", lambda: types.SimpleNamespace(start=lambda: started.append(1)))
     app = object.__new__(GearOptimizerApp)
+    app._materialize_gpu_runtime_on_main_thread = lambda: None
     gpu_fields._REQUESTED_MAX_GA_RUNS = None
     app._configure_execution_and_prewarm(3)
 
     # GA buffer sizing is recorded in-process now (was the GPU_NATIVE_GA_MAX_RUNS env bridge).
     assert gpu_fields._REQUESTED_MAX_GA_RUNS == 3
+    assert started == [1]
 
 
 def test_ga_buffer_config_restores_defaults_and_clears_request_on_reset():

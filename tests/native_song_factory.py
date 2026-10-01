@@ -5,14 +5,12 @@ from typing import Any
 
 from gear_optimizer.solver.native_inflight_config import (
     NativeSong,
-    NativeSongBundleState,
     NativeSongConfig,
     NativeSongDBState,
     NativeSongDecodeState,
     NativeSongFGState,
     NativeSongGAState,
     NativeSongGPUInputs,
-    NativeSongPrepState,
     NativeSongRuntimeState,
 )
 
@@ -25,12 +23,10 @@ _FIELD_PATH_BY_NAME = {
     **{name: ("config",) for name in _field_names(NativeSongConfig)},
     **{name: ("gpu_inputs",) for name in _field_names(NativeSongGPUInputs)},
     "song_slot": ("runtime",),
-    **{name: ("runtime", "prep") for name in _field_names(NativeSongPrepState)},
     **{name: ("runtime", "ga") for name in _field_names(NativeSongGAState)},
     **{name: ("runtime", "decode") for name in _field_names(NativeSongDecodeState)},
     **{name: ("runtime", "fg") for name in _field_names(NativeSongFGState)},
     **{name: ("runtime", "db") for name in _field_names(NativeSongDBState)},
-    **{name: ("runtime", "bundle") for name in _field_names(NativeSongBundleState)},
 }
 
 

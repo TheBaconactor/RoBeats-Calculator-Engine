@@ -43,10 +43,9 @@ def apply_fg_materialization_result(
     song: NativeSong,
     result: FgMaterializationResult,
     *,
-    progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
-    """Apply a spawned worker's FG results on the driver/persistence owner."""
+    """The song's FG results, and its records judged against `progress_tracker` (a run's bests) when given."""
 
     if not isinstance(result, FgMaterializationResult):
         raise TypeError("FG materialization worker returned an invalid result")
@@ -55,9 +54,4 @@ def apply_fg_materialization_result(
 
     runtime = getattr(song, "runtime", song)
     runtime.fg.fg_results = result.results
-    runtime.fg.fg_run_wall_s = max(0.0, float(result.wall_seconds))
-    runtime.fg.cpu_fg_run_s = max(0.0, float(result.cpu_seconds))
-
     runtime.db.record_info = evaluate_fg_progress_record_update(song, progress_tracker)
-    if progress_cb is not None:
-        progress_cb(completed_delta=0, failed_delta=0, record_info=runtime.db.record_info)

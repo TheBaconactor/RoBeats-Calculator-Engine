@@ -1660,7 +1660,6 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
     pipeline.prepare_fg_static_sync(song)
 
     assert song.runtime.fg.fg_response_scoring_bundle is bundle
-    assert song.runtime.fg.fg_static_prep_done is True
     assert seen == {
         "song": timed_song,
         "curves": curves,

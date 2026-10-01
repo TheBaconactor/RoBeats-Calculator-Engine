@@ -81,11 +81,9 @@ def _owner_row(fg_score):
 
 def _make_fg_song(plan, owner_score_map, **overrides):
     kwargs = dict(
-        fg_prep_future=None,
         fg_response_frontier_plan=plan,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
-        effective_difficulty="Hard",
         ga_candidates=[],
         registry=None,
         fixed_stats={},
@@ -179,7 +177,6 @@ def test_fg_materialization_returns_the_reduced_results_with_its_timings(monkeyp
 
     assert seen == [(plan, {(1,): "row"})]
     assert result.results == (("loadout", "fg result"),)
-    assert result.wall_seconds >= 0.0 and result.cpu_seconds >= 0.0
 
 
 def test_materialize_from_owner_score_map_fails_on_missing_base_components(tmp_path):
@@ -210,10 +207,8 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
     monkeypatch.setattr(FgPlanner, "plan_many", staticmethod(lambda *_args, **_kwargs: plan))
 
     song = make_native_song(
-        fg_prep_future=None,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
-        effective_difficulty="Hard",
         ga_candidates=[],
         registry=None,
         fixed_stats={},
@@ -231,4 +226,3 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
     fg_pipeline.prepare_fg_job_sync(song)
 
     assert song.runtime.fg.fg_response_frontier_plan is plan
-    assert song.runtime.fg.cpu_fg_prep_s >= 0.0

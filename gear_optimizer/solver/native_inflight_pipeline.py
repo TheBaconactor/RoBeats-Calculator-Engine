@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
@@ -18,17 +17,10 @@ __all__ = [
     "decode_ga_payload_sync",
     "prepare_fg_job_sync",
     "prepare_fg_static_sync",
-    "thread_cpu_time_s",
 ]
 
 
-def thread_cpu_time_s() -> float:
-    """Best-effort per-thread CPU timer for CPU-side stage profiling."""
-    return float(time.thread_time())
-
-
 def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list, list, list[dict]]:
-    cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, "gpu_inputs", song)
     song_key = str(song.config.task_key or song.config.song_name or "")
     # The fused GA->FG owner continuation (Slice 3) returns
@@ -39,20 +31,13 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
     runs_payload = ga_result["runs_payload"]
     song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
     decode_cfg_data = dict(song.gpu_inputs.cfg_data or {})
-    best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
+    return decode_gpu_native_ga_runs_payload(
         runs_payload=runs_payload,
         registry=gpu_inputs.registry,
         cfg_data=decode_cfg_data,
         base_stats_fixed=gpu_inputs.fixed_stats,
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
-    out = (best_data, best_gear, best_minis, ga_candidates)
-    try:
-        cpu_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
-        song.runtime.decode.cpu_decode_s = cpu_s
-    except (AttributeError, TypeError, ValueError):
-        cpu_s = None
-    return out
 
 
 def prepare_fg_static_sync(song: NativeSong) -> None:
@@ -105,9 +90,7 @@ def prepare_ga_candidate_surface_for_fg(
 
 
 def prepare_fg_job_sync(song: NativeSong) -> None:
-    cpu_t0 = thread_cpu_time_s()
     runtime = getattr(song, "runtime", song)
-    t0 = time.perf_counter()
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
     ga_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
         song,
@@ -126,8 +109,3 @@ def prepare_fg_job_sync(song: NativeSong) -> None:
             "FG dynamic prep did not materialize the exact response frontier plan "
             f"for {getattr(song.config, 'task_key', '') or getattr(song.config, 'song_name', '')}"
         )
-    song.runtime.fg.fg_prep_wall_s = max(0.0, time.perf_counter() - t0)
-    try:
-        song.runtime.fg.cpu_fg_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
-    except (AttributeError, TypeError, ValueError):
-        pass

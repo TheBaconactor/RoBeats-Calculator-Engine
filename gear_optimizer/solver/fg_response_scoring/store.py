@@ -33,5 +33,4 @@ class ResponseFrontierStore:
         # (the fused turn reads the in-memory arrays, not the memmap).
         bundle = session_prune_scoring_bundle(bundle, curves)
         song.runtime.fg.fg_response_scoring_bundle = bundle
-        song.runtime.fg.fg_static_prep_done = True
         return bundle

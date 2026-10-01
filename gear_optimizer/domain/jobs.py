@@ -35,8 +35,6 @@ class SongJob:
     repeat_index: int = 0
     repeat_total: int = 0
     ga_seed: int | None = None
-    repeat_bundle: bool = False
-    queue_source: str = "legacy_task_tuple"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,20 +76,6 @@ def extract_repeat_context(task: Sequence[Any] | Any) -> dict | None:
         return None
     for extra in task[TASK_FIXED_FIELD_COUNT:]:
         if is_repeat_context(extra):
-            return extra
-    return None
-
-
-def extract_repeat_bundle(task: Sequence[Any] | Any) -> dict | None:
-    if not _is_task_sequence(task) or len(task) <= TASK_FIXED_FIELD_COUNT:
-        return None
-    for extra in task[TASK_FIXED_FIELD_COUNT:]:
-        if not isinstance(extra, dict):
-            continue
-        if not bool(extra.get("repeat_bundle")):
-            continue
-        runs = extra.get("runs")
-        if isinstance(runs, list) and runs:
             return extra
     return None
 
@@ -151,32 +135,11 @@ def seed_plan_from_song_job(job: SongJob) -> PreparedSongSeedPlan:
     )
 
 
-def effective_task_count(tasks: list[Any]) -> int:
-    if not isinstance(tasks, list) or not tasks:
-        return 0
-    total = 0
-    for task in tasks:
-        repeats = 1
-        bundle = extract_repeat_bundle(task)
-        if bundle is not None:
-            try:
-                repeats = int(bundle.get("repeat_total") or 0)
-            except (ValueError, TypeError):
-                repeats = 0
-            if repeats <= 0:
-                runs = bundle.get("runs")
-                repeats = len(runs) if isinstance(runs, list) else 0
-            repeats = max(1, int(repeats))
-        total += max(1, int(repeats))
-    return max(0, int(total))
-
-
-def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_task_tuple") -> SongJob:
+def task_tuple_to_song_job(task: Sequence[Any]) -> SongJob:
     if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
         raise ValueError(f"song task must contain the {TASK_FIXED_FIELD_COUNT}-field production prefix")
 
     repeat_ctx = extract_repeat_context(task)
-    repeat_bundle = extract_repeat_bundle(task)
     repeat_index = 0
     repeat_total = 0
     ga_seed = None
@@ -190,14 +153,6 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
         except (ValueError, TypeError):
             repeat_total = 0
         ga_seed = task_ga_seed(task)
-    elif repeat_bundle is not None:
-        try:
-            repeat_total = int(repeat_bundle.get("repeat_total") or 0)
-        except (ValueError, TypeError):
-            repeat_total = 0
-        if repeat_total <= 0:
-            runs = repeat_bundle.get("runs")
-            repeat_total = len(runs) if isinstance(runs, list) else 0
 
     return SongJob(
         file_path=task[int(TaskIndex.FILE_PATH)],
@@ -206,8 +161,6 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
         repeat_index=max(0, int(repeat_index)),
         repeat_total=max(0, int(repeat_total)),
         ga_seed=ga_seed,
-        repeat_bundle=repeat_bundle is not None,
-        queue_source=str(queue_source or "legacy_task_tuple"),
     )
 
 

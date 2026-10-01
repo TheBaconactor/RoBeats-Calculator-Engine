@@ -7,7 +7,6 @@ into a frozen dataclass so the orchestrator body stays focused on runtime logic.
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
@@ -19,11 +18,6 @@ if TYPE_CHECKING:
     from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
 
 logger = logging.getLogger(__name__)
-
-# Songs prepared and scheduled concurrently (capped by the queue size and the GPU song slots).
-IN_FLIGHT_SONGS = 12
-CANONICAL_GA_QUEUE_MULT = 2
-CANONICAL_PREP_BUFFER_MULT = 4
 
 
 from gear_optimizer.core.types import JsonDict
@@ -39,8 +33,6 @@ class NativeSongConfig:
     task_key: str = ""
     ga_seed: int | None = None
     db_key: str = ""
-    effective_difficulty: str = ""
-    ga_depth: int = 0
 
 
 @dataclass
@@ -72,37 +64,22 @@ class NativeSongGPUInputs:
 
 
 @dataclass
-class NativeSongPrepState:
-    cpu_prep_s: float = 0.0
-    wall_prep_s: float = 0.0
-
-
-@dataclass
 class NativeSongGAState:
-    ga_future: Optional[concurrent.futures.Future] = None
-    ga_submit_t0: float | None = None
     ga_initial_populations: Optional[list[Any]] = None
 
 
 @dataclass
 class NativeSongDecodeState:
-    decode_future: Optional[concurrent.futures.Future] = None
-    decode_submit_t0: float | None = None
     ga_candidates: Optional[list[JsonDict]] = None
     fg_surface_prepared: bool = False
     best_data: Optional[JsonDict] = None
     best_gear: Optional[list[Any]] = None
     best_minis: Optional[list[Any]] = None
-    cpu_decode_s: float = 0.0
 
 
 @dataclass
 class NativeSongFGState:
     fg_results: Optional[tuple[tuple[SolvedLoadout, SolvedFg], ...]] = None  # best FG score first
-    fg_prep_future: Optional[concurrent.futures.Future] = None
-    fg_static_prep_done: bool = False
-    fg_dynamic_prep_done: bool = False
-    fg_prep_submit_t0: float | None = None
     fg_response_scoring_bundle: Any | None = None
     fg_response_frontier_plan: Any | None = None
     # Slice 3 fused GA->FG handoff: the owner-scored per-base_components FG result map
@@ -110,10 +87,6 @@ class NativeSongFGState:
     # owner thread. The FG worker materializes from this instead of submitting
     # BUILD+SCORE owner requests. Set by decode_ga_payload_sync from the GA response.
     fg_owner_score_map: Any | None = None
-    cpu_fg_prep_s: float = 0.0
-    fg_prep_wall_s: float = 0.0
-    cpu_fg_run_s: float = 0.0
-    fg_run_wall_s: float = 0.0
 
 
 @dataclass
@@ -125,22 +98,12 @@ class NativeSongDBState:
 
 
 @dataclass
-class NativeSongBundleState:
-    bundle_parent_task: Any | None = None
-    bundle_task_key: str = ""
-    bundle_repeat_index: int = 0
-    bundle_repeat_total: int = 0
-
-
-@dataclass
 class NativeSongRuntimeState:
     song_slot: int = 0
-    prep: NativeSongPrepState = field(default_factory=NativeSongPrepState)
     ga: NativeSongGAState = field(default_factory=NativeSongGAState)
     decode: NativeSongDecodeState = field(default_factory=NativeSongDecodeState)
     fg: NativeSongFGState = field(default_factory=NativeSongFGState)
     db: NativeSongDBState = field(default_factory=NativeSongDBState)
-    bundle: NativeSongBundleState = field(default_factory=NativeSongBundleState)
 
 
 # eq=False (identity equality/hash): conveyor deques remove songs by identity,

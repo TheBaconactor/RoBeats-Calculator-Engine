@@ -18,8 +18,7 @@ def _song(task: tuple) -> SimpleNamespace:
     return SimpleNamespace(
         config=SimpleNamespace(song_name=task_song_name(task), task_key=task_queue_label(task), fp="",
                                db_key=task_song_name(task)),
-        runtime=SimpleNamespace(bundle=SimpleNamespace(bundle_parent_task=None),
-                                db=SimpleNamespace(record_info=None, db_best_score=100, db_best_fg_score=90,
+        runtime=SimpleNamespace(db=SimpleNamespace(record_info=None, db_best_score=100, db_best_fg_score=90,
                                                    db_baseline_valid=True)),
     )
 
@@ -180,8 +179,6 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
     song = SimpleNamespace(gpu_inputs=inputs, config=SimpleNamespace(ga_seed=7),
                            runtime=SimpleNamespace(song_slot=0, ga=SimpleNamespace(ga_initial_populations=None),
                                                    fg=SimpleNamespace(fg_response_scoring_bundle=bundle)))
-    monkeypatch.setattr("gear_optimizer.solver.native_inflight_pipeline_ga.InflightGAPipeline.prepare_submit",
-                        lambda _song: None)
     abort = threading.Event()
 
     class _Executor:

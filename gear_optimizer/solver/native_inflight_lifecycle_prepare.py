@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-import time
 from collections import OrderedDict
 from typing import Optional
 
@@ -23,7 +22,7 @@ from gear_optimizer.solver.native_inflight_config import (
     NativeSongGPUInputs,
     NativeSongRuntimeState,
 )
-from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_static_sync, thread_cpu_time_s
+from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_static_sync
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 
 logger = logging.getLogger(__name__)
@@ -94,8 +93,6 @@ def _catalog_digest(gears, song_minis) -> str:
 
 
 def prepare_native_song(task: tuple) -> NativeSong:
-    wall_t0 = time.perf_counter()
-    cpu_t0 = thread_cpu_time_s()
     from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
 
@@ -107,7 +104,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     run_context = task_view.context
     fp = job.file_path
     found_song_name = job.song_name
-    effective_difficulty = job.difficulty
     multi_start = run_context.multi_start
     curves = run_context.curves
     gears = run_context.gears
@@ -216,8 +212,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             task_key=str(task_key),
             ga_seed=int(ga_seed) if ga_seed is not None else None,
             db_key=str(db_key),
-            effective_difficulty=str(effective_difficulty),
-            ga_depth=int(ga_depth),
         ),
         gpu_inputs=NativeSongGPUInputs(
             curves=curves,
@@ -258,6 +252,4 @@ def prepare_native_song(task: tuple) -> NativeSong:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
     build_or_load_timeline_frontier_payload(song.gpu_inputs.timed_song, song.gpu_inputs.curves)
-    song.runtime.prep.wall_prep_s = max(0.0, time.perf_counter() - float(wall_t0))
-    song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     return song

@@ -105,7 +105,7 @@ class ProgressTracker:
         ).strip()
 
     def emit_error_item_progress(self, progress_cb: Callable[..., Any] | None, item: Any) -> bool:
-        if not isinstance(item, dict) or not item.get("_error") or bool(item.get("_suppress_progress")):
+        if not isinstance(item, dict) or not item.get("_error"):
             return False
         song_label = self.error_item_song_label(item)
         progress_key = self.error_item_progress_key(item)

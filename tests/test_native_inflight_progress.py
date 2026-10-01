@@ -77,11 +77,10 @@ def test_progress_tracker_emit_error_item_progress_dedupes_queue_key():
     ]
 
 
-def test_progress_tracker_emit_error_item_progress_ignores_suppressed_or_non_errors():
+def test_progress_tracker_emit_error_item_progress_ignores_non_errors():
     tracker = ProgressTracker()
     events = []
 
-    assert tracker.emit_error_item_progress(lambda **kwargs: events.append(kwargs), {"_error": True, "_suppress_progress": True}) is False
     assert tracker.emit_error_item_progress(lambda **kwargs: events.append(kwargs), {"song": "song-a"}) is False
     assert tracker.emit_error_item_progress(lambda **kwargs: events.append(kwargs), "not-a-payload") is False
     assert events == []

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from gear_optimizer.solver.native_inflight_config import NativeSong
@@ -8,10 +7,6 @@ from gear_optimizer.solver.native_inflight_config import NativeSong
 
 class InflightGAPipeline:
     """GA request payload assembly and the decode result's hand-off onto the song."""
-
-    @staticmethod
-    def prepare_submit(song: NativeSong) -> None:
-        song.runtime.ga.ga_submit_t0 = time.perf_counter()
 
     @staticmethod
     def build_payload(song: NativeSong) -> dict[str, Any]:
