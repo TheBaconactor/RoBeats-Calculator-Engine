@@ -2814,42 +2814,10 @@ def _numba_head_generated_threshold(min_surfaces: int) -> int:
 
 @njit(cache=True, nogil=True)
 def _numba_head_surface_basis(surface, lo_pos, hi_pos):
-    lo = int(lo_pos)
-    hi = int(hi_pos)
-    hlen = hi - lo
     fl, fh, gl, gh, bf, bg, bfg = surface
-    one = np.uint64(1)
-    c_lo = _HEAD_DOM_C[0]
-    c_hi = _HEAD_DOM_C[1]
-    k_lo = (c_lo - 1.0) / 100.0
-    k_hi = (c_hi - 1.0) / 100.0
-    b_lo = 0.0
-    c_lo_arr = 0.0
-    d_lo = 0.0
-    b_hi = 0.0
-    c_hi_arr = 0.0
-    d_hi = 0.0
-    for idx in range(hlen):
-        pos = lo + idx
-        if pos < 64:
-            fbit = (fl >> np.uint64(pos)) & one
-            gbit = (gl >> np.uint64(pos)) & one
-        else:
-            fbit = (fh >> np.uint64(pos - 64)) & one
-            gbit = (gh >> np.uint64(pos - 64)) & one
-        if fbit == 0 and gbit == 0:
-            continue
-        slo = 1.0 + k_lo * float(lo + idx + 1)
-        shi = 1.0 + k_hi * float(lo + idx + 1)
-        if fbit != 0:
-            b_lo += slo
-            b_hi += shi
-        if gbit != 0:
-            c_lo_arr += slo
-            c_hi_arr += shi
-        if fbit != 0 and gbit != 0:
-            d_lo += slo
-            d_hi += shi
+    _fl, _fh, _gl, _gh, b_lo, c_lo_arr, d_lo, b_hi, c_hi_arr, d_hi = _numba_session_pattern_basis(
+        fl, fh, gl, gh, lo_pos, hi_pos, _HEAD_DOM_C[0], _HEAD_DOM_C[1]
+    )
     return (
         fl,
         fh,
