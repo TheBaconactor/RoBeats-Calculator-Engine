@@ -28,7 +28,7 @@ from gear_optimizer.core.memory import (
 )
 from gear_optimizer.store import db, legacy, schema
 from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
-from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
+from gear_optimizer.settings import RunSettings, direct_solve, paths, reasoning_search, service_settings
 
 
 def request_run_settings(*, repeats: int, reasoning: str) -> RunSettings:
@@ -60,6 +60,7 @@ class PersistentOptimizerSession:
         self._minis: Mapping[str, Mini] = {}
         self._initialized = False
         self._request_count = 0
+        self._solve_context = None
         self._prepare_data_root()
 
     def _prepare_data_root(self) -> None:
@@ -125,12 +126,15 @@ class PersistentOptimizerSession:
         )
         if not tasks:
             raise RuntimeError("persistent optimizer produced no task")
-        tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
-        tracker.prime(task_queue, build_memory_guard_resume_context(*self._app._get_filter_params(run)))
         try:
-            self._app._execute_tasks(tasks, tracker)
-            if self._app._memory_guard_restart_needed(tracker):
-                raise RuntimeError("persistent optimizer requested a memory-guard restart")
+            if direct_solve():
+                self._solve_direct(tasks)
+            else:
+                tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
+                tracker.prime(task_queue, build_memory_guard_resume_context(*self._app._get_filter_params(run)))
+                self._app._execute_tasks(tasks, tracker)
+                if self._app._memory_guard_restart_needed(tracker):
+                    raise RuntimeError("persistent optimizer requested a memory-guard restart")
             entries = legacy.read_best_loadouts(self._result_db, song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
             if not entries:
                 raise RuntimeError("optimizer produced no T5 loadout")
@@ -140,6 +144,20 @@ class PersistentOptimizerSession:
             return entries
         finally:
             self._remove_result_db()
+
+    def _solve_direct(self, tasks: list) -> None:
+        """Each task (a song repeat) solved in this process and stored into the result database."""
+        from gear_optimizer.pipeline.post_processor import store_solve
+        from gear_optimizer.pipeline.solve import SolveContext, solve_song
+
+        if self._solve_context is None:
+            self._solve_context = SolveContext()
+        conn = schema.connect(self._result_db, write=True)
+        try:
+            for task in tasks:
+                store_solve(conn, solve_song(task, self._solve_context), dict(self._gears), dict(self._minis))
+        finally:
+            conn.close()
 
 
 def main() -> int:

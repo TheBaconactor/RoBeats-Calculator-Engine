@@ -238,6 +238,13 @@ def persistent_worker() -> bool:
     return _env_bool("ROBEATSMETA_OPTIMIZER_PERSISTENT_WORKER", False)
 
 
+def direct_solve() -> bool:
+    """Engine rewrite R1 rollout switch: the persistent worker solves each request with pipeline.solve (one process;
+    no per-request post-processor process or FG process pool) instead of the in-flight pipeline. Goes with the
+    in-flight pipeline."""
+    return _env_bool("ROBEATSMETA_DIRECT_SOLVE", False)
+
+
 @dataclass(frozen=True, slots=True)
 class ServiceSettings:
     """The :8765 HTTP service (ROBEATSMETA_OPTIMIZER_*)."""
