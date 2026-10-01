@@ -101,15 +101,22 @@ class PersistentOptimizerSession:
         repeats: int,
         reasoning: str,
         promote_to: str | None = None,
+        gear_dir: str | None = None,
     ) -> list[dict[str, Any]]:
         """Solve one chart and return its T5 leaderboard; `promote_to` (a clean official solve) also merges every
-        result into that catalog database."""
+        result into that catalog database; `gear_dir` holds the request's own Gears.csv / Minis.csv (a custom pool,
+        solved only on the direct path)."""
         run = request_run_settings(repeats=repeats, reasoning=reasoning)
         self._chart_path.write_text(chart_text, encoding="utf-8")
         self._remove_result_db()
         if not self._initialized:
             self._initialize()
         assert self._curves is not None
+        gears, minis = self._gears, self._minis
+        if gear_dir:
+            if not direct_solve():
+                raise RuntimeError("a custom item pool is solved only on the direct path")
+            gears, minis = load_gears(Path(gear_dir) / "Gears.csv"), load_minis(Path(gear_dir) / "Minis.csv")
 
         self._app._stop_cached_result = False
         self._app._stop_requested.clear()
@@ -117,18 +124,12 @@ class PersistentOptimizerSession:
         set_memory_watchdog_limit(compute_memory_guard_limit(run))
         schema.ensure(self._result_db)
         task_queue = [(str(self._chart_path), str(song_name), "Hard")]
-        tasks = self._app._prepare_tasks(
-            task_queue,
-            run,
-            self._curves,
-            self._gears,
-            self._minis,
-        )
+        tasks = self._app._prepare_tasks(task_queue, run, self._curves, gears, minis)
         if not tasks:
             raise RuntimeError("persistent optimizer produced no task")
         try:
             if direct_solve():
-                self._solve_direct(tasks)
+                self._solve_direct(tasks, gears, minis)
             else:
                 tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
                 tracker.prime(task_queue, build_memory_guard_resume_context(*self._app._get_filter_params(run)))
@@ -145,7 +146,7 @@ class PersistentOptimizerSession:
         finally:
             self._remove_result_db()
 
-    def _solve_direct(self, tasks: list) -> None:
+    def _solve_direct(self, tasks: list, gears: Mapping[str, Gear], minis: Mapping[str, Mini]) -> None:
         """Each task (a song repeat) solved in this process and stored into the result database."""
         from gear_optimizer.pipeline.post_processor import store_solve
         from gear_optimizer.pipeline.solve import SolveContext, solve_song
@@ -155,7 +156,7 @@ class PersistentOptimizerSession:
         conn = schema.connect(self._result_db, write=True)
         try:
             for task in tasks:
-                store_solve(conn, solve_song(task, self._solve_context), dict(self._gears), dict(self._minis))
+                store_solve(conn, solve_song(task, self._solve_context), dict(gears), dict(minis))
         finally:
             conn.close()
 
@@ -194,6 +195,7 @@ def main() -> int:
                         repeats=int(request.get("repeats") or 1),
                         reasoning=str(request.get("reasoning") or "default"),
                         promote_to=request.get("promoteTo") or None,
+                        gear_dir=request.get("gearDir") or None,
                     )
                     response = {"ok": True, "loadouts": result}
                 except BaseException as exc:

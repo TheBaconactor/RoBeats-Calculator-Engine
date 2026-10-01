@@ -1,6 +1,7 @@
 """LRU prep caches and native song preparation for in-flight orchestration."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -81,6 +82,17 @@ def _prep_cache_get_or_build(
     return _PREP_CACHE_SINGLEFLIGHT.run((str(cache_name), key), _build_and_cache)
 
 
+def _catalog_digest(gears, song_minis) -> str:
+    """The items a song's pools are built from: a request's own catalog (a custom pool) must not reuse the cached
+    pools of another catalog with the same colors."""
+    digest = hashlib.blake2b(digest_size=16)
+    for gear in sorted(gears.values(), key=lambda g: g.name):
+        digest.update(repr((gear.name, gear.slot, sorted(gear.stats.items()))).encode())
+    for mini in sorted(song_minis, key=lambda m: m.name):
+        digest.update(repr((mini.name, sorted(mini.stats.items()), mini.targets_song)).encode())
+    return digest.hexdigest()
+
+
 def prepare_native_song(task: tuple) -> NativeSong:
     wall_t0 = time.perf_counter()
     cpu_t0 = thread_cpu_time_s()
@@ -118,7 +130,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
     targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
-    pool_key = (str(p_color), str(s_color), tuple(slots), targeting_minis)
+    pool_key = (str(p_color), str(s_color), tuple(slots), targeting_minis, _catalog_digest(gears, song_minis))
     def _build_pools():
         return initialize_pools(gears, song_minis, p_color, slots, s_color=s_color)
 

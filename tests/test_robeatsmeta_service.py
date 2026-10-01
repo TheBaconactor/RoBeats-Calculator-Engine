@@ -798,6 +798,39 @@ def test_custom_pool_rows_land_in_the_request_copy_and_never_the_catalog(tmp_pat
     assert ((catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()) == before
 
 
+def test_a_custom_pool_on_an_official_chart_is_solved_warm_with_its_own_catalog_copy(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    shutil.copytree(Path(service.__file__).resolve().parents[1] / "Data" / "Gear", data_root / "Data" / "Gear")
+    seen: dict[str, object] = {}
+
+    class FakeWorker:
+        def request(self, payload):
+            from gear_optimizer.gamedata import read_gears, read_minis
+
+            gear_dir = Path(payload["gearDir"])
+            seen.update(dir=gear_dir, gear=read_gears(gear_dir / "Gears.csv"), minis=read_minis(gear_dir / "Minis.csv"))
+            return [{"loadout_hash": "custom", "score": 1}]
+
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1")
+    monkeypatch.setattr(service, "_get_persistent_solve_worker", lambda: FakeWorker())
+    from gear_optimizer.gamedata import read_gears
+
+    excluded = next(iter(read_gears(data_root / "Data" / "Gear" / "Gears.csv")))
+    result = service.solve(
+        {
+            "jobId": "custom_pool_warm",
+            "targetSongId": "Feeding [Hard]",
+            "customGear": [_CUSTOM_GEAR],
+            "customMinis": [_CUSTOM_MINI],
+            "excludeGear": [excluded],
+        }
+    )
+
+    assert result == [{"loadout_hash": "custom", "score": 1}]
+    assert "Test Hat" in seen["gear"] and "Test Mini" in seen["minis"] and excluded not in seen["gear"]
+    assert not Path(seen["dir"]).exists()  # the request's catalog copy goes with the request
+
+
 def test_custom_pool_refuses_to_redefine_a_catalog_item(tmp_path):
     catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
     work = tmp_path / "Gear"

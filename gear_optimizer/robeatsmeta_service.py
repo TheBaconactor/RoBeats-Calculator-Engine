@@ -7,6 +7,7 @@ import ctypes.util
 import hashlib
 import hmac
 import ipaddress
+import contextlib
 import json
 import logging
 import multiprocessing
@@ -30,7 +31,14 @@ from urllib.parse import urlsplit
 from gear_optimizer.chart import read_header
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
-from gear_optimizer.settings import DIFFICULTIES, REASONING_LEVELS, paths, reasoning_search, service_settings
+from gear_optimizer.settings import (
+    DIFFICULTIES,
+    REASONING_LEVELS,
+    direct_solve,
+    paths,
+    reasoning_search,
+    service_settings,
+)
 from gear_optimizer.store import db, legacy, schema
 from gear_optimizer.store.db import present_songs
 from gear_optimizer.data.exported_game_data_sync import exported_song_names
@@ -1030,7 +1038,10 @@ def _solve_persistent(
     timing_mode: str,
     *,
     promote_to: str | None = None,
+    custom_pool: dict[str, list[Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    """Solve on the warm persistent worker; a custom pool travels as a per-request Gears.csv / Minis.csv copy
+    (built and validated exactly as for an isolated solve) that the worker loads for this request only."""
     normalized_chart = _normalize_chart(chart_text, result_song_name, timing_mode)
     payload = {
         "jobId": job,
@@ -1041,12 +1052,21 @@ def _solve_persistent(
     }
     if promote_to:
         payload["promoteTo"] = promote_to
-    with _SOLVE_SEMAPHORE:
-        _acquire_solve_slot()
-        try:
-            return _get_persistent_solve_worker().request(payload)
-        finally:
-            _release_solve_slot()
+    with contextlib.ExitStack() as stack:
+        if custom_pool and any(custom_pool.values()):
+            run_root = _service_run_root()
+            run_root.mkdir(parents=True, exist_ok=True)
+            gear_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=f"{job}-", dir=run_root))) / "Gear"
+            shutil.copytree(GEAR_DIR, gear_dir)
+            _remove_excluded_rows(gear_dir, custom_pool)
+            _append_custom_pool_rows(gear_dir, custom_pool)
+            payload["gearDir"] = str(gear_dir)
+        with _SOLVE_SEMAPHORE:
+            _acquire_solve_slot()
+            try:
+                return _get_persistent_solve_worker().request(payload)
+            finally:
+                _release_solve_slot()
 
 
 def _solve_isolated(
@@ -1172,11 +1192,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
     try:
-        custom_request = bool(str(request.get("chartText") or "").strip()) or any(
-            custom_pool.get(key) for key in ("gear", "minis", "excludeGear", "excludeMinis")
-        )
+        custom_chart = bool(str(request.get("chartText") or "").strip())
+        custom_items = any(custom_pool.get(key) for key in ("gear", "minis", "excludeGear", "excludeMinis"))
+        custom_request = custom_chart or custom_items
         promote_to = _promotion_target(request, timing_mode=timing_mode, custom_pool=custom_pool)
-        if _persistent_worker_enabled() and not custom_request:
+        # An uploaded chart keeps the isolated path (its frontier caches must stay out of the shared ones); a
+        # custom item pool on an official chart is solved warm on the direct path.
+        if _persistent_worker_enabled() and not custom_chart and (direct_solve() or not custom_items):
             state.result = _solve_persistent(
                 job,
                 chart_text,
@@ -1185,6 +1207,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
                 reasoning,
                 timing_mode,
                 promote_to=promote_to,
+                custom_pool=custom_pool if custom_items else None,
             )
         else:
             state.result = _solve_isolated(
