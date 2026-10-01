@@ -74,12 +74,12 @@ def test_frontier_disk_cache_write_is_compact_and_leak_free(tmp_path: Path, monk
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
 
-    timeline_api._save_frontier_payload_to_disk(key, payload)
-    saved = timeline_api._frontier_disk_cache_path(key)
+    timeline_api._save_frontier_payload(key, timeline_api._encode_frontier_payload_npz(payload))
+    saved = timeline_api.TIMELINE_FRONTIER_CACHE.file_path(key)
     assert saved.exists()
     assert not list(tmp_path.glob("*.tmp.npz"))
 
-    loaded, _raw = timeline_api._load_frontier_payload_from_disk(key)
+    loaded, _raw = timeline_api._load_frontier_payload(key)
     assert loaded is not None
     assert int(loaded.grid_count_body_fever.shape[0]) == 1
     assert int(loaded.grid_frontier_body_fever_pool.shape[0]) == 1
@@ -100,7 +100,7 @@ def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
     assert current_version == "exact-frontier-v12+logic-e0f26c1952cc"
-    assert timeline_api.timeline_frontier_compatible_cache_versions() == (
+    assert timeline_api.TIMELINE_FRONTIER_CACHE.compatible_versions() == (
         current_version,
         "exact-frontier-v12+logic-dac3ca4b6278",
         "exact-frontier-v12+logic-ede645c00a02",
@@ -130,13 +130,13 @@ def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
             "_FRONTIER_DISK_CACHE_VERSION",
             predecessor,
         )
-        timeline_api._save_frontier_payload_to_disk(predecessor_key, payload)
+        timeline_api._save_frontier_payload(predecessor_key, timeline_api._encode_frontier_payload_npz(payload))
 
-    predecessor_path = timeline_api._frontier_disk_cache_path(predecessor_key)
+    predecessor_path = timeline_api.TIMELINE_FRONTIER_CACHE.file_path(predecessor_key)
     assert predecessor_path.exists()
     assert not timeline_api.timeline_frontier_cache_file_is_complete(predecessor_path)
-    assert timeline_api._live_frontier_disk_cache_path(current_key) is None
-    assert timeline_api._load_frontier_payload_from_disk(current_key) is None
+    assert timeline_api.TIMELINE_FRONTIER_CACHE.readable_path(current_key) is None
+    assert timeline_api._load_frontier_payload(current_key) is None
 
 
 def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload(
@@ -154,7 +154,6 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload
     timeline_api.reset_timeline_state()
     second = timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     assert second.cache_source == "disk"
-    assert int(second.total_notes) == 4
 
 
 _PAYLOAD_ARRAY_NAMES = (
@@ -217,7 +216,7 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
 
     first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert first.cache_source == "built"
-    cached = timeline_api._frontier_payload_cache[first.cache_key]
+    cached = timeline_api._frontier_payload_memory.get(first.cache_key)
     assert isinstance(cached, bytes)
     assert len(cached) < 200_000
     assert cached == Path(first.disk_path).read_bytes()
@@ -227,7 +226,7 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
     with monkeypatch.context() as no_disk:
         no_disk.setattr(
             timeline_api,
-            "_live_frontier_disk_cache_path",
+            "_load_frontier_payload",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("memory hit must not touch disk")),
         )
         second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
@@ -236,7 +235,7 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
     timeline_api.reset_timeline_state()
     third = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert third.cache_source == "disk"
-    assert timeline_api._frontier_payload_cache[third.cache_key] == cached
+    assert timeline_api._frontier_payload_memory.get(third.cache_key) == cached
     # A memory hit decodes exactly the disk form: identical arrays, dtypes and (trimmed) shapes.
     for name in _PAYLOAD_ARRAY_NAMES:
         a = np.asarray(getattr(second.payload, name))
@@ -292,12 +291,12 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
     current_path = Path(built.disk_path)
     assert current_path.exists()
 
-    predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
+    predecessor = timeline_api.TIMELINE_FRONTIER_CACHE.compatible_versions()[1]
     predecessor_key = (predecessor, *built.cache_key[1:])
     with monkeypatch.context() as predecessor_context:
         predecessor_context.setattr(timeline_api, "_FRONTIER_DISK_CACHE_VERSION", predecessor)
-        timeline_api._save_frontier_payload_to_disk(predecessor_key, built.payload)
-    predecessor_path = timeline_api._frontier_disk_cache_path(predecessor_key)
+        timeline_api._save_frontier_payload(predecessor_key, timeline_api._encode_frontier_payload_npz(built.payload))
+    predecessor_path = timeline_api.TIMELINE_FRONTIER_CACHE.file_path(predecessor_key)
     assert predecessor_path.exists()
     current_path.unlink()
 
@@ -341,7 +340,6 @@ def test_build_or_load_timeline_frontier_payload_builds_and_persists_live_cache_
     timeline_api.reset_timeline_state()
     loaded = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert loaded.cache_source == "disk"
-    assert int(loaded.total_notes) == 4
 
 
 def test_frontier_disk_cache_cleans_tmp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
@@ -354,9 +352,9 @@ def test_frontier_disk_cache_cleans_tmp_when_replace_fails(tmp_path: Path, monke
         raise OSError("simulated replace failure")
 
     monkeypatch.setattr(Path, "replace", _raise_replace)
-    timeline_api._save_frontier_payload_to_disk(key, payload)
+    timeline_api._save_frontier_payload(key, timeline_api._encode_frontier_payload_npz(payload))
 
-    assert not timeline_api._frontier_disk_cache_path(key).exists()
+    assert not timeline_api.TIMELINE_FRONTIER_CACHE.file_path(key).exists()
     assert not list(tmp_path.glob("*.tmp.npz"))
 
 

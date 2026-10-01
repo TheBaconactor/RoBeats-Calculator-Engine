@@ -10,87 +10,43 @@ import numpy as np
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
+from gear_optimizer.solver.frontier_cache import FrontierCacheInfo, FrontierCacheLoad
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 
 from .response_build_gpu_batch import build_force_greats_response_first_frontiers_gpu_batch
 from .response_build_gpu_numba import _HEAD_DOM_C, _HEAD_DOM_F, _HEAD_DOM_G, _HEAD_DOM_V, _numba_session_box_keep_mask
 from .response_cache_keys import (
-    _fg_response_disk_cache_dir,
-    _fg_response_disk_cache_path,
     _response_axes,
     fg_response_frontier_bundle_cache_key,
-    fg_response_frontier_geometry_cache_key,
     fg_response_frontier_payload_cache_key,
 )
-from .response_cache_serde import (
-    frontier_result_from_scoring_bundle,
-    frontier_result_from_scoring_bundle_for_stats,
-)
 from .response_cache_store import (
+    FG_RESPONSE_FRONTIER_CACHE,
     _dense_rank_pattern_ids_inplace,
     _frontier_is_complete,
     _invalidate_bundle_array_views,
     _load_bundle_array_members,
     _load_payload,
-    _memory_put,  # noqa: F401
-    _payload_disk_info_if_complete,
-    _payload_memory_get,
-    _payload_memory_put,
+    _payload_disk_is_complete,
+    _payload_memory,
     _response_bundle_build_slots,
     _save_payload,
-    _scoring_bundle_memory_get,
-    _scoring_bundle_memory_put,
-    compress_cache_dir_sidecars,
+    _scoring_bundle_memory,
     load_first_surface_scoring_patterns,
-    load_first_surface_scoring_rows,
-    purge_stale_version_cache_files,
     release_fg_response_song_memory,
-    resolve_fg_response_bundle_path,
-    reset_fg_response_frontier_payload_cache,
 )
 from .response_cache_types import (
-    _FG_RESPONSE_CACHE_VERSION,
+    _FG_RESPONSE_CACHE_VERSION,  # noqa: F401 -- response_cache_keys reads the cache version from this module
     _SCORING_BUNDLE_ARRAY_NAMES,
     _SURFACE_BUNDLE_PATH_ARRAY_NAME,
     _SURFACE_GENERATION_ARRAY_NAME,
-    FgResponseFrontierCacheInfo,
     FgResponseFrontierCachePayload,
-    FgResponseFrontierPrewarmResult,
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
     all_response_stat_keys,
     normalize_fg_response_stat_keys,
 )
 from .response_types import FgResponseFrontierResult
-
-__all__ = [
-    "FgResponseFrontierCacheInfo",
-    "FgResponseFrontierCachePayload",
-    "FgResponseFrontierPrewarmResult",
-    "FgResponseFrontierScoringBundle",
-    "_FG_RESPONSE_CACHE_VERSION",
-    "_fg_response_disk_cache_path",
-    "build_or_load_response_frontier_payload",
-    "cleanup_fg_response_frontier_cache_temp_files",
-    "compress_cache_dir_sidecars",
-    "fg_response_frontier_bundle_cache_key",
-    "fg_response_frontier_geometry_cache_key",
-    "fg_response_frontier_payload_cache_info",
-    "fg_response_frontier_payload_cache_key",
-    "frontier_result_from_scoring_bundle",
-    "frontier_result_from_scoring_bundle_for_stats",
-    "all_response_stat_keys",
-    "load_first_surface_scoring_rows",
-    "load_first_surface_scoring_patterns",
-    "session_head_dominance_box",
-    "session_prune_scoring_bundle",
-    "load_response_frontier_scoring_bundle",
-    "normalize_fg_response_stat_keys",
-    "purge_stale_version_cache_files",
-    "release_fg_response_song_memory",
-    "reset_fg_response_frontier_payload_cache",
-]
-
 
 def _source_label(counts: Counter[str]) -> str:
     if int(counts.get("built", 0)) > 0:
@@ -102,7 +58,7 @@ def _source_label(counts: Counter[str]) -> str:
 
 
 def _response_bundle_build_lock(bundle_key: tuple) -> FrontierBuildLock:
-    bundle_path = _fg_response_disk_cache_path(bundle_key)
+    bundle_path = FG_RESPONSE_FRONTIER_CACHE.file_path(bundle_key)
     lock_dir = bundle_path.parent / ".bundle_locks" / bundle_path.stem
     return FrontierBuildLock(lock_dir, label=f"fg_response_bundle:{bundle_path.stem}")
 
@@ -373,63 +329,22 @@ def fg_response_frontier_payload_cache_info(
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
-) -> FgResponseFrontierCacheInfo:
+) -> FrontierCacheInfo:
+    """Whether a payload with `stat_keys` is cached, checked without loading one: a request payload or the song's
+    bundle, in memory or as a complete file."""
     keys = normalize_fg_response_stat_keys(stat_keys)
     payload_key = fg_response_frontier_payload_cache_key(song, curves, keys)
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
-    payload = _payload_memory_get(payload_key)
-    if payload is not None:
-        return FgResponseFrontierCacheInfo(
-            cache_key=payload_key,
-            disk_path=resolve_fg_response_bundle_path(payload_key),
-            cache_source="memory",
-            total_notes=int(payload.total_notes),
-            long_notes=int(payload.long_notes),
-            frontier_count=int(len(payload.frontier_by_key)),
-        )
-    disk_info = _payload_disk_info_if_complete(payload_key, keys)
-    if disk_info is not None:
-        total_notes, long_notes, frontier_count = disk_info
-        return FgResponseFrontierCacheInfo(
-            cache_key=payload_key,
-            disk_path=resolve_fg_response_bundle_path(payload_key),
-            cache_source="disk",
-            total_notes=int(total_notes),
-            long_notes=int(long_notes),
-            frontier_count=int(frontier_count),
-        )
-    bundle = _payload_memory_get(bundle_key)
-    if bundle is not None:
-        subset = _payload_subset(bundle, keys)
-        if subset is not None:
-            return FgResponseFrontierCacheInfo(
-                cache_key=payload_key,
-                disk_path=resolve_fg_response_bundle_path(bundle_key),
-                cache_source="disk",
-                total_notes=int(subset.total_notes),
-                long_notes=int(subset.long_notes),
-                frontier_count=int(len(subset.frontier_by_key)),
-            )
-    bundle_disk_info = _payload_disk_info_if_complete(bundle_key, keys)
-    if bundle_disk_info is not None:
-        total_notes, long_notes, frontier_count = bundle_disk_info
-        return FgResponseFrontierCacheInfo(
-            cache_key=payload_key,
-            disk_path=resolve_fg_response_bundle_path(bundle_key),
-            cache_source="disk",
-            total_notes=int(total_notes),
-            long_notes=int(long_notes),
-            frontier_count=int(frontier_count),
-        )
-    song_inputs = song.fg_inputs
-    return FgResponseFrontierCacheInfo(
-        cache_key=payload_key,
-        disk_path=resolve_fg_response_bundle_path(payload_key),
-        cache_source="missing",
-        total_notes=int(song_inputs.total_notes),
-        long_notes=int(song_inputs.long_notes),
-        frontier_count=0,
-    )
+    if _payload_memory.get(payload_key) is not None:
+        return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "memory")
+    if _payload_disk_is_complete(payload_key, keys):
+        return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "disk")
+    bundle = _payload_memory.get(bundle_key)
+    if (bundle is not None and _payload_subset(bundle, keys) is not None) or _payload_disk_is_complete(
+        bundle_key, keys
+    ):
+        return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key), "disk")
+    return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "missing")
 
 
 def _stat_key_index_rows(keys: tuple[tuple[int, int], ...]) -> np.ndarray:
@@ -506,7 +421,7 @@ def load_response_frontier_scoring_bundle(
 ) -> FgResponseFrontierScoringBundle:
     keys = normalize_fg_response_stat_keys(stat_keys)
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
-    cached_scoring = _scoring_bundle_memory_get(bundle_key)
+    cached_scoring = _scoring_bundle_memory.get(bundle_key)
     if cached_scoring is not None:
         requested = _stat_key_index_rows(keys)
         if bool(np.all(cached_scoring.frontier_idx_by_stat[requested[:, 0], requested[:, 1]] >= 0)):
@@ -550,7 +465,7 @@ def load_response_frontier_scoring_bundle(
             f"{missing[:5]!r}"
         )
     scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
-    _scoring_bundle_memory_put(bundle_key, scoring_bundle)
+    _scoring_bundle_memory.put(bundle_key, scoring_bundle)
     return scoring_bundle
 
 def build_or_load_response_frontier_payload(
@@ -558,23 +473,20 @@ def build_or_load_response_frontier_payload(
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
-) -> FgResponseFrontierPrewarmResult:
+) -> FrontierCacheLoad[FgResponseFrontierCachePayload]:
     started = time.perf_counter()
     keys = normalize_fg_response_stat_keys(stat_keys)
     cache_key = fg_response_frontier_payload_cache_key(song, curves, keys)
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
-    bundle_path = resolve_fg_response_bundle_path(bundle_key)
-    payload = _payload_memory_get(cache_key)
+    bundle_path = FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)
+    payload = _payload_memory.get(cache_key)
     if payload is not None and _payload_subset(payload, keys) is not None:
-        return FgResponseFrontierPrewarmResult(
+        return FrontierCacheLoad(
             payload=payload,
             cache_key=cache_key,
             disk_path=bundle_path,
             cache_source="memory",
             elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-            total_notes=int(payload.total_notes),
-            long_notes=int(payload.long_notes),
-            frontier_count=int(len(payload.frontiers)),
         )
     source = "disk"
     request_payload = _load_payload(cache_key)
@@ -583,7 +495,7 @@ def build_or_load_response_frontier_payload(
     payload = request_payload
     bundle: FgResponseFrontierCachePayload | None = None
     if payload is None:
-        bundle = _payload_memory_get(bundle_key)
+        bundle = _payload_memory.get(bundle_key)
         if bundle is None:
             bundle = _load_payload(bundle_key)
         payload = _payload_subset(bundle, keys)
@@ -625,29 +537,42 @@ def build_or_load_response_frontier_payload(
                 if bundle_changed:
                     _save_payload(bundle_key, bundle)
                     _invalidate_bundle_array_views(bundle_key)
-                _payload_memory_put(bundle_key, bundle)
+                _payload_memory.put(bundle_key, bundle)
                 payload = _payload_subset(bundle, keys)
                 if payload is None:
                     raise ValueError("FG response frontier bundle did not contain requested keys after build")
-    _payload_memory_put(cache_key, payload)
-    return FgResponseFrontierPrewarmResult(
+    _payload_memory.put(cache_key, payload)
+    return FrontierCacheLoad(
         payload=payload,
         cache_key=cache_key,
-        disk_path=resolve_fg_response_bundle_path(bundle_key),
+        disk_path=FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key),
         cache_source=source,
         elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-        total_notes=int(payload.total_notes),
-        long_notes=int(payload.long_notes),
-        frontier_count=int(len(payload.frontiers)),
     )
 
 
-def cleanup_fg_response_frontier_cache_temp_files(cache_dir: str | Path | None = None) -> int:
-    root = Path(cache_dir) if cache_dir is not None else _fg_response_disk_cache_dir()
-    if not root.exists():
-        return 0
-    removed = 0
-    for path in root.glob("*.tmp.npz"):
-        path.unlink(missing_ok=True)
-        removed += 1
-    return int(removed)
+def ensure_response_frontier_cache_for_song(
+    song: TimedSong,
+    curves: StatCurves,
+    *,
+    stat_keys: Iterable[tuple[int, int]] | None = None,
+) -> tuple[str, float, Path]:
+    """Make sure the song's bundle with `stat_keys` (default: every FT/FF key) is on disk; returns (cache source,
+    build ms, bundle file).
+
+    The candidate-independent bundle is keyed by the song's timing, so a chart-only (zero_ms) song has its own
+    bundle, distinct from the perfect_window one. A hit costs a metadata + sidecar-header probe: it skips
+    build_or_load's per-row object materialization (seconds on heavy bundles), which no caller of this needs (scoring
+    reads the slim bundle + sidecars). A miss builds the requested cells, publishes them, then releases the song's
+    memory tiers: build_or_load pins the merged bundle and request payload (~1 GB of frontier rows on heavy charts)
+    in the process-wide payload tier, and nothing here reads them; the bundle re-opens from disk where it is needed.
+    """
+    keys = tuple(stat_keys) if stat_keys is not None else all_response_stat_keys()
+    cache_info = fg_response_frontier_payload_cache_info(song, curves, stat_keys=keys)
+    if cache_info.cache_source in {"disk", "memory"}:
+        return cache_info.cache_source, 0.0, cache_info.disk_path
+    try:
+        result = build_or_load_response_frontier_payload(song, curves, stat_keys=keys)
+    finally:
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(song, curves))
+    return result.cache_source, result.elapsed_ms, result.disk_path

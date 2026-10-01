@@ -6,6 +6,12 @@ import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
+
+from gear_optimizer.solver.frontier_cache import (
+    FrontierCacheBuildResult,
+    FrontierCacheInfo,
+    build_frontier_cache_for_chart,
+)
 from tests.curves_support import synthetic_curves
 
 
@@ -25,14 +31,24 @@ def test_standalone_and_service_share_the_startup_cache_owner() -> None:
 
     assert "run_startup_cpu_work(" in app_source
     assert "run_startup_cpu_work(" in service_source
-    assert "run_fg_response_frontier_cache_prebuild(" not in service_source
+    assert "prebuild_frontier_cache(" not in service_source
     assert 'str(REPO_ROOT / "main.py"), "run"' in service_source
+
+
+def _fake_prebuilds(monkeypatch, *, timeline, fg) -> None:
+    """cpu_work_manager's two prebuilds, faked per cache."""
+    from gear_optimizer.solver import cpu_work_manager
+
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "prebuild_frontier_cache",
+        lambda prebuild, **kwargs: {"timeline": timeline, "fg_response": fg}[prebuild.cache.name](**kwargs),
+    )
 
 
 def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+    from gear_optimizer.solver.frontier_cache import FrontierCachePrebuildSummary
 
     calls: list[str] = []
 
@@ -40,15 +56,14 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
         calls.append("timeline_start")
         time.sleep(0.02)
         calls.append("timeline_end")
-        return TimelineFrontierCachePrebuildSummary(total=1, completed=1, disk=1)
+        return FrontierCachePrebuildSummary(total=1, completed=1, disk=1)
 
     def _fg(**_kwargs):
         calls.append("fg_start")
         calls.append("fg_end")
-        return FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=1)
+        return FrontierCachePrebuildSummary(total=1, completed=1, built=1)
 
-    monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", _timeline)
-    monkeypatch.setattr(cpu_work_manager, "run_fg_response_frontier_cache_prebuild", _fg)
+    _fake_prebuilds(monkeypatch, timeline=_timeline, fg=_fg)
 
     cpu_work_manager.run_startup_cpu_work(
         song_queue=[("Data/Easy/Fake.txt",)],
@@ -61,18 +76,12 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
 
 def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+    from gear_optimizer.solver.frontier_cache import FrontierCachePrebuildSummary
 
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_timeline_frontier_cache_prebuild",
-        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
-    )
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_fg_response_frontier_cache_prebuild",
-        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
+    _fake_prebuilds(
+        monkeypatch,
+        timeline=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
+        fg=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
     )
 
     stream = io.StringIO()
@@ -90,18 +99,12 @@ def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(mo
 
 def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+    from gear_optimizer.solver.frontier_cache import FrontierCachePrebuildSummary
 
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_timeline_frontier_cache_prebuild",
-        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=1, disk=0, memory=0),
-    )
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_fg_response_frontier_cache_prebuild",
-        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
+    _fake_prebuilds(
+        monkeypatch,
+        timeline=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=1, disk=0, memory=0),
+        fg=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
     )
 
     stream = io.StringIO()
@@ -131,22 +134,16 @@ def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path:
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _UnexpectedExecutor)
     monkeypatch.setattr(
         prebuild,
-        "build_timeline_frontier_cache_for_path",
-        lambda path, _curves: built.append(str(path))
-        or prebuild.TimelineFrontierCacheBuildResult(
-            path=str(path),
-            source="disk",
-            build_ms=0.0,
-            cache_file="cache.npz",
-        ),
+        "build_frontier_cache_for_chart",
+        lambda path, _curves, _mode, _ensure: built.append(str(path))
+        or FrontierCacheBuildResult(path=str(path), source="disk", build_ms=0.0, cache_file="cache.npz"),
     )
 
-    summary, results = prebuild._run_missing_timeline_prebuild([str(song_path)], {})
+    tally = prebuild._build_timeline_songs([str(song_path)], {}, "perfect_window")
 
     assert built == [str(song_path)]
-    assert summary.completed == 1
-    assert summary.disk == 1
-    assert results[0].path == str(song_path)
+    assert len(tally.results) == 1 and tally.sources["disk"] == 1
+    assert tally.results[0].path == str(song_path)
 
 
 def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatch) -> None:
@@ -164,12 +161,10 @@ def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatc
         def __exit__(self, *_args):
             return False
 
-        def submit(self, _fn, path):
+        def submit(self, _fn, path, _timing_mode):
             future = prebuild.concurrent.futures.Future()
             future.set_result(
-                prebuild.TimelineFrontierCacheBuildResult(
-                    path=str(path), source="disk", build_ms=0.0, cache_file=f"{path}.npz"
-                )
+                FrontierCacheBuildResult(path=str(path), source="disk", build_ms=0.0, cache_file=f"{path}.npz")
             )
             return future
 
@@ -177,10 +172,9 @@ def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatc
     monkeypatch.setattr(prebuild, "frontier_prebuild_intra_worker_threads", lambda _workers: 1)
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
 
-    summary, results = prebuild._run_missing_timeline_prebuild(["a.txt", "b.txt"], {})
+    tally = prebuild._build_timeline_songs(["a.txt", "b.txt"], {}, "perfect_window")
 
-    assert summary.completed == 2
-    assert len(results) == 2
+    assert len(tally.results) == 2
     assert captured_kwargs["max_tasks_per_worker"] == prebuild._TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER
 
 
@@ -199,15 +193,13 @@ def test_timeline_multi_prebuild_counts_broken_worker_future_per_path(monkeypatc
         def __exit__(self, *_args):
             return False
 
-        def submit(self, _fn, path):
+        def submit(self, _fn, path, _timing_mode):
             future = prebuild.concurrent.futures.Future()
             if path == "broken.txt":
                 future.set_exception(BrokenProcessPool("native worker exited"))
             else:
                 future.set_result(
-                    prebuild.TimelineFrontierCacheBuildResult(
-                        path=str(path), source="disk", build_ms=0.0, cache_file=f"{path}.npz"
-                    )
+                    FrontierCacheBuildResult(path=str(path), source="disk", build_ms=0.0, cache_file=f"{path}.npz")
                 )
             return future
 
@@ -215,12 +207,11 @@ def test_timeline_multi_prebuild_counts_broken_worker_future_per_path(monkeypatc
     monkeypatch.setattr(prebuild, "frontier_prebuild_intra_worker_threads", lambda _workers: 1)
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
 
-    summary, results = prebuild._run_missing_timeline_prebuild(["broken.txt", "ready.txt"], {})
+    tally = prebuild._build_timeline_songs(["broken.txt", "ready.txt"], {}, "perfect_window")
 
-    assert summary.total == 2
-    assert summary.completed == 1
-    assert summary.failures == 1
-    assert [result.path for result in results] == ["ready.txt"]
+    assert tally.total == 2
+    assert tally.failures == 1
+    assert [result.path for result in tally.results] == ["ready.txt"]
 
 
 def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
@@ -237,27 +228,21 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(
         prebuild,
         "_dedupe_paths_by_response_bundle_key",
-        lambda paths, _curves: ([(str(path), 0) for path in paths], {}),
+        lambda paths, _curves, _mode: ([(str(path), 0) for path in paths], {}),
     )
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", lambda **_kwargs: _UnexpectedExecutor())
     monkeypatch.setattr(
         prebuild,
-        "build_fg_response_frontier_cache_for_path",
-        lambda path, _curves, *, stat_keys: built.append(str(path))
-        or prebuild.FgResponseFrontierCacheBuildResult(
-            path=str(path),
-            source="disk",
-            build_ms=0.0,
-            cache_file="cache.npz",
-        ),
+        "build_frontier_cache_for_chart",
+        lambda path, _curves, _mode, _ensure: built.append(str(path))
+        or FrontierCacheBuildResult(path=str(path), source="disk", build_ms=0.0, cache_file="cache.npz"),
     )
 
-    summary, results = prebuild._run_missing_fg_prebuild([str(song_path)], {}, ((0, 0),))
+    tally = prebuild._build_fg_songs([str(song_path)], {}, "perfect_window")
 
     assert built == [str(song_path)]
-    assert summary.completed == 1
-    assert summary.disk == 1
-    assert results[0].path == str(song_path)
+    assert len(tally.results) == 1 and tally.sources["disk"] == 1
+    assert tally.results[0].path == str(song_path)
 
 
 def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all(monkeypatch) -> None:
@@ -276,7 +261,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: SimpleNamespace(stop=lambda: None))
     items = [(f"giant{i}.txt", 7000) for i in range(3)] + [(f"light{i}.txt", 500) for i in range(4)]
     monkeypatch.setattr(
-        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _curves: (list(items), {})
+        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _curves, _mode: (list(items), {})
     )
 
     budget_gb = 26.0 - prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB
@@ -284,9 +269,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
 
     class _FakeFuture:
         def __init__(self, path: str):
-            self._result = prebuild.FgResponseFrontierCacheBuildResult(
-                path=path, source="built", build_ms=1.0, cache_file=f"{path}.npz"
-            )
+            self._result = FrontierCacheBuildResult(path=path, source="built", build_ms=1.0, cache_file=f"{path}.npz")
 
         def result(self):
             return self._result
@@ -303,7 +286,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
         def __exit__(self, *_args):
             return False
 
-        def submit(self, _fn, path, reducer_threads):
+        def submit(self, _fn, path, reducer_threads, _timing_mode):
             assert int(reducer_threads) >= 1
             return _FakeFuture(str(path))
 
@@ -317,13 +300,11 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
     monkeypatch.setattr(prebuild.concurrent.futures, "wait", _fake_wait)
 
-    summary, results = prebuild._run_missing_fg_prebuild(
-        [path for path, _notes in items], {}, ((0, 0),)
-    )
+    tally = prebuild._build_fg_songs([path for path, _notes in items], {}, "perfect_window")
 
-    assert summary.completed == len(items)
-    assert summary.failures == 0
-    assert sorted(result.path for result in results) == sorted(path for path, _notes in items)
+    assert len(tally.results) == len(items)
+    assert tally.failures == 0
+    assert sorted(result.path for result in tally.results) == sorted(path for path, _notes in items)
     assert ledger_peaks, "admission loop never drained"
     assert max(ledger_peaks) <= budget_gb + 1e-9
     assert captured_kwargs["max_tasks_per_worker"] == prebuild._FG_PREBUILD_MAX_TASKS_PER_WORKER
@@ -340,15 +321,13 @@ def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch)
     monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
     monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: SimpleNamespace(stop=lambda: None))
     monkeypatch.setattr(
-        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _refs: (list(items), {})
+        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _refs, _mode: (list(items), {})
     )
     submitted_widths: list[int] = []
 
     class _FakeFuture:
         def __init__(self, path: str):
-            self._result = prebuild.FgResponseFrontierCacheBuildResult(
-                path=path, source="built", build_ms=1.0, cache_file=f"{path}.npz"
-            )
+            self._result = FrontierCacheBuildResult(path=path, source="built", build_ms=1.0, cache_file=f"{path}.npz")
 
         def result(self):
             return self._result
@@ -363,7 +342,7 @@ def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch)
         def __exit__(self, *_args):
             return False
 
-        def submit(self, _fn, path, reducer_threads):
+        def submit(self, _fn, path, reducer_threads, _timing_mode):
             submitted_widths.append(int(reducer_threads))
             return _FakeFuture(str(path))
 
@@ -374,380 +353,10 @@ def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch)
         lambda futures, **_kwargs: ({next(iter(futures))}, set()),
     )
 
-    summary, results = prebuild._run_missing_fg_prebuild(
-        [path for path, _notes in items], {}, ((0, 0),)
-    )
+    tally = prebuild._build_fg_songs([path for path, _notes in items], {}, "perfect_window")
 
-    assert summary.completed == 2
-    assert [result.path for result in results] == ["first.txt", "last.txt"]
+    assert [result.path for result in tally.results] == ["first.txt", "last.txt"]
     assert submitted_widths == [11, 11]
-
-
-def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-
-    song_a = tmp_path / "SongA.txt"
-    song_b = tmp_path / "SongB.txt"
-    song_a.write_text("fake", encoding="utf-8")
-    song_b.write_text("fake", encoding="utf-8")
-
-    class _Plan:
-        total_paths = 2
-        hit_paths = (str(song_a), str(song_b))
-        missing_paths = ()
-        key_by_norm_path = {}
-        validated_entry_count = 0
-
-        @property
-        def hit_count(self) -> int:
-            return 2
-
-    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
-    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
-    monkeypatch.setattr(prebuild, "_apply_manifest_results", lambda **_kwargs: 0)
-
-    def _unexpected_lock(*_args, **_kwargs):
-        raise AssertionError("cache hits must not acquire the build lock")
-
-    monkeypatch.setattr(
-        prebuild,
-        "FrontierBuildLock",
-        _unexpected_lock,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
-    compression_calls = 0
-
-    def _compress() -> None:
-        nonlocal compression_calls
-        compression_calls += 1
-
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
-        _compress,
-    )
-
-    def _unexpected_parse(_paths, _curves):
-        raise AssertionError("manifest hits must not reach the dedupe/weight parse pass")
-
-    monkeypatch.setattr(prebuild, "_dedupe_paths_by_response_bundle_key", _unexpected_parse)
-
-    summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        song_queue=[(str(song_a),), (str(song_b),)],
-        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        data_root=tmp_path,
-        timing_modes=("perfect_window",),
-    )
-
-    assert summary.total == 2
-    assert summary.completed == 2
-    assert summary.disk == 2
-    assert compression_calls == 0
-
-
-def test_complete_manifest_skips_maintenance_with_uncompressed_sidecars(
-    monkeypatch, tmp_path: Path
-) -> None:
-    import numpy as np
-
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-
-    song_path = tmp_path / "Song.txt"
-    song_path.write_text("fake", encoding="utf-8")
-    sidecar = tmp_path / f"cached{store._SURFACE_ROW_SIDECAR_SUFFIX}"
-    np.save(sidecar, np.arange(20000, dtype=np.uint32))
-    original = sidecar.read_bytes()
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(store, "sys", SimpleNamespace(platform="darwin"))
-
-    class _Plan:
-        total_paths = 1
-        hit_paths = (str(song_path),)
-        missing_paths = ()
-        key_by_norm_path = {}
-        validated_entry_count = 0
-
-        @property
-        def hit_count(self) -> int:
-            return 1
-
-    plan_calls = 0
-
-    def _plan(*_args, **_kwargs):
-        nonlocal plan_calls
-        plan_calls += 1
-        return _Plan()
-
-    compression_calls = 0
-
-    def _compress() -> None:
-        nonlocal compression_calls
-        compression_calls += 1
-
-    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
-    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
-
-    def _unexpected_lock(*_args, **_kwargs):
-        raise AssertionError("cache hits must not acquire the build lock for compression")
-
-    monkeypatch.setattr(prebuild, "FrontierBuildLock", _unexpected_lock)
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
-        lambda **_kwargs: 0,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
-        _compress,
-    )
-    monkeypatch.setattr(
-        prebuild,
-        "_run_missing_fg_prebuild",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("complete pool maintenance must not start workers")
-        ),
-    )
-
-    summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        song_queue=[(str(song_path),)],
-        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        data_root=tmp_path,
-        timing_modes=("perfect_window",),
-    )
-
-    assert plan_calls == 1
-    assert compression_calls == 0
-    assert sidecar.read_bytes() == original
-    assert summary.completed == 1
-    assert summary.disk == 1
-    assert summary.built == 0
-
-
-def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch, tmp_path: Path) -> None:
-    from contextlib import nullcontext
-
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-
-    song_path = tmp_path / "Song.txt"
-    song_path.write_text("fake", encoding="utf-8")
-
-    class _Plan:
-        total_paths = 1
-        hit_paths = (str(song_path),)
-        missing_paths = ()
-        key_by_norm_path = {}
-        validated_entry_count = 0
-
-        @property
-        def hit_count(self) -> int:
-            return 1
-
-    persist_calls: list[bool] = []
-
-    def _plan(*_args, **kwargs):
-        persist_calls.append(bool(kwargs.get("persist_validated_entries", True)))
-        return _Plan()
-
-    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
-    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: False)
-    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
-        lambda **_kwargs: 0,
-    )
-    compression_calls = 0
-
-    def _compress() -> None:
-        nonlocal compression_calls
-        compression_calls += 1
-
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
-        _compress,
-    )
-
-    def _unexpected_build(*_args, **_kwargs):
-        raise AssertionError("compatible complete pool must not start workers")
-
-    monkeypatch.setattr(prebuild, "_run_missing_fg_prebuild", _unexpected_build)
-    summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        song_queue=[(str(song_path),)],
-        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        data_root=tmp_path,
-        timing_modes=("perfect_window",),
-    )
-
-    assert persist_calls == [True]
-    assert summary.total == 1
-    assert summary.completed == 1
-    assert summary.disk == 1
-    assert summary.built == 0
-    assert compression_calls == 0
-
-
-def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkeypatch, tmp_path: Path) -> None:
-    from contextlib import nullcontext
-
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-
-    song_path = tmp_path / "Song.txt"
-    song_path.write_text("fake", encoding="utf-8")
-
-    class _Plan:
-        total_paths = 1
-        hit_paths = (str(song_path),)
-        missing_paths = ()
-        key_by_norm_path = {}
-
-        def __init__(self, validated_entry_count: int) -> None:
-            self.validated_entry_count = validated_entry_count
-
-        @property
-        def hit_count(self) -> int:
-            return 1
-
-    persist_calls: list[bool] = []
-
-    def _plan(*_args, **kwargs):
-        persist = bool(kwargs.get("persist_validated_entries", True))
-        persist_calls.append(persist)
-        return _Plan(0 if persist else 1)
-
-    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
-    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
-    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
-        lambda: 0,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
-        lambda **_kwargs: 0,
-    )
-    monkeypatch.setattr(
-        prebuild,
-        "_run_missing_fg_prebuild",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("complete derived hits must repair metadata without starting workers")
-        ),
-    )
-
-    summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        song_queue=[(str(song_path),)],
-        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        data_root=tmp_path,
-        timing_modes=("perfect_window",),
-    )
-
-    assert persist_calls == [False, True]
-    assert summary.completed == 1
-    assert summary.disk == 1
-    assert summary.built == 0
-
-
-def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
-
-    song_path = tmp_path / "Song.txt"
-    song_path.write_text("fake", encoding="utf-8")
-
-    class _Plan:
-        total_paths = 1
-        hit_paths = (str(song_path),)
-        missing_paths = ()
-        key_by_norm_path = {}
-        validated_entry_count = 0
-
-        @property
-        def hit_count(self) -> int:
-            return 1
-
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
-
-    def _unexpected_lock(*_args, **_kwargs):
-        raise AssertionError("cache hits must not acquire the build lock")
-
-    monkeypatch.setattr(
-        prebuild,
-        "FrontierBuildLock",
-        _unexpected_lock,
-    )
-
-    summary = prebuild.run_timeline_frontier_cache_prebuild(
-        song_queue=[(str(song_path),)],
-        curves={},
-        data_root=tmp_path,
-        timing_modes=("perfect_window",),
-    )
-
-    assert summary.total == 1
-    assert summary.completed == 1
-    assert summary.disk == 1
-
-
-def test_timeline_prebuild_persists_complete_unrecorded_hits_under_lock(monkeypatch, tmp_path: Path) -> None:
-    from contextlib import nullcontext
-
-    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
-
-    song_path = tmp_path / "Song.txt"
-    song_path.write_text("fake", encoding="utf-8")
-
-    class _Plan:
-        total_paths = 1
-        hit_paths = (str(song_path),)
-        missing_paths = ()
-        key_by_norm_path = {}
-
-        def __init__(self, validated_entry_count: int) -> None:
-            self.validated_entry_count = validated_entry_count
-
-        @property
-        def hit_count(self) -> int:
-            return 1
-
-    persist_calls: list[bool] = []
-
-    def _plan(*_args, **kwargs):
-        persist = bool(kwargs.get("persist_validated_entries", True))
-        persist_calls.append(persist)
-        return _Plan(0 if persist else 1)
-
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
-    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        prebuild,
-        "_run_missing_timeline_prebuild",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("complete derived hits must repair metadata without starting workers")
-        ),
-    )
-
-    summary = prebuild.run_timeline_frontier_cache_prebuild(
-        song_queue=[(str(song_path),)],
-        curves={},
-        data_root=tmp_path,
-        timing_modes=("perfect_window",),
-    )
-
-    assert persist_calls == [False, True]
-    assert summary.completed == 1
-    assert summary.disk == 1
-    assert summary.built == 0
 
 
 def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None:
@@ -784,8 +393,7 @@ def _chart_text(name: str, timestamps: list[float]) -> str:
 
 
 def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCacheInfo
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import ensure_response_frontier_cache_for_song
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Cached Song", [1.0, 2.0]), encoding="utf-8")
@@ -793,14 +401,7 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
     cache_path.write_text("cache", encoding="utf-8")
 
     def _cache_info(_song, _curves, *, stat_keys):
-        return FgResponseFrontierCacheInfo(
-            cache_key=("cache",),
-            disk_path=cache_path,
-            cache_source="disk",
-            total_notes=2,
-            long_notes=0,
-            frontier_count=len(tuple(stat_keys)),
-        )
+        return FrontierCacheInfo(cache_key=("cache",), disk_path=cache_path, cache_source="disk")
 
     def _unexpected_build(*_args, **_kwargs):
         raise AssertionError("valid startup cache hit must not rebuild")
@@ -814,10 +415,11 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
         _unexpected_build,
     )
 
-    result = prebuild.build_fg_response_frontier_cache_for_path(
+    result = build_frontier_cache_for_chart(
         str(song_path),
         synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        stat_keys=((0, 0),),
+        "perfect_window",
+        ensure_response_frontier_cache_for_song,
     )
 
     assert result.source == "disk"
@@ -826,140 +428,31 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
 
 
 def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCacheInfo
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import ensure_response_frontier_cache_for_song
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Missing Song", [1.0, 2.0, 3.0]), encoding="utf-8")
     cache_path = tmp_path / "cache.npz"
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.fg_response_frontier_payload_cache_info",
-        lambda *_args, **_kwargs: FgResponseFrontierCacheInfo(
-            cache_key=("missing",),
-            disk_path=cache_path,
-            cache_source="missing",
-            total_notes=3,
-            long_notes=0,
-            frontier_count=0,
+        lambda *_args, **_kwargs: FrontierCacheInfo(
+            cache_key=("missing",), disk_path=cache_path, cache_source="missing"
         ),
     )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.build_or_load_response_frontier_payload",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            cache_source="built",
-            elapsed_ms=12.5,
-            total_notes=3,
-            long_notes=0,
-            frontier_count=1,
-            disk_path=cache_path,
-        ),
+        lambda *_args, **_kwargs: SimpleNamespace(cache_source="built", elapsed_ms=12.5, disk_path=cache_path),
     )
 
-    result = prebuild.build_fg_response_frontier_cache_for_path(
+    result = build_frontier_cache_for_chart(
         str(song_path),
         synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        stat_keys=((0, 0),),
+        "perfect_window",
+        ensure_response_frontier_cache_for_song,
     )
 
     assert result.source == "built"
     assert result.build_ms == 12.5
-
-
-def test_fg_response_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-
-    cache_dir = tmp_path / "cache"
-    song_path = tmp_path / "Song.txt"
-    cache_path = tmp_path / "broken.npz"
-    song_path.write_text("fake", encoding="utf-8")
-    cache_path.write_text("not a complete npz", encoding="utf-8")
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(cache_dir))
-    curves = synthetic_curves({"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161})
-    stat_keys = ((0, 0),)
-
-    plan = prebuild._build_manifest_plan([str(song_path)], curves, stat_keys=stat_keys)
-    prebuild._apply_manifest_results(
-        plan=plan,
-        results=[SimpleNamespace(path=str(song_path), source="disk", cache_file=str(cache_path))],
-        stat_keys=stat_keys,
-    )
-
-    second_plan = prebuild._build_manifest_plan([str(song_path)], curves, stat_keys=stat_keys)
-
-    assert second_plan.hit_paths == ()
-    assert second_plan.missing_paths == (str(song_path),)
-
-
-def test_timeline_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
-
-    cache_dir = tmp_path / "cache"
-    song_path = tmp_path / "Song.txt"
-    cache_path = tmp_path / "broken.npz"
-    song_path.write_text("fake", encoding="utf-8")
-    cache_path.write_text("not a complete npz", encoding="utf-8")
-    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(cache_dir))
-    curves = synthetic_curves({"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161})
-
-    plan = prebuild._build_manifest_plan([str(song_path)], curves)
-    prebuild._apply_manifest_results(
-        plan=plan,
-        results=[SimpleNamespace(path=str(song_path), source="disk", cache_file=str(cache_path))],
-    )
-
-    second_plan = prebuild._build_manifest_plan([str(song_path)], curves)
-
-    assert second_plan.hit_paths == ()
-    assert second_plan.missing_paths == (str(song_path),)
-
-
-def test_manifest_identity_hit_does_not_validate_payload(tmp_path: Path) -> None:
-    from gear_optimizer.solver.frontier_cache_manifest import build_manifest_plan
-
-    song_path = tmp_path / "Song.txt"
-    cache_path = tmp_path / "cache.npz"
-    manifest_path = tmp_path / "manifest.json"
-    song_path.write_text("fake", encoding="utf-8")
-    cache_path.write_text("cache", encoding="utf-8")
-    st = os.stat(cache_path)
-
-    first_plan = build_manifest_plan(
-        [str(song_path)],
-        manifest_path=manifest_path,
-        cache_version="v1",
-        version_field="version",
-        ref_sig_hex="ref",
-    )
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "schema": 2,
-                "version": "v1",
-                "entries": {
-                    first_plan.key_by_norm_path[os.path.abspath(song_path).casefold()]: {
-                        "cache_file": str(cache_path),
-                        "cache_mtime_ns": int(st.st_mtime_ns),
-                        "cache_size": int(st.st_size),
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    second_plan = build_manifest_plan(
-        [str(song_path)],
-        manifest_path=manifest_path,
-        cache_version="v1",
-        version_field="version",
-        ref_sig_hex="ref",
-        cache_file_validator=lambda _path: (_ for _ in ()).throw(
-            AssertionError("identity hit must not validate payload")
-        ),
-    )
-
-    assert second_plan.hit_paths == (str(song_path),)
-    assert second_plan.missing_paths == ()
 
 
 def test_ram_guard_force_resumes_stalled_worker_below_resume_floor(monkeypatch):

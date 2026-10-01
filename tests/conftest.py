@@ -66,9 +66,8 @@ def _isolate_frontier_cache_dirs() -> None:
     and ``bin/fg_response_frontier_cache`` when their env overrides are unset
     (``_frontier_disk_cache_dir`` / ``_fg_response_disk_cache_dir``). Any test that
     exercises a real cache code path -- a timeline build/load, a cache-info probe, or
-    ``run_fg_response_frontier_cache_prebuild`` (which calls the real
-    ``purge_stale_version_cache_files`` / ``compress_cache_dir_sidecars`` /
-    ``cleanup_fg_response_frontier_cache_temp_files``) -- without setting its override
+    the FG cache prebuild (whose maintenance purges superseded versions, compresses sidecars and
+    removes temporary files) -- without setting its override
     would read, prune, purge, or rebuild the developer's PRODUCTION cache under ``bin/``.
 
     Pinning both overrides for the whole session (env is read live via ``env_get``, so a

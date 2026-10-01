@@ -287,10 +287,8 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
     """
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        build_or_load_response_frontier_payload,
-        reset_fg_response_frontier_payload_cache,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import build_or_load_response_frontier_payload
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
 
     decoded, _payload_base_stats7, song, curves = real_ga_run
 

@@ -26,9 +26,7 @@ def _reset_fg_cache() -> None:
     # The bundle memory cache is process-global and keyed by song timing/ref, not by the
     # per-test FG_RESPONSE_FRONTIER_CACHE_DIR. Reset it so each test rebuilds against its own
     # tmp cache dir (otherwise a sibling test's in-memory bundle points at a stale sidecar path).
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        reset_fg_response_frontier_payload_cache,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
 
     reset_fg_response_frontier_payload_cache()
 

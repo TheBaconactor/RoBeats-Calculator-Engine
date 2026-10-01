@@ -288,12 +288,3 @@ def timeline_prebuild_worker_count() -> int:
         TIMELINE_PREBUILD_GB_PER_WORKER,
         system_reserve_gb=TIMELINE_PREBUILD_SYSTEM_RESERVE_GB,
     )
-
-
-def init_process_pool_worker_band(total_workers: int) -> None:
-    """Pin a ProcessPoolExecutor frontier prebuild worker to the full frontier CPU set.
-
-    The ``total_workers`` parameter is retained for initializer-signature stability but no longer
-    selects a band -- every worker gets the whole frontier set (see pin_frontier_prebuild_worker)."""
-    del total_workers
-    pin_frontier_prebuild_worker()

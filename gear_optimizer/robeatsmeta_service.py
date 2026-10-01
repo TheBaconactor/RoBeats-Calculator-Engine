@@ -271,17 +271,10 @@ def _prebuild_frontier_caches(
         build_missing=True,
         authorize_destructive_rotation=True,
     )
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
-        _build_manifest_plan as build_fg_manifest_plan,
-        _manifest_path as fg_manifest_path,
-    )
+    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+        FG_RESPONSE_FRONTIER_CACHE,
         _surface_sidecar_paths,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
-        _build_manifest_plan as build_timeline_manifest_plan,
-        _manifest_path as timeline_manifest_path,
     )
 
     def recorded_files(plan, manifest_path: Path, cache_root: Path) -> set[str]:
@@ -298,21 +291,16 @@ def _prebuild_frontier_caches(
             files.add(cache_file.name)
         return files
 
-    timeline_plan = build_timeline_manifest_plan(song_paths, curves, persist_validated_entries=False)
+    timeline_plan = TIMELINE_FRONTIER_CACHE.manifest_plan(song_paths, curves, persist_validated_entries=False)
     timeline_files = recorded_files(
         timeline_plan,
-        timeline_manifest_path(),
+        TIMELINE_FRONTIER_CACHE.manifest_path(),
         _TIMELINE_FRONTIER_CACHE_DIR,
     )
-    fg_plan = build_fg_manifest_plan(
-        song_paths,
-        curves,
-        stat_keys=all_response_stat_keys(),
-        persist_validated_entries=False,
-    )
+    fg_plan = FG_RESPONSE_FRONTIER_CACHE.manifest_plan(song_paths, curves, persist_validated_entries=False)
     fg_bundles = recorded_files(
         fg_plan,
-        fg_manifest_path(),
+        FG_RESPONSE_FRONTIER_CACHE.manifest_path(),
         _FG_RESPONSE_FRONTIER_CACHE_DIR,
     )
     fg_files = set(fg_bundles)

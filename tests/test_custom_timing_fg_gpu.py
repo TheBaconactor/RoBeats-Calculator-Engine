@@ -21,9 +21,7 @@ pytestmark = pytest.mark.gpu
 
 
 def _reset_fg_cache() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        reset_fg_response_frontier_payload_cache,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
 
     reset_fg_response_frontier_payload_cache()
 

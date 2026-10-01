@@ -7,10 +7,6 @@ the cached grid/frontier payload for the active song slot.
 
 import io
 import time
-import hashlib
-import threading
-from collections import OrderedDict
-from dataclasses import dataclass
 from pathlib import Path
 import logging
 import numpy as np
@@ -26,10 +22,15 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _head_mask_coefficients_py,
     build_timeline_frontier_grid_payload,
 )
-from gear_optimizer.solver.frontier_cache_scope import (
-    frontier_cache_is_ephemeral,
-    scoped_frontier_cache_dir,
+from gear_optimizer.solver.frontier_cache import (
+    FrontierCache,
+    FrontierCacheInfo,
+    FrontierCacheLoad,
+    MemoryLru,
+    content_addressed_path,
+    write_atomically,
 )
+from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
@@ -50,23 +51,24 @@ logger = logging.getLogger(__name__)
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
 
+# The payload arrays in file order: (name, dtype, rank in the file). A file holds the one song slot of a payload,
+# whose arrays carry a leading slot axis in memory; pools hold their rows in use only.
+_PAYLOAD_ARRAYS = (
+    ("grid_count_body_fever", np.int32, 2),
+    ("grid_count_body_normal", np.int32, 2),
+    ("grid_head_len", np.int8, 2),
+    ("grid_fever_masks_bits", np.uint32, 3),
+    ("grid_frontier_count", np.int32, 2),
+    ("grid_frontier_offset", np.int32, 2),
+    ("grid_frontier_body_fever_pool", np.int32, 1),
+    ("grid_frontier_body_normal_pool", np.int32, 1),
+    ("grid_frontier_masks_bits_pool", np.uint32, 2),
+    ("grid_frontier_head_coeffs_pool", np.int16, 2),
+    ("grid_gap", np.int32, 2),
+    ("grid_fever_activations", np.int32, 2),
+)
 _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES = frozenset(
-    (
-        "version",
-        "frontier_pool_used",
-        "grid_count_body_fever",
-        "grid_count_body_normal",
-        "grid_head_len",
-        "grid_fever_masks_bits",
-        "grid_frontier_count",
-        "grid_frontier_offset",
-        "grid_frontier_body_fever_pool",
-        "grid_frontier_body_normal_pool",
-        "grid_frontier_masks_bits_pool",
-        "grid_frontier_head_coeffs_pool",
-        "grid_gap",
-        "grid_fever_activations",
-    )
+    ("version", "frontier_pool_used", *(name for name, _, _ in _PAYLOAD_ARRAYS))
 )
 
 
@@ -195,56 +197,14 @@ def _upload_timeline_frontier_payload_slot(
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
-# Sized to cover the native in-flight prep window (prep_limit tops out around 36):
-# prep workers hydrate a song's payload ahead of its GA turn, and the entry must
-# survive in this LRU until the owner uploads it. Entries hold the compressed .npz
-# bytes (~20-90KB, the exact disk form) instead of the ~1.1MB decoded payload; each
-# hit decodes its own arrays (<1ms) through the same reader as a disk load.
-_FRONTIER_PAYLOAD_CACHE_MAX = 40
-_frontier_payload_cache: "OrderedDict[tuple, bytes]" = OrderedDict()
-_frontier_payload_cache_lock = threading.RLock()
-# Bump whenever the base frontier OUTPUT changes in a way the cache key does NOT capture.
-# The key (_frontier_payload_cache_key -> song_key) hashes raw song inputs + window settings,
-# NOT the grouping/DP logic, so a pure logic change is invisible to it and only the version
-# invalidates stale disk payloads. v6: the chord-tied held-tail grouping split (issue #42 /
-# PR #45) changed the base frontier for held-tail-chord songs without touching any key input,
-# so pre-fix v5 payloads in bin/timeline_frontier_cache/ must not be reused.
-# v7: per-cell N_hn/N_hf/Sigma_hn/Sigma_hf grids replaced by the per-VARIANT
-# grid_frontier_head_coeffs_pool (the eval kernel needs coefficients for every pool
-# row; the per-cell grids were never read on the live GPU path).
-# v8: STALE-CACHE INVALIDATION (2026-07-04). The base DP (_build_exact_timeline_frontier_
-# from_context) is floor-aware / endpoint-early exact -- a note whose EARLIEST legal hit
-# (perfect_floor = chart-20ms, held-tail -40) lands inside the fever window is counted even
-# when its nominal chart time falls outside. Pre-existing v7 disk payloads on some machines
-# were built by an older DP that omitted that boundary note, and no version moved when the DP
-# gained it, so a pure-logic change went invisible to the (input+window)-hashed key. Symptom:
-# Bopeebo Easy T5 Vibe persisted base 1,360,389 (nominal ff24) from a stale v7 payload while a
-# fresh build of the SAME loadout selects the floor-optimal ff22 -> 1,364,025 (bit-exact to the
-# host application's live re-solve). Bumping forces a rebuild from the current floor-aware DP. Strictly
-# regression-safe: perfect_floor <= chart pointwise, so a rebuilt cell's body_fever only rises
-# or stays equal; songs with no endpoint-early boundary note are byte-identical.
-# v9: fold a DP-LOGIC FINGERPRINT into the version (Fix 1, 2026-07-04). The base string above is the
-# human backstop + semantic history; the appended `+logic-<fp>` is an ast-level digest of the
-# timeline DP module (timeline_exact_frontier.py). A change to the DP body (as in the v7->v8 floor-
-# aware regression that went invisible) now shifts the fingerprint automatically, so stale disk
-# payloads built by the old logic no longer validate against the new code -- killing the silent
-# stale-cache bug class rather than relying on someone remembering to bump the string. Docstring/
-# comment/whitespace edits do NOT move it (see logic_fingerprint.py). Over-invalidation is safe.
-# v9 -> v10: hit-time chord-reachability -- the base activation clock is now capped to the reachable
-# value (a wide-window group can no longer claim a late activation a later-indexed overlapping
-# sibling, hit first, forecloses), so stale bundles carry a phantom over-extended drain window (and,
-# where it captured a note, an over-count). The DP fingerprint over timeline_exact_frontier.py
-# already shifts automatically; this backstop bump records the behaviour change.
-# v10->v11: BUG-1 judgment-edge inclusivity fix. The base drain searches the Perfect FLOOR envelope
-# (build_perfect_floor_envelope_sec), whose early edge shifted +1ms to the engine's exclusive-early
-# boundary (-20/-40 -> -19/-39). The historical single-source fingerprint did not include
-# timing_envelope.py, so this explicit bump invalidated the stale (1ms-over-generous) membership
-# floor. Re-solve to re-persist best_score.
-# v11->v12: Base no longer has a body-only large-fill shortcut. Every Base geometry runs through
-# the shared lane-aware recurrence with Perfect-only actions. The old shortcut used an activation's
-# raw latest Perfect edge instead of the capped input-engine owner and could retain phantom fever
-# notes. Base cache identity now fingerprints the complete shared producer, not only this wrapper,
-# so a future shared recurrence change cannot silently reuse stale Base payloads.
+# The compressed .npz bytes (~20-90KB, the exact disk form) of recently used payloads, not the ~1.1MB decoded
+# payloads: a song prepared ahead of its GA turn is decoded (<1ms) from here instead of re-read from disk.
+_frontier_payload_memory: MemoryLru[bytes] = MemoryLru(40)
+# The timeline cache version: a hand-kept base version plus a fingerprint (an AST digest, see logic_fingerprint.py) of
+# the Base producer sources, so a logic change there rotates it by itself. The cache key hashes the song inputs and the
+# FT/FF axes, never the producer, so bump the base version when the payload changes in a way neither sees (e.g. a
+# dependency's behavior). A new version reads an older version's files only when it lists that version below, after a
+# byte gate proved them identical. The version history is in git.
 _FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v12"
 _FG_SCORING_POLICY_SOURCE = Path(__file__).resolve().parents[2] / "scoring" / "fg_policy.py"
 # Base persists timing geometry and Perfect-only recurrence output, never Great score valuation.
@@ -325,31 +285,6 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-def timeline_frontier_compatible_cache_versions() -> tuple[str, ...]:
-    current = str(_FRONTIER_DISK_CACHE_VERSION)
-    return (current, *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS.get(current, ()))
-
-
-@dataclass(frozen=True)
-class TimelineFrontierPrewarmResult:
-    payload: TimelineFrontierGridPayload
-    cache_key: tuple
-    disk_path: Path
-    cache_source: str
-    elapsed_ms: float
-    total_notes: int
-    long_notes: int
-
-
-@dataclass(frozen=True)
-class TimelineFrontierCacheInfo:
-    cache_key: tuple
-    disk_path: Path
-    cache_source: str
-    total_notes: int
-    long_notes: int
-
-
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:
     return (
         _FRONTIER_DISK_CACHE_VERSION,
@@ -359,107 +294,46 @@ def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.
     )
 
 
+def _song_cache_key(song: TimedSong, curves: StatCurves) -> tuple:
+    """The key of the payload file serving `song`: its timing and the FT/FF axes.
+
+    The payload depends on the other curves not at all, so startup prebuild and runtime scoring share one file.
+    """
+    return _frontier_payload_cache_key(song.timeline_key, curves.f32["Fever Time"], curves.f32["Fever Fill Rate"])
+
+
 def _frontier_disk_cache_dir() -> Path:
     scoped = scoped_frontier_cache_dir("timeline")
     return scoped if scoped is not None else paths().timeline_cache
 
 
-def _frontier_disk_cache_path(cache_key: tuple) -> Path:
-    digest = hashlib.blake2b(repr(cache_key).encode("utf-8"), digest_size=16).hexdigest()
-    return _frontier_disk_cache_dir() / f"{digest}.npz"
-
-
-def _live_frontier_disk_cache_path(cache_key: tuple) -> Path | None:
-    path = _frontier_disk_cache_path(cache_key)
-    if path.exists():
-        return path
-    if cache_key and str(cache_key[0]) == str(_FRONTIER_DISK_CACHE_VERSION):
-        for predecessor in timeline_frontier_compatible_cache_versions()[1:]:
-            predecessor_path = _frontier_disk_cache_path((predecessor, *cache_key[1:]))
-            if predecessor_path.exists():
-                return predecessor_path
-    return None
+def _encode_frontier_payload_npz(payload: TimelineFrontierGridPayload) -> bytes:
+    """The compressed .npz form of a payload (the disk file and the memory tier's entry)."""
+    pool_used = max(0, int(payload.frontier_pool_used))
+    arrays = {}
+    for name, dtype, _rank in _PAYLOAD_ARRAYS:
+        slot = getattr(payload, name)[0]
+        arrays[name] = np.asarray(slot[:pool_used] if name.endswith("_pool") else slot, dtype=dtype)
+    buf = io.BytesIO()
+    np.savez_compressed(
+        buf,
+        version=np.asarray(_FRONTIER_DISK_CACHE_VERSION),
+        frontier_pool_used=np.asarray(pool_used, dtype=np.int32),
+        **arrays,
+    )
+    return buf.getvalue()
 
 
 def _decode_frontier_payload_npz(raw: bytes) -> TimelineFrontierGridPayload | None:
+    """The payload of an .npz form; None when a version outside the compatible lineage wrote it."""
     with np.load(io.BytesIO(raw), allow_pickle=False) as data:
-        version = str(data["version"].item())
-        if version not in timeline_frontier_compatible_cache_versions():
+        if str(data["version"].item()) not in TIMELINE_FRONTIER_CACHE.compatible_versions():
             return None
-        grid_count_body_fever = np.asarray(data["grid_count_body_fever"], dtype=np.int32)
-        grid_count_body_normal = np.asarray(data["grid_count_body_normal"], dtype=np.int32)
-        grid_head_len = np.asarray(data["grid_head_len"], dtype=np.int8)
-        grid_fever_masks_bits = np.asarray(data["grid_fever_masks_bits"], dtype=np.uint32)
-        grid_frontier_count = np.asarray(data["grid_frontier_count"], dtype=np.int32)
-        grid_frontier_offset = np.asarray(data["grid_frontier_offset"], dtype=np.int32)
-        grid_frontier_body_fever_pool = np.asarray(data["grid_frontier_body_fever_pool"], dtype=np.int32)
-        grid_frontier_body_normal_pool = np.asarray(data["grid_frontier_body_normal_pool"], dtype=np.int32)
-        grid_frontier_masks_bits_pool = np.asarray(data["grid_frontier_masks_bits_pool"], dtype=np.uint32)
-        grid_frontier_head_coeffs_pool = np.asarray(data["grid_frontier_head_coeffs_pool"], dtype=np.int16)
-        grid_gap = np.asarray(data["grid_gap"], dtype=np.int32)
-        grid_fever_activations = np.asarray(data["grid_fever_activations"], dtype=np.int32)
-
-        # Compact on-disk format stores a single source slot; runtime upload remaps it.
-        if grid_count_body_fever.ndim == 2:
-            grid_count_body_fever = np.expand_dims(grid_count_body_fever, axis=0)
-        if grid_count_body_normal.ndim == 2:
-            grid_count_body_normal = np.expand_dims(grid_count_body_normal, axis=0)
-        if grid_head_len.ndim == 2:
-            grid_head_len = np.expand_dims(grid_head_len, axis=0)
-        if grid_fever_masks_bits.ndim == 3:
-            grid_fever_masks_bits = np.expand_dims(grid_fever_masks_bits, axis=0)
-        if grid_frontier_count.ndim == 2:
-            grid_frontier_count = np.expand_dims(grid_frontier_count, axis=0)
-        if grid_frontier_offset.ndim == 2:
-            grid_frontier_offset = np.expand_dims(grid_frontier_offset, axis=0)
-        if grid_frontier_body_fever_pool.ndim == 1:
-            grid_frontier_body_fever_pool = np.expand_dims(grid_frontier_body_fever_pool, axis=0)
-        if grid_frontier_body_normal_pool.ndim == 1:
-            grid_frontier_body_normal_pool = np.expand_dims(grid_frontier_body_normal_pool, axis=0)
-        if grid_frontier_masks_bits_pool.ndim == 2:
-            grid_frontier_masks_bits_pool = np.expand_dims(grid_frontier_masks_bits_pool, axis=0)
-        if grid_frontier_head_coeffs_pool.ndim == 2:
-            grid_frontier_head_coeffs_pool = np.expand_dims(grid_frontier_head_coeffs_pool, axis=0)
-        if grid_gap.ndim == 2:
-            grid_gap = np.expand_dims(grid_gap, axis=0)
-        if grid_fever_activations.ndim == 2:
-            grid_fever_activations = np.expand_dims(grid_fever_activations, axis=0)
-        payload = TimelineFrontierGridPayload(
-            grid_count_body_fever=grid_count_body_fever,
-            grid_count_body_normal=grid_count_body_normal,
-            grid_head_len=grid_head_len,
-            grid_fever_masks_bits=grid_fever_masks_bits,
-            grid_frontier_count=grid_frontier_count,
-            grid_frontier_offset=grid_frontier_offset,
-            grid_frontier_body_fever_pool=grid_frontier_body_fever_pool,
-            grid_frontier_body_normal_pool=grid_frontier_body_normal_pool,
-            grid_frontier_masks_bits_pool=grid_frontier_masks_bits_pool,
-            grid_frontier_head_coeffs_pool=grid_frontier_head_coeffs_pool,
-            grid_gap=grid_gap,
-            grid_fever_activations=grid_fever_activations,
-            frontier_pool_used=int(data["frontier_pool_used"].item()),
-        )
-        return payload
-
-
-def _load_frontier_payload_from_disk(cache_key: tuple) -> tuple[TimelineFrontierGridPayload, bytes] | None:
-    path = _live_frontier_disk_cache_path(cache_key)
-    if path is None:
-        return None
-    try:
-        raw = path.read_bytes()
-        payload = _decode_frontier_payload_npz(raw)
-        if payload is None:
-            return None
-        return payload, raw
-    except Exception as e:
-        # An unreadable or corrupt payload is a cache miss: drop it so the next build rewrites it.
-        logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return None
+        arrays = {}
+        for name, dtype, rank in _PAYLOAD_ARRAYS:
+            array = np.asarray(data[name], dtype=dtype)
+            arrays[name] = np.expand_dims(array, axis=0) if array.ndim == rank else array
+        return TimelineFrontierGridPayload(**arrays, frontier_pool_used=int(data["frontier_pool_used"].item()))
 
 
 def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
@@ -476,32 +350,16 @@ def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
             if files != _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES:
                 return False
             version = str(data["version"].item())
-            if version not in timeline_frontier_compatible_cache_versions():
+            if version not in TIMELINE_FRONTIER_CACHE.compatible_versions():
                 return False
             pool_used = int(np.asarray(data["frontier_pool_used"]).item())
             if pool_used < 0:
                 return False
-            for name in (
-                "grid_count_body_fever",
-                "grid_count_body_normal",
-                "grid_head_len",
-                "grid_frontier_count",
-                "grid_frontier_offset",
-                "grid_gap",
-                "grid_fever_activations",
-            ):
-                if tuple(np.asarray(data[name]).shape) != grid_shape:
+            for name, _dtype, rank in _PAYLOAD_ARRAYS:
+                leading = (pool_used,) if name.endswith("_pool") else grid_shape
+                expected = (*leading, 4) if rank > len(leading) else leading
+                if tuple(np.asarray(data[name]).shape) != expected:
                     return False
-            if tuple(np.asarray(data["grid_fever_masks_bits"]).shape) != (*grid_shape, 4):
-                return False
-            if tuple(np.asarray(data["grid_frontier_body_fever_pool"]).shape) != (pool_used,):
-                return False
-            if tuple(np.asarray(data["grid_frontier_body_normal_pool"]).shape) != (pool_used,):
-                return False
-            if tuple(np.asarray(data["grid_frontier_masks_bits_pool"]).shape) != (pool_used, 4):
-                return False
-            if tuple(np.asarray(data["grid_frontier_head_coeffs_pool"]).shape) != (pool_used, 4):
-                return False
             frontier_count = np.asarray(data["grid_frontier_count"], dtype=np.int64)
             frontier_offset = np.asarray(data["grid_frontier_offset"], dtype=np.int64)
             if bool(np.any(frontier_count < 0)) or bool(np.any(frontier_offset < 0)):
@@ -513,92 +371,59 @@ def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
     return True
 
 
-def _get_cached_frontier_payload_with_source(
-    song_key: tuple,
-    *,
-    ref_ft: np.ndarray,
-    ref_ff: np.ndarray,
-) -> tuple[TimelineFrontierGridPayload | None, str]:
-    cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
-    ephemeral = frontier_cache_is_ephemeral()
-    if not ephemeral:
-        with _frontier_payload_cache_lock:
-            cached_raw = _frontier_payload_cache.get(cache_key)
-            if cached_raw is not None:
-                _frontier_payload_cache.move_to_end(cache_key)
-        if cached_raw is not None:
-            cached = _decode_frontier_payload_npz(cached_raw)
-            if cached is None:
-                raise ValueError("timeline frontier memory cache holds an incompatible payload")
-            return cached, "memory"
-
-    loaded = _load_frontier_payload_from_disk(cache_key)
-    if loaded is not None:
-        cached, raw = loaded
-        if not ephemeral:
-            _frontier_payload_memory_put(cache_key, raw)
-        return cached, "disk"
-    return None, "missing"
+TIMELINE_FRONTIER_CACHE = FrontierCache(
+    name="timeline",
+    log_label="[TimelineCache]",
+    directory=_frontier_disk_cache_dir,
+    file_path=lambda cache_key: content_addressed_path(_frontier_disk_cache_dir(), cache_key),
+    version=lambda: _FRONTIER_DISK_CACHE_VERSION,
+    predecessors=_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS,
+    is_complete=timeline_frontier_cache_file_is_complete,
+    song_key=_song_cache_key,
+    manifest_name="manifest_v1.json",
+    manifest_version_field="frontier_version",
+)
 
 
-def _frontier_payload_memory_put(cache_key: tuple, raw: bytes) -> None:
-    with _frontier_payload_cache_lock:
-        _frontier_payload_cache[cache_key] = raw
-        _frontier_payload_cache.move_to_end(cache_key)
-        while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
-            _frontier_payload_cache.popitem(last=False)
-
-
-def _save_frontier_payload_to_disk(
-    cache_key: tuple,
-    payload: TimelineFrontierGridPayload,
-) -> bytes:
-    """Serialize the compact .npz form, persist it best-effort, and return its bytes."""
-    source_slot_i = 0
-    pool_used = max(0, int(payload.frontier_pool_used))
-    buf = io.BytesIO()
-    np.savez_compressed(
-        buf,
-        version=np.asarray(_FRONTIER_DISK_CACHE_VERSION),
-        frontier_pool_used=np.asarray(pool_used, dtype=np.int32),
-        grid_count_body_fever=np.asarray(payload.grid_count_body_fever[source_slot_i], dtype=np.int32),
-        grid_count_body_normal=np.asarray(payload.grid_count_body_normal[source_slot_i], dtype=np.int32),
-        grid_head_len=np.asarray(payload.grid_head_len[source_slot_i], dtype=np.int8),
-        grid_fever_masks_bits=np.asarray(payload.grid_fever_masks_bits[source_slot_i], dtype=np.uint32),
-        grid_frontier_count=np.asarray(payload.grid_frontier_count[source_slot_i], dtype=np.int32),
-        grid_frontier_offset=np.asarray(payload.grid_frontier_offset[source_slot_i], dtype=np.int32),
-        grid_frontier_body_fever_pool=np.asarray(
-            payload.grid_frontier_body_fever_pool[source_slot_i, :pool_used], dtype=np.int32
-        ),
-        grid_frontier_body_normal_pool=np.asarray(
-            payload.grid_frontier_body_normal_pool[source_slot_i, :pool_used], dtype=np.int32
-        ),
-        grid_frontier_masks_bits_pool=np.asarray(
-            payload.grid_frontier_masks_bits_pool[source_slot_i, :pool_used, :], dtype=np.uint32
-        ),
-        grid_frontier_head_coeffs_pool=np.asarray(
-            payload.grid_frontier_head_coeffs_pool[source_slot_i, :pool_used, :], dtype=np.int16
-        ),
-        grid_gap=np.asarray(payload.grid_gap[source_slot_i], dtype=np.int32),
-        grid_fever_activations=np.asarray(payload.grid_fever_activations[source_slot_i], dtype=np.int32),
-    )
-    raw = buf.getvalue()
-    path = _frontier_disk_cache_path(cache_key)
-    tmp: Path | None = None
+def _load_frontier_payload(cache_key: tuple) -> tuple[TimelineFrontierGridPayload, bytes] | None:
+    path = TIMELINE_FRONTIER_CACHE.readable_path(cache_key)
+    if path is None:
+        return None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz")
-        tmp.write_bytes(raw)
-        tmp.replace(path)
+        raw = path.read_bytes()
+        payload = _decode_frontier_payload_npz(raw)
     except Exception as e:
+        # An unreadable or corrupt payload is a cache miss: drop it so the next build rewrites it.
+        logger.debug(f"timeline:_load_frontier_payload: {e}")
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    return None if payload is None else (payload, raw)
+
+
+def _save_frontier_payload(cache_key: tuple, raw: bytes) -> None:
+    try:
+        write_atomically(TIMELINE_FRONTIER_CACHE.file_path(cache_key), lambda tmp: tmp.write_bytes(raw))
+    except OSError as e:
         # The disk tier is an optimization: a failed write leaves the in-memory payload in use.
-        logger.debug(f"timeline:_save_frontier_payload_to_disk: {e}")
-        if tmp is not None:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-    return raw
+        logger.debug(f"timeline:_save_frontier_payload: {e}")
+
+
+def _cached_frontier_payload(cache_key: tuple) -> tuple[TimelineFrontierGridPayload | None, str]:
+    raw = _frontier_payload_memory.get(cache_key)
+    if raw is not None:
+        cached = _decode_frontier_payload_npz(raw)
+        if cached is None:
+            raise ValueError("timeline frontier memory cache holds an incompatible payload")
+        return cached, "memory"
+    loaded = _load_frontier_payload(cache_key)
+    if loaded is None:
+        return None, "missing"
+    cached, raw = loaded
+    _frontier_payload_memory.put(cache_key, raw)
+    return cached, "disk"
 
 
 def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dict:
@@ -627,42 +452,32 @@ def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dic
         "last_note_time": chart.last_note_time,
         "ref_ft": curves.f32["Fever Time"],
         "ref_ff": curves.f32["Fever Fill Rate"],
-        "note_types": chart.note_types,
         "perfect_candidates": perfect_candidates,
         "perfect_floor": perfect_floor,
         "lanes": lanes,
     }
 
 
-def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) -> TimelineFrontierCacheInfo:
+def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) -> FrontierCacheInfo:
     """
     Return exact-frontier cache status without building group payloads or loading `.npz`.
 
     Startup prebuild uses this to skip already-built songs cheaply, with the exact key runtime upload
-    uses.
+    uses. The disk path is the file that serves the key (a ratified predecessor's when only that one
+    exists), so the prebuild manifest records the file that is actually read.
     """
-    cache_key = _frontier_payload_cache_key(song.timeline_key, curves.f32["Fever Time"], curves.f32["Fever Fill Rate"])
-
-    cache_source = "missing"
-    if not frontier_cache_is_ephemeral():
-        with _frontier_payload_cache_lock:
-            if isinstance(_frontier_payload_cache.get(cache_key), bytes):
-                cache_source = "memory"
-    # Report the file that actually serves this key: the current-version path when it
-    # exists, else the ratified predecessor's. Returning the (possibly nonexistent)
-    # current-version path here made the prebuild manifest unable to validate/record
-    # predecessor hits, so startup re-verified those songs every run instead of taking
-    # the manifest fast path.
-    live_path = _live_frontier_disk_cache_path(cache_key)
-    disk_path = live_path if live_path is not None else _frontier_disk_cache_path(cache_key)
-    if cache_source == "missing" and live_path is not None:
+    cache_key = _song_cache_key(song, curves)
+    readable = TIMELINE_FRONTIER_CACHE.readable_path(cache_key)
+    if cache_key in _frontier_payload_memory:
+        cache_source = "memory"
+    elif readable is not None:
         cache_source = "disk"
-    return TimelineFrontierCacheInfo(
+    else:
+        cache_source = "missing"
+    return FrontierCacheInfo(
         cache_key=cache_key,
-        disk_path=disk_path,
+        disk_path=readable or TIMELINE_FRONTIER_CACHE.file_path(cache_key),
         cache_source=cache_source,
-        total_notes=song.chart.total_notes,
-        long_notes=song.chart.long_notes,
     )
 
 
@@ -768,77 +583,46 @@ def _build_zero_ms_timeline_payload(song: TimedSong, curves: StatCurves) -> Time
     )
 
 
-def _zero_ms_timeline_result(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
-    """Load or persist the cheap zero_ms singleton payload."""
-    t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(song, curves)
-    cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
-    payload, cache_source = _get_cached_frontier_payload_with_source(
-        lookup["song_key"],
-        ref_ft=lookup["ref_ft"],
-        ref_ff=lookup["ref_ff"],
-    )
-    if payload is None:
-        payload = _build_zero_ms_timeline_payload(song, curves)
-        raw = _save_frontier_payload_to_disk(cache_key, payload)
-        cache_source = "built"
-        if not frontier_cache_is_ephemeral():
-            _frontier_payload_memory_put(cache_key, raw)
-    return TimelineFrontierPrewarmResult(
-        payload=payload,
-        cache_key=cache_key,
-        disk_path=_frontier_disk_cache_path(cache_key),
-        cache_source=cache_source,
-        elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        total_notes=int(lookup["total_notes"]),
-        long_notes=int(lookup["long_notes"]),
-    )
-
-
-def build_or_load_timeline_frontier_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
+def build_or_load_timeline_frontier_payload(
+    song: TimedSong, curves: StatCurves
+) -> FrontierCacheLoad[TimelineFrontierGridPayload]:
     """
     The song's exact timeline frontier payload: the memory or disk cache's, else built and persisted.
 
     Host-side (no Taichi fields are touched) and the one entry point of runtime scoring, background
-    lookahead and offline disk-cache prebuilding, so they share the cache signatures.
+    lookahead and offline disk-cache prebuilding, so they share the cache signatures. zero_ms is fixed
+    timing: its payload is the cheap chart-time singleton, never the perfect_window candidate frontier.
     """
-    if song.mode == "zero_ms":
-        # zero_ms is fixed timing: serve the cheap chart-time singleton and never touch the
-        # perfect_window candidate-frontier build or its disk cache.
-        return _zero_ms_timeline_result(song, curves)
     t0 = time.perf_counter()
     lookup = _timeline_payload_lookup_context(song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
-    payload, cache_source = _get_cached_frontier_payload_with_source(
-        lookup["song_key"],
-        ref_ft=lookup["ref_ft"],
-        ref_ff=lookup["ref_ff"],
-    )
+    payload, cache_source = _cached_frontier_payload(cache_key)
     if payload is None:
-        payload = build_timeline_frontier_grid_payload(
-            song_slot=0,
-            total_notes=int(lookup["total_notes"]),
-            long_notes=int(lookup["long_notes"]),
-            last_note_time=float(lookup["last_note_time"]),
-            timestamps=lookup["timestamps"],
-            perfect_candidate_timestamps=lookup["perfect_candidates"],
-            perfect_floor_timestamps=lookup["perfect_floor"],
-            lanes=lookup["lanes"],
-            ref_ft=lookup["ref_ft"],
-            ref_ff=lookup["ref_ff"],
-        )
-        raw = _save_frontier_payload_to_disk(cache_key, payload)
-        if not frontier_cache_is_ephemeral():
-            _frontier_payload_memory_put(cache_key, raw)
+        if song.mode == "zero_ms":
+            payload = _build_zero_ms_timeline_payload(song, curves)
+        else:
+            payload = build_timeline_frontier_grid_payload(
+                song_slot=0,
+                total_notes=int(lookup["total_notes"]),
+                long_notes=int(lookup["long_notes"]),
+                last_note_time=float(lookup["last_note_time"]),
+                timestamps=lookup["timestamps"],
+                perfect_candidate_timestamps=lookup["perfect_candidates"],
+                perfect_floor_timestamps=lookup["perfect_floor"],
+                lanes=lookup["lanes"],
+                ref_ft=lookup["ref_ft"],
+                ref_ff=lookup["ref_ff"],
+            )
+        raw = _encode_frontier_payload_npz(payload)
+        _save_frontier_payload(cache_key, raw)
+        _frontier_payload_memory.put(cache_key, raw)
         cache_source = "built"
-    return TimelineFrontierPrewarmResult(
+    return FrontierCacheLoad(
         payload=payload,
         cache_key=cache_key,
-        disk_path=_frontier_disk_cache_path(cache_key),
+        disk_path=TIMELINE_FRONTIER_CACHE.file_path(cache_key),
         cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        total_notes=int(lookup["total_notes"]),
-        long_notes=int(lookup["long_notes"]),
     )
 
 
@@ -847,7 +631,7 @@ def precompute_timeline_gpu(
     curves: StatCurves,
     song_slot: int = 0,
     *,
-    prebuilt_frontier: "TimelineFrontierPrewarmResult | None" = None,
+    prebuilt_frontier: FrontierCacheLoad[TimelineFrontierGridPayload] | None = None,
 ) -> None:
     """
     Upload the startup-built exact timeline frontier for one song slot.
@@ -942,14 +726,12 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
         ref_ft=np.asarray(lookup["ref_ft"], dtype=np.float32),
         ref_ff=np.asarray(lookup["ref_ff"], dtype=np.float32),
     )
-    frontier_result = TimelineFrontierPrewarmResult(
+    frontier_result = FrontierCacheLoad(
         payload=payload,
         cache_key=cache_key,
-        disk_path=_frontier_disk_cache_path(cache_key),
+        disk_path=TIMELINE_FRONTIER_CACHE.file_path(cache_key),
         cache_source="warmup_disposable",
         elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-        total_notes=int(lookup["total_notes"]),
-        long_notes=int(lookup["long_notes"]),
     )
     precompute_timeline_gpu(
         song,
@@ -963,7 +745,5 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
 def reset_timeline_state() -> None:
     """Reset module-level timeline upload caches after `ti.reset()`."""
     global _gpu_timeline_song_id_by_slot
-    global _frontier_payload_cache
     _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS
-    with _frontier_payload_cache_lock:
-        _frontier_payload_cache.clear()
+    _frontier_payload_memory.clear()

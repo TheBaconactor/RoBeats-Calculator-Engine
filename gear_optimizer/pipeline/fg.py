@@ -82,7 +82,7 @@ def release_fg_song_surfaces(song: NativeSong) -> None:
     fg = song.runtime.fg
     bundle = fg.fg_response_scoring_bundle
     if bundle is not None:
-        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
             release_fg_response_song_memory,
         )
 

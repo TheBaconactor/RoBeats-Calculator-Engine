@@ -1,96 +1,63 @@
-from contextlib import contextmanager
+"""The FG cache's directory maintenance: only a build or an authorized rotation purges, compresses and cleans."""
+
+from pathlib import Path
 
 import pytest
 
 from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-from gear_optimizer.solver.frontier_cache_manifest import FrontierCacheManifestPlan
+from gear_optimizer.solver.frontier_cache import FrontierCacheManifestPlan
 
 
 @pytest.mark.parametrize(
-    "missing,rotate,build_missing,expected",
+    "missing,rotate,build_missing,maintained",
     [
-        (False, True, True, ["lock", "maintain:True"]),
-        (True, False, True, ["lock", "maintain:False", "build", "save", "compress"]),
-        (True, False, False, ["lock"]),
+        (False, False, True, False),  # hits only read or repair the manifest
+        (True, False, False, False),  # nothing is built
+        (True, False, True, True),
+        (False, True, True, True),
     ],
 )
-def test_cache_build_and_explicit_maintenance_remain_locked(
-    monkeypatch, tmp_path, missing, rotate, build_missing, expected
+def test_maintenance_runs_before_builds_and_authorized_rotations(
+    monkeypatch, tmp_path: Path, missing, rotate, build_missing, maintained
 ):
-    song = tmp_path / "Song.txt"
-    song.write_text("test chart")
-    paths = (str(song),)
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    compressions: list[str] = []
+    monkeypatch.setattr(prebuild, "compress_cache_dir_sidecars", lambda: compressions.append("compress"))
+    interrupted_write = tmp_path / "bundle.123.456.tmp.npz"
+    interrupted_write.write_bytes(b"partial")
+    chart = str(tmp_path / "Song.txt")
     plan = FrontierCacheManifestPlan(
         total_paths=1,
-        hit_paths=() if missing else paths,
-        missing_paths=paths if missing else (),
+        hit_paths=() if missing else (chart,),
+        missing_paths=(chart,) if missing else (),
         key_by_norm_path={},
     )
-    calls = []
 
-    @contextmanager
-    def lock(*_args, **_kwargs):
-        calls.append("lock")
-        yield
+    prebuild.FG_RESPONSE_FRONTIER_PREBUILD.maintain(plan, build_missing, rotate)
 
-    def build(*_args, **_kwargs):
-        calls.append("build")
-        return prebuild.FgResponseFrontierCachePrebuildSummary(completed=1, built=1), []
-
-    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(prebuild, "FrontierBuildLock", lock)
-    monkeypatch.setattr(
-        prebuild,
-        "_maintain_fg_response_frontier_cache_under_lock",
-        lambda **kwargs: calls.append(f"maintain:{kwargs['authorize_destructive_rotation']}"),
-    )
-    monkeypatch.setattr(prebuild, "_run_missing_fg_prebuild", build)
-    monkeypatch.setattr(prebuild, "_apply_manifest_results", lambda **_kwargs: calls.append("save"))
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
-        lambda: calls.append("compress"),
-    )
-
-    summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        song_queue=[paths],
-        curves={},
-        data_root=tmp_path,
-        authorize_destructive_rotation=rotate,
-        build_missing=build_missing,
-        timing_modes=("perfect_window",),
-    )
-
-    assert calls == expected
-    assert summary.completed == int(not missing or build_missing)
-    assert summary.failures == int(missing and not build_missing)
-    assert summary.built == int(missing and build_missing)
+    assert interrupted_write.exists() is not maintained
+    assert (tmp_path / ".purged_version").exists() is maintained
+    assert compressions == (["compress"] if maintained else [])
 
 
-def test_destructive_rotation_never_parses_the_manifest_for_its_version(monkeypatch, tmp_path):
-    song = tmp_path / "Song.txt"
-    song.write_text("test chart")
-    paths = (str(song),)
-    plan = FrontierCacheManifestPlan(total_paths=1, hit_paths=paths, missing_paths=(), key_by_norm_path={})
+@pytest.mark.parametrize("built,compressed", [(0, False), (3, True)])
+def test_sidecars_are_compressed_after_a_build_wrote_some(monkeypatch, built, compressed):
+    compressions: list[str] = []
+    monkeypatch.setattr(prebuild, "compress_cache_dir_sidecars", lambda: compressions.append("compress"))
 
-    def version_probe():
-        raise AssertionError("a destructive-rotation prebuild must not parse the whole FG manifest")
+    prebuild.FG_RESPONSE_FRONTIER_PREBUILD.after_build(built)
 
-    @contextmanager
-    def lock(*_args, **_kwargs):
-        yield
+    assert compressions == (["compress"] if compressed else [])
 
-    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", version_probe)
-    monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(prebuild, "FrontierBuildLock", lock)
-    monkeypatch.setattr(prebuild, "_maintain_fg_response_frontier_cache_under_lock", lambda **_kwargs: None)
 
-    summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        song_queue=[paths],
-        curves={},
-        data_root=tmp_path,
-        authorize_destructive_rotation=True,
-        timing_modes=("perfect_window",),
-    )
+def test_timeline_maintenance_removes_interrupted_writes_on_every_lock_entry(monkeypatch, tmp_path: Path):
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TIMELINE_FRONTIER_PREBUILD
 
-    assert summary.completed == 1
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    interrupted_write = tmp_path / "payload.123.456.tmp.npz"
+    interrupted_write.write_bytes(b"partial")
+    plan = FrontierCacheManifestPlan(total_paths=1, hit_paths=("Song.txt",), missing_paths=(), key_by_norm_path={})
+
+    TIMELINE_FRONTIER_PREBUILD.maintain(plan, False, False)
+
+    assert not interrupted_write.exists()

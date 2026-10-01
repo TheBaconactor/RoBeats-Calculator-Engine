@@ -218,9 +218,9 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
-        all_response_stat_keys,
-        reset_fg_response_frontier_payload_cache,
     )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         build_fused_owner_solve_result_from_score_row,
         score_fused_owner_base_components_on_gpu_owner,

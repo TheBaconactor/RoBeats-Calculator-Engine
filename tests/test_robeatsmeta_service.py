@@ -1192,7 +1192,7 @@ def test_persistent_worker_restarts_when_a_new_catalog_activates(data_root, monk
 def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root, monkeypatch):
     from gear_optimizer import gamedata
     from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
+    from gear_optimizer.solver.frontier_cache import ordered_frontier_cache_song_paths
 
     _write_chart(data_root, "Normal", "Old by Artist", "old.txt")
     _write_chart(data_root, "Normal", "New by Artist", "new.txt")
