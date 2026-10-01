@@ -11,6 +11,12 @@ from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
 from gear_optimizer.solver.gpu_service import GpuFatalError, GpuServiceTimeoutError
 
 
+@pytest.fixture(autouse=True)
+def _in_flight_path(monkeypatch):
+    """These tests cover the in-flight pipeline; the direct path (pipeline.solve) is the default."""
+    monkeypatch.setenv("ROBEATSMETA_DIRECT_SOLVE", "0")
+
+
 def _make_minimal_app() -> GearOptimizerApp:
     app = object.__new__(GearOptimizerApp)
     app._progress = None
@@ -155,6 +161,38 @@ def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch)
 
     with pytest.raises(GpuServiceTimeoutError, match="timed out"):
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+
+def test_the_direct_path_solves_the_queue_with_run_queue_and_stops_the_executor(monkeypatch):
+    from gear_optimizer.pipeline import solve as solve_module
+    from gear_optimizer.solver import native_inflight_lifecycle
+
+    monkeypatch.setenv("ROBEATSMETA_DIRECT_SOLVE", "1")
+    seen: dict = {}
+
+    class _Context:
+        def close(self, *, stop_executor):
+            seen["stop_executor"] = stop_executor
+
+    class _Sender:
+        def __init__(self, _queue, *, stop_requested):
+            pass
+
+        def send(self, item):
+            pass
+
+        def close(self, *, timeout):
+            seen["sender_closed"] = True
+
+    monkeypatch.setattr(solve_module, "SolveContext", _Context)
+    monkeypatch.setattr(solve_module, "run_queue", lambda tasks, ctx, **kwargs: seen.update(tasks=tasks, kwargs=kwargs))
+    monkeypatch.setattr(native_inflight_lifecycle, "PostSender", _Sender)
+    tasks = _build_tasks(count=2)
+
+    _make_minimal_app()._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+    assert seen["tasks"] == tasks and seen["sender_closed"]
+    assert seen["stop_executor"] is True  # a batch run persists Taichi's offline cache, like the in-flight path
 
 
 def test_configure_execution_prewarms_native_ga():

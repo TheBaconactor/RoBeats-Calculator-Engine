@@ -7,6 +7,7 @@ import time
 
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
+from gear_optimizer.settings import direct_solve, persistent_worker
 from gear_optimizer.solver.native_inflight_config import IN_FLIGHT_SONGS
 
 logger = logging.getLogger(__name__)
@@ -65,22 +66,46 @@ class TaskExecutionMixin:
                 if self._progress is not None:
                     self._progress.update_counts(completed=0, total=int(total_tasks))
                 self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
-                NativeOptimizationEngine().run(
-                    NativeOptimizationRequest(
-                        tasks=tasks,
-                        in_flight_songs=int(inflight_songs),
-                        completed_songs=completed_songs,
-                        memory_resume_tracker=memory_resume_tracker,
-                        post_queue=post_queue,
-                        stop_requested=self._stop_requested_now,
-                        progress_cb=self._progress_event,
+                if direct_solve():
+                    self._run_direct(tasks, post_queue, completed_songs, memory_resume_tracker)
+                else:
+                    NativeOptimizationEngine().run(
+                        NativeOptimizationRequest(
+                            tasks=tasks,
+                            in_flight_songs=int(inflight_songs),
+                            completed_songs=completed_songs,
+                            memory_resume_tracker=memory_resume_tracker,
+                            post_queue=post_queue,
+                            stop_requested=self._stop_requested_now,
+                            progress_cb=self._progress_event,
+                        )
                     )
-                )
             finally:
                 self._progress_counts_driven = False
                 songs_failed = not self._stop_post_processor(post_queue, post_proc)
             if songs_failed:
                 raise RuntimeError("song(s) failed in this run (see the [POST] FAILED lines)")
+
+    def _run_direct(self, tasks, post_queue, completed_songs, memory_resume_tracker) -> None:
+            """The queue solved in this process (pipeline.solve.run_queue), posting to the run's post-processor."""
+            from gear_optimizer.pipeline.solve import SolveContext, run_queue
+            from gear_optimizer.solver.native_inflight_lifecycle import PostSender
+
+            post_sender = PostSender(post_queue, stop_requested=self._stop_requested_now)
+            ctx = SolveContext()
+            try:
+                run_queue(
+                    tasks,
+                    ctx,
+                    post=post_sender.send,
+                    completed_songs=completed_songs,
+                    memory_resume_tracker=memory_resume_tracker,
+                    stop_requested=self._stop_requested_now,
+                    progress_cb=self._progress_event,
+                )
+            finally:
+                post_sender.close(timeout=10.0)
+                ctx.close(stop_executor=not persistent_worker())
 
     def _start_post_processor(self, total_tasks: int):
             from gear_optimizer.pipeline.post_processor import run_post_processor
