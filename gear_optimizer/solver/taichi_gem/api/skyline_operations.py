@@ -19,7 +19,7 @@ import numpy as np
 
 from .. import fields
 from ..fields import MAX_EVALS_PER_DISPATCH
-from ..skyline_chunking import compute_skyline_combo_chunk
+from ..combo_chunking import compute_combo_chunk
 from ..kernel_loader import get_kernels
 
 from .initialization import (
@@ -207,7 +207,7 @@ def skyline_evaluate_population(
         )
     eval_budget = int(MAX_EVALS_PER_DISPATCH)
     max_evals = max(int(eval_budget), int(n_genomes))
-    combo_chunk = compute_skyline_combo_chunk(
+    combo_chunk = compute_combo_chunk(
         n_genomes=n_genomes,
         n_combos=n_combos,
         max_evals=max_evals,

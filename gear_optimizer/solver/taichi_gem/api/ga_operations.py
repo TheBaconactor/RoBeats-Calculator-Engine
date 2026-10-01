@@ -18,7 +18,7 @@ from .initialization import ensure_ready, _ensure_ftff_combo_tables
 from gear_optimizer.chart import Chart
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.timing_envelope import TimedSong
-from ..ga_chunking import compute_ga_combo_chunk
+from ..combo_chunking import compute_combo_chunk
 from .common_operations import compute_array_sig, probability_to_u32_fp
 _GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
 _GA_COMBO_CHUNK_MAX: int = 4096  # exact-combo dispatch chunk ceiling (TDR-safe)
@@ -503,7 +503,7 @@ def ga_evaluate_prepared_population(
     kernels.ga_build_unique_slot_table_kernel(n_genomes)
     eval_budget = int(_ga_eval_budget())
     max_evals = max(int(eval_budget), int(n_genomes))
-    combo_chunk = compute_ga_combo_chunk(
+    combo_chunk = compute_combo_chunk(
         n_genomes=n_genomes,
         n_combos=n_combos,
         max_evals=max_evals,
