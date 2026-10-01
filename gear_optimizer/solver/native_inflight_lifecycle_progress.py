@@ -159,53 +159,6 @@ class ProgressTracker:
         )
 
 
-class ActiveRuntimeProgressReporter:
-    def __init__(self, emit_progress: Callable[..., Any]) -> None:
-        self._emit_progress = emit_progress
-        self.active_label = ""
-
-    @staticmethod
-    def active_song_label(
-        *,
-        ga_inflight,
-        decode_inflight,
-        fg_futures,
-    ) -> str:
-        for source_name, source in (
-            ("ga", ga_inflight),
-            ("decode", decode_inflight),
-        ):
-            if source:
-                return native_song_label(source[0])
-        if fg_futures:
-            return native_song_label(fg_futures[0][0])
-        return ""
-
-    def emit(
-        self,
-        *,
-        ga_inflight,
-        decode_inflight,
-        fg_futures,
-        force: bool = False,
-    ) -> None:
-        song_label = self.active_song_label(
-            ga_inflight=ga_inflight,
-            decode_inflight=decode_inflight,
-            fg_futures=fg_futures,
-        )
-        if not force and song_label == self.active_label:
-            return
-        self.active_label = str(song_label or "").strip()
-        if not self.active_label:
-            return
-        self._emit_progress(
-            completed_delta=0,
-            failed_delta=0,
-            record_info={"song": self.active_label, "status": "RUNNING"},
-        )
-
-
 def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTracker | None) -> dict:
     """The record info of a song whose FG stage finished (its run's best base score and best winning FG score)."""
     key = str(song.config.db_key or "").strip()

@@ -163,3 +163,13 @@ def test_the_solve_context_starts_the_gpu_without_waiting_and_a_failed_init_is_f
     with pytest.raises(GpuFatalError, match="no Vulkan device"):
         ctx.gpu_client
     assert executor.stopped
+
+
+def test_only_a_cancelled_future_or_an_executor_abort_counts_as_a_stop_abort():
+    import concurrent.futures
+
+    from gear_optimizer.solver.native_inflight_lifecycle import is_stop_abort_exception
+
+    assert is_stop_abort_exception(concurrent.futures.CancelledError()) is True
+    assert is_stop_abort_exception(RuntimeError("GpuExecutor aborted: hotkey stop")) is True
+    assert is_stop_abort_exception(RuntimeError("other failure")) is False

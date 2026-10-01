@@ -20,16 +20,13 @@ if __name__ == "__main__":
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import (
-    MEMORY_GUARD_RESUME_FILE,
-    MemoryGuardResumeTracker,
-    build_memory_guard_resume_context,
     compute_memory_guard_limit,
     memory_release_requested,
     set_memory_watchdog_limit,
 )
 from gear_optimizer.store import db, legacy, schema
 from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
-from gear_optimizer.settings import RunSettings, direct_solve, paths, reasoning_search, service_settings
+from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
 
 
 def request_run_settings(*, repeats: int, reasoning: str) -> RunSettings:
@@ -105,8 +102,7 @@ class PersistentOptimizerSession:
         gear_dir: str | None = None,
     ) -> list[dict[str, Any]]:
         """Solve one chart and return its T5 leaderboard; `promote_to` (a clean official solve) also merges every
-        result into that catalog database; `gear_dir` holds the request's own Gears.csv / Minis.csv (a custom pool,
-        solved only on the direct path)."""
+        result into that catalog database; `gear_dir` holds the request's own Gears.csv / Minis.csv (a custom pool)."""
         run = request_run_settings(repeats=repeats, reasoning=reasoning)
         self._chart_path.write_text(chart_text, encoding="utf-8")
         self._remove_result_db()
@@ -115,8 +111,6 @@ class PersistentOptimizerSession:
         assert self._curves is not None
         gears, minis = self._gears, self._minis
         if gear_dir:
-            if not direct_solve():
-                raise RuntimeError("a custom item pool is solved only on the direct path")
             gears, minis = load_gears(Path(gear_dir) / "Gears.csv"), load_minis(Path(gear_dir) / "Minis.csv")
 
         self._app._stop_cached_result = False
@@ -129,14 +123,7 @@ class PersistentOptimizerSession:
         if not tasks:
             raise RuntimeError("persistent optimizer produced no task")
         try:
-            if direct_solve():
-                self._solve_direct(tasks, gears, minis)
-            else:
-                tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
-                tracker.prime(task_queue, build_memory_guard_resume_context(*self._app._get_filter_params(run)))
-                self._app._execute_tasks(tasks, tracker)
-                if self._app._memory_guard_restart_needed(tracker):
-                    raise RuntimeError("persistent optimizer requested a memory-guard restart")
+            self._solve_direct(tasks, gears, minis)
             entries = legacy.read_best_loadouts(self._result_db, song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
             if not entries:
                 raise RuntimeError("optimizer produced no T5 loadout")

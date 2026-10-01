@@ -3,98 +3,27 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
-import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from gear_optimizer.solver.gpu_executor import get_gpu_executor
-from gear_optimizer.solver.gpu_service import GpuFatalError, GpuServiceClient
 from gear_optimizer.solver.native_inflight_lifecycle_prepare import (
     _lru_get,
     _lru_put,
     prepare_native_song,
 )
 from gear_optimizer.solver.native_inflight_lifecycle_progress import (
-    ActiveRuntimeProgressReporter,
     ProgressTracker,
     evaluate_fg_progress_record_update,
 )
-from gear_optimizer.solver.native_inflight_lifecycle_queues import (
-    InflightBundleTracker,
-    PostSender,
-    SongPrepCompletion,
-    SongPrepQueue,
-)
+from gear_optimizer.solver.native_inflight_lifecycle_queues import PostSender
 
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[..., Any]
 
 
-def _emit_startup_status(progress_cb: ProgressCallback | None, status: str) -> None:
-    if progress_cb is None:
-        return
-    progress_cb(completed_delta=0, failed_delta=0, record_info={"status": status})
-
-
 # Taichi/Vulkan init plus kernel warmup on a cold offline cache.
 GPU_EXECUTOR_INIT_TIMEOUT_S = 600.0
-
-
-def start_native_inflight_gpu_client(*, progress_cb: ProgressCallback | None = None):
-    """Start the native GPU executor and return its service client."""
-    gpu_executor = get_gpu_executor()
-    _emit_startup_status(progress_cb, "GPU init (Taichi/Vulkan)")
-    gpu_executor.start(in_process=True)
-    if not gpu_executor.wait_until_ready(timeout=GPU_EXECUTOR_INIT_TIMEOUT_S):
-        err = getattr(gpu_executor, "last_init_error", None)
-        msg = "[InFlight] GPU executor Taichi init failed or timed out"
-        if err:
-            msg = f"{msg} ({err})"
-        gpu_executor.stop()
-        raise GpuFatalError(msg)
-    _emit_startup_status(progress_cb, "GPU warmup (Taichi JIT)")
-    gpu_client = GpuServiceClient(gpu_executor)
-    gpu_client.start(start_executor=False)
-    return gpu_executor, gpu_client
-
-
-@dataclass
-class CachedRuntimeSignal:
-    callback: Callable[[], bool] | None
-    poll_interval_s: float = 0.05
-    next_check_mono: float = 0.0
-    cached_requested: bool = False
-    monotonic: Callable[[], float] = field(default=time.monotonic, repr=False)
-
-    def requested(self, now_mono: float | None = None) -> bool:
-        if self.cached_requested:
-            return True
-        if self.callback is None or not callable(self.callback):
-            return False
-        now_val = float(self.monotonic() if now_mono is None else now_mono)
-        if now_val < float(self.next_check_mono):
-            return False
-        self.cached_requested = bool(self.callback())
-        if self.cached_requested:
-            return True
-        self.next_check_mono = now_val + float(self.poll_interval_s)
-        return False
-
-
-@dataclass
-class GpuAbortRequester:
-    gpu_executor: Any
-    requested_once: bool = False
-
-    def request(self, reason: str) -> bool:
-        if self.requested_once:
-            return False
-        self.requested_once = True
-        self.gpu_executor.request_abort(str(reason or "stop requested"))
-        return True
 
 
 def is_stop_abort_exception(exc: BaseException) -> bool:
@@ -104,157 +33,12 @@ def is_stop_abort_exception(exc: BaseException) -> bool:
     return "GpuExecutor aborted:" in msg
 
 
-def build_abort_queue_snapshot(
-    *,
-    pending_tasks: int,
-    prepared: int,
-    prep_inflight: int,
-    ga_inflight: int,
-    decode_inflight: int,
-    pending_fg: int,
-    fg_prep: int,
-    fg_futures: int,
-) -> str:
-    return (
-        f"pending={int(pending_tasks)} prepared={int(prepared)} prep_inflight={int(prep_inflight)} "
-        f"ga_inflight={int(ga_inflight)} decode_inflight={int(decode_inflight)} "
-        f"pending_fg={int(pending_fg)} fg_prep={int(fg_prep)} fg_futures={int(fg_futures)}"
-    )
-
-
-def native_abort_log_path() -> Path:
-    from gear_optimizer.settings import paths
-
-    return paths().bin_path("inflight_native_abort.log")
-
-
-def append_native_abort_log(
-    exc: Exception,
-    *,
-    snapshot: str,
-    trace: str,
-    path: str | Path | None = None,
-    timestamp: str | None = None,
-) -> bool:
-    log_path = Path(path) if path is not None else native_abort_log_path()
-    ts = str(timestamp or time.strftime("%Y-%m-%d %H:%M:%S"))
-    try:
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"\n[{ts}] {type(exc).__name__}: {exc}\n")
-            fh.write(str(snapshot) + "\n")
-            fh.write(str(trace) + "\n")
-    except OSError:
-        # Diagnostics only: never let the abort log replace the exception being reported.
-        logger.warning("[InFlight] Could not write %s", log_path, exc_info=True)
-        return False
-    return True
-
-
-def log_native_abort(
-    exc: Exception,
-    *,
-    pending_tasks: int,
-    prepared: int,
-    prep_inflight: int,
-    ga_inflight: int,
-    decode_inflight: int,
-    pending_fg: int,
-    fg_prep: int,
-    fg_futures: int,
-    trace: str,
-    path: str | Path | None = None,
-    timestamp: str | None = None,
-) -> bool:
-    snapshot = build_abort_queue_snapshot(
-        pending_tasks=pending_tasks,
-        prepared=prepared,
-        prep_inflight=prep_inflight,
-        ga_inflight=ga_inflight,
-        decode_inflight=decode_inflight,
-        pending_fg=pending_fg,
-        fg_prep=fg_prep,
-        fg_futures=fg_futures,
-    )
-    return append_native_abort_log(exc, snapshot=snapshot, trace=trace, path=path, timestamp=timestamp)
-
-
-def _shutdown_step(label: str, action: Callable[[], None]) -> None:
-    try:
-        action()
-    except Exception:
-        # Best effort: one failed step must not skip the remaining shutdown steps.
-        logger.warning("[InFlight][SHUTDOWN] %s failed", label, exc_info=True)
-
-
-def shutdown_native_inflight_resources(
-    *,
-    fg_pipeline,
-    decode_queue,
-    prep_queue,
-    post_sender,
-    gpu_client,
-    gpu_executor,
-    keep_gpu_executor_running: bool = False,
-) -> None:
-    """Shut down native in-flight resources: worker executors concurrently
-    (ThreadPoolExecutor + as_completed), then post_sender / gpu_client /
-    gpu_executor sequentially after the join."""
-    import concurrent.futures
-
-    parallel_steps: list[tuple[str, Callable[[], None]]] = [
-        (
-            "fg_executor.shutdown",
-            lambda: fg_pipeline.shutdown_fg(wait=True, cancel_futures=True),
-        ),
-        (
-            "decode_executor.shutdown",
-            lambda: decode_queue.shutdown(wait=True, cancel_futures=True),
-        ),
-        (
-            "fg_prep_executor.shutdown",
-            lambda: fg_pipeline.shutdown_prep(wait=True, cancel_futures=True),
-        ),
-        (
-            "prep_executor.shutdown",
-            lambda: prep_queue.shutdown(wait=True, cancel_futures=True),
-        ),
-    ]
-
-    # Leaving the pool's context waits for every step.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(parallel_steps)) as pool:
-        for label, action in parallel_steps:
-            pool.submit(_shutdown_step, label, action)
-
-    if post_sender is not None:
-        _shutdown_step("post_sender.close", lambda: post_sender.close(timeout=10.0))
-    _shutdown_step("gpu_client.close", lambda: gpu_client.close(timeout=2.0))
-
-    def _stop_gpu_executor_if_running() -> None:
-        if gpu_executor.is_running:
-            gpu_executor.stop()
-
-    if not keep_gpu_executor_running:
-        _shutdown_step("gpu_executor.stop", _stop_gpu_executor_if_running)
-
-
 __all__ = [
-    "ActiveRuntimeProgressReporter",
-    "CachedRuntimeSignal",
-    "GpuAbortRequester",
-    "InflightBundleTracker",
     "PostSender",
     "ProgressTracker",
-    "SongPrepCompletion",
-    "SongPrepQueue",
     "_lru_get",
     "_lru_put",
-    "append_native_abort_log",
-    "build_abort_queue_snapshot",
     "evaluate_fg_progress_record_update",
     "is_stop_abort_exception",
-    "log_native_abort",
-    "native_abort_log_path",
     "prepare_native_song",
-    "shutdown_native_inflight_resources",
-    "start_native_inflight_gpu_client",
 ]

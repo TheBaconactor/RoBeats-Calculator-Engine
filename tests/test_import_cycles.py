@@ -1,6 +1,6 @@
 """S1: the engine's modules import one way. Function-level imports count: they only defer a cycle to call time.
 
-Each remaining cycle is listed with the stage that removes it; a new cycle, or a listed one that grew, fails.
+The remaining cycle is listed with the stage that removes it; a new cycle, or a listed one that grew, fails.
 """
 
 from __future__ import annotations
@@ -19,17 +19,6 @@ KNOWN_CYCLES = {
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys",
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache_serde",
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache_store",
-    }),
-    # R1e deletes the in-flight pipeline.
-    frozenset({
-        "gear_optimizer.solver.native_inflight_lifecycle",
-        "gear_optimizer.solver.native_inflight_lifecycle_prepare",
-        "gear_optimizer.solver.native_inflight_pipeline",
-        "gear_optimizer.solver.native_inflight_pipeline_fg",
-    }),
-    frozenset({
-        "gear_optimizer.solver.native_inflight_config",
-        "gear_optimizer.solver.native_inflight_scheduler_policy",
     }),
 }
 

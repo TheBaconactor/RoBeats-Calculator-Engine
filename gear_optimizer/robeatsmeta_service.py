@@ -35,7 +35,6 @@ from gear_optimizer.core.macos_background import make_process_background_only
 from gear_optimizer.settings import (
     DIFFICULTIES,
     REASONING_LEVELS,
-    direct_solve,
     paths,
     reasoning_search,
     service_settings,
@@ -1198,8 +1197,8 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         custom_request = custom_chart or custom_items
         promote_to = _promotion_target(request, timing_mode=timing_mode, custom_pool=custom_pool)
         # An uploaded chart keeps the isolated path (its frontier caches must stay out of the shared ones); a
-        # custom item pool on an official chart is solved warm on the direct path.
-        if _persistent_worker_enabled() and not custom_chart and (direct_solve() or not custom_items):
+        # custom item pool on an official chart is solved warm.
+        if _persistent_worker_enabled() and not custom_chart:
             state.result = _solve_persistent(
                 job,
                 chart_text,

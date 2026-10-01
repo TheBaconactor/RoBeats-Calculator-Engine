@@ -4,7 +4,6 @@ from gear_optimizer.domain.jobs import (
     TASK_FIXED_FIELD_COUNT,
     extract_repeat_bundle,
     extract_repeat_context,
-    materialize_repeat_task,
     task_queue_label,
 )
 
@@ -154,38 +153,3 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
     ]
 
 
-def test_native_repeat_bundle_materializes_logical_run_label():
-    bundle_task = (
-        "dummy.txt",
-        "Dummy Song",
-        "Hard",
-        {},
-        {},
-        {},
-        [],
-        [],
-        {},
-        {},
-        "",
-        1,
-        None,
-        1,
-        False,
-        {
-            "repeat_bundle": True,
-            "repeat_total": 3,
-            "runs": [
-                {"repeat_index": 1, "repeat_total": 3, "ga_seed": 101},
-                {"repeat_index": 2, "repeat_total": 3, "ga_seed": 202},
-                {"repeat_index": 3, "repeat_total": 3, "ga_seed": 303},
-            ],
-        },
-    )
-
-    bundle = extract_repeat_bundle(bundle_task)
-    assert bundle is not None
-    assert task_queue_label(bundle_task) == "Dummy Song"
-
-    logical_task = materialize_repeat_task(bundle_task, bundle["runs"][1])
-    assert extract_repeat_bundle(logical_task) is None
-    assert task_queue_label(logical_task) == "Dummy Song (Run 2/3)"

@@ -6,15 +6,7 @@ import pytest
 
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_tuple_from_job_context
-from gear_optimizer.engine.native import NativeOptimizationEngine
-from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT, IN_FLIGHT_SONGS
 from gear_optimizer.solver.gpu_service import GpuFatalError, GpuServiceTimeoutError
-
-
-@pytest.fixture(autouse=True)
-def _in_flight_path(monkeypatch):
-    """These tests cover the in-flight pipeline; the direct path (pipeline.solve) is the default."""
-    monkeypatch.setenv("ROBEATSMETA_DIRECT_SOLVE", "0")
 
 
 def _make_minimal_app() -> GearOptimizerApp:
@@ -45,129 +37,11 @@ def _build_tasks(*, count: int = 2):
     ]
 
 
-def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
-    app = _make_minimal_app()
-    tasks = _build_tasks(count=1)
-    calls: list[dict] = []
-
-    def _record_run(*args, **kwargs):
-        calls.append({"args": args, "kwargs": kwargs})
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
-    )
-
-    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-    expected_tasks = [NativeOptimizationEngine._canonical_task_tuple(task) for task in tasks]
-    assert len(calls) == 1
-    assert calls[0]["args"][0] == expected_tasks
-    assert calls[0]["kwargs"]["in_flight_songs"] == 1
-    assert "total_tasks" not in calls[0]["kwargs"]
-
-
-def test_full_task_prefix_uses_native_inflight_pipeline(monkeypatch):
-    app = _make_minimal_app()
-    tasks = _build_tasks(count=1)
-    native_calls: list[dict] = []
-
-    def _record_run(*args, **kwargs):
-        native_calls.append({"args": args, "kwargs": kwargs})
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
-    )
-
-    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-    expected_tasks = [NativeOptimizationEngine._canonical_task_tuple(task) for task in tasks]
-    assert len(native_calls) == 1
-    assert native_calls[0]["args"][0] == expected_tasks
-
-
-@pytest.mark.parametrize(
-    ("count", "expected"),
-    [(1, 1), (2, 2), (IN_FLIGHT_SONGS + 5, IN_FLIGHT_SONGS)],
-)
-def test_native_execution_caps_inflight_songs_at_the_queue(monkeypatch, count, expected):
-    app = _make_minimal_app()
-    tasks = _build_tasks(count=count)
-    calls: list[dict] = []
-
-    def _record_run(*args, **kwargs):
-        calls.append({"args": args, "kwargs": kwargs})
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
-    )
-
-    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-    assert calls[0]["kwargs"]["in_flight_songs"] == expected
-
-
-def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):
-    app = _make_minimal_app()
-    tasks = _build_tasks(count=2)
-
-    def _raise_runtime(*_args, **_kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=_raise_runtime),
-    )
-
-    with pytest.raises(RuntimeError, match="boom"):
-        app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-
-def test_a_run_whose_songs_failed_raises_after_the_run(monkeypatch):
-    app = _make_minimal_app()
-    app._stop_post_processor = lambda _queue, _proc: False  # the post-processor reported failed songs
-    ran = []
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=lambda *_a, **_k: ran.append(1)),
-    )
-
-    with pytest.raises(RuntimeError, match="failed in this run"):
-        app._run_sequential(_build_tasks(count=2), completed_songs=set(), memory_resume_tracker=None)
-    assert ran == [1]
-
-
-def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch):
-    app = _make_minimal_app()
-    tasks = _build_tasks()
-
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
-
-    def _raise_timeout(*_args, **_kwargs):
-        raise GpuServiceTimeoutError("GPU service request gpu_native_ga_run timed out after 240.0s")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=_raise_timeout),
-    )
-
-    with pytest.raises(GpuServiceTimeoutError, match="timed out"):
-        app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-
-def test_the_direct_path_solves_the_queue_with_run_queue_and_stops_the_executor(monkeypatch):
+def _patch_queue(monkeypatch, run_queue) -> dict:
+    """The app's run with pipeline.solve.run_queue replaced: no GPU executor, no post-processor process."""
     from gear_optimizer.pipeline import solve as solve_module
     from gear_optimizer.solver import native_inflight_lifecycle
 
-    monkeypatch.setenv("ROBEATSMETA_DIRECT_SOLVE", "1")
     seen: dict = {}
 
     class _Context:
@@ -185,14 +59,49 @@ def test_the_direct_path_solves_the_queue_with_run_queue_and_stops_the_executor(
             seen["sender_closed"] = True
 
     monkeypatch.setattr(solve_module, "SolveContext", _Context)
-    monkeypatch.setattr(solve_module, "run_queue", lambda tasks, ctx, **kwargs: seen.update(tasks=tasks, kwargs=kwargs))
+    monkeypatch.setattr(solve_module, "run_queue", run_queue)
     monkeypatch.setattr(native_inflight_lifecycle, "PostSender", _Sender)
+    return seen
+
+
+def test_the_run_solves_the_queue_with_run_queue_and_stops_the_executor(monkeypatch):
+    calls = []
+    seen = _patch_queue(monkeypatch, lambda tasks, ctx, **kwargs: calls.append(tasks))
     tasks = _build_tasks(count=2)
 
     _make_minimal_app()._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
-    assert seen["tasks"] == tasks and seen["sender_closed"]
-    assert seen["stop_executor"] is True  # a batch run persists Taichi's offline cache, like the in-flight path
+    assert calls == [tasks] and seen["sender_closed"]
+    assert seen["stop_executor"] is True  # a batch run persists Taichi's offline cache
+
+
+def test_a_failed_run_raises(monkeypatch):
+    def _raise_runtime(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    _patch_queue(monkeypatch, _raise_runtime)
+    with pytest.raises(RuntimeError, match="boom"):
+        _make_minimal_app()._run_sequential(_build_tasks(count=2), completed_songs=set(), memory_resume_tracker=None)
+
+
+def test_a_run_whose_songs_failed_raises_after_the_run(monkeypatch):
+    app = _make_minimal_app()
+    app._stop_post_processor = lambda _queue, _proc: False  # the post-processor reported failed songs
+    ran = []
+    _patch_queue(monkeypatch, lambda *_a, **_k: ran.append(1))
+
+    with pytest.raises(RuntimeError, match="failed in this run"):
+        app._run_sequential(_build_tasks(count=2), completed_songs=set(), memory_resume_tracker=None)
+    assert ran == [1]
+
+
+def test_a_gpu_timeout_ends_the_run(monkeypatch):
+    def _raise_timeout(*_args, **_kwargs):
+        raise GpuServiceTimeoutError("GPU service request gpu_native_ga_run timed out after 240.0s")
+
+    _patch_queue(monkeypatch, _raise_timeout)
+    with pytest.raises(GpuServiceTimeoutError, match="timed out"):
+        _make_minimal_app()._run_sequential(_build_tasks(), completed_songs=set(), memory_resume_tracker=None)
 
 
 def test_configure_execution_prewarms_native_ga():

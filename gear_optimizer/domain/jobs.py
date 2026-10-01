@@ -96,21 +96,6 @@ def extract_repeat_bundle(task: Sequence[Any] | Any) -> dict | None:
     return None
 
 
-def materialize_repeat_task(task: tuple, repeat_ctx: dict) -> tuple:
-    if not _is_task_sequence(task):
-        return task
-    prefix = list(task[:TASK_FIXED_FIELD_COUNT])
-    extras: list[Any] = []
-    for extra in task[TASK_FIXED_FIELD_COUNT:]:
-        if is_repeat_context(extra):
-            continue
-        if isinstance(extra, dict) and bool(extra.get("repeat_bundle")):
-            continue
-        extras.append(extra)
-    extras.append(dict(repeat_ctx or {}))
-    return tuple(prefix + extras)
-
-
 def task_file_path(task: Sequence[Any] | Any) -> str:
     if not _is_task_sequence(task) or len(task) <= int(TaskIndex.FILE_PATH):
         return ""
@@ -276,16 +261,3 @@ def task_tuple_from_job_context(
         *extras,
     )
 
-def ensure_task_tuple(task: Sequence[Any]) -> tuple[Any, ...]:
-    """Validate the task tuple ABI and return it as an immutable tuple.
-
-    Historically we "canonicalized" tasks by unpacking them into a typed view and
-    rebuilding the tuple. That roundtrip is semantically identity for valid tasks
-    (it exists to validate the fixed-field ABI). This helper keeps the validation
-    but avoids rebuilding/allocating a new tuple.
-    """
-    if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
-        raise ValueError("song task must contain the fixed-field production prefix")
-    # Ensure we can interpret it as a view (type/shape validation).
-    task_tuple_to_view(task)
-    return tuple(task)

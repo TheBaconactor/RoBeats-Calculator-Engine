@@ -1,5 +1,4 @@
 from gear_optimizer.solver.native_inflight_lifecycle import (
-    ActiveRuntimeProgressReporter,
     ProgressTracker,
     evaluate_fg_progress_record_update,
 )
@@ -167,55 +166,3 @@ def test_evaluate_fg_progress_record_update_updates_base_session_best():
     assert tracker.snapshot("song-a") == (1100, 900, True)
 
 
-def test_active_runtime_progress_reporter_prefers_ga_then_decode_then_fg():
-    ga_song = make_native_song(task_key="ga-song", song_name="GA Song")
-    decode_song = make_native_song(task_key="decode-song", song_name="Decode Song")
-    fg_song = make_native_song(task_key="fg-song", song_name="FG Song")
-
-    assert (
-        ActiveRuntimeProgressReporter.active_song_label(
-            ga_inflight=[ga_song],
-            decode_inflight=[decode_song],
-            fg_futures=[(fg_song, object(), 0.0)],
-        )
-        == "ga-song"
-    )
-    assert (
-        ActiveRuntimeProgressReporter.active_song_label(
-            ga_inflight=[],
-            decode_inflight=[decode_song],
-            fg_futures=[(fg_song, object(), 0.0)],
-        )
-        == "decode-song"
-    )
-    assert (
-        ActiveRuntimeProgressReporter.active_song_label(
-            ga_inflight=[],
-            decode_inflight=[],
-            fg_futures=[(fg_song, object(), 0.0)],
-        )
-        == "fg-song"
-    )
-
-
-def test_active_runtime_progress_reporter_emits_running_only_on_change_unless_forced():
-    events = []
-    reporter = ActiveRuntimeProgressReporter(lambda **kwargs: events.append(kwargs))
-    song = make_native_song(task_key="demo-song", song_name="Demo Song")
-
-    reporter.emit(ga_inflight=[song], decode_inflight=[], fg_futures=[])
-    reporter.emit(ga_inflight=[song], decode_inflight=[], fg_futures=[])
-    reporter.emit(ga_inflight=[song], decode_inflight=[], fg_futures=[], force=True)
-
-    assert events == [
-        {
-            "completed_delta": 0,
-            "failed_delta": 0,
-            "record_info": {"song": "demo-song", "status": "RUNNING"},
-        },
-        {
-            "completed_delta": 0,
-            "failed_delta": 0,
-            "record_info": {"song": "demo-song", "status": "RUNNING"},
-        },
-    ]

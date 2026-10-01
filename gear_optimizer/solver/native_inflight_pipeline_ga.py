@@ -1,97 +1,13 @@
 from __future__ import annotations
 
-import concurrent.futures
 import time
-from collections import deque
-from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from gear_optimizer.solver.native_inflight_config import NativeSong
 
 
-
-@dataclass(frozen=True)
-class GADecodeCompletion:
-    song: NativeSong
-    future: concurrent.futures.Future
-    submit_t0: float | None
-
-
-@dataclass(frozen=True)
-class GARunCompletion:
-    song: NativeSong
-    future: concurrent.futures.Future
-
-
-class GADecodeQueue:
-    def __init__(self, *, max_workers: int) -> None:
-        self.executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, int(max_workers)),
-            thread_name_prefix="GADecode",
-        )
-        self.inflight: deque[NativeSong] = deque()
-
-    def submit(
-        self,
-        song: NativeSong,
-        ga_result: Any,
-        decode_fn: Callable[[NativeSong, Any], Any],
-        *,
-        register_future: Callable[[concurrent.futures.Future | None], None],
-    ) -> concurrent.futures.Future:
-        song.runtime.decode.decode_submit_t0 = time.perf_counter()
-        future = self.executor.submit(decode_fn, song, ga_result)
-        song.runtime.decode.decode_future = future
-        register_future(future)
-        self.inflight.append(song)
-        return future
-
-    def pop_completed(self) -> list[GADecodeCompletion]:
-        completions: list[GADecodeCompletion] = []
-        for song in list(self.inflight):
-            future = song.runtime.decode.decode_future
-            if future is None:
-                continue
-            done = future.done()
-            if not done:
-                continue
-            self.inflight.remove(song)
-            completions.append(
-                GADecodeCompletion(
-                    song=song,
-                    future=future,
-                    submit_t0=song.runtime.decode.decode_submit_t0,
-                )
-            )
-        return completions
-
-    def cancel_all(self) -> None:
-        for song in list(self.inflight):
-            if song.runtime.decode.decode_future is not None:
-                song.runtime.decode.decode_future.cancel()
-
-    def shutdown(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
-        self.executor.shutdown(wait=wait, cancel_futures=cancel_futures)
-
-
 class InflightGAPipeline:
-    """Owns GA request payload assembly and per-song GPU slot bookkeeping."""
-
-    def __init__(self) -> None:
-        self.inflight: deque[NativeSong] = deque()
-
-    @staticmethod
-    def reserve_slot(song: NativeSong, slot_pool: Any) -> int:
-        if int(song.runtime.song_slot or 0) <= 0:
-            song.runtime.song_slot = int(slot_pool.acquire())
-        return int(song.runtime.song_slot)
-
-    @staticmethod
-    def release_slot(song: NativeSong, slot_pool: Any) -> None:
-        song_slot = int(song.runtime.song_slot or 0)
-        if song_slot > 0:
-            slot_pool.release(song_slot)
-        song.runtime.song_slot = 0
+    """GA request payload assembly and the decode result's hand-off onto the song."""
 
     @staticmethod
     def prepare_submit(song: NativeSong) -> None:
@@ -127,35 +43,6 @@ class InflightGAPipeline:
             "fg_mini_sig_id": song.gpu_inputs.fg_mini_sig_id,
             "fg_scoring_bundle": fg_scoring_bundle,
         }
-
-    @staticmethod
-    def mark_submitted(song: NativeSong, future: Any) -> None:
-        song.runtime.ga.ga_future = future
-        song.runtime.ga.ga_initial_populations = None
-
-    def track_submitted(
-        self,
-        song: NativeSong,
-        future: concurrent.futures.Future,
-        *,
-        register_future: Callable[[concurrent.futures.Future | None], None],
-    ) -> None:
-        self.mark_submitted(song, future)
-        register_future(song.runtime.ga.ga_future)
-        self.inflight.append(song)
-
-    def pop_completed_runs(self) -> list[GARunCompletion]:
-        completions: list[GARunCompletion] = []
-        for song in list(self.inflight):
-            future = song.runtime.ga.ga_future
-            if future is None:
-                continue
-            done = future.done()
-            if not done:
-                continue
-            self.inflight.remove(song)
-            completions.append(GARunCompletion(song=song, future=future))
-        return completions
 
     @staticmethod
     def store_decode_result(song: NativeSong, decode_result: tuple[Any, Any, Any, Any]) -> None:

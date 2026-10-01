@@ -6,16 +6,14 @@ import queue
 import time
 
 from gear_optimizer.core.memory import memory_release_requested
-from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
-from gear_optimizer.settings import direct_solve, persistent_worker
-from gear_optimizer.solver.native_inflight_config import IN_FLIGHT_SONGS
+from gear_optimizer.settings import persistent_worker
 
 logger = logging.getLogger(__name__)
 
 
 class TaskExecutionMixin:
     def _execute_tasks(self, tasks, memory_resume_tracker):
-            """Run the queue through the native in-flight engine, then record completion counts."""
+            """Solve the queue (_run_sequential), then record completion counts."""
             if self._stop_requested_now():
                 return
             completed_songs = set()
@@ -46,15 +44,14 @@ class TaskExecutionMixin:
                 self._stop_hotkeys()
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
-            """Run the current queue through the native in-flight production engine. Raises when the pipeline
-            fails, or after the run when any song failed (the post-processor counts and logs them)."""
+            """Solve the current queue in this process (_run_direct) with the run's post-processor storing the results.
+            Raises when the run fails, or after the run when any song failed (the post-processor counts and logs them)."""
             if self._stop_requested_now():
                 return
             if not tasks:
                 return
 
             total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
-            inflight_songs = min(IN_FLIGHT_SONGS, len(tasks))
 
             post_queue = None
             post_proc = None
@@ -66,20 +63,7 @@ class TaskExecutionMixin:
                 if self._progress is not None:
                     self._progress.update_counts(completed=0, total=int(total_tasks))
                 self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
-                if direct_solve():
-                    self._run_direct(tasks, post_queue, completed_songs, memory_resume_tracker)
-                else:
-                    NativeOptimizationEngine().run(
-                        NativeOptimizationRequest(
-                            tasks=tasks,
-                            in_flight_songs=int(inflight_songs),
-                            completed_songs=completed_songs,
-                            memory_resume_tracker=memory_resume_tracker,
-                            post_queue=post_queue,
-                            stop_requested=self._stop_requested_now,
-                            progress_cb=self._progress_event,
-                        )
-                    )
+                self._run_direct(tasks, post_queue, completed_songs, memory_resume_tracker)
             finally:
                 self._progress_counts_driven = False
                 songs_failed = not self._stop_post_processor(post_queue, post_proc)

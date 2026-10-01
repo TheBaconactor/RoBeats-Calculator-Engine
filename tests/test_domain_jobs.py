@@ -6,7 +6,6 @@ from gear_optimizer.domain.jobs import (
     effective_task_count,
     extract_repeat_bundle,
     extract_repeat_context,
-    materialize_repeat_task,
     seed_plan_from_song_job,
     task_ga_seed,
     task_queue_label,
@@ -144,23 +143,6 @@ def test_bundle_helpers_count_logical_repeats_without_materializing_work():
     assert task_tuple_to_song_job(task).repeat_bundle is True
     assert task_tuple_to_song_job(task).repeat_total == 3
     assert effective_task_count([task, _legacy_task()]) == 4
-
-
-def test_materialize_repeat_task_replaces_bundle_metadata_with_one_repeat_context():
-    bundle = {
-        "repeat_bundle": True,
-        "repeat_total": 2,
-        "runs": [{"repeat_index": 1, "repeat_total": 2, "ga_seed": 101}],
-    }
-    old_repeat = {"repeat_index": 9, "repeat_total": 9, "ga_seed": 999}
-    unrelated = {"keep": True}
-    repeat_ctx = {"repeat_index": 1, "repeat_total": 2, "ga_seed": 101}
-
-    original = _legacy_task(bundle, unrelated, old_repeat)
-    materialized = materialize_repeat_task(original, repeat_ctx)
-
-    assert materialized[:TASK_FIXED_FIELD_COUNT] == original[:TASK_FIXED_FIELD_COUNT]
-    assert materialized[TASK_FIXED_FIELD_COUNT:] == (unrelated, repeat_ctx)
 
 
 def test_short_legacy_tuple_is_rejected_at_the_adapter_boundary():
