@@ -55,6 +55,7 @@ def _compare(
 ):
     for row, combo in ti.ndrange(stats.shape[0], 2):
         ft, ff = combo + 1, 1
+        row_flags = fields.GpuColorFlags(*[flags[row, i] for i in ti.static(range(12))])
         budget = stats[row, 5] - ft - ff
         pp, cm, fm = stats[row, 0], stats[row, 1], stats[row, 2]
         p = stats[row, 3] + 3 * (ft * flags[row, 0] + ff * flags[row, 2])
@@ -64,18 +65,7 @@ def _compare(
             combo,
             stats[row, 5],
             3,
-            flags[row, 0],
-            flags[row, 1],
-            flags[row, 2],
-            flags[row, 3],
-            flags[row, 4],
-            flags[row, 5],
-            flags[row, 6],
-            flags[row, 7],
-            flags[row, 8],
-            flags[row, 9],
-            flags[row, 10],
-            flags[row, 11],
+            row_flags,
             0,
             0,
             0,
@@ -108,18 +98,7 @@ def _compare(
             0,
             0,
             3,
-            flags[row, 0],
-            flags[row, 1],
-            flags[row, 2],
-            flags[row, 3],
-            flags[row, 4],
-            flags[row, 5],
-            flags[row, 6],
-            flags[row, 7],
-            flags[row, 8],
-            flags[row, 9],
-            flags[row, 10],
-            flags[row, 11],
+            row_flags,
             0,
             ft * 3,
             3,
