@@ -90,6 +90,7 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None) -> Iterator
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
     deadline = None if timeout_sec is None else time.monotonic() + max(0.0, float(timeout_sec))
+    locked = False
     try:
         if os.name == "nt":
             import msvcrt
@@ -124,20 +125,14 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None) -> Iterator
                     if time.monotonic() >= deadline:
                         raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
                     time.sleep(0.01)
+        locked = True
         yield
     finally:
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            pass  # Not locked: acquiring it failed (e.g. timed out), which is already propagating.
+        if locked and os.name == "nt":
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        elif locked:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
 
 
