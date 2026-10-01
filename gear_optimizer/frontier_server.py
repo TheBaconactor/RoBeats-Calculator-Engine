@@ -277,8 +277,8 @@ def build_publication(
         allowed = (cache_allowlist or {}).get(scope) if scope in {"timeline", "fg"} else None
         for relative, source in _iter_scope_files(scope, source_root, allowed):
             file_stat = source.stat()
-            size = int(file_stat.st_size)
-            mtime_ns = int(file_stat.st_mtime_ns)
+            size = file_stat.st_size
+            mtime_ns = file_stat.st_mtime_ns
             digest = prior_hashes.get((scope, relative, size, mtime_ns)) or _sha256_file(source)
             entry = {
                 "scope": scope,
@@ -315,8 +315,8 @@ def build_publication(
         json.dumps(
             {
                 "protocol": _PROTOCOL,
-                "data_revision": str(data_revision),
-                "code_revision": str(code_revision),
+                "data_revision": data_revision,
+                "code_revision": code_revision,
                 "bundles": [(item["name"], item["content_sha256"]) for item in bundle_specs],
             },
             separators=(",", ":"),
@@ -347,7 +347,7 @@ def build_publication(
             else:
                 _write_bundle(destination, bundle.pop("_sources"))
             bundle.pop("_sources", None)
-            bundle["size"] = int(destination.stat().st_size)
+            bundle["size"] = destination.stat().st_size
             # A hard link shares the prior bundle's bytes, so its recorded digest still holds;
             # re-reading every unchanged bundle cost gigabytes of I/O per publication.
             recorded = str(prior.get("sha256") or "") if linked and prior.get("size") == bundle["size"] else ""
@@ -355,8 +355,8 @@ def build_publication(
         manifest = {
             "protocol": _PROTOCOL,
             "revision": revision,
-            "data_revision": str(data_revision),
-            "code_revision": str(code_revision),
+            "data_revision": data_revision,
+            "code_revision": code_revision,
             "generated_at": int(time.time()),
             "bundles": bundle_specs,
         }
@@ -460,7 +460,7 @@ def _git(repo_root: Path, *args: str, timeout: int = 120) -> str:
         check=True,
         capture_output=True,
         text=True,
-        timeout=max(1, int(timeout)),
+        timeout=timeout,
     )
     return result.stdout.strip()
 
@@ -519,7 +519,7 @@ def _extract_repository_snapshot(repo_root: Path, commit: str, destination: Path
                         raise ValueError(f"missing file body in Git Data archive: {member.name!r}")
                     with source, target.open("xb") as output:
                         shutil.copyfileobj(source, output, length=1024 * 1024)
-                    os.chmod(target, int(member.mode) & 0o777)
+                    os.chmod(target, member.mode & 0o777)
                 else:
                     raise ValueError(f"unsupported entry in Git archive: {member.name!r}")
         os.replace(work, destination)
@@ -619,20 +619,20 @@ class FrontierServerMaintainer:
                     logger.info("pruning stale frontier publication %s", entry.name)
                     shutil.rmtree(entry, ignore_errors=True)
         except OSError:
-            pass
+            logger.warning("pruning stale frontier publications failed", exc_info=True)
         try:
             for entry in snapshots.iterdir():
                 if entry.name != ".sync" and entry.is_dir() and entry.name != keep_commit:
                     logger.info("pruning stale source snapshot %s", entry.name)
                     shutil.rmtree(entry, ignore_errors=True)
         except OSError:
-            pass
+            logger.warning("pruning stale source snapshots failed", exc_info=True)
         try:
             for entry in (snapshots / ".sync").iterdir():
                 if entry.name != f"{keep_commit}.json":
                     entry.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.warning("pruning stale game-data sync states failed", exc_info=True)
 
     def _charts_needing_caches(
         self,
