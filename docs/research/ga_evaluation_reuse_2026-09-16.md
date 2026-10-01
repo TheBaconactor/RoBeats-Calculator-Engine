@@ -65,7 +65,7 @@ All new cache regressions, exhaustive GPU parity, batching, decoding, and Skylin
 
 ### Ponytail review
 
-Reviewed the final diff using [ponytail-review](/Users/server/.codex/skills/ponytail-review/SKILL.md). Related obsolete kernels, duplicated aggregation, redundant fixture wrapping, and stale benchmark assumptions were removed. The four cache fields serve exact matching, the complete winner, and deterministic publication; none is speculative.
+Reviewed the final diff with the ponytail-review checklist. Related obsolete kernels, duplicated aggregation, redundant fixture wrapping, and stale benchmark assumptions were removed. The four cache fields serve exact matching, the complete winner, and deterministic publication; none is speculative.
 
 Complexity-only conclusion: **Lean already. Ship.** The baseline failures and worker limitation above remain separate correctness concerns.
 

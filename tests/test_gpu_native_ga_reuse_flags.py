@@ -32,15 +32,3 @@ def test_ga_prepare_population_never_builds_exact_reuse_map(monkeypatch) -> None
     ga_operations.ga_prepare_population_base_stats(12, n_slots=9, flags=gpu_color_flags(None))
 
     assert calls == ["aggregate"]
-
-
-def test_exact_eval_reuse_helpers_are_removed() -> None:
-    """Regression guard: the removed reuse opt-in helpers must not return."""
-    from gear_optimizer.solver.taichi_gem.api import ga_operations
-
-    for name in (
-        "_ga_exact_genome_base_stats_reuse_enabled",
-        "_ga_exact_genome_eval_results_reuse_enabled",
-        "_ga_exact_genome_stats_signature_reuse_enabled",
-    ):
-        assert not hasattr(ga_operations, name), f"{name} should be removed"

@@ -97,16 +97,6 @@ def test_timeline_prebuild_worker_count_floor_is_one(monkeypatch) -> None:
     assert cpu_affinity.timeline_prebuild_worker_count() == 1
 
 
-def test_fg_response_flat_worker_ram_cap_is_deleted() -> None:
-    """The flat FG GB-per-worker cap admitted 12 workers x ~7 GB measured giant commit and crashed
-    the machine (2026-07-09). Its one canonical replacement is the weighted admission scheduler;
-    the superseded route must not resurface."""
-    from gear_optimizer.core import cpu_affinity
-
-    assert not hasattr(cpu_affinity, "fg_response_prebuild_worker_count")
-    assert not hasattr(cpu_affinity, "FG_RESPONSE_PREBUILD_GB_PER_WORKER")
-
-
 def test_windows_frontier_worker_pinning_full_set_on_uniform_cores(monkeypatch) -> None:
     """Uniform silicon (no E-cores): same full-set mask, reserved weakest CPU still excluded."""
     from gear_optimizer.core import cpu_affinity

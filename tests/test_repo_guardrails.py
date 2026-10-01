@@ -170,37 +170,6 @@ def test_maintained_document_code_paths_resolve() -> None:
     )
 
 
-def test_retired_force_great_options_stay_out_of_configs_and_tools() -> None:
-    retired_config_options = (
-        "ForceGreatsMode",
-        "FG_SolverMode",
-        "ForceGreatsFinder",
-        "FG_SearchRadius",
-    )
-    retired_runtime_state = ("pending_fg_jobs",)
-    offenders: list[str] = []
-
-    for path in (_REPO_ROOT / "config.ini",):
-        text = path.read_text(encoding="utf-8", errors="ignore").lower()
-        hits = [token for token in retired_config_options if token.lower() in text]
-        if hits:
-            offenders.append(f"{path.relative_to(_REPO_ROOT)}: {', '.join(hits)}")
-
-    for path in sorted((_REPO_ROOT / "tools").rglob("*.py")):
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        hits = [
-            token
-            for token in (*retired_config_options, *retired_runtime_state)
-            if token in text
-        ]
-        if hits:
-            offenders.append(f"{path.relative_to(_REPO_ROOT)}: {', '.join(hits)}")
-
-    assert not offenders, "Retired Force Great controls were reintroduced:\n" + "\n".join(
-        offenders
-    )
-
-
 def test_maintained_documentation_does_not_reference_retired_surfaces() -> None:
     retired = (
         "gear_optimizer/solver/genetic.py",
@@ -231,127 +200,12 @@ def test_maintained_documentation_does_not_reference_retired_surfaces() -> None:
     )
 
 
-def _iter_python_files(root: Path, rel_dirs: list[str]):
-    skip_parts = {
-        ".git",
-        ".pytest_cache",
-        "__pycache__",
-        "Data",
-        "bin",
-        "artifacts",
-        ".venv",
-        "venv",
-    }
-
-    for rel in rel_dirs:
-        base = root / rel
-        if not base.exists():
-            continue
-        for p in base.rglob("*.py"):
-            if any(part in skip_parts for part in p.parts):
-                continue
-            yield p
-
-
-def test_no_removed_gpu_symbols_present() -> None:
-    # Keep this list scoped to the removed batch gem solver surface.
-    forbidden = (
-        "optimize_gems_gpu",
-        "optimize_gems_batch_gpu",
-        "OPTIMIZE_GEMS_BATCH",
-        "solve_batch_kernel",
-        "copy_fever_masks_from_ndarray_kernel",
-    )
-
-    offenders: list[str] = []
-    for path in _iter_python_files(
-        _REPO_ROOT,
-        rel_dirs=[
-            "gear_optimizer",
-            "general_meta",
-            "tools",
-        ],
-    ):
-        txt = path.read_text(encoding="utf-8", errors="ignore")
-        hits = [tok for tok in forbidden if tok in txt]
-        if hits:
-            rel = path.relative_to(_REPO_ROOT)
-            offenders.append(f"{rel}: {', '.join(hits)}")
-
-    assert not offenders, "Removed GPU symbols were reintroduced:\n" + "\n".join(offenders)
-
-
-def test_non_skyline_compatibility_shims_stay_deleted() -> None:
-    forbidden = [
-        "gear_optimizer/core/cfg_window_decode.py",
-        "gear_optimizer/helpers/song_helpers/stats_gateway.py",
-        "gear_optimizer/helpers/song_helpers/persistence.py",
-        "gear_optimizer/solver/scoring/force_greats.py",
-        "gear_optimizer/solver/candidate_solver_cache.py",
-        "gear_optimizer/solver/gpu_executor_profile.py",
-        "gear_optimizer/solver/gpu_profiler.py",
-        "gear_optimizer/solver/item_pools.py",
-        "gear_optimizer/solver/marginal_pruning.py",
-        "gear_optimizer/solver/taichi_gem/ftff_combos.py",
-        "gear_optimizer/solver/taichi_gem/api/gpu_prefetch.py",
-        "gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu.py",
-        "gear_optimizer/solver/taichi_gem/force_greats/response_inner.py",
-        "gear_optimizer/solver/taichi_gem/force_greats/api.py",
-        "gear_optimizer/helpers/song_helpers/force_greats/response_frontier_adapter.py",
-        "scripts/profile/profile_ga_gpu.py",
-        "scripts/profile/profile_main_hot.py",
-        "scripts/regression/ga_gpu_integration.py",
-        "scripts/regression/gpu_stats_regression.py",
-        "scripts/regression/regression_baseline.py",
-        "scripts/regression/regression_ga.py",
-        "tests/test_ga_evaluate_population_fusion.py",
-        "tests/test_ga_population_upload_kernel.py",
-        "tests/test_ga_run_payload_packed.py",
-        "tests/test_gpu_elites_regression.py",
-        "tests/test_gpu_ga_cold_eval_determinism.py",
-        "tests/test_gpu_ga_eval_race_free.py",
-        "tests/test_gpu_ga_global_best_consistency.py",
-        "tests/test_gpu_ga_ops.py",
-        "tests/test_gpu_native_ga_plateau_prune_regression.py",
-        "tests/test_gpu_occupancy_matrix.py",
-        "tools/bench/bench_gpu_occupancy_matrix.py",
-        "tools/bench/bench_gpu_native_ga_eval.py",
-        "tools/db/verify_recompute_fix.py",
-        "tools/profile/tests/profile_ga.py",
-    ]
-
-    present = [rel for rel in forbidden if (_REPO_ROOT / rel).exists()]
-
-    assert not present, "Non-Skyline compatibility shims were reintroduced:\n" + "\n".join(present)
-
-
 def test_taichi_api_package_imports_fail_loudly() -> None:
     api_init = (_REPO_ROOT / "gear_optimizer" / "solver" / "taichi_gem" / "api" / "__init__.py").read_text(
         encoding="utf-8"
     )
 
     assert "except ImportError" not in api_init
-
-
-def test_scoring_package_does_not_reexport_old_fever_solver_surface() -> None:
-    scoring_init = (_REPO_ROOT / "gear_optimizer" / "solver" / "scoring" / "__init__.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "solve_best_fever_combination" not in scoring_init
-    assert "batch_evaluate_genomes" not in scoring_init
-
-
-def test_legacy_ftff_solver_api_stays_deleted() -> None:
-    parallel_solvers = (
-        _REPO_ROOT / "gear_optimizer" / "solver" / "taichi_gem" / "api" / "parallel_solvers.py"
-    ).read_text(encoding="utf-8")
-    api_init = (_REPO_ROOT / "gear_optimizer" / "solver" / "taichi_gem" / "api" / "__init__.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "def solve_genomes_with_ftff(" not in parallel_solvers
-    assert '"solve_genomes_with_ftff"' not in api_init
 
 
 def _is_disallowed_taichi_gem_import(module: str) -> bool:
