@@ -1,6 +1,9 @@
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.solver.native_inflight_lifecycle import ProgressTracker, evaluate_fg_progress_record_update
-from gear_optimizer.solver.native_inflight_lifecycle_progress import RECORD_UPDATE_SCORE_EPSILON
+from gear_optimizer.pipeline.progress import (
+    RECORD_UPDATE_SCORE_EPSILON,
+    ProgressTracker,
+    evaluate_fg_progress_record_update,
+)
 from gear_optimizer.gamedata import STATS
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
 from tests.native_song_factory import make_native_song

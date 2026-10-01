@@ -2,7 +2,7 @@ import sqlite3
 
 import gear_optimizer.helpers.song_helpers.database_context as database_context
 from gear_optimizer.helpers.song_helpers.database_context import SongDbBaseline
-from gear_optimizer.solver.native_inflight_lifecycle_progress import run_record_info
+from gear_optimizer.pipeline.progress import run_record_info
 from gear_optimizer.store import db, schema
 from tests.store_support import result
 

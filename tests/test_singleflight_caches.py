@@ -9,7 +9,7 @@ import numpy as np
 
 from gear_optimizer.core import singleflight as singleflight_module
 from gear_optimizer.solver import fg_effective_dedup
-from gear_optimizer.solver import native_inflight_lifecycle_prepare as lifecycle_prepare
+from gear_optimizer.pipeline import prepare as lifecycle_prepare
 
 
 def _track_waiter(monkeypatch):

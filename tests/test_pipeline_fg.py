@@ -158,7 +158,7 @@ def test_fg_materialization_requires_the_owner_score_map():
         raise AssertionError("expected a missing owner FG score map to fail loudly")
 
 
-def test_fg_materialization_returns_the_reduced_results_with_its_timings(monkeypatch):
+def test_fg_materialization_returns_the_reduced_results(monkeypatch):
     from gear_optimizer.solver import fg_materialization_worker as worker
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
@@ -193,8 +193,8 @@ def test_materialize_from_owner_score_map_fails_on_missing_base_components(tmp_p
         raise AssertionError("expected a missing owner-map base_components row to fail loudly")
 
 
-def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+def test_prepare_fg_plan_builds_the_plan_without_an_owner_round_trip(monkeypatch):
+    from gear_optimizer.pipeline import fg as fg_pipeline
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     plan = SimpleNamespace(prepared_batches=[SimpleNamespace(batch=SimpleNamespace())])
@@ -223,6 +223,6 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
     )
 
     # The fused handoff prefetches NO owner BUILD/SCORE during prep (the owner already scored in the GA turn).
-    fg_pipeline.prepare_fg_job_sync(song)
+    fg_pipeline.prepare_fg_plan(song)
 
     assert song.runtime.fg.fg_response_frontier_plan is plan

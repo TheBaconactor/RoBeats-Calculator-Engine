@@ -48,31 +48,27 @@ def _ga_turn(payload: dict, abort_requested: Callable[[], bool]) -> dict:
 
 def run_ga(song: Any, executor: Any) -> dict:
     """The GA result of a prepared song (prepare_native_song) on the GPU executor (started)."""
-    from gear_optimizer.solver.native_inflight_pipeline_ga import InflightGAPipeline
+    from gear_optimizer.pipeline.ga import ga_payload
 
     song.runtime.song_slot = _GA_SLOT
     try:
-        return executor.call(_ga_turn, InflightGAPipeline.build_payload(song), executor.abort_requested)
+        return executor.call(_ga_turn, ga_payload(song), executor.abort_requested)
     finally:
         song.runtime.song_slot = 0
 
 
 def finish_song(song: Any, ga_result: Any, progress_tracker=None) -> SongSolve:
     """The SongSolve of a song from its GA result (no GPU work). `progress_tracker` (a run's) judges its records."""
+    from gear_optimizer.pipeline.fg import apply_fg_materialization_result, prepare_fg_plan, release_fg_song_surfaces
+    from gear_optimizer.pipeline.ga import decode_ga_result, store_decode_result
     from gear_optimizer.solver.fg_materialization_worker import (
         build_fg_materialization_request,
         materialize_fg_request,
     )
-    from gear_optimizer.solver.native_inflight_pipeline import decode_ga_payload_sync, prepare_fg_job_sync
-    from gear_optimizer.solver.native_inflight_pipeline_fg import (
-        apply_fg_materialization_result,
-        release_fg_song_surfaces,
-    )
-    from gear_optimizer.solver.native_inflight_pipeline_ga import InflightGAPipeline
 
-    InflightGAPipeline.store_decode_result(song, decode_ga_payload_sync(song, ga_result))
+    store_decode_result(song, decode_ga_result(song, ga_result))
     try:
-        prepare_fg_job_sync(song)
+        prepare_fg_plan(song)
         apply_fg_materialization_result(song, materialize_fg_request(build_fg_materialization_request(song)),
                                         progress_tracker=progress_tracker)
     finally:
@@ -82,7 +78,7 @@ def finish_song(song: Any, ga_result: Any, progress_tracker=None) -> SongSolve:
 
 def solve_song(task: tuple, executor: Any) -> SongSolve:
     """The SongSolve of one queue task (an app task tuple)."""
-    from gear_optimizer.solver.native_inflight_lifecycle import prepare_native_song
+    from gear_optimizer.pipeline.prepare import prepare_native_song
 
     song = prepare_native_song(task)
     return finish_song(song, run_ga(song, executor))
@@ -106,17 +102,14 @@ def run_queue(
     past its watchdog) ends the run: the process cannot use its GPU any more. Any other error fails that song only."""
     from gear_optimizer.core.memory import memory_release_requested
     from gear_optimizer.domain.jobs import task_file_path, task_queue_label, task_song_name
-    from gear_optimizer.solver.native_inflight_completion import (
-        build_native_song_error_payload,
-        build_native_task_error_payload,
-        mark_song_completed,
-    )
-    from gear_optimizer.solver.native_inflight_lifecycle import (
+    from gear_optimizer.pipeline.prepare import prepare_native_song
+    from gear_optimizer.pipeline.progress import (
         ProgressTracker,
-        is_stop_abort_exception,
-        prepare_native_song,
+        mark_song_completed,
+        song_error_payload,
+        task_error_payload,
     )
-    from gear_optimizer.solver.gpu_executor import GpuFatalError
+    from gear_optimizer.solver.gpu_executor import GpuFatalError, is_stop_abort_exception
 
     progress = ProgressTracker()
 
@@ -144,7 +137,7 @@ def run_queue(
         try:
             post(finish_song(song, ga_result, progress))
         except Exception as exc:
-            fail(task, build_native_song_error_payload(song, exc=exc, trace=traceback.format_exc()))
+            fail(task, song_error_payload(song, exc=exc, trace=traceback.format_exc()))
             return
         progress.emit_done_song_progress(progress_cb, song)
         complete(task)
@@ -169,7 +162,7 @@ def run_queue(
                 try:
                     song = prepared.result()
                 except Exception as exc:
-                    finisher.submit(fail, task, build_native_task_error_payload(
+                    finisher.submit(fail, task, task_error_payload(
                         song_name=task_song_name(task), queue_key=task_queue_label(task), exc=exc,
                         trace=traceback.format_exc()))
                     continue
@@ -184,8 +177,7 @@ def run_queue(
                 except Exception as exc:
                     if stop_requested is not None and stop_requested() and is_stop_abort_exception(exc):
                         break
-                    finisher.submit(fail, task, build_native_song_error_payload(song, exc=exc,
-                                                                                trace=traceback.format_exc()))
+                    finisher.submit(fail, task, song_error_payload(song, exc=exc, trace=traceback.format_exc()))
                     continue
                 while len(finishing) >= _FINISH_BEHIND:  # bounded: finishing songs hold their surfaces
                     finishing.popleft().result()

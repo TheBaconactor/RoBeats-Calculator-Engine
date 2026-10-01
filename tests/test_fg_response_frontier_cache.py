@@ -1622,7 +1622,7 @@ def test_fg_prebuild_reducer_threads_size_to_memory_weight_class(monkeypatch) ->
 
 
 def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:
-    from gear_optimizer.solver import native_inflight_pipeline as pipeline
+    from gear_optimizer.pipeline import fg as pipeline
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
 
@@ -1657,7 +1657,7 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
         runtime=SimpleNamespace(fg=SimpleNamespace()),
     )
 
-    pipeline.prepare_fg_static_sync(song)
+    pipeline.prepare_fg_static(song)
 
     assert song.runtime.fg.fg_response_scoring_bundle is bundle
     assert seen == {

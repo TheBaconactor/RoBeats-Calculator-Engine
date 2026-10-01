@@ -21,11 +21,12 @@ Use this page to find the current owner of a behavior. The
 - Queue coordination: `gear_optimizer/pipeline/queue_task_coordinator.py`
 - Result post-processing: `gear_optimizer/pipeline/post_processor.py`
 - Songs end to end (the queue, one GA at a time): `gear_optimizer/pipeline/solve.py`
-- Resource and song lifecycle:
-  `gear_optimizer/solver/native_inflight_lifecycle.py`
-- GA/decode pipeline: `gear_optimizer/solver/native_inflight_pipeline.py`
-- Force Great materialization:
-  `gear_optimizer/solver/native_inflight_pipeline_fg.py`
+- A song being solved and its preparation: `gear_optimizer/pipeline/song.py`,
+  `gear_optimizer/pipeline/prepare.py`
+- GA request and decode: `gear_optimizer/pipeline/ga.py`
+- Force Great preparation, planning and results: `gear_optimizer/pipeline/fg.py`
+  (materialization: `gear_optimizer/solver/fg_materialization_worker.py`)
+- Records, progress and completion: `gear_optimizer/pipeline/progress.py`
 - Post-processor process: `gear_optimizer/pipeline/post_processor.py`
 - A solved song's results: `gear_optimizer/pipeline/results.py`
 - Canonicalization (results -> store rows): `gear_optimizer/pipeline/canonical.py`

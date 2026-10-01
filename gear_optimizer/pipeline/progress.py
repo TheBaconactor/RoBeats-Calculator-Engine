@@ -1,12 +1,15 @@
-"""Progress tracking and GA queue limit helpers for native in-flight orchestration."""
+"""A run's progress: each finished song's records judged against the run's bests, the progress events, and each
+task's completion (the completed set and the resume journal) or error payload."""
+
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from gear_optimizer.core.result_payloads import build_error_payload
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.solver.native_inflight_config import native_song_label
+from gear_optimizer.pipeline.song import NativeSong, native_song_label
 
 # A run is a NEW record for the progress counter when its best score (base or FG) beats the song's stored best by
 # more than this many points.
@@ -180,3 +183,50 @@ def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTrac
             mark_valid=baseline_valid,
         )
     return record_info
+
+
+def mark_song_completed(
+    *,
+    completed_songs: set[str],
+    task_key: str,
+    song_name: str,
+    song_path: str | None = None,
+    memory_resume_tracker=None,
+) -> None:
+    key = str(task_key)
+    completed_songs.add(key)
+    if memory_resume_tracker:
+        memory_resume_tracker.mark_completed(song_path=song_path, song_name=str(song_name))
+
+
+def song_error_payload(
+    song: NativeSong,
+    *,
+    exc: Exception,
+    trace: str,
+) -> dict[str, Any]:
+    return build_error_payload(
+        song_name=str(song.config.song_name),
+        queue_key=str(song.config.task_key),
+        queue_label=str(song.config.task_key),
+        exc=exc,
+        trace=trace,
+    )
+
+
+def task_error_payload(
+    *,
+    song_name: str,
+    queue_key: str,
+    exc: Exception,
+    trace: str,
+    queue_label: str | None = None,
+) -> dict[str, Any]:
+    key = str(queue_key)
+    return build_error_payload(
+        song_name=str(song_name),
+        queue_key=key,
+        queue_label=str(queue_label if queue_label is not None else key),
+        exc=exc,
+        trace=trace,
+    )

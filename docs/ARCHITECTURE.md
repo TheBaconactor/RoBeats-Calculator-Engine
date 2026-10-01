@@ -67,12 +67,12 @@ flowchart LR
 The main execution owners are:
 
 - `gear_optimizer/pipeline/solve.py` for the song stages and the queue;
-- `gear_optimizer/solver/native_inflight_lifecycle.py` for song preparation and
-  progress;
-- `gear_optimizer/solver/native_inflight_pipeline.py` and
-  `native_inflight_pipeline_ga.py` for GA request and decode stages;
-- `gear_optimizer/solver/native_inflight_pipeline_fg.py` for Force Great
-  planning and host-only payload materialization; and
+- `gear_optimizer/pipeline/song.py` for the state of a song being solved and
+  `pipeline/prepare.py` for its preparation;
+- `gear_optimizer/pipeline/ga.py` for the GA request and its decode;
+- `gear_optimizer/pipeline/fg.py` for Force Great preparation, planning and
+  results;
+- `gear_optimizer/pipeline/progress.py` for records, progress and completion;
 - `gear_optimizer/solver/gpu_executor.py` for all GPU execution: one owner
   thread initializes Taichi and runs every GPU call.
 

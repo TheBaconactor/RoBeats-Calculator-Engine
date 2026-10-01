@@ -74,7 +74,7 @@ class TaskExecutionMixin:
             """The queue solved in this process (pipeline.solve.run_queue), posting to the run's post-processor."""
             from gear_optimizer.pipeline.solve import run_queue
             from gear_optimizer.solver.gpu_executor import get_gpu_executor
-            from gear_optimizer.solver.native_inflight_lifecycle import PostSender
+            from gear_optimizer.pipeline.post_processor import PostSender
 
             post_sender = PostSender(post_queue, stop_requested=self._stop_requested_now)
             executor = get_gpu_executor()

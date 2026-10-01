@@ -38,8 +38,9 @@ def _build_tasks(*, count: int = 2):
 
 def _patch_queue(monkeypatch, run_queue) -> dict:
     """The app's run with pipeline.solve.run_queue replaced: no GPU executor, no post-processor process."""
+    from gear_optimizer.pipeline import post_processor
     from gear_optimizer.pipeline import solve as solve_module
-    from gear_optimizer.solver import gpu_executor, native_inflight_lifecycle
+    from gear_optimizer.solver import gpu_executor
 
     seen: dict = {}
 
@@ -62,7 +63,7 @@ def _patch_queue(monkeypatch, run_queue) -> dict:
 
     monkeypatch.setattr(gpu_executor, "get_gpu_executor", _Executor)
     monkeypatch.setattr(solve_module, "run_queue", run_queue)
-    monkeypatch.setattr(native_inflight_lifecycle, "PostSender", _Sender)
+    monkeypatch.setattr(post_processor, "PostSender", _Sender)
     return seen
 
 

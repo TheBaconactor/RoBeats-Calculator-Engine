@@ -1,4 +1,6 @@
-"""LRU prep caches and native song preparation for in-flight orchestration."""
+"""A queue task prepared into a NativeSong: its item pools, registry and GPU inputs (cached per song colors and
+catalog), and its GA-invariant FG preparation."""
+
 from __future__ import annotations
 
 import hashlib
@@ -12,17 +14,17 @@ import numpy as np
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
-from gear_optimizer.solver.base_stats import build_stats_array
-from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
-from gear_optimizer.solver.native_inflight_config import (
+from gear_optimizer.pipeline.fg import prepare_fg_static
+from gear_optimizer.pipeline.song import (
     NativeSong,
     NativeSongConfig,
     NativeSongDBState,
     NativeSongGPUInputs,
     NativeSongRuntimeState,
 )
-from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_static_sync
+from gear_optimizer.solver.base_stats import build_stats_array
+from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
+from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 
 logger = logging.getLogger(__name__)
@@ -244,7 +246,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
             ),
         ),
     )
-    prepare_fg_static_sync(song)
+    prepare_fg_static(song)
     # Hydrate the in-memory timeline-frontier payload cache from this prep worker so
     # the owner thread's upload at the GA turn hits the "memory" branch instead of
     # re-reading the .npz from disk at the song boundary (host-side: no Taichi; a payload

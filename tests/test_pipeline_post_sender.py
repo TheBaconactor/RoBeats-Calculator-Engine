@@ -1,6 +1,6 @@
 import queue
 
-from gear_optimizer.solver.native_inflight_lifecycle import PostSender
+from gear_optimizer.pipeline.post_processor import PostSender
 
 
 def test_post_sender_forwards_items_to_post_queue():

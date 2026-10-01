@@ -187,13 +187,13 @@ def score_fused_fg_from_selected_payload(
     payload, so the lookup is exact; the SCORE is a pure function of base_components).
 
     Required state (no fallback): the song-level FG scoring bundle is prepared pre-GA
-    (prepare_fg_static_sync) and attached to the GA request payload with the song. Its
+    (pipeline.fg.prepare_fg_static) and attached to the GA request payload with the song. Its
     absence fails loudly here.
     """
     if fg_scoring_bundle is None:
         raise ValueError(
             "fused GA->FG handoff requires the song-level FG scoring bundle on the GA "
-            "request (prepare_fg_static_sync must run pre-GA)"
+            "request (prepare_fg_static must run pre-GA)"
         )
     if curves is None:
         raise ValueError("fused GA->FG handoff requires stat curves")

@@ -212,9 +212,9 @@ def test_ftff_response_position_prune_matches_bruteforce_randomized():
             assert got.tolist() == expected
 
 
-def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(monkeypatch):
+def test_prepare_fg_plan_uses_db_only_entries_for_response_frontier_route(monkeypatch):
 
-    import gear_optimizer.solver.native_inflight_pipeline as stages
+    import gear_optimizer.pipeline.fg as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     seen = {}
@@ -256,7 +256,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
     )
     song.runtime.fg.fg_response_scoring_bundle = seen_bundle
 
-    stages.prepare_fg_job_sync(song)
+    stages.prepare_fg_plan(song)
 
     assert seen["plan_ga_n"] == 1
     assert seen["scoring_bundle"] is seen_bundle
@@ -264,13 +264,13 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
     assert len(song.runtime.decode.ga_candidates or []) == 1
 
 
-def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatch):
+def test_prepare_fg_plan_builds_plan_without_owner_build_prefetch(monkeypatch):
     # Fused GA->FG handoff (Slice 3): the GPU owner scores FG in the GA turn, so FG
     # prep only builds the plan -- it does NOT prefetch any owner BUILD/SCORE round
     # trip (the former prefetch_group_builds + finalize_prefetched_group_builds step is
     # deleted). A passed gpu_client is accepted but unused for scoring.
 
-    import gear_optimizer.solver.native_inflight_pipeline as stages
+    import gear_optimizer.pipeline.fg as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
@@ -302,14 +302,14 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
         song_slot=1,
     )
 
-    stages.prepare_fg_job_sync(song)
+    stages.prepare_fg_plan(song)
 
     assert song.runtime.fg.fg_response_frontier_plan == "raw-plan"
 
 
-def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(monkeypatch):
+def test_prepare_fg_plan_canonicalizes_gpu_payload_before_response_frontier(monkeypatch):
 
-    import gear_optimizer.solver.native_inflight_pipeline as stages
+    import gear_optimizer.pipeline.fg as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
@@ -352,7 +352,7 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
         song_slot=1,
     )
 
-    stages.prepare_fg_job_sync(song)
+    stages.prepare_fg_plan(song)
 
     selected = song.runtime.decode.ga_candidates or []
     assert len(selected) == 2
@@ -361,9 +361,9 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
 
 
-def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monkeypatch):
+def test_prepare_fg_plan_processes_configured_top_base_candidate_limit(monkeypatch):
 
-    import gear_optimizer.solver.native_inflight_pipeline as stages
+    import gear_optimizer.pipeline.fg as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     seen: dict[str, int] = {}
@@ -408,7 +408,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
         song_slot=1,
     )
 
-    stages.prepare_fg_job_sync(song)
+    stages.prepare_fg_plan(song)
 
     assert seen == {"candidate_count": 77, "limit": 51}
     assert len(song.runtime.decode.ga_candidates or []) == 51
@@ -416,9 +416,9 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
 
 
-def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkeypatch):
+def test_prepare_fg_plan_requires_materialized_response_frontier_plan(monkeypatch):
 
-    import gear_optimizer.solver.native_inflight_pipeline as stages
+    import gear_optimizer.pipeline.fg as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
@@ -442,14 +442,14 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
     )
 
     with pytest.raises(RuntimeError, match="did not materialize the exact response frontier plan"):
-        stages.prepare_fg_job_sync(song)
+        stages.prepare_fg_plan(song)
 
 
-def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundle(monkeypatch):
+def test_prepare_fg_static_loads_and_session_prunes_canonical_scoring_bundle(monkeypatch):
 
     from types import SimpleNamespace
 
-    import gear_optimizer.solver.native_inflight_pipeline as stages
+    import gear_optimizer.pipeline.fg as stages
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
     seen: dict[str, object] = {"session_prune": 0}
@@ -481,7 +481,7 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
         curves=synthetic_curves({}),
     )
 
-    stages.prepare_fg_static_sync(song)
+    stages.prepare_fg_static(song)
 
     assert song.runtime.fg.fg_response_scoring_bundle is bundle
     assert seen == {"session_prune": 1, "stat_keys": canonical_keys}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Any
 
-from gear_optimizer.solver.native_inflight_config import (
+from gear_optimizer.pipeline.song import (
     NativeSong,
     NativeSongConfig,
     NativeSongDBState,

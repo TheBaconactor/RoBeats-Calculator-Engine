@@ -1,29 +1,19 @@
-"""
-GPU-native in-flight pipeline configuration parsing.
-
-Extracts all config/ENV-driven settings for the native in-flight orchestrator
-into a frozen dataclass so the orchestrator body stays focused on runtime logic.
-"""
+"""A song being solved: its configuration, its GPU inputs, and the state each stage leaves on it."""
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 
+from gear_optimizer.core.types import JsonDict
+from gear_optimizer.gamedata import SongMini, StatCurves
+from gear_optimizer.solver.item_registry import ItemRegistry
+from gear_optimizer.solver.timing_envelope import TimedSong
 
 if TYPE_CHECKING:
     from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
-
-logger = logging.getLogger(__name__)
-
-
-from gear_optimizer.core.types import JsonDict
-from gear_optimizer.solver.timing_envelope import TimedSong
-from gear_optimizer.gamedata import SongMini, StatCurves
-from gear_optimizer.solver.item_registry import ItemRegistry
 
 
 @dataclass
@@ -106,12 +96,8 @@ class NativeSongRuntimeState:
     db: NativeSongDBState = field(default_factory=NativeSongDBState)
 
 
-# eq=False (identity equality/hash): conveyor deques remove songs by identity,
-# and the auto-generated value __eq__ would recurse into NativeSongGPUInputs'
-# numpy fields (ambiguous-truth crash) and, on a not-found miss, into the deep
-# repr (a proven multi-second stall). No code compares NativeSong by value.
-# This enforces the identity-conveyor invariant at the producer rather than per
-# call site (see _remove_song_by_identity for the absence-tolerant variant).
+# eq=False (identity equality and hash): a generated value __eq__ would compare NativeSongGPUInputs' numpy fields
+# (ambiguous truth) and recurse into the deep repr. No code compares songs by value.
 @dataclass(eq=False)
 class NativeSong:
     config: NativeSongConfig

@@ -1,46 +1,21 @@
+"""A song's FG stage: its GA-invariant preparation (the FG scoring bundle), the FG plan over its GA candidates, the
+materialized FG results, and the release of its FG surfaces."""
+
 from __future__ import annotations
 
-import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
-from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
-from gear_optimizer.solver.native_inflight_config import NativeSong
-from gear_optimizer.solver.native_inflight_pipeline_ga import InflightGAPipeline
+from gear_optimizer.pipeline.song import NativeSong
+from gear_optimizer.solver.fg_materialization_worker import FgMaterializationResult
 
-logger = logging.getLogger(__name__)
-
-__all__ = [
-    "InflightGAPipeline",
-    "decode_ga_payload_sync",
-    "prepare_fg_job_sync",
-    "prepare_fg_static_sync",
-]
+if TYPE_CHECKING:
+    from gear_optimizer.pipeline.progress import ProgressTracker
 
 
-def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list, list, list[dict]]:
-    gpu_inputs = getattr(song, "gpu_inputs", song)
-    song_key = str(song.config.task_key or song.config.song_name or "")
-    # The fused GA->FG owner continuation (Slice 3) returns
-    # {runs_payload, fg_owner_score}: the GA payload plus the owner-scored FG result
-    # map. Unpack the map onto the song for the FG worker; decode consumes the payload.
-    if not isinstance(ga_result, dict) or "runs_payload" not in ga_result:
-        raise RuntimeError(f"GPU-native GA result must be a fused {{runs_payload, fg_owner_score}} dict for {song_key}")
-    runs_payload = ga_result["runs_payload"]
-    song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
-    decode_cfg_data = dict(song.gpu_inputs.cfg_data or {})
-    return decode_gpu_native_ga_runs_payload(
-        runs_payload=runs_payload,
-        registry=gpu_inputs.registry,
-        cfg_data=decode_cfg_data,
-        base_stats_fixed=gpu_inputs.fixed_stats,
-        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
-    )
-
-
-def prepare_fg_static_sync(song: NativeSong) -> None:
+def prepare_fg_static(song: NativeSong) -> None:
     """
     Prepare the GA-invariant part of FG while GA is still running.
     Response-frontier FG consumes GA candidates directly. The late FG prep still owns
@@ -61,8 +36,7 @@ def prepare_ga_candidate_surface_for_fg(
     # ``ga_candidates`` carries the raw GPU-deduped candidate pool from decode (no
     # decode-side select anymore). This is the single canonical color-folded select
     # over that raw pool -- the FG funnel + persistence authority. It runs exactly
-    # once per song (prepare_fg_job_sync, or build_deferred_post_payload when FG is
-    # skipped), then overwrites ga_candidates with the selected surface below.
+    # once per song (prepare_fg_plan), then overwrites ga_candidates with the selected surface below.
     source_candidates = runtime.decode.ga_candidates
     preselect_count = len(source_candidates or [])
     selected = select_top_base_ga_candidates(
@@ -89,7 +63,7 @@ def prepare_ga_candidate_surface_for_fg(
     return selected, int(preselect_count), bool(hydrated)
 
 
-def prepare_fg_job_sync(song: NativeSong) -> None:
+def prepare_fg_plan(song: NativeSong) -> None:
     runtime = getattr(song, "runtime", song)
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
     ga_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
@@ -109,3 +83,49 @@ def prepare_fg_job_sync(song: NativeSong) -> None:
             "FG dynamic prep did not materialize the exact response frontier plan "
             f"for {getattr(song.config, 'task_key', '') or getattr(song.config, 'song_name', '')}"
         )
+
+
+def release_fg_song_surfaces(song: NativeSong) -> None:
+    """Release a song's ~0.5-1.5 GB FG response surfaces once its FG scoring is complete.
+
+    After this job's `materialize_from_owner_score_map`, nothing else reads the per-song scoring
+    bundle, prepared plan, or owner score map -- the fused GA turn and the FG planner are the only
+    other readers and both run earlier. Left alone, each song's surface pool stays resident, pinned
+    by BOTH the per-song bundle handle and the process-global response-frontier caches, until the
+    song object is garbage-collected and the entry-count LRU evicts it. A standalone optimizer run
+    never runs the serving-mode idle sweep, so ~prep_limit songs' worth accumulates and trips the
+    memory guard after only a few dozen songs. Dropping all three references here bounds resident FG
+    surfaces to the songs actively scoring. Lossless: any later access rebuilds from the on-disk
+    bundle. Best-effort -- a cleanup error must not fail the already-complete FG job.
+    """
+    fg = song.runtime.fg
+    if fg is None:
+        return
+    bundle = getattr(fg, "fg_response_scoring_bundle", None)
+    if bundle is not None:
+        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+            release_fg_response_song_memory,
+        )
+
+        release_fg_response_song_memory(getattr(bundle, "cache_key", ()))
+    fg.fg_response_scoring_bundle = None
+    fg.fg_response_frontier_plan = None
+    fg.fg_owner_score_map = None
+
+
+def apply_fg_materialization_result(
+    song: NativeSong,
+    result: FgMaterializationResult,
+    *,
+    progress_tracker: ProgressTracker | None = None,
+) -> None:
+    """The song's FG results, and its records judged against `progress_tracker` (a run's bests) when given."""
+
+    if not isinstance(result, FgMaterializationResult):
+        raise TypeError("FG materialization worker returned an invalid result")
+
+    from gear_optimizer.pipeline.progress import evaluate_fg_progress_record_update
+
+    runtime = getattr(song, "runtime", song)
+    runtime.fg.fg_results = result.results
+    runtime.db.record_info = evaluate_fg_progress_record_update(song, progress_tracker)

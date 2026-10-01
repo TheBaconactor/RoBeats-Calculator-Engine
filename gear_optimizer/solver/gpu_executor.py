@@ -74,6 +74,13 @@ def is_fatal_gpu_error(exc: BaseException) -> bool:
     return False
 
 
+def is_stop_abort_exception(exc: BaseException) -> bool:
+    if isinstance(exc, concurrent.futures.CancelledError):
+        return True
+    msg = str(exc or "")
+    return "GpuExecutor aborted:" in msg
+
+
 def _stop_this_process(message: str) -> None:
     """SIGTERM this process shortly, after the caller has raised (a stuck GPU call cannot be interrupted)."""
 

@@ -6,7 +6,7 @@ import pytest
 from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_queue_label, task_song_name
 from gear_optimizer.domain.jobs import task_tuple_from_job_context
 from gear_optimizer.pipeline import solve as solve_module
-from gear_optimizer.solver import native_inflight_lifecycle
+from gear_optimizer.pipeline import prepare as prepare_module
 
 
 def _task(name: str) -> tuple:
@@ -24,7 +24,7 @@ def _song(task: tuple) -> SimpleNamespace:
 
 
 def _stages(monkeypatch, *, prepare=_song, run_ga=None, finish=None) -> None:
-    monkeypatch.setattr(native_inflight_lifecycle, "prepare_native_song", prepare)
+    monkeypatch.setattr(prepare_module, "prepare_native_song", prepare)
     monkeypatch.setattr(solve_module, "run_ga", run_ga or (lambda song, _executor: f"ga {song.config.song_name}"))
     monkeypatch.setattr(solve_module, "finish_song", finish or (lambda song, _ga, _tracker: song.config.task_key))
 
@@ -199,7 +199,7 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
 def test_only_a_cancelled_future_or_an_executor_abort_counts_as_a_stop_abort():
     import concurrent.futures
 
-    from gear_optimizer.solver.native_inflight_lifecycle import is_stop_abort_exception
+    from gear_optimizer.solver.gpu_executor import is_stop_abort_exception
 
     assert is_stop_abort_exception(concurrent.futures.CancelledError()) is True
     assert is_stop_abort_exception(RuntimeError("GpuExecutor aborted: hotkey stop")) is True

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from gear_optimizer.solver.native_inflight_config import NativeSong
+if TYPE_CHECKING:
+    from gear_optimizer.pipeline.song import NativeSong
 
 
 class ResponseFrontierStore:
