@@ -4,8 +4,11 @@ import io
 import json
 import queue
 
+import pytest
+
 from gear_optimizer import robeatsmeta_service as service
 from gear_optimizer import service_worker as worker
+from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
 
 
 def test_persistent_worker_reuses_one_process(monkeypatch):
@@ -225,3 +228,59 @@ def test_service_worker_passes_the_promotion_target_to_the_solve(monkeypatch):
 
     assert worker.main() == 0
     assert [c["promote_to"] for c in calls] == ["/catalog/evolution.db", None]
+
+
+def _serve(monkeypatch, failures: list) -> tuple[list[dict], int]:
+    """worker.main over one request per entry of `failures` (the exception that request's solve raises, or None).
+    Returns the protocol responses and the number of solves."""
+    import gear_optimizer.cli as cli
+    import gear_optimizer.core.logging_config as logging_config
+
+    for name in ("common_init", "_apply_taichi_shell_env", "_apply_service_mode_frontier_threads"):
+        monkeypatch.setattr(cli, name, lambda: None)
+    monkeypatch.setattr(logging_config, "configure_default_logging", lambda: None)
+    monkeypatch.setattr(worker, "make_process_background_only", lambda: None)
+    monkeypatch.setattr(worker, "reassert_process_background_only", lambda: None)
+    solves: list[dict] = []
+
+    class FakeSession:
+        def solve(self, **kwargs):
+            failure = failures[len(solves)]
+            solves.append(kwargs)
+            if failure is not None:
+                raise failure
+            return [{"score": 1}]
+
+    monkeypatch.setattr(worker, "PersistentOptimizerSession", FakeSession)
+    request = json.dumps({"chartText": "c", "songName": "Song"}) + "\n"
+    monkeypatch.setattr(worker.sys, "stdin", io.StringIO(request * len(failures)))
+    out = io.StringIO()
+    monkeypatch.setattr(worker.sys, "stdout", out)
+    assert worker.main() == 0
+    return [json.loads(line) for line in out.getvalue().splitlines()], len(solves)
+
+
+def test_a_failed_request_is_answered_and_the_worker_keeps_serving(monkeypatch):
+    responses, solves = _serve(monkeypatch, [ValueError("bad chart"), None])
+    assert responses == [
+        {"ok": False, "error": "ValueError: bad chart", "restart": False},
+        {"ok": True, "loadouts": [{"score": 1}]},
+    ]
+    assert solves == 2
+
+
+@pytest.mark.parametrize("failure", [
+    GpuServiceTimeoutError("GPU service request timed out"),
+    RuntimeError("Vulkan: VK_ERROR_DEVICE_LOST (device lost)"),
+])
+def test_a_request_that_lost_the_gpu_ends_the_worker(monkeypatch, failure):
+    responses, solves = _serve(monkeypatch, [failure, None])
+    assert [r["restart"] for r in responses] == [True]
+    assert solves == 1
+
+
+def test_past_the_memory_guard_the_worker_exits_after_answering(monkeypatch):
+    monkeypatch.setattr(worker, "memory_release_requested", lambda: True)
+    responses, solves = _serve(monkeypatch, [None, None])
+    assert responses == [{"ok": True, "loadouts": [{"score": 1}]}]
+    assert solves == 1

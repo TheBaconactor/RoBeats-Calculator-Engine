@@ -24,6 +24,7 @@ from gear_optimizer.core.memory import (
     MemoryGuardResumeTracker,
     build_memory_guard_resume_context,
     compute_memory_guard_limit,
+    memory_release_requested,
     set_memory_watchdog_limit,
 )
 from gear_optimizer.store import db, legacy, schema
@@ -181,6 +182,8 @@ def main() -> int:
             _apply_service_mode_frontier_threads()
             reassert_process_background_only()
             session = PersistentOptimizerSession()
+            from gear_optimizer.solver.gpu_service import is_fatal_gpu_error
+
             for raw_line in sys.stdin:
                 line = raw_line.strip()
                 if not line:
@@ -198,11 +201,16 @@ def main() -> int:
                         gear_dir=request.get("gearDir") or None,
                     )
                     response = {"ok": True, "loadouts": result}
+                except Exception as exc:
+                    # A failed request leaves nothing behind (each one rewrites the chart and the result database);
+                    # the worker keeps serving unless its GPU is gone.
+                    response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": is_fatal_gpu_error(exc)}
                 except BaseException as exc:
                     response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": True}
                 protocol.write(json.dumps(response, separators=(",", ":")) + "\n")
                 protocol.flush()
-                if not response.get("ok"):
+                # Past the memory guard's limit the worker exits after answering; the service starts a fresh one.
+                if response.get("restart") or memory_release_requested():
                     break
         finally:
             sys.__stdout__ = original_stdout

@@ -48,6 +48,39 @@ class GpuServiceTimeoutError(GpuFatalError):
     """Raised when an in-process GPU service request exceeds its watchdog timeout."""
 
 
+# GPU driver errors (raised through Taichi) that mean the device is gone; only their messages say so.
+_FATAL_DRIVER_MARKERS = (
+    "device lost",
+    "device removed",
+    "device hung",
+    "dxgi_error_device_hung",
+    "dxgi_error_device_removed",
+    "cudaerrorlaunchtimeout",
+    "watchdog timeout",
+    "tdr",
+    "waituntilcompleted",
+    "metaldevice::wait_idle",
+)
+
+
+def is_fatal_gpu_error(exc: BaseException) -> bool:
+    """Whether `exc`, or an exception it was raised from, means this process can no longer use its GPU: the engine's
+    own GpuFatalError or a driver's device loss."""
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, GpuFatalError):
+            return True
+        if any(marker in f"{type(current).__name__}: {current}".lower() for marker in _FATAL_DRIVER_MARKERS):
+            return True
+        pending += [current.__cause__, current.__context__]
+    return False
+
+
 @dataclass
 class _PendingGpuRequest:
     future: Future

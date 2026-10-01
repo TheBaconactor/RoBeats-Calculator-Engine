@@ -381,48 +381,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return False
         return memory_resume_tracker is not None and memory_resume_tracker.pending_count() > 0
 
-    @staticmethod
-    def _iter_exception_chain(exc: BaseException | None):
-        seen: set[int] = set()
-        pending = [exc]
-        while pending:
-            current = pending.pop(0)
-            if current is None:
-                continue
-            current_id = id(current)
-            if current_id in seen:
-                continue
-            seen.add(current_id)
-            yield current
-            pending.append(getattr(current, "__cause__", None))
-            pending.append(getattr(current, "__context__", None))
-
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
-        if not self._fatal_gpu_errors_enabled():
-            return False
-        from gear_optimizer.solver.gpu_service import GpuFatalError
+        from gear_optimizer.solver.gpu_service import is_fatal_gpu_error
 
-        # The engine's own unrecoverable GPU states raise GpuFatalError; the GPU drivers' (through Taichi) only
-        # have their messages.
-        fatal_markers = (
-            "device lost",
-            "device removed",
-            "device hung",
-            "dxgi_error_device_hung",
-            "dxgi_error_device_removed",
-            "cudaerrorlaunchtimeout",
-            "watchdog timeout",
-            "tdr",
-            "waituntilcompleted",
-            "metaldevice::wait_idle",
-        )
-        for current in self._iter_exception_chain(exc):
-            if isinstance(current, GpuFatalError):
-                return True
-            message = f"{type(current).__name__}: {current}".lower()
-            if any(marker in message for marker in fatal_markers):
-                return True
-        return False
+        return self._fatal_gpu_errors_enabled() and is_fatal_gpu_error(exc)
 
     def _handle_loop_restart(self):
         logger.info("Restarting song scan immediately...")
