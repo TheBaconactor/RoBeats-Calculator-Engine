@@ -6,9 +6,9 @@ Per loadout of the GA surface:
 - meta result: the gem allocation re-solved exhaustively for the loadout's items (song fixed stats: the baseline
   TeamBuff), scored by exact replay (perfect_window: score + TimelineFrontier witness, physically validated;
   zero_ms: fixed chart timing, no witness);
-- Force Greats result, for every loadout the FG stage solved: perfect_window keeps the solved result, zero_ms
-  re-solves it at chart timing; either comes scored by an exact surface replay of a physically validated trace
-  (the FG materializer's) and stays attached whether or not it beats the meta score (the store ranks the FG board);
+- Force Greats result, for every loadout the FG stage solved: its result (solved at the song's timing), scored by an
+  exact surface replay of a physically validated trace (the FG materializer's); it stays attached whether or not it
+  beats the meta score (the store ranks the FG board);
 - stored stats: recomputed from the item names and gems, and they must give the scores' stats back.
 The rows come in the order the store numbers new loadouts (exact score ties rank by it): the run's best, the
 loadouts whose FG result beat the base score it was solved against (FG stage order), then the rest of the surface.
@@ -30,13 +30,12 @@ from ..data.loadout_equivalence import (
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
 from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names
 from ..helpers.song_helpers.song_config import baseline_fixed_stats
-from ..helpers.song_helpers.team_buff_tiers import resolve_tier_fg_force_batch
 from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats, total
 from ..store.boards import Row
 from ..store.records import FgResult, Loadout, MetaResult, encode_trace
-from .results import SolvedFg, SolvedLoadout, SongSolve, solved_fg
+from .results import SolvedFg, SolvedLoadout, SongSolve
 
 if TYPE_CHECKING:
     from ..solver.scoring.fever_solver import GemSolve
@@ -67,9 +66,6 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
     items = [[gears[n] for n in x.gear] + [song_view[n] for n in x.minis] for x in solve.loadouts]
     fixed = baseline_fixed_stats(song.chart)
     solves = _meta_resolve(fixed, items, song, curves, primary)
-    if song.mode == "zero_ms":
-        # The FG stage's surfaces are chart-timing results too, but zero_ms stores the re-solve (as served).
-        fg_by_index = _fg_resolve(fixed, items, sorted(fg_by_index), song, curves, primary)
 
     fixed_tier = team_buff_effect(solve.tier, primary)
     out: list[Row] = []
@@ -172,25 +168,6 @@ def _meta_resolve(
 
     rows = [total(fixed, *(item.stats for item in row)) for row in items]
     return solve_best_fever_combination_batch(rows, song, curves, selected_color=primary)
-
-
-def _fg_resolve(
-    fixed: Mapping[str, int],
-    items: list[list[Any]],
-    indices: list[int],
-    song: TimedSong,
-    curves: StatCurves,
-    primary: str,
-) -> dict[int, SolvedFg]:
-    """zero_ms: the FG results re-solved at chart timing (one response-frontier dispatch)."""
-    forces = resolve_tier_fg_force_batch(
-        fixed_song_stats=dict(fixed),
-        loadouts=[items[i] for i in indices],
-        song=song,
-        curves=curves,
-        selected_color=primary,
-    )
-    return {i: solved_fg(force, default_element=primary) for i, force in zip(indices, forces, strict=True)}
 
 
 def _meta_score(stats: Mapping[str, int], song: TimedSong, curves: StatCurves) -> tuple[int, dict[str, Any] | None]:
