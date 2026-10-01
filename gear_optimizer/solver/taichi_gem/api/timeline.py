@@ -194,48 +194,11 @@ _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per s
 # The compressed .npz bytes (~20-90KB, the exact disk form) of recently used payloads, not the ~1.1MB decoded
 # payloads: a song prepared ahead of its GA turn is decoded (<1ms) from here instead of re-read from disk.
 _frontier_payload_memory: MemoryLru[bytes] = MemoryLru(40)
-# Bump whenever the base frontier OUTPUT changes in a way the cache key does NOT capture.
-# The key (_frontier_payload_cache_key -> song_key) hashes raw song inputs + window settings,
-# NOT the grouping/DP logic, so a pure logic change is invisible to it and only the version
-# invalidates stale disk payloads. v6: the chord-tied held-tail grouping split (issue #42 /
-# PR #45) changed the base frontier for held-tail-chord songs without touching any key input,
-# so pre-fix v5 payloads in bin/timeline_frontier_cache/ must not be reused.
-# v7: per-cell N_hn/N_hf/Sigma_hn/Sigma_hf grids replaced by the per-VARIANT
-# grid_frontier_head_coeffs_pool (the eval kernel needs coefficients for every pool
-# row; the per-cell grids were never read on the live GPU path).
-# v8: STALE-CACHE INVALIDATION (2026-07-04). The base DP (_build_exact_timeline_frontier_
-# from_context) is floor-aware / endpoint-early exact -- a note whose EARLIEST legal hit
-# (perfect_floor = chart-20ms, held-tail -40) lands inside the fever window is counted even
-# when its nominal chart time falls outside. Pre-existing v7 disk payloads on some machines
-# were built by an older DP that omitted that boundary note, and no version moved when the DP
-# gained it, so a pure-logic change went invisible to the (input+window)-hashed key. Symptom:
-# Bopeebo Easy T5 Vibe persisted base 1,360,389 (nominal ff24) from a stale v7 payload while a
-# fresh build of the SAME loadout selects the floor-optimal ff22 -> 1,364,025 (bit-exact to the
-# host application's live re-solve). Bumping forces a rebuild from the current floor-aware DP. Strictly
-# regression-safe: perfect_floor <= chart pointwise, so a rebuilt cell's body_fever only rises
-# or stays equal; songs with no endpoint-early boundary note are byte-identical.
-# v9: fold a DP-LOGIC FINGERPRINT into the version (Fix 1, 2026-07-04). The base string above is the
-# human backstop + semantic history; the appended `+logic-<fp>` is an ast-level digest of the
-# timeline DP module (timeline_exact_frontier.py). A change to the DP body (as in the v7->v8 floor-
-# aware regression that went invisible) now shifts the fingerprint automatically, so stale disk
-# payloads built by the old logic no longer validate against the new code -- killing the silent
-# stale-cache bug class rather than relying on someone remembering to bump the string. Docstring/
-# comment/whitespace edits do NOT move it (see logic_fingerprint.py). Over-invalidation is safe.
-# v9 -> v10: hit-time chord-reachability -- the base activation clock is now capped to the reachable
-# value (a wide-window group can no longer claim a late activation a later-indexed overlapping
-# sibling, hit first, forecloses), so stale bundles carry a phantom over-extended drain window (and,
-# where it captured a note, an over-count). The DP fingerprint over timeline_exact_frontier.py
-# already shifts automatically; this backstop bump records the behaviour change.
-# v10->v11: BUG-1 judgment-edge inclusivity fix. The base drain searches the Perfect FLOOR envelope
-# (build_perfect_floor_envelope_sec), whose early edge shifted +1ms to the engine's exclusive-early
-# boundary (-20/-40 -> -19/-39). The historical single-source fingerprint did not include
-# timing_envelope.py, so this explicit bump invalidated the stale (1ms-over-generous) membership
-# floor. Re-solve to re-persist best_score.
-# v11->v12: Base no longer has a body-only large-fill shortcut. Every Base geometry runs through
-# the shared lane-aware recurrence with Perfect-only actions. The old shortcut used an activation's
-# raw latest Perfect edge instead of the capped input-engine owner and could retain phantom fever
-# notes. Base cache identity now fingerprints the complete shared producer, not only this wrapper,
-# so a future shared recurrence change cannot silently reuse stale Base payloads.
+# The timeline cache version: a hand-kept base version plus a fingerprint (an AST digest, see logic_fingerprint.py) of
+# the Base producer sources, so a logic change there rotates it by itself. The cache key hashes the song inputs and the
+# FT/FF axes, never the producer, so bump the base version when the payload changes in a way neither sees (e.g. a
+# dependency's behavior). A new version reads an older version's files only when it lists that version below, after a
+# byte gate proved them identical. The version history is in git.
 _FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v12"
 _FG_SCORING_POLICY_SOURCE = Path(__file__).resolve().parents[2] / "scoring" / "fg_policy.py"
 # Base persists timing geometry and Perfect-only recurrence output, never Great score valuation.

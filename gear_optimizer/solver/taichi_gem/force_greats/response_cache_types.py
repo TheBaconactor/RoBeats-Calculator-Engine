@@ -12,98 +12,13 @@ from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 
 from .response_types import FgResponseFrontierResult
 
-# Bump whenever the FG response-frontier bundle OUTPUT changes via code (not the chart file).
-# The per-song disk digest captures perfect_floor / candidate timestamps, but the prebuild's
-# coarse manifest (frontier_cache_manifest._manifest_key) keys ONLY on cache_version + chart
-# path/mtime/size + ref/stat sigs -- it never parses the chart. So an FG-output code change with
-# an unchanged chart file and an unbumped version makes the prebuild false-hit stale bundles
-# (built=0) while runtime computes the new perfect_floor-keyed digest and fail-louds on a missing
-# scoring bundle. This is the FG analog of timeline._FRONTIER_DISK_CACHE_VERSION.
-# v12 -> v13: issue #42 endpoint-early fever -> perfect_floor envelope (build_perfect_floor_envelope_sec)
-#             changed the bundle output; the v12 bundles predate it.
-# v13 -> v14: issue #44 greats-side endpoint-early fever -> early-Great floor (build_great_floor_envelope_sec)
-#             adds early-Great extended surfaces to the bundle; the v13 bundles predate them.
-# v14 -> v15: issue #44 Route A head upper-envelope prune (_numba_head_envelope_filter) shrinks the
-#             cached frontier to the parametric envelope (same best_fg_score, far fewer surfaces); the
-#             v14 bundles carry the un-pruned early-Great cascade, so rebuild to gain the perf win.
-# v15 -> v16: issue #44 early-Great FLOOR corrected -75 -> cumulative -95 (held -190) to match the
-#             game's get_note_times/timedelta_to_result (great_lower = perfect_lower + great_extra).
-#             Captures legal early-Great fever for notes 75-95ms past a cutoff; v15 under-included it.
-# v16 -> v17: body-pair radix correctness. The build packs (normal_great, body_fever_great) as
-#             normal_great*pair_mod + body_fever_great; pair_mod was sized to the SECTION COUNT, but
-#             the issue-#44 early-Great band makes body_fever_great exceed that, so the pack aliased
-#             onto a phantom (normal_great+1, ...) surface -- silently OVER-scoring some cells and
-#             crashing trace reconstruction. pair_mod now sizes to the geometry's true max
-#             body_fever_great (= section_bound*(1+early_Great_band)); best_fg_score drops to the
-#             correct value on aliased cells, so v16 bundles are wrong and must rebuild. (Latent
-#             since #44 at -75; -95's wider band made it reproduce.)
-# v17 -> v18: PR #89 late-Great deliverability cap (build_per_note_great_window_ms clamps the late
-#             edge at NOTE_REMOVE_LATE_CAP_MS = +200) changed great_candidates for most charts.
-#             That changed the content-addressed bundle key for those songs, but WITHOUT a version
-#             bump the manifest fast-path (identity: version + chart mtime/size + ref sig, none of
-#             which moved) kept reporting the pre-#89 bundles as valid and skipped the rebuild --
-#             every affected song then failed prep loudly ("scoring bundle is missing") while the
-#             startup banner said the cache was ready. v17 bundles for affected songs schedule
-#             non-deliverable +200..+380ms late-Great activations, so they are semantically stale
-#             and must rebuild. Invariant: ANY change that alters fg_response_frontier_song_cache_key
-#             inputs (the song's FG inputs / timing envelopes) MUST bump this version -- the
-#             version string is the only key-derivation fingerprint the manifest fast-path sees.
-#             v18->v19: canonical late-Great gate (late_great_prefix_is_legal) added to the search
-#             (_compact_first_frontier_action_arrays) + reconstruct mirror -- illegal (phantom)
-#             late-Great activations whose fill-crossing is an earlier Perfect are no longer emitted,
-#             so produced surfaces change for any song where the old model scheduled one. Rebuild.
-# v19 -> v20: the manual string above is now the BACKSTOP + history; a DP-LOGIC FINGERPRINT of the FG
-#             builder modules is appended as `+logic-<fp>` (Fix 1, 2026-07-04). The manifest fast-path
-#             admits that "the version string is the only key-derivation fingerprint [it] sees" -- so
-#             any change to the FG search/build/pack/kernel logic below now moves the version
-#             automatically, and the manifest can no longer false-hit bundles built by superseded
-#             logic (the failure mode that stranded songs at built=0 while runtime fail-louded). The
-#             fingerprint is ast-level: comment/docstring/whitespace edits do NOT rebuild (see
-#             logic_fingerprint.py); only real logic/literal changes do. Over-invalidation is safe.
-# v20 -> v21: hit-time chord-reachability -- the frontier now forbids UNREACHABLE late-Great
-#             activations (an earlier-hit same-timestamp sibling or on-time note-ahead completes the
-#             fever bar first), so stale bundles carry phantom late-Great over-reports and MUST
-#             rebuild. The DP fingerprint over fill_crossing.py + response_build_gpu_precompute.py
-#             already moves the version automatically; this backstop bump records the behaviour change.
-# v21 -> v22: the PERFECT activation clock is now capped to the reachable value too (a held-tail +80
-#             perfect activation whose narrower later-indexed sibling is hit first over-extended the
-#             drain window). perfect_end_idx is built from the capped clock, so stale bundles carry the
-#             phantom perfect-activation window and MUST rebuild.
-# v22->v23: BUG-1 judgment-edge inclusivity fix (timing_envelope.py perfect/great FLOOR early edges
-# shifted +1ms to the engine's exclusive-early boundary: -20/-40 -> -19/-39, -95/-190 -> -94/-189).
-# The explicit bump invalidated those stale bundles; v30 also fingerprints timing_envelope.py so a
-# future judgment-window change cannot repeat this manifest false-hit failure.
-# v23->v24: input-engine-aware reachability. The frontier now carries lanes in the cache key, keeps
-# raw timing edges in precompute, and filters reconstructed surfaces through the weighted lane-aware
-# owner. Stale v23 bundles can either keep phantoms the input engine cannot play or miss legal
-# region-delay surfaces the lane-blind clamp removed.
-# v24->v25: region-delay producer. The numba first-frontier graph now emits late-Great activations
-# from non-prefix contiguous Great runs, and traces persist forced_run_start/count so the note graph
-# and audits render the same run the surface scored. v24 bundles are prefix-only after filtering.
-# v25->v26: input-engine-aware same-time sibling bundles. A region-delay late-Great activation may
-# require following same-time/early-hit siblings to also be forced Great so their Perfect hits do not
-# fill the bar first; stale v25 bundles miss legal higher-scoring surfaces such as ART Hard 835/3/3.
-# v26->v27: shared input-order breakpoint owner. Delayed activation hits are capped by following
-# notes' scored label upper edges, and capped hits own the fever end / early-Great extension. Stale
-# v26 bundles can miss legal capped-breakpoint surfaces or price them from the wrong activation edge.
-# v27->v28: shifted-head region representative. The numba first-frontier producer now emits the
-# earliest shifted-head run representative (plus the normal crossing offset) and both Perfect /
-# late-Great crossing branches. Stale v27 bundles can miss score-equivalent timing witnesses and
-# shifted-head breakpoint surfaces.
-# v28->v29: region-3 normal-edge gate + either-envelope late-activation gate (records 16.31/16.34).
-# Stale v28 bundles carry unreconstructable region-2 normal-edge phantom surfaces (k >= ~2*denom
-# rows packed the Perfect activation inside the forced run) AND miss legal late-Great activation
-# edges whose perfect-floor extent ties the Perfect edge but whose early-Great reach is strictly
-# longer (the +337.5-point tiny-chart oracle witness). Both directions require a rebuild.
-# v29->v30: exact head-pattern interning. Logical surface order/content is unchanged, but the two
-# sidecars now persist (pattern_id + body counts) rows and exact mask/coefficient patterns instead
-# of repeating eight mask words plus four coefficients for every body-count variant. The reader
-# expands to v29-identical logical rows; the physical format change requires one deliberate rebuild.
-# v30->v31: issue #149 exact cross-lane activation schedules. Region reachability now proves the
-# exact score-bearing signature that the cached surface consumes: head-note identities remain
-# position-exact while the body permits any legal cross-lane order preserving its event/Great
-# counts. Reconstructed traces persist that exact order for canonical physical replay. V30 can
-# retain surfaces whose missing schedule cannot replay.
+# The FG response-frontier cache version: a hand-kept base version plus a fingerprint (an AST digest, see
+# logic_fingerprint.py) of every module that co-determines the cached bundles (_FG_DP_SOURCES), so a logic change there
+# rotates it by itself. Bump the base version when bundle output changes in a way the fingerprint cannot see (e.g. a
+# dependency's behavior); any change of the bundle key's inputs needs a new version, because the version is the only
+# key-derivation input the prebuild manifest sees. A new version reads an older version's files only when
+# response_cache_store._EXACT_COMPATIBLE_PREDECESSOR_VERSIONS lists it, after a byte gate proved them identical. The
+# version history is in git.
 _FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v31"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
