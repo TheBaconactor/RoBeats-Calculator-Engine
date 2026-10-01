@@ -98,14 +98,7 @@ def create_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = create_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
-    if args.command == "run":
-        return run()
-    if args.command == "meta":
-        return meta()
-    if args.command == "sync-data":
-        return sync_data()
-    parser.error(f"Unknown command: {args.command}")
-    return 2
+    return {"run": run, "meta": meta, "sync-data": sync_data}[args.command]()
 
 
 if __name__ == "__main__":

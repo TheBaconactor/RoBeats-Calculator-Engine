@@ -258,8 +258,12 @@ def test_build_song_queue_resume_limit_preserves_prepended_paths(monkeypatch, tm
     app = GearOptimizerApp()
     queue = app._build_song_queue(_hard_queue_run(song_queue_limit=3))
 
-    assert [item[1] for item in queue] == [song_new_a, song_new_b, song_resume_a]
-    assert queue_path_key(queue[0]) == queue_path_key((str(new_fp_a.resolve()), song_new_a, "Hard"))
+    # The new charts come first in discovery (directory listing) order, then the resume queue's head.
+    assert sorted(item[1] for item in queue[:2]) == [song_new_a, song_new_b]
+    assert queue[2][1] == song_resume_a
+    assert {queue_path_key(item) for item in queue[:2]} == {
+        queue_path_key((str(fp.resolve()), "", "")) for fp in (new_fp_a, new_fp_b)
+    }
 
 
 def test_build_song_queue_legacy_resume_does_not_prepend_completed_paths(monkeypatch, tmp_path):

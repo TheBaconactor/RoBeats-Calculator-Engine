@@ -7,15 +7,12 @@ from typing import Callable
 SongQueueItem = tuple[str, str, str]
 
 
+_DIFFICULTY_BY_FOLDER = {"hard": "Hard", "normal": "Normal", "easy": "Easy"}
+
+
 def infer_song_difficulty_from_path(root: str) -> str:
-    parent_folder = os.path.basename(str(root or "")).lower()
-    if parent_folder == "hard":
-        return "Hard"
-    if parent_folder == "normal":
-        return "Normal"
-    if parent_folder == "easy":
-        return "Easy"
-    return "Unknown"
+    """The difficulty a chart folder (Data/<Difficulty>) holds; "Unknown" for any other folder."""
+    return _DIFFICULTY_BY_FOLDER.get(os.path.basename(root).lower(), "Unknown")
 
 
 def queue_path_key(item: SongQueueItem) -> str:
@@ -66,14 +63,9 @@ def merge_discovered_with_resume(
     """
     known_paths = set(resume_known_path_keys or ()) or {queue_path_key(item) for item in resume_queue}
     prepended = [item for item in discovered_queue if queue_path_key(item) not in known_paths]
-    merged = list(prepended) + list(resume_queue)
-    limit = max(0, int(song_queue_limit or 0))
-    if limit > 0 and len(merged) > limit:
-        if len(prepended) >= limit:
-            merged = list(prepended[:limit])
-        else:
-            keep_resume = limit - len(prepended)
-            merged = list(prepended) + list(resume_queue[:keep_resume])
+    merged = prepended + list(resume_queue)
+    if song_queue_limit > 0 and len(merged) > song_queue_limit:
+        merged = prepended[:song_queue_limit] + list(resume_queue[: max(0, song_queue_limit - len(prepended))])
     return merged, len(prepended)
 
 
@@ -109,27 +101,26 @@ def finalize_song_queue(
     if resume and present:
         resume = prioritize_missing_first(resume, present)
 
-    limit = max(0, int(song_queue_limit or 0))
     if resume_active:
         merged, prepended_count = merge_discovered_with_resume(
             discovered_queue=discovered,
             resume_queue=resume,
             resume_known_path_keys=resume_known_path_keys,
-            song_queue_limit=limit,
+            song_queue_limit=song_queue_limit,
         )
-        limit_applied = limit > 0 and len(merged) < len(discovered) + len(resume)
+        limit_applied = song_queue_limit > 0 and len(merged) < len(discovered) + len(resume)
         return FinalizeSongQueueResult(
             queue=merged,
             prepended_count=prepended_count,
             limit_applied=limit_applied,
         )
 
-    if limit > 0 and len(discovered) > limit:
+    if song_queue_limit > 0 and len(discovered) > song_queue_limit:
         if present:
             discovered = prioritize_missing_first(discovered, present, sort_key=queue_sort_key)
         else:
             discovered = sorted(discovered, key=queue_sort_key)
-        discovered = discovered[:limit]
+        discovered = discovered[:song_queue_limit]
         return FinalizeSongQueueResult(queue=discovered, prepended_count=0, limit_applied=True)
 
     return FinalizeSongQueueResult(queue=discovered, prepended_count=0, limit_applied=False)
