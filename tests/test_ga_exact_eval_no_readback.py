@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from gear_optimizer.solver.taichi_gem.api import ga_operations
+from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
 
 
 class _NoHostReadback:
@@ -32,7 +33,7 @@ def test_ga_evaluate_keeps_unique_count_on_device(monkeypatch) -> None:
         _NoHostReadback(),
     )
 
-    ga_operations.ga_evaluate_prepared_population(3, total_budget=90)
+    ga_operations.ga_evaluate_prepared_population(3, total_budget=90, flags=gpu_color_flags(None))
 
     assert calls[0] == ("rep", (3,))
     assert calls[1] == ("slots", (3,))
@@ -48,4 +49,4 @@ def test_ga_evaluate_rejects_invalid_population_without_dispatch(monkeypatch, n_
     monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
 
     with pytest.raises(ValueError, match="n_genomes out of range"):
-        ga_operations.ga_evaluate_prepared_population(n_genomes, total_budget=90)
+        ga_operations.ga_evaluate_prepared_population(n_genomes, total_budget=90, flags=gpu_color_flags(None))

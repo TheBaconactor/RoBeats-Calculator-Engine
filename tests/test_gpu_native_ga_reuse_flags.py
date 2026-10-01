@@ -10,6 +10,7 @@ def test_ga_prepare_population_never_builds_exact_reuse_map(monkeypatch) -> None
     so setting them must have NO effect and the reuse kernels must never dispatch.
     """
     from gear_optimizer.solver.taichi_gem.api import ga_operations
+    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
 
     calls: list[str] = []
     fake_kernels = SimpleNamespace(
@@ -28,7 +29,7 @@ def test_ga_prepare_population_never_builds_exact_reuse_map(monkeypatch) -> None
     monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
     monkeypatch.setattr(ga_operations, "kernels", fake_kernels)
 
-    ga_operations.ga_prepare_population_base_stats(12, n_slots=9)
+    ga_operations.ga_prepare_population_base_stats(12, n_slots=9, flags=gpu_color_flags(None))
 
     assert calls == ["aggregate"]
 

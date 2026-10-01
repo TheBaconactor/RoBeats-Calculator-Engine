@@ -5,6 +5,7 @@ Includes:
 """
 import taichi as ti
 from .. import kernels_helpers
+from ..kernels_helpers import GpuColorFlags
 from .....rules import MAX_STAT
 from ..warmstart_common import solve_combo_warmstart_preloaded
 @ti.kernel
@@ -15,18 +16,7 @@ def ga_find_best_combo_warmstart_kernel(
     combo_count: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
 ):
     """
@@ -65,8 +55,8 @@ def ga_find_best_combo_warmstart_kernel(
         song_slot: Grid slot for batch coalescing
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
-    w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
+    w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ft << 1) + flags.is_s_ft)
+    w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ff << 1) + flags.is_s_ff)
     block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
     total_threads = n_genomes_launch * block_dim
     ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
@@ -120,18 +110,7 @@ def ga_find_best_combo_warmstart_kernel(
                 combo_idx,
                 total_budget,  # combo_budget
                 gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
+                flags,
                 song_slot,
                 w_ft,
                 w_ff,

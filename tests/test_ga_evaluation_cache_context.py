@@ -6,12 +6,14 @@ import pytest
 
 from gear_optimizer.solver.taichi_gem.api import ga_eval_cache
 from gear_optimizer.solver.taichi_gem.api import ga_operations as ga
+from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
 
 
 @pytest.mark.parametrize("change", [
     {"total_budget": 12}, {"gem_scale_fever": 2}, {"song_slot": 1},
     {"max_ft_gems_global": 1}, {"max_ff_gems_global": 1},
-    *({f"is_{color}_{stat}": 1} for color in ("p", "s") for stat in ("ft", "ff", "pp", "cm", "fm", "ov")),
+    *({"flags": gpu_color_flags({f"is_{color}_{stat}": 1})} for color in ("p", "s")
+      for stat in ("ft", "ff", "pp", "cm", "fm", "ov")),
 ])
 def test_every_scoring_argument_invalidates_cached_results(monkeypatch, change):
     clears = []
@@ -26,7 +28,7 @@ def test_every_scoring_argument_invalidates_cached_results(monkeypatch, change):
             "ga_scatter_dup_results_kernel",
         )
     }))
-    original = {"total_budget": 9}
+    original = {"total_budget": 9, "flags": gpu_color_flags(None)}
     ga.ga_evaluate_prepared_population(3, **original)
     ga.ga_evaluate_prepared_population(3, **original)
     assert clears == [0]

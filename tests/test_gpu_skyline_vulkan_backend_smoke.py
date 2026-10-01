@@ -24,6 +24,7 @@ def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
     )
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu_for_warmup
+    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     import taichi as ti
 
@@ -51,6 +52,7 @@ def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
         total_budget=min(90, int(gpu_fields.MAX_TOTAL_BUDGET)),
         gem_scale_fever=3,
         song_slot=0,
+        flags=gpu_color_flags(None),
     )
     skyline_evaluate_population(int(n_genomes), materialize_mode="none", **evaluate)
     ti.sync()

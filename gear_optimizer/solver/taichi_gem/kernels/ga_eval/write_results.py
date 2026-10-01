@@ -1,6 +1,7 @@
 """Taichi Kernels - Materialize GA run-best rows from packed keys."""
 import taichi as ti
 from .. import kernels_helpers
+from ..kernels_helpers import GpuColorFlags
 from ..write_results_common import solve_best_combo_uncached
 @ti.func
 def _best_combo_idx_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
@@ -22,18 +23,7 @@ def _materialize_best_combo_stats(
     combo_idx: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
     ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
@@ -44,18 +34,7 @@ def _materialize_best_combo_stats(
         ff,
         total_budget,
         gem_scale_fever,
-        is_p_ft,
-        is_s_ft,
-        is_p_ff,
-        is_s_ff,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
+        flags,
         song_slot,
         True,
     )
@@ -70,18 +49,7 @@ def _refresh_live_score_from_chunk_state(
     genome_idx: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
 ):
     combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
@@ -109,18 +77,7 @@ def ga_refresh_scores_and_update_runs_best_kernel(
     n_slots: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
 ):
     """
@@ -136,18 +93,7 @@ def ga_refresh_scores_and_update_runs_best_kernel(
             genome_idx,
             total_budget,
             gem_scale_fever,
-            is_p_ft,
-            is_s_ft,
-            is_p_ff,
-            is_s_ff,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
+            flags,
             song_slot,
         )
     for r in range(n_runs):
@@ -170,18 +116,7 @@ def ga_refresh_scores_and_update_runs_best_kernel(
                     combo_idx,
                     total_budget,
                     gem_scale_fever,
-                    is_p_ft,
-                    is_s_ft,
-                    is_p_ff,
-                    is_s_ff,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
+                    flags,
                     song_slot,
                 )
                 _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)

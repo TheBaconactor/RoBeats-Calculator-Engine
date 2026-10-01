@@ -12,6 +12,7 @@ import taichi as ti
 from .. import fields as gpu_fields
 
 from . import kernels_helpers
+from .kernels_helpers import GpuColorFlags
 
 
 @ti.kernel
@@ -57,18 +58,7 @@ def skyline_copy_population_indices_from_ndarray_kernel(
 def skyline_aggregate_and_init_best_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     reuse_exact_genome_base_stats: ti.i32,
 ):
     """
@@ -124,8 +114,8 @@ def skyline_aggregate_and_init_best_kernel(
                 flow += kernels_helpers.item_stats[item_id, 8]
                 chill += kernels_helpers.item_stats[item_id, 9]
 
-        p_val = (beat * is_p_ft) + (vibe * is_p_ff) + (rush * is_p_fm) + (flow * is_p_cm) + (chill * is_p_pp)
-        s_val = (beat * is_s_ft) + (vibe * is_s_ff) + (rush * is_s_fm) + (flow * is_s_cm) + (chill * is_s_pp)
+        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
+        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
 
         kernels_helpers.genome_base_stats[g][0] = ti.cast(pp, ti.i16)
         kernels_helpers.genome_base_stats[g][1] = ti.cast(cm, ti.i16)

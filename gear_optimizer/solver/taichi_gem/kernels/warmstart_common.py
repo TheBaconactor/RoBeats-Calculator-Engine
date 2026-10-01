@@ -4,6 +4,7 @@ import taichi as ti
 
 from ....rules import MAX_STAT
 from . import kernels_helpers
+from .kernels_helpers import GpuColorFlags
 from .kernels_scoring import (
     optimize_core_device_exact_bound,
     response_score_upper_bound_relaxed,
@@ -16,18 +17,7 @@ def solve_combo_warmstart_preloaded(
     combo_idx: ti.i32,
     combo_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
     w_ft: ti.i32,
     w_ff: ti.i32,
@@ -78,8 +68,8 @@ def solve_combo_warmstart_preloaded(
             )
             head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
             budget: ti.i32 = combo_budget - ft - ff
-            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * flags.is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * flags.is_p_ff)
+            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * flags.is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * flags.is_s_ff)
 
             if score_cull_threshold > 0:
                 ub_score = response_score_upper_bound_relaxed(
@@ -89,14 +79,7 @@ def solve_combo_warmstart_preloaded(
                     base_fm,
                     p_val,
                     s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
+                    flags,
                     head_len,
                     body_total,
                 )
@@ -111,14 +94,7 @@ def solve_combo_warmstart_preloaded(
                     base_fm,
                     p_val,
                     s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
+                    flags,
                     head_len,
                     song_slot,
                     ft_idx,

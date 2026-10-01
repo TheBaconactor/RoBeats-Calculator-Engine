@@ -9,6 +9,7 @@ import taichi as ti
 
 from ... import fields as gpu_fields
 from .. import kernels_helpers
+from ..kernels_helpers import GpuColorFlags
 from .....rules import MAX_STAT
 from ..warmstart_common import solve_combo_warmstart_preloaded
 
@@ -19,18 +20,7 @@ def _compute_combo_key_warmstart_preloaded(
     combo_idx: ti.i32,
     combo_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
     w_ft: ti.i32,
     w_ff: ti.i32,
@@ -58,18 +48,7 @@ def _compute_combo_key_warmstart_preloaded(
         combo_idx,
         combo_budget,
         gem_scale_fever,
-        is_p_ft,
-        is_s_ft,
-        is_p_ff,
-        is_s_ff,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
+        flags,
         song_slot,
         w_ft,
         w_ff,
@@ -100,18 +79,7 @@ def skyline_find_best_combo_warmstart_kernel(
     combo_count: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
     reuse_exact_eval_results: ti.template(),
     use_timing_response_antichain: ti.template(),
@@ -139,8 +107,8 @@ def skyline_find_best_combo_warmstart_kernel(
 
     # FT/FF elemental contribution weights in base_value space (2*p + s).
     # Each FT/FF gem adds GEM_STAT_TO_ELEMENT to the corresponding color stat.
-    w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
-    w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
+    w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ft << 1) + flags.is_s_ft)
+    w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ff << 1) + flags.is_s_ff)
 
     if ti.static(gpu_fields.IS_METAL):
         # Metal/MoltenVK has no u64 atomics, so it cannot atomic_max the packed (score, combo_idx)
@@ -185,18 +153,7 @@ def skyline_find_best_combo_warmstart_kernel(
                     combo_idx,
                     total_budget,  # combo_budget
                     gem_scale_fever,
-                    is_p_ft,
-                    is_s_ft,
-                    is_p_ff,
-                    is_s_ff,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
+                    flags,
                     song_slot,
                     w_ft,
                     w_ff,
@@ -287,18 +244,7 @@ def skyline_find_best_combo_warmstart_kernel(
                     combo_idx,
                     total_budget,  # combo_budget
                     gem_scale_fever,
-                    is_p_ft,
-                    is_s_ft,
-                    is_p_ff,
-                    is_s_ff,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
+                    flags,
                     song_slot,
                     w_ft,
                     w_ff,

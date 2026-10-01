@@ -35,6 +35,7 @@ class RegistrySolveRequest:
 
 def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
     from .scoring.runtime_state import _GPU_LOCK
+    from .taichi_gem.kernels.kernels_helpers import gpu_color_flags
     from .taichi_gem.api import (
         skyline_upload_base_fixed_stats,
         skyline_upload_item_stats,
@@ -47,18 +48,7 @@ def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
         return solve_genomes_from_registry(
             request.population_indices,
             request.song,
-            int(request.flags.get("is_p_ft", 0)),
-            int(request.flags.get("is_s_ft", 0)),
-            int(request.flags.get("is_p_ff", 0)),
-            int(request.flags.get("is_s_ff", 0)),
-            int(request.flags.get("is_p_pp", 0)),
-            int(request.flags.get("is_s_pp", 0)),
-            int(request.flags.get("is_p_cm", 0)),
-            int(request.flags.get("is_s_cm", 0)),
-            int(request.flags.get("is_p_fm", 0)),
-            int(request.flags.get("is_s_fm", 0)),
-            int(request.flags.get("is_p_ov", 0)),
-            int(request.flags.get("is_s_ov", 0)),
+            gpu_color_flags(request.flags),
             request.curves,
             total_budget=int(request.total_budget),
             gem_scale_fever=int(request.gem_scale_fever),

@@ -3,6 +3,7 @@
 import taichi as ti
 
 from . import kernels_helpers
+from .kernels_helpers import GpuColorFlags
 from .kernels_scoring import optimize_core_device_exact_bound, score_solution_from_gems_frontier
 
 
@@ -13,18 +14,7 @@ def solve_best_combo_uncached(
     ff: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
     rescore_result: ti.template(),
 ) -> ti.types.vector(5, ti.i32):
@@ -43,8 +33,8 @@ def solve_best_combo_uncached(
     ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
     ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
     head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
-    p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-    s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+    p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * flags.is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * flags.is_p_ff)
+    s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * flags.is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * flags.is_s_ff)
     budget: ti.i32 = total_budget - ft - ff
     res_vec = optimize_core_device_exact_bound(
         budget,
@@ -53,14 +43,7 @@ def solve_best_combo_uncached(
         base_fm,
         p_val,
         s_val,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
+        flags,
         head_len,
         song_slot,
         ft_idx,
@@ -85,18 +68,7 @@ def solve_best_combo_uncached(
                 base_ft_stat,
                 base_ff_stat,
                 gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
+                flags,
                 song_slot,
                 ft_idx,
                 ff_idx,

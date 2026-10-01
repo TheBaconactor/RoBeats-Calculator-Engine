@@ -10,6 +10,7 @@ Includes:
 import taichi as ti
 
 from .. import kernels_helpers
+from ..kernels_helpers import GpuColorFlags
 from .write_results import _best_combo_idx_from_chunk_state, _materialize_best_combo_stats
 
 
@@ -174,18 +175,7 @@ def ga_pack_fg_candidates_table_segmented_kernel(
     n_slots: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
 ):
     """
@@ -253,8 +243,8 @@ def ga_pack_fg_candidates_table_segmented_kernel(
                 flow += kernels_helpers.item_stats[item_id, 8]
                 chill += kernels_helpers.item_stats[item_id, 9]
 
-        p_val = (beat * is_p_ft) + (vibe * is_p_ff) + (rush * is_p_fm) + (flow * is_p_cm) + (chill * is_p_pp)
-        s_val = (beat * is_s_ft) + (vibe * is_s_ff) + (rush * is_s_fm) + (flow * is_s_cm) + (chill * is_s_pp)
+        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
+        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
 
         base_col0 = 1 + 9 + _GA_FG_RESULTS_COLS
         kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 0] = pp
@@ -352,18 +342,7 @@ def ga_pack_fg_candidates_table_segmented_kernel(
                 combo_idx,
                 total_budget,
                 gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
+                flags,
                 song_slot,
             )
             _write_fg_candidate_row_from_genome(
@@ -738,16 +717,7 @@ def ga_refresh_fg_candidates_row0_kernel(
     run_idx_start: ti.i32,
     n_runs: ti.i32,
     n_slots: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
+    flags: GpuColorFlags,
 ):
     """
     Re-derive `ga_fg_candidates_packed` row 0 from `ga_runs_payload_packed` row 0.
@@ -804,8 +774,8 @@ def ga_refresh_fg_candidates_row0_kernel(
                 flow += kernels_helpers.item_stats[item_id, 8]
                 chill += kernels_helpers.item_stats[item_id, 9]
 
-        p_val = (beat * is_p_ft) + (vibe * is_p_ff) + (rush * is_p_fm) + (flow * is_p_cm) + (chill * is_p_pp)
-        s_val = (beat * is_s_ft) + (vibe * is_s_ff) + (rush * is_s_fm) + (flow * is_s_cm) + (chill * is_s_pp)
+        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
+        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
 
         base_col0 = 1 + 9 + _GA_FG_RESULTS_COLS
         kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 0] = pp

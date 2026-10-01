@@ -16,6 +16,7 @@ CM/FM surfaces, uses a PP/OV prefix table, and prunes with admissible bounds.
 import taichi as ti
 
 from . import kernels_helpers
+from .kernels_helpers import GpuColorFlags
 
 
 @ti.func
@@ -111,18 +112,7 @@ def score_solution_from_gems_frontier(
     base_ft_stat: ti.i32,
     base_ff_stat: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
@@ -140,21 +130,21 @@ def score_solution_from_gems_frontier(
 
     p_val: ti.i32 = (
         base_p_val
-        + (ft * GEM_STAT_TO_ELEMENT * is_p_ft)
-        + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-        + (pp_gems * GEM_STAT_TO_ELEMENT * is_p_pp)
-        + (cm_gems * GEM_STAT_TO_ELEMENT * is_p_cm)
-        + (fm_gems * GEM_STAT_TO_ELEMENT * is_p_fm)
-        + (ov_gems * ELEMENTAL_GEM_SCALE * is_p_ov)
+        + (ft * GEM_STAT_TO_ELEMENT * flags.is_p_ft)
+        + (ff * GEM_STAT_TO_ELEMENT * flags.is_p_ff)
+        + (pp_gems * GEM_STAT_TO_ELEMENT * flags.is_p_pp)
+        + (cm_gems * GEM_STAT_TO_ELEMENT * flags.is_p_cm)
+        + (fm_gems * GEM_STAT_TO_ELEMENT * flags.is_p_fm)
+        + (ov_gems * ELEMENTAL_GEM_SCALE * flags.is_p_ov)
     )
     s_val: ti.i32 = (
         base_s_val
-        + (ft * GEM_STAT_TO_ELEMENT * is_s_ft)
-        + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-        + (pp_gems * GEM_STAT_TO_ELEMENT * is_s_pp)
-        + (cm_gems * GEM_STAT_TO_ELEMENT * is_s_cm)
-        + (fm_gems * GEM_STAT_TO_ELEMENT * is_s_fm)
-        + (ov_gems * ELEMENTAL_GEM_SCALE * is_s_ov)
+        + (ft * GEM_STAT_TO_ELEMENT * flags.is_s_ft)
+        + (ff * GEM_STAT_TO_ELEMENT * flags.is_s_ff)
+        + (pp_gems * GEM_STAT_TO_ELEMENT * flags.is_s_pp)
+        + (cm_gems * GEM_STAT_TO_ELEMENT * flags.is_s_cm)
+        + (fm_gems * GEM_STAT_TO_ELEMENT * flags.is_s_fm)
+        + (ov_gems * ELEMENTAL_GEM_SCALE * flags.is_s_ov)
     )
 
     pp_factor = kernels_helpers.lookup_ref_pp(pp_stat)
@@ -202,14 +192,7 @@ def response_score_upper_bound_relaxed(
     cur_fm: ti.i32,
     cur_p_val: ti.i32,
     cur_s_val: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     head_len: ti.i32,
     body_total: ti.i32,
 ) -> ti.f32:
@@ -219,14 +202,14 @@ def response_score_upper_bound_relaxed(
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
-    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
-    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
-    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
-    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
-    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
-    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
-    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
-    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * flags.is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * flags.is_s_ov
 
     w_pp: ti.i32 = (pp_p_delta << 1) + pp_s_delta
     w_cm: ti.i32 = (cm_p_delta << 1) + cm_s_delta
@@ -337,14 +320,7 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     cur_fm: ti.i32,
     cur_p_val: ti.i32,
     cur_s_val: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     m0: ti.u32,
     m1: ti.u32,
     m2: ti.u32,
@@ -363,14 +339,14 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
-    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
-    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
-    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
-    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
-    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
-    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
-    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
-    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * flags.is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * flags.is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * flags.is_s_ov
 
     w_pp: ti.i32 = (pp_p_delta << 1) + pp_s_delta
     w_cm: ti.i32 = (cm_p_delta << 1) + cm_s_delta
@@ -380,15 +356,15 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
 
     # PP-vs-OV prefix argmax table lookup key (16 flag combos).
     # This makes PP selection O(1) per (CM,FM) pair instead of an inner O(B) scan.
-    f_p_pp: ti.i32 = ti.cast(is_p_pp != 0, ti.i32)
-    f_s_pp: ti.i32 = ti.cast(is_s_pp != 0, ti.i32)
-    f_p_ov: ti.i32 = ti.cast(is_p_ov != 0, ti.i32)
-    f_s_ov: ti.i32 = ti.cast(is_s_ov != 0, ti.i32)
+    f_p_pp: ti.i32 = ti.cast(flags.is_p_pp != 0, ti.i32)
+    f_s_pp: ti.i32 = ti.cast(flags.is_s_pp != 0, ti.i32)
+    f_p_ov: ti.i32 = ti.cast(flags.is_p_ov != 0, ti.i32)
+    f_s_ov: ti.i32 = ti.cast(flags.is_s_ov != 0, ti.i32)
     flags_idx: ti.i32 = f_p_pp | (f_s_pp << 1) | (f_p_ov << 2) | (f_s_ov << 3)
     cur_pp_idx: ti.i32 = ti.max(0, ti.min(MAX_STAT, cur_pp))
     delta_pp_vs_ov: ti.i32 = w_pp - w_ov
 
-    allow_pp: ti.i32 = ti.cast((is_p_pp != 0) | (is_s_pp != 0), ti.i32)
+    allow_pp: ti.i32 = ti.cast((flags.is_p_pp != 0) | (flags.is_s_pp != 0), ti.i32)
 
     max_pp_gems: ti.i32 = 0
     if allow_pp != 0 and cur_pp < MAX_STAT:
@@ -804,14 +780,7 @@ def optimize_core_device_exact_bound(
     cur_fm: ti.i32,
     cur_p_val: ti.i32,
     cur_s_val: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     head_len: ti.i32,
     song_slot: ti.i32,
     ft_idx: ti.i32,
@@ -829,14 +798,7 @@ def optimize_core_device_exact_bound(
             cur_fm,
             cur_p_val,
             cur_s_val,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
+            flags,
             frontier.m0,
             frontier.m1,
             frontier.m2,

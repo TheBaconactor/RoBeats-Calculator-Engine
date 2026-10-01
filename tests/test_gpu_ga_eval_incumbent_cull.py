@@ -26,7 +26,7 @@ from tests.songs_support import make_song
 import numpy as np
 import pytest
 
-from gear_optimizer.core.color_flags import build_color_flags, normalize_color_flags
+from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.gamedata import Gear, SongMini
@@ -132,6 +132,7 @@ def _make_exhaustive_reference_kernel():
     import taichi as ti
 
     from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
+    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import GpuColorFlags
     from gear_optimizer.solver.taichi_gem.kernels.warmstart_common import (
         MAX_STAT,
         solve_combo_warmstart_preloaded,
@@ -143,23 +144,12 @@ def _make_exhaustive_reference_kernel():
         n_combos: ti.i32,
         total_budget: ti.i32,
         gem_scale_fever: ti.i32,
-        is_p_ft: ti.i32,
-        is_s_ft: ti.i32,
-        is_p_ff: ti.i32,
-        is_s_ff: ti.i32,
-        is_p_pp: ti.i32,
-        is_s_pp: ti.i32,
-        is_p_cm: ti.i32,
-        is_s_cm: ti.i32,
-        is_p_fm: ti.i32,
-        is_s_fm: ti.i32,
-        is_p_ov: ti.i32,
-        is_s_ov: ti.i32,
+        flags: GpuColorFlags,
         song_slot: ti.i32,
     ):
         GEM_STAT_TO_ELEMENT: ti.i32 = 3
-        w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
-        w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
+        w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ft << 1) + flags.is_s_ft)
+        w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ff << 1) + flags.is_s_ff)
         block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
         total_threads = n_genomes * block_dim
         ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
@@ -198,18 +188,7 @@ def _make_exhaustive_reference_kernel():
                     combo_idx,
                     total_budget,
                     gem_scale_fever,
-                    is_p_ft,
-                    is_s_ft,
-                    is_p_ff,
-                    is_s_ff,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
+                    flags,
                     song_slot,
                     w_ft,
                     w_ff,
@@ -251,6 +230,7 @@ def eval_device_state():
     import importlib
 
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
         precompute_timeline_gpu,
@@ -268,7 +248,7 @@ def eval_device_state():
 
     song = _song()
     curves = _curves()
-    flags = normalize_color_flags(build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)).as_tuple()
+    flags = gpu_color_flags(build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR))
 
     with _GPU_LOCK:
         ensure_ready()
@@ -307,35 +287,10 @@ def _run_production_eval(flags) -> tuple[np.ndarray, np.ndarray]:
     gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
     from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
 
-    (
-        is_p_ft,
-        is_s_ft,
-        is_p_ff,
-        is_s_ff,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-    ) = flags
     gpu_api.ga_prepare_population_base_stats(
         _N_GENOMES,
         _N_SLOTS,
-        is_p_ft=is_p_ft,
-        is_s_ft=is_s_ft,
-        is_p_ff=is_p_ff,
-        is_s_ff=is_s_ff,
-        is_p_pp=is_p_pp,
-        is_s_pp=is_s_pp,
-        is_p_cm=is_p_cm,
-        is_s_cm=is_s_cm,
-        is_p_fm=is_p_fm,
-        is_s_fm=is_s_fm,
-        is_p_ov=is_p_ov,
-        is_s_ov=is_s_ov,
+        flags=flags,
     )
     gpu_api.ga_evaluate_prepared_population(
         _N_GENOMES,
@@ -343,18 +298,7 @@ def _run_production_eval(flags) -> tuple[np.ndarray, np.ndarray]:
         total_budget=_TOTAL_BUDGET,
         gem_scale_fever=_GEM_SCALE_FEVER,
         song_slot=_SONG_SLOT,
-        is_p_ft=is_p_ft,
-        is_s_ft=is_s_ft,
-        is_p_ff=is_p_ff,
-        is_s_ff=is_s_ff,
-        is_p_pp=is_p_pp,
-        is_s_pp=is_s_pp,
-        is_p_cm=is_p_cm,
-        is_s_cm=is_s_cm,
-        is_p_fm=is_p_fm,
-        is_s_fm=is_s_fm,
-        is_p_ov=is_p_ov,
-        is_s_ov=is_s_ov,
+        flags=flags,
     )
     keys = kernels_helpers.chunk_best_key.to_numpy()[:_N_GENOMES].copy()
     results = kernels_helpers.chunk_best_results.to_numpy()[:_N_GENOMES].copy()
@@ -392,35 +336,10 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
             _TOTAL_BUDGET, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET
         )
         assert int(n_combos) > 0
-        (
-            is_p_ft,
-            is_s_ft,
-            is_p_ff,
-            is_s_ff,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
-        ) = flags
         gpu_api.ga_prepare_population_base_stats(
             _N_GENOMES,
             _N_SLOTS,
-            is_p_ft=is_p_ft,
-            is_s_ft=is_s_ft,
-            is_p_ff=is_p_ff,
-            is_s_ff=is_s_ff,
-            is_p_pp=is_p_pp,
-            is_s_pp=is_s_pp,
-            is_p_cm=is_p_cm,
-            is_s_cm=is_s_cm,
-            is_p_fm=is_p_fm,
-            is_s_fm=is_s_fm,
-            is_p_ov=is_p_ov,
-            is_s_ov=is_s_ov,
+            flags=flags,
         )
         exhaustive = _make_exhaustive_reference_kernel()
         exhaustive(
@@ -428,18 +347,7 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
             int(n_combos),
             _TOTAL_BUDGET,
             _GEM_SCALE_FEVER,
-            is_p_ft,
-            is_s_ft,
-            is_p_ff,
-            is_s_ff,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
+            flags,
             _SONG_SLOT,
         )
         # The production finalize kernel is compacted (reduces unique-slot rows via

@@ -15,6 +15,7 @@ from ..kernel_loader import get_kernels
 from ..runtime import on_hard_reset
 from .ga_eval_cache import reset_ga_evaluation_cache, use_ga_evaluation_context
 from .initialization import ensure_ready, _ensure_ftff_combo_tables
+from ..kernels.kernels_helpers import gpu_color_flags
 from gear_optimizer.chart import Chart
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.timing_envelope import TimedSong
@@ -78,6 +79,7 @@ def warmup_ga_kernels_light() -> None:
     total_budget = min(90, int(fields.MAX_TOTAL_BUDGET))
     gem_scale_fever = 3
     song_slot = 0
+    flags = gpu_color_flags(None)
 
     curves = _warmup_curves()
     ensure_ready(curves)
@@ -104,10 +106,12 @@ def warmup_ga_kernels_light() -> None:
     ga_init_runs_best(run_idx_start=0, n_runs=int(n_runs), n_slots=int(n_slots))
     ga_prepare_population_base_stats(
         n_genomes=int(n_runs) * int(n_genomes),
+        flags=flags,
         n_slots=n_slots,
     )
     ga_evaluate_prepared_population(
         int(n_runs) * int(n_genomes),
+        flags=flags,
         n_slots=n_slots,
         total_budget=total_budget,
         gem_scale_fever=gem_scale_fever,
@@ -115,6 +119,7 @@ def warmup_ga_kernels_light() -> None:
     )
     ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         run_idx_start=0,
+        flags=flags,
         n_runs=int(n_runs),
         n_genomes_per_run=int(n_genomes),
         n_slots=int(n_slots),
@@ -129,6 +134,7 @@ def warmup_ga_kernels_light() -> None:
     )
     ga_pack_fg_candidates_table_segmented(
         table_slot=song_slot,
+        flags=flags,
         run_idx_start=0,
         n_runs=int(n_runs),
         n_genomes_per_run=int(n_genomes),
@@ -395,18 +401,7 @@ def ga_prepare_population_base_stats(
     n_genomes: int,
     n_slots: int = 9,
     *,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
+    flags,
 ) -> None:
     """
     Aggregate the active population into `genome_base_stats`. Evaluation owns winner initialization.
@@ -417,18 +412,7 @@ def ga_prepare_population_base_stats(
     kernels.ga_aggregate_genome_stats_kernel(
         n_genomes,
         n_slots,
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
+        flags,
     )
 def ga_evaluate_prepared_population(
     n_genomes: int,
@@ -437,18 +421,7 @@ def ga_evaluate_prepared_population(
     total_budget: int,
     gem_scale_fever: int = 3,
     song_slot: int = 0,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
+    flags,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
 ) -> None:
@@ -488,8 +461,8 @@ def ga_evaluate_prepared_population(
     max_ff_gems_i = max(0, min(int(total_budget_i), int(max_ff_gems_i)))
     use_ga_evaluation_context((
         total_budget_i, gem_scale_fever_i, song_slot_i, max_ft_gems_i, max_ff_gems_i,
-        int(is_p_ft), int(is_s_ft), int(is_p_ff), int(is_s_ff), int(is_p_pp), int(is_s_pp),
-        int(is_p_cm), int(is_s_cm), int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
+        int(flags.is_p_ft), int(flags.is_s_ft), int(flags.is_p_ff), int(flags.is_s_ff), int(flags.is_p_pp), int(flags.is_s_pp),
+        int(flags.is_p_cm), int(flags.is_s_cm), int(flags.is_p_fm), int(flags.is_s_fm), int(flags.is_p_ov), int(flags.is_s_ov),
     ))
     n_combos = _ensure_ftff_combo_tables(
         total_budget_i,
@@ -529,18 +502,7 @@ def ga_evaluate_prepared_population(
             int(chunk_len),
             total_budget_i,
             gem_scale_fever_i,
-            int(is_p_ft),
-            int(is_s_ft),
-            int(is_p_ff),
-            int(is_s_ff),
-            int(is_p_pp),
-            int(is_s_pp),
-            int(is_p_cm),
-            int(is_s_cm),
-            int(is_p_fm),
-            int(is_s_fm),
-            int(is_p_ov),
-            int(is_s_ov),
+            flags,
             song_slot_i,
         )
         kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
@@ -579,18 +541,7 @@ def ga_refresh_scores_and_update_runs_best(
     n_slots: int,
     total_budget: int,
     gem_scale_fever: int,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
+    flags,
     song_slot: int = 0,
 ) -> None:
     """
@@ -616,18 +567,7 @@ def ga_refresh_scores_and_update_runs_best(
         int(n_slots),
         int(total_budget),
         int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
+        flags,
         int(song_slot),
     )
 def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
@@ -638,18 +578,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     n_slots: int = 9,
     total_budget: int,
     gem_scale_fever: int,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
+    flags,
     song_slot: int = 0,
     mutation_rate: float = 0.02,
     immigrant_rate: float = 0.0,
@@ -693,18 +622,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         int(n_slots),
         int(total_budget),
         int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
+        flags,
         int(song_slot),
         int(n_islands),
         int(elites_per_island),
@@ -750,16 +668,7 @@ def ga_refresh_fg_candidates_row0(
     run_idx_start: int,
     n_runs: int,
     n_slots: int = 9,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
+    flags,
 ) -> None:
     """
     Re-derive `ga_fg_candidates_packed` row 0 from `ga_runs_payload_packed` row 0
@@ -785,16 +694,7 @@ def ga_refresh_fg_candidates_row0(
         run_idx_start,
         n_runs,
         int(n_slots),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
+        flags,
     )
 def ga_pack_fg_candidates_table_segmented(
     *,
@@ -805,18 +705,7 @@ def ga_pack_fg_candidates_table_segmented(
     n_slots: int = 9,
     total_budget: int,
     gem_scale_fever: int,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
+    flags,
     song_slot: int = 0,
 ) -> None:
     """
@@ -849,18 +738,7 @@ def ga_pack_fg_candidates_table_segmented(
         int(n_slots),
         int(total_budget),
         int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
+        flags,
         int(song_slot),
     )
 def ga_download_fg_selected_payload(

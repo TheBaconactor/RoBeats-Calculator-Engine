@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.timing_envelope import TimedSong
-from ..core.color_flags import normalize_color_flags
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from .gpu_tuning_policy import choose_ga_batch_runs
 
@@ -529,20 +528,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             n_slots=int(n_slots),
         )
 
-    (
-        is_p_ft,
-        is_s_ft,
-        is_p_ff,
-        is_s_ff,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-    ) = normalize_color_flags(color_flags).as_tuple()
+    from .taichi_gem.kernels.kernels_helpers import gpu_color_flags
+
+    flags = gpu_color_flags(color_flags)
 
     total_budget = int(cfg_data.get("TotalBudget", 90))
     gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
@@ -666,18 +654,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     prepare_kwargs = dict(
                         n_genomes=n_total,
                         n_slots=int(n_slots),
-                        is_p_ft=is_p_ft,
-                        is_s_ft=is_s_ft,
-                        is_p_ff=is_p_ff,
-                        is_s_ff=is_s_ff,
-                        is_p_pp=is_p_pp,
-                        is_s_pp=is_s_pp,
-                        is_p_cm=is_p_cm,
-                        is_s_cm=is_s_cm,
-                        is_p_fm=is_p_fm,
-                        is_s_fm=is_s_fm,
-                        is_p_ov=is_p_ov,
-                        is_s_ov=is_s_ov,
+                        flags=flags,
                     )
                     eval_kwargs = dict(
                         n_genomes=n_total,
@@ -685,18 +662,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         total_budget=total_budget,
                         gem_scale_fever=gem_scale_fever,
                         song_slot=int(song_slot),
-                        is_p_ft=is_p_ft,
-                        is_s_ft=is_s_ft,
-                        is_p_ff=is_p_ff,
-                        is_s_ff=is_s_ff,
-                        is_p_pp=is_p_pp,
-                        is_s_pp=is_s_pp,
-                        is_p_cm=is_p_cm,
-                        is_s_cm=is_s_cm,
-                        is_p_fm=is_p_fm,
-                        is_s_fm=is_s_fm,
-                        is_p_ov=is_p_ov,
-                        is_s_ov=is_s_ov,
+                        flags=flags,
                         max_ft_gems_global=int(max_ft_gems_global),
                         max_ff_gems_global=int(max_ff_gems_global),
                     )
@@ -721,18 +687,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 total_budget=total_budget,
                                 gem_scale_fever=gem_scale_fever,
                                 song_slot=int(song_slot),
-                                is_p_ft=is_p_ft,
-                                is_s_ft=is_s_ft,
-                                is_p_ff=is_p_ff,
-                                is_s_ff=is_s_ff,
-                                is_p_pp=is_p_pp,
-                                is_s_pp=is_s_pp,
-                                is_p_cm=is_p_cm,
-                                is_s_cm=is_s_cm,
-                                is_p_fm=is_p_fm,
-                                is_s_fm=is_s_fm,
-                                is_p_ov=is_p_ov,
-                                is_s_ov=is_s_ov,
+                                flags=flags,
                                 mutation_rate=float(mutation_rate),
                                 immigrant_rate=float(immigrant_rate),
                                 tournament_k=int(tournament_k),
@@ -749,18 +704,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 total_budget=total_budget,
                                 gem_scale_fever=gem_scale_fever,
                                 song_slot=int(song_slot),
-                                is_p_ft=is_p_ft,
-                                is_s_ft=is_s_ft,
-                                is_p_ff=is_p_ff,
-                                is_s_ff=is_s_ff,
-                                is_p_pp=is_p_pp,
-                                is_s_pp=is_s_pp,
-                                is_p_cm=is_p_cm,
-                                is_s_cm=is_s_cm,
-                                is_p_fm=is_p_fm,
-                                is_s_fm=is_s_fm,
-                                is_p_ov=is_p_ov,
-                                is_s_ov=is_s_ov,
+                                flags=flags,
                             )
                         _raise_if_abort_requested(
                             abort_requested, f"after GPU-native GA runs-best update generation {int(gen)}"
@@ -784,18 +728,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         n_slots=int(n_slots),
                         total_budget=total_budget,
                         gem_scale_fever=gem_scale_fever,
-                        is_p_ft=is_p_ft,
-                        is_s_ft=is_s_ft,
-                        is_p_ff=is_p_ff,
-                        is_s_ff=is_s_ff,
-                        is_p_pp=is_p_pp,
-                        is_s_pp=is_s_pp,
-                        is_p_cm=is_p_cm,
-                        is_s_cm=is_s_cm,
-                        is_p_fm=is_p_fm,
-                        is_s_fm=is_s_fm,
-                        is_p_ov=is_p_ov,
-                        is_s_ov=is_s_ov,
+                        flags=flags,
                         song_slot=int(song_slot),
                     )
                     _raise_if_abort_requested(abort_requested, "after packing FG candidates from GPU-native GA")
@@ -828,18 +761,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         # and the selected payload see the polished genomes. Runs after the pack
         # because the polish consumes population_indices/eval scratch.
         _polish_flags = dict(
-            is_p_ft=is_p_ft,
-            is_s_ft=is_s_ft,
-            is_p_ff=is_p_ff,
-            is_s_ff=is_s_ff,
-            is_p_pp=is_p_pp,
-            is_s_pp=is_s_pp,
-            is_p_cm=is_p_cm,
-            is_s_cm=is_s_cm,
-            is_p_fm=is_p_fm,
-            is_s_fm=is_s_fm,
-            is_p_ov=is_p_ov,
-            is_s_ov=is_s_ov,
+            flags=flags,
         )
         _polish_runs_best_one_swap(
             gpu_api=gpu_api,
@@ -870,16 +792,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             run_idx_start=0,
             n_runs=int(seg_len),
             n_slots=int(n_slots),
-            is_p_ft=is_p_ft,
-            is_s_ft=is_s_ft,
-            is_p_ff=is_p_ff,
-            is_s_ff=is_s_ff,
-            is_p_pp=is_p_pp,
-            is_s_pp=is_s_pp,
-            is_p_cm=is_p_cm,
-            is_s_cm=is_s_cm,
-            is_p_fm=is_p_fm,
-            is_s_fm=is_s_fm,
+            flags=flags,
         )
 
         selected_payload = gpu_api.ga_download_fg_selected_payload(

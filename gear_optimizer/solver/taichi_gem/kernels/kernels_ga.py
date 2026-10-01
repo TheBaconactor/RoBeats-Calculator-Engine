@@ -11,6 +11,7 @@ during population evolution.
 """
 import taichi as ti
 from . import kernels_helpers
+from .kernels_helpers import GpuColorFlags
 from .ga_eval.write_results import (
     _best_combo_idx_from_chunk_state,
     _materialize_best_combo_stats,
@@ -288,18 +289,7 @@ def ga_generate_initial_populations_kernel(
 def ga_aggregate_genome_stats_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
 ):
     """
     Aggregate item stats into genome_base_stats for all genomes.
@@ -342,8 +332,8 @@ def ga_aggregate_genome_stats_kernel(
                 rush += kernels_helpers.item_stats[item_id, 7]
                 flow += kernels_helpers.item_stats[item_id, 8]
                 chill += kernels_helpers.item_stats[item_id, 9]
-        p_val = (beat * is_p_ft) + (vibe * is_p_ff) + (rush * is_p_fm) + (flow * is_p_cm) + (chill * is_p_pp)
-        s_val = (beat * is_s_ft) + (vibe * is_s_ff) + (rush * is_s_fm) + (flow * is_s_cm) + (chill * is_s_pp)
+        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
+        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
         kernels_helpers.genome_base_stats[g][0] = ti.cast(pp, ti.i16)
         kernels_helpers.genome_base_stats[g][1] = ti.cast(cm, ti.i16)
         kernels_helpers.genome_base_stats[g][2] = ti.cast(fm, ti.i16)
@@ -553,18 +543,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     n_slots: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
+    flags: GpuColorFlags,
     song_slot: ti.i32,
     n_islands: ti.i32,
     elites_per_island: ti.i32,
@@ -608,18 +587,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
             genome_idx,
             total_budget,
             gem_scale_fever,
-            is_p_ft,
-            is_s_ft,
-            is_p_ff,
-            is_s_ff,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
+            flags,
             song_slot,
         )
     for r in range(n_runs_i):
@@ -642,18 +610,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
                     combo_idx,
                     total_budget,
                     gem_scale_fever,
-                    is_p_ft,
-                    is_s_ft,
-                    is_p_ff,
-                    is_s_ff,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
+                    flags,
                     song_slot,
                 )
                 _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)

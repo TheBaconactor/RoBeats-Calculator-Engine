@@ -93,8 +93,7 @@ def test_changed_budget_clears_live_winners_without_reaggregation(eval_device_st
 
     with _GPU_LOCK:
         old = _run_production_eval(eval_device_state)
-        names = [f"is_{color}_{stat}" for stat in ("ft", "ff", "pp", "cm", "fm", "ov") for color in ("p", "s")]
-        kwargs = dict(zip(names, eval_device_state, strict=True), total_budget=0)
+        kwargs = dict(flags=eval_device_state, total_budget=0)
         ga_evaluate_prepared_population(_N_GENOMES, **kwargs)
         assert int(fields.ga_exact_eval_unique_count.to_numpy()[0]) > 0
         actual = fields.chunk_best_key.to_numpy()[:_N_GENOMES]
