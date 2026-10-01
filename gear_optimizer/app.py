@@ -171,7 +171,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
         from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
-        get_gpu_executor().start(in_process=True)
+        get_gpu_executor().start()
         logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
 
     def _set_runtime_progress_counts(
@@ -382,7 +382,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return memory_resume_tracker is not None and memory_resume_tracker.pending_count() > 0
 
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
-        from gear_optimizer.solver.gpu_service import is_fatal_gpu_error
+        from gear_optimizer.solver.gpu_executor import is_fatal_gpu_error
 
         return self._fatal_gpu_errors_enabled() and is_fatal_gpu_error(exc)
 

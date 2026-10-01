@@ -58,7 +58,6 @@ class PersistentOptimizerSession:
         self._minis: Mapping[str, Mini] = {}
         self._initialized = False
         self._request_count = 0
-        self._solve_context = None
         self._prepare_data_root()
 
     def _prepare_data_root(self) -> None:
@@ -137,14 +136,15 @@ class PersistentOptimizerSession:
     def _solve_direct(self, tasks: list, gears: Mapping[str, Gear], minis: Mapping[str, Mini]) -> None:
         """Each task (a song repeat) solved in this process and stored into the result database."""
         from gear_optimizer.pipeline.post_processor import store_solve
-        from gear_optimizer.pipeline.solve import SolveContext, solve_song
+        from gear_optimizer.pipeline.solve import solve_song
+        from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
-        if self._solve_context is None:
-            self._solve_context = SolveContext()
+        executor = get_gpu_executor()
+        executor.start()  # once: it keeps Taichi and the kernels warm between requests
         conn = schema.connect(self._result_db, write=True)
         try:
             for task in tasks:
-                store_solve(conn, solve_song(task, self._solve_context), dict(gears), dict(minis))
+                store_solve(conn, solve_song(task, executor), dict(gears), dict(minis))
         finally:
             conn.close()
 
@@ -169,7 +169,7 @@ def main() -> int:
             _apply_service_mode_frontier_threads()
             reassert_process_background_only()
             session = PersistentOptimizerSession()
-            from gear_optimizer.solver.gpu_service import is_fatal_gpu_error
+            from gear_optimizer.solver.gpu_executor import is_fatal_gpu_error
 
             for raw_line in sys.stdin:
                 line = raw_line.strip()

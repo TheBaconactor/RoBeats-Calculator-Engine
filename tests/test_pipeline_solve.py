@@ -23,14 +23,14 @@ def _song(task: tuple) -> SimpleNamespace:
 
 def _stages(monkeypatch, *, prepare=_song, run_ga=None, finish=None) -> None:
     monkeypatch.setattr(native_inflight_lifecycle, "prepare_native_song", prepare)
-    monkeypatch.setattr(solve_module, "run_ga", run_ga or (lambda song, _ctx: f"ga {song.config.song_name}"))
+    monkeypatch.setattr(solve_module, "run_ga", run_ga or (lambda song, _executor: f"ga {song.config.song_name}"))
     monkeypatch.setattr(solve_module, "finish_song", finish or (lambda song, _ga: song.config.task_key))
 
 
-def _run(names, *, ctx=None, stop_requested=None) -> tuple[list, set]:
+def _run(names, *, executor=None, stop_requested=None) -> tuple[list, set]:
     posted: list = []
     completed: set[str] = {"Done Before"}
-    solve_module.run_queue([_task(n) for n in names], ctx, post=posted.append, completed_songs=completed,
+    solve_module.run_queue([_task(n) for n in names], executor, post=posted.append, completed_songs=completed,
                            stop_requested=stop_requested)
     return posted, completed - {"Done Before"}
 
@@ -52,7 +52,7 @@ def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(m
             raise RuntimeError("bad chart")
         return _song(task)
 
-    def run_ga(song, _ctx):
+    def run_ga(song, _executor):
         if song.config.song_name == "GA Fails":
             raise RuntimeError("gpu boom")
         return "ga"
@@ -66,7 +66,7 @@ def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(m
     posted, completed = _run(["A", "Prep Fails", "GA Fails", "Finish Fails", "B"])
     assert _labels(posted) == ["A", ("Prep Fails", "bad chart"), ("GA Fails", "gpu boom"),
                                ("Finish Fails", "fg boom"), "B"]
-    assert completed == {"A", "Prep Fails", "GA Fails", "Finish Fails", "B"}  # as in the in-flight pipeline
+    assert completed == {"A", "Prep Fails", "GA Fails", "Finish Fails", "B"}
 
 
 def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(monkeypatch):
@@ -77,7 +77,7 @@ def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(mon
             c_prepared.set()
         return _song(task)
 
-    def run_ga(song, _ctx):
+    def run_ga(song, _executor):
         if song.config.song_name == "B" and not (a_finished.wait(5) and c_prepared.wait(5)):
             raise AssertionError("A was not finished or C not prepared while B's GA ran")
         return "ga"
@@ -99,7 +99,7 @@ def test_a_stop_request_leaves_the_rest_of_the_queue_pending(monkeypatch):
         return song.config.task_key
 
     _stages(monkeypatch, finish=finish)
-    posted, completed = _run(["A", "B", "C"], ctx=SimpleNamespace(abort=lambda reason: None),
+    posted, completed = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: None),
                              stop_requested=stop.is_set)
     assert posted[0] == "A" and set(posted) <= {"A", "B"} and completed == set(posted)
 
@@ -107,7 +107,7 @@ def test_a_stop_request_leaves_the_rest_of_the_queue_pending(monkeypatch):
 def test_a_stop_request_aborts_the_ga_in_progress_and_its_song_stays_pending(monkeypatch):
     stop, aborted = threading.Event(), threading.Event()
 
-    def run_ga(song, _ctx):
+    def run_ga(song, _executor):
         if song.config.song_name == "B":
             stop.set()
             if not aborted.wait(5):
@@ -116,15 +116,15 @@ def test_a_stop_request_aborts_the_ga_in_progress_and_its_song_stays_pending(mon
         return "ga"
 
     _stages(monkeypatch, run_ga=run_ga)
-    posted, completed = _run(["A", "B", "C"], ctx=SimpleNamespace(abort=lambda reason: aborted.set()),
+    posted, completed = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: aborted.set()),
                              stop_requested=stop.is_set)
     assert posted == ["A"] and completed == {"A"}
 
 
 def test_a_fatal_gpu_error_ends_the_run_after_the_songs_past_their_ga_finish(monkeypatch):
-    from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
+    from gear_optimizer.solver.gpu_executor import GpuServiceTimeoutError
 
-    def run_ga(song, _ctx):
+    def run_ga(song, _executor):
         if song.config.song_name == "B":
             raise GpuServiceTimeoutError("GA watchdog timeout")
         return "ga"
@@ -136,33 +136,50 @@ def test_a_fatal_gpu_error_ends_the_run_after_the_songs_past_their_ga_finish(mon
     assert posted == ["A"]
 
 
-class _Executor:
-    def __init__(self, *, ready: bool) -> None:
-        self.ready, self.started, self.stopped, self.waited = ready, False, False, False
-        self.last_init_error = None if ready else "no Vulkan device"
+def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(monkeypatch):
+    import inspect
 
-    def start(self, *, in_process: bool) -> None:
-        self.started = in_process
+    from gear_optimizer.solver import genetic_pipeline
 
-    def wait_until_ready(self, timeout: float) -> bool:
-        self.waited = True
-        return self.ready
+    bundle, ga_calls, fg_calls = object(), [], []
 
-    def stop(self) -> None:
-        self.stopped = True
+    def run_ga_runs(**kwargs):
+        inspect.signature(real_run).bind(**kwargs)  # every payload key is a GA argument
+        ga_calls.append(kwargs)
+        return "runs payload"
 
+    def score_fg(**kwargs):
+        fg_calls.append(kwargs)
+        return "fg owner score"
 
-def test_the_solve_context_starts_the_gpu_without_waiting_and_a_failed_init_is_fatal(monkeypatch):
-    from gear_optimizer.solver import gpu_executor
-    from gear_optimizer.solver.gpu_service import GpuFatalError
+    real_run = genetic_pipeline.run_gpu_native_ga_runs_payload_prebuilt
+    monkeypatch.setattr(genetic_pipeline, "run_gpu_native_ga_runs_payload_prebuilt", run_ga_runs)
+    monkeypatch.setattr(genetic_pipeline, "score_fused_fg_from_selected_payload", score_fg)
+    inputs = SimpleNamespace(timed_song="timed song", curves="curves", item_stats=1, slot_start=2, slot_count=3,
+                             base_fixed_stats_arr=4, num_runs=3, n_genomes=128, init_heuristic_topk=None,
+                             init_heuristic_k=0, init_heuristic_copies=25, gens_per_run=42,
+                             color_flags={"rush": True}, cfg_data={"selected_color": "rush"}, fg_gear_name_rank=5,
+                             fg_mini_sig_id=6)
+    song = SimpleNamespace(gpu_inputs=inputs, config=SimpleNamespace(ga_seed=7),
+                           runtime=SimpleNamespace(song_slot=0, ga=SimpleNamespace(ga_initial_populations=None),
+                                                   fg=SimpleNamespace(fg_response_scoring_bundle=bundle)))
+    monkeypatch.setattr("gear_optimizer.solver.native_inflight_pipeline_ga.InflightGAPipeline.prepare_submit",
+                        lambda _song: None)
+    abort = threading.Event()
 
-    executor = _Executor(ready=False)
-    monkeypatch.setattr(gpu_executor, "get_gpu_executor", lambda: executor)
-    ctx = solve_module.SolveContext()
-    assert executor.started and not executor.waited  # the first songs prepare while Taichi initializes
-    with pytest.raises(GpuFatalError, match="no Vulkan device"):
-        ctx.gpu_client
-    assert executor.stopped
+    class _Executor:
+        abort_requested = abort.is_set
+
+        def call(self, fn, *args):
+            assert song.runtime.song_slot == solve_module._GA_SLOT
+            return fn(*args)
+
+    assert solve_module.run_ga(song, _Executor()) == {"runs_payload": "runs payload", "fg_owner_score": "fg owner score"}
+    assert song.runtime.song_slot == 0
+    assert ga_calls[0]["song"] == "timed song" and ga_calls[0]["n_generations"] == 42 and ga_calls[0]["ga_seed"] == 7
+    assert ga_calls[0]["abort_requested"] == abort.is_set
+    assert fg_calls == [{"runs_payload": "runs payload", "fg_scoring_bundle": bundle, "song": "timed song",
+                         "curves": "curves", "cfg_data": {"selected_color": "rush"}}]
 
 
 def test_only_a_cancelled_future_or_an_executor_abort_counts_as_a_stop_abort():

@@ -8,7 +8,7 @@ import pytest
 
 from gear_optimizer import robeatsmeta_service as service
 from gear_optimizer import service_worker as worker
-from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
+from gear_optimizer.solver.gpu_executor import GpuServiceTimeoutError
 
 
 def test_persistent_worker_reuses_one_process(monkeypatch):

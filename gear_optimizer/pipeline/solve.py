@@ -1,8 +1,8 @@
 """Songs end to end in this process.
 
 A song: prepare_native_song (incl. the GA-invariant FG static prep) -> run_ga (the GA with its fused FG owner score,
-on the GPU executor) -> finish_song (decode -> FG plan -> FG materialization -> SongSolve, host only). No per-song
-process or pool (the in-flight pipeline spawns an FG process pool per run and schedules up to 12 songs at once).
+a call on the GPU executor) -> finish_song (decode -> FG plan -> FG materialization -> SongSolve, host only). No per-song
+process or pool.
 
 solve_song: one song on the calling thread (the persistent worker).
 
@@ -28,58 +28,32 @@ _GA_SLOT = 1
 # about one GA (they share the GIL with the GA's kernel launches; bench/ga_timeline.py), so 2 keeps the GPU on GAs.
 _PREP_AHEAD = 2
 _FINISH_BEHIND = 2
-# Taichi init + the GA kernel warmup (cold: compiling every kernel).
-_GPU_INIT_TIMEOUT_S = 600.0
 
 
-class SolveContext:
-    """A process's GPU executor and its client, started once (the executor keeps Taichi and the GA kernels warm).
+def _ga_turn(payload: dict, abort_requested: Callable[[], bool]) -> dict:
+    """On the GPU owner thread: the song's GA runs, then the fused FG owner score of the payload they select."""
+    from gear_optimizer.solver.genetic_pipeline import (
+        run_gpu_native_ga_runs_payload_prebuilt,
+        score_fused_fg_from_selected_payload,
+    )
 
-    The executor initializes Taichi and warms the GA kernels on its own thread; the first GA waits for that, so the
-    first songs' preparation overlaps it."""
-
-    def __init__(self) -> None:
-        from gear_optimizer.solver.gpu_executor import get_gpu_executor
-
-        self._executor = get_gpu_executor()
-        self._executor.start(in_process=True)
-        self._client = None
-
-    @property
-    def gpu_client(self) -> Any:
-        """The executor's client once its GPU init finished; GpuFatalError if the init failed or timed out."""
-        if self._client is None:
-            from gear_optimizer.solver.gpu_service import GpuFatalError, GpuServiceClient
-
-            if not self._executor.wait_until_ready(timeout=_GPU_INIT_TIMEOUT_S):
-                error = self._executor.last_init_error
-                self._executor.stop()
-                raise GpuFatalError(f"GPU executor Taichi init failed or timed out ({error})")
-            client = GpuServiceClient(self._executor)
-            client.start(start_executor=False)
-            self._client = client
-        return self._client
-
-    def close(self, *, stop_executor: bool = False) -> None:
-        """Close the client; `stop_executor` also stops the executor (it persists Taichi's offline kernel cache)."""
-        if self._client is not None:
-            self._client.close(timeout=2.0)
-        if stop_executor and self._executor.is_running:
-            self._executor.stop()
-
-    def abort(self, reason: str) -> None:
-        """Abort the GA running on the executor: its future raises "GpuExecutor aborted: <reason>"."""
-        self._executor.request_abort(reason)
+    ga_kwargs = dict(payload)
+    fg_scoring_bundle = ga_kwargs.pop("fg_scoring_bundle")
+    runs_payload = run_gpu_native_ga_runs_payload_prebuilt(**ga_kwargs, abort_requested=abort_requested)
+    fg_owner_score = score_fused_fg_from_selected_payload(
+        runs_payload=runs_payload, fg_scoring_bundle=fg_scoring_bundle, song=ga_kwargs["song"],
+        curves=ga_kwargs["curves"], cfg_data=ga_kwargs["cfg_data"])
+    return {"runs_payload": runs_payload, "fg_owner_score": fg_owner_score}
 
 
-def run_ga(song: Any, ctx: SolveContext) -> Any:
-    """The GA result of a prepared song (prepare_native_song)."""
+def run_ga(song: Any, executor: Any) -> dict:
+    """The GA result of a prepared song (prepare_native_song) on the GPU executor (started)."""
     from gear_optimizer.solver.native_inflight_pipeline_ga import InflightGAPipeline
 
     song.runtime.song_slot = _GA_SLOT
     try:
         InflightGAPipeline.prepare_submit(song)
-        return ctx.gpu_client.submit_gpu_native_ga_run(InflightGAPipeline.build_payload(song)).future.result()
+        return executor.call(_ga_turn, InflightGAPipeline.build_payload(song), executor.abort_requested)
     finally:
         song.runtime.song_slot = 0
 
@@ -107,17 +81,17 @@ def finish_song(song: Any, ga_result: Any) -> SongSolve:
     return song_solve(song)
 
 
-def solve_song(task: tuple, ctx: SolveContext) -> SongSolve:
+def solve_song(task: tuple, executor: Any) -> SongSolve:
     """The SongSolve of one queue task (an app task tuple)."""
     from gear_optimizer.solver.native_inflight_lifecycle import prepare_native_song
 
     song = prepare_native_song(task)
-    return finish_song(song, run_ga(song, ctx))
+    return finish_song(song, run_ga(song, executor))
 
 
 def run_queue(
     tasks: list[tuple],
-    ctx: SolveContext,
+    executor: Any,
     *,
     post: Callable[[Any], None],
     completed_songs: set[str],
@@ -127,11 +101,10 @@ def run_queue(
 ) -> None:
     """Solve `tasks` (queue tasks; SongRepeats are separate tasks); post each SongSolve or error payload in queue order.
 
-    A task is marked completed once finished (also when it failed: its error went to `post`, as in the in-flight
-    pipeline); a stop request or a memory release leaves the unfinished tasks pending (the resume journal keeps them).
-    A stop request also aborts the GA in progress (its song stays pending, as in the in-flight pipeline); songs past
-    their GA still finish. A GpuFatalError (GPU init failed, a GA past its watchdog) ends the run, as in the in-flight
-    pipeline: the process cannot use its GPU any more. Any other error fails that song only."""
+    A task is marked completed once finished (also when it failed: its error went to `post`); a stop request or a
+    memory release leaves the unfinished tasks pending (the resume journal keeps them). A stop request also aborts the
+    GA in progress (its song stays pending); songs past their GA still finish. A GpuFatalError (GPU init failed, a GA
+    past its watchdog) ends the run: the process cannot use its GPU any more. Any other error fails that song only."""
     from gear_optimizer.core.memory import memory_release_requested
     from gear_optimizer.domain.jobs import task_file_path, task_queue_label, task_song_name
     from gear_optimizer.solver.native_inflight_completion import (
@@ -144,7 +117,7 @@ def run_queue(
         is_stop_abort_exception,
         prepare_native_song,
     )
-    from gear_optimizer.solver.gpu_service import GpuFatalError
+    from gear_optimizer.solver.gpu_executor import GpuFatalError
 
     progress = ProgressTracker()
 
@@ -154,7 +127,7 @@ def run_queue(
     def abort_on_stop(done: threading.Event) -> None:
         while not done.wait(0.05):
             if stop_requested():
-                ctx.abort("stop requested")
+                executor.request_abort("stop requested")
                 return
 
     # The finisher thread posts and completes every task, so both happen in queue order.
@@ -202,7 +175,7 @@ def run_queue(
                         trace=traceback.format_exc()))
                     continue
                 try:
-                    ga_result = run_ga(song, ctx)
+                    ga_result = run_ga(song, executor)
                 except GpuFatalError:
                     raise
                 except Exception as exc:

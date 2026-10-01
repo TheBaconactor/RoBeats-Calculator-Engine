@@ -28,14 +28,11 @@ flowchart TD
     E --> F["Chart queue construction"]
     F --> G["Startup CPU work: timeline and FG frontier caches"]
     G --> H["Main-thread Taichi/Vulkan initialization"]
-    H --> I["NativeOptimizationEngine"]
-    I --> J["Native in-flight song pipeline"]
-    J --> K["Single GPU executor"]
-    J --> L["CPU preparation and decode"]
-    J --> M["Host-only exact FG materialization"]
-    K --> N["Canonical post-processing"]
-    L --> N
-    M --> N
+    H --> I["pipeline.solve.run_queue"]
+    I --> J["Song preparation (prep thread)"]
+    J --> K["GA and fused FG owner score (GPU executor)"]
+    K --> L["Decode and host-only exact FG materialization (finish thread)"]
+    L --> N["Canonical post-processing"]
     N --> O["Atomic SQLite persistence"]
 ```
 
@@ -47,46 +44,40 @@ flowchart TD
 4. load stats, gear, minis, and the selected chart queue;
 5. build or verify timeline and Force Great response-frontier caches;
 6. initialize Taichi/Vulkan on the main thread; and
-7. hand canonical task tuples to `NativeOptimizationEngine`.
+7. solve the queue of canonical task tuples with `pipeline.solve.run_queue`.
 
 Taichi initialization happens before worker scheduling because the device
 runtime is process-global and must have one unambiguous owner.
 
-## In-flight execution and ownership
+## Execution and ownership
 
-`gear_optimizer/solver/native_inflight_orchestrator.py` overlaps work across
-songs while preserving a single device owner.
+`gear_optimizer/pipeline/solve.py` solves the queue in one optimizer process
+with a single device owner: one GA runs at a time on the GPU executor while a
+prep thread prepares the next songs and a finish thread finishes the previous
+ones.
 
 ```mermaid
 flowchart LR
-    A["Song preparation threads"] --> B["GPU service client"]
-    B --> C["One GpuExecutor"]
-    C --> D["GA evaluation and reduction"]
-    C --> E["FG response scoring bundle"]
-    D --> F["GA decode threads"]
-    E --> G["FG planning threads"]
-    G --> H["Host-only FG process pool"]
-    F --> I["Post-processor process"]
-    H --> I
-    I --> K[("SQLite")]
+    A["Prep thread: song preparation"] --> B["GpuExecutor.call: GA and fused FG owner score"]
+    B --> C["Finish thread: decode, FG planning, host-only FG materialization"]
+    C --> D["Post-processor process"]
+    D --> E[("SQLite")]
 ```
 
 The main execution owners are:
 
-- `gear_optimizer/solver/native_inflight_lifecycle.py` for resources,
-  preparation, progress, and shutdown;
+- `gear_optimizer/pipeline/solve.py` for the song stages and the queue;
+- `gear_optimizer/solver/native_inflight_lifecycle.py` for song preparation and
+  progress;
 - `gear_optimizer/solver/native_inflight_pipeline.py` and
   `native_inflight_pipeline_ga.py` for GA request and decode stages;
 - `gear_optimizer/solver/native_inflight_pipeline_fg.py` for Force Great
-  planning and host-only payload materialization;
-- `gear_optimizer/solver/gpu_service.py` for the orchestration-to-device
-  request boundary; and
-- `gear_optimizer/solver/gpu_executor.py` for all mutable GPU execution.
+  planning and host-only payload materialization; and
+- `gear_optimizer/solver/gpu_executor.py` for all GPU execution: one owner
+  thread initializes Taichi and runs every GPU call.
 
-Song-level parallelism uses in-flight scheduling in one optimizer process.
-Preparation and decode use thread pools. `NativeFGPipeline` uses a small spawned
-process pool for CPU-only exact payload materialization; those workers never
-initialize or access the GPU.
+Force Great payload materialization is CPU-only and runs on the finish thread;
+it never initializes or accesses the GPU.
 
 ## Search, scoring, and Force Great frontiers
 

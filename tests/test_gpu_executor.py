@@ -1,128 +1,109 @@
-"""
-Test GPU Executor parallel mode integration.
+import threading
 
-This test verifies that the GPU executor IPC mechanism works correctly
-when multiple workers submit GPU requests.
-"""
-
-from tests.curves_support import synthetic_curves
 import pytest
-import time
+
+from gear_optimizer.solver import gpu_executor
+from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuFatalError, GpuServiceTimeoutError, is_fatal_gpu_error
 
 
-pytestmark = pytest.mark.gpu
+@pytest.fixture
+def gpu(monkeypatch):
+    """The executor's GPU init and finalize stubbed: records which thread ran them."""
+    seen: dict = {"finalized_on": []}
+    monkeypatch.setattr(gpu_executor, "_init_gpu", lambda: seen.setdefault("init_on", threading.current_thread().name))
+    monkeypatch.setattr(gpu_executor, "_finalize_gpu", lambda: seen["finalized_on"].append(threading.current_thread().name))
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", raising=False)
+    return seen
 
 
-def test_gpu_executor_basic_lifecycle():
-    """Test GPU executor can start and stop."""
-    from gear_optimizer.solver.gpu_executor import GpuExecutor
-
-    # Create fresh instance (bypass singleton for testing)
-    GpuExecutor._instance = None
-    executor = GpuExecutor()
-
-    assert not executor.is_running
-    executor.start()
-    assert executor.is_running
-
-    # Give it a moment to initialize Taichi
-    time.sleep(1.0)
-
-    executor.stop()
-    assert not executor.is_running
-
-    # Cleanup
-    GpuExecutor._instance = None
-
-
-def test_gpu_executor_worker_registration():
-    """Test workers can be registered with the executor."""
-    from gear_optimizer.solver.gpu_executor import GpuExecutor
-
-    GpuExecutor._instance = None
+def test_calls_run_in_order_on_the_owner_thread_which_finalizes_the_gpu_on_stop(gpu):
     executor = GpuExecutor()
     executor.start()
-    time.sleep(0.5)
-
     try:
-        # Register multiple workers
-        registrations = []
-        for i in range(3):
-            worker_id, req_q, resp_q = executor.register_worker()
-            registrations.append((worker_id, req_q, resp_q))
-            assert worker_id == i
-
-        assert executor.stats["registered_workers"] == 3
+        assert [executor.call(lambda i: (i, threading.current_thread().name), i) for i in range(3)] == [
+            (i, "GpuExecutorThread") for i in range(3)]
+        with pytest.raises(ValueError, match="bad input"):  # the call's own exception
+            executor.call(lambda: (_ for _ in ()).throw(ValueError("bad input")))
+        assert executor.call(lambda: "next") == "next"
     finally:
         executor.stop()
-        GpuExecutor._instance = None
+    assert gpu["init_on"] == "GpuExecutorThread" and gpu["finalized_on"] == ["GpuExecutorThread"]
+    assert not executor.is_running
 
 
-def test_gpu_executor_ipc_request():
-    """Test a full IPC request/response cycle."""
-    from gear_optimizer.solver.gpu_executor import GpuExecutor
-    import numpy as np
+def test_a_failed_gpu_init_is_fatal_and_stops_the_executor(gpu, monkeypatch):
+    def init():
+        raise RuntimeError("no Vulkan device")
 
-    GpuExecutor._instance = None
+    monkeypatch.setattr(gpu_executor, "_init_gpu", init)
     executor = GpuExecutor()
     executor.start()
-    time.sleep(1.0)  # Wait for Taichi init
+    with pytest.raises(GpuFatalError, match="no Vulkan device"):
+        executor.call(lambda: "never runs")
+    assert not executor.is_running and gpu["finalized_on"] == []
 
+
+def test_an_abort_stops_the_call_in_progress_and_refuses_queued_calls_until_the_next_start(gpu):
+    executor = GpuExecutor()
+    executor.start()
     try:
-        # Register a worker
-        worker_id, req_q, resp_q = executor.register_worker()
+        def ga(abort_requested):
+            executor.request_abort("stop requested")
+            if abort_requested():
+                raise RuntimeError("GpuExecutor aborted: before GPU-native GA generation 3")
 
-        # For this test, we need to ensure refs are loaded first
-        from gear_optimizer.solver.taichi_gem.api import load_curves
-
-        # Create minimal ref arrays for test
-        curves = synthetic_curves({
-            "Perfect Points": np.linspace(0, 100, 161, dtype=np.float64),
-            "Combo Multiplier": np.linspace(1, 2, 161, dtype=np.float64),
-            "Fever Multiplier": np.linspace(1, 2, 161, dtype=np.float64),
-            "Fever Fill Rate": np.linspace(0.5, 1.5, 161, dtype=np.float64),
-            "Fever Time": np.linspace(0.5, 1.5, 161, dtype=np.float64),
-        })
-
-        # Submit a minimal solve request
-        # Note: This requires a real timeline grid, so we skip actual execution
-        # Just verify the executor processes requests without crashing
-
-        print(f"[TEST] GPU Executor running, {executor.stats}")
-        assert executor.is_running
-
+        with pytest.raises(RuntimeError, match="GpuExecutor aborted: before GPU-native GA generation 3"):
+            executor.call(ga, executor.abort_requested)
+        with pytest.raises(RuntimeError, match="GpuExecutor aborted: stop requested"):
+            executor.call(lambda: pytest.fail("an aborted executor ran a call"))
     finally:
         executor.stop()
-        GpuExecutor._instance = None
+    executor.start()
+    try:
+        assert executor.call(lambda: "runs again") == "runs again"
+    finally:
+        executor.stop()
 
 
-def test_gpu_executor_dispatcher_routes_known_request(monkeypatch):
-    """Test the restored single-request dispatcher uses the request-type table."""
-    from gear_optimizer.solver.gpu_executor import GpuExecutor
-    from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
+def test_under_the_service_a_stuck_call_is_fatal_and_stops_the_process(gpu, monkeypatch):
+    stopped, release = [], threading.Event()
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    monkeypatch.setattr(gpu_executor, "_CALL_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(gpu_executor, "_stop_this_process", stopped.append)
+
+    def stuck():
+        release.wait(5)
 
     executor = GpuExecutor()
-    seen = []
-
-    def _fake_handler(req):
-        seen.append((req.request_type, req.request_id))
-        return GpuResponse(request_id=int(req.request_id), success=True, result="ok")
-
-    monkeypatch.setitem(executor._dispatch, GpuRequestType.LOAD_CURVES, _fake_handler)
-
-    response = executor._execute_request(
-        GpuRequest(
-            request_type=GpuRequestType.LOAD_CURVES,
-            request_id=77,
-            worker_id=0,
-            payload={"curves": {}},
-        )
-    )
-
-    assert response.success is True
-    assert response.result == "ok"
-    assert seen == [(GpuRequestType.LOAD_CURVES, 77)]
+    executor.start()
+    try:
+        with pytest.raises(GpuServiceTimeoutError, match="GPU call stuck timed out after 0.2s"):
+            executor.call(stuck)
+        assert stopped == ["GPU call stuck timed out after 0.2s"]
+    finally:
+        release.set()
+        executor.stop()
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def test_standalone_runs_wait_for_a_slow_call(gpu, monkeypatch):
+    monkeypatch.setattr(gpu_executor, "_CALL_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(gpu_executor, "_stop_this_process", lambda message: pytest.fail(message))
+    executor = GpuExecutor()
+    executor.start()
+    try:
+        assert executor.call(lambda: threading.Event().wait(0.3) or "done") == "done"
+    finally:
+        executor.stop()
+
+
+def test_fatal_gpu_errors_are_the_engines_own_or_a_lost_device_anywhere_in_the_chain():
+    try:
+        try:
+            raise RuntimeError("[Vulkan] VK_ERROR_DEVICE_LOST: device lost")
+        except RuntimeError as driver_error:
+            raise ValueError("GA batch failed") from driver_error
+    except ValueError as exc:
+        chained = exc
+    assert is_fatal_gpu_error(GpuServiceTimeoutError("GPU call _ga_turn timed out after 240.0s"))
+    assert is_fatal_gpu_error(chained)
+    assert not is_fatal_gpu_error(RuntimeError("GpuExecutor aborted: stop requested"))

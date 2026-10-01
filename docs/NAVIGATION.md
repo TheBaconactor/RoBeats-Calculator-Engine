@@ -20,8 +20,7 @@ Use this page to find the current owner of a behavior. The
 - Task dispatch: `gear_optimizer/task_execution.py`
 - Queue coordination: `gear_optimizer/pipeline/queue_task_coordinator.py`
 - Result post-processing: `gear_optimizer/pipeline/post_processor.py`
-- Native in-flight scheduling:
-  `gear_optimizer/solver/native_inflight_orchestrator.py`
+- Songs end to end (the queue, one GA at a time): `gear_optimizer/pipeline/solve.py`
 - Resource and song lifecycle:
   `gear_optimizer/solver/native_inflight_lifecycle.py`
 - GA/decode pipeline: `gear_optimizer/solver/native_inflight_pipeline.py`
@@ -49,15 +48,13 @@ Use this page to find the current owner of a behavior. The
 
 ## GPU and Taichi
 
-- Request/service boundary: `gear_optimizer/solver/gpu_service.py`
-- Single GPU owner: `gear_optimizer/solver/gpu_executor.py`
-- Request contracts: `gear_optimizer/solver/gpu_executor_types.py`
+- Single GPU owner (one thread runs every GPU call): `gear_optimizer/solver/gpu_executor.py`
 - Public Taichi API: `gear_optimizer/solver/taichi_gem/api/`
 - Kernels: `gear_optimizer/solver/taichi_gem/kernels/`
 - GA evaluation and reduction:
   `gear_optimizer/solver/taichi_gem/kernels/ga_eval/`
 
-Production scoring should import through the public Taichi API or GPU service,
+Production scoring should import through the public Taichi API or GPU executor,
 not directly from kernel internals.
 
 ## Data and persistence

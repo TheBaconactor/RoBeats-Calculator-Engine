@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
@@ -31,9 +31,6 @@ from .response_types import (
     FgResponseInnerResult,
     FgResponseSurface,
 )
-
-if TYPE_CHECKING:
-    from gear_optimizer.solver.gpu_service import GpuJobHandle
 
 __all__ = [
     "FgResponseFrontierResult",
@@ -191,8 +188,6 @@ class FgResponseFrontierPackedScoringBatch:
     scoring_surface_head_coeff_ms: float = 0.0
     scoring_setup_ms: float = 0.0
     scoring_group_build_ms: float = 0.0
-    # In-process only: optional async group-build submitted during FG prep.
-    group_build_handle: GpuJobHandle | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,25 +630,10 @@ def prepare_force_greats_response_frontier_scoring_batch(
     )
 
 
-def _resolve_async_group_build_handle(
-    batch: FgResponseFrontierPackedScoringBatch,
-) -> FgResponseFrontierPackedScoringBatch:
-    if fg_batch_stage(batch) is not FgBatchStage.INPUT:
-        return batch
-    handle = batch.group_build_handle
-    if handle is None:
-        return batch
-    built_batch = handle.future.result()
-    if fg_batch_stage(built_batch) is FgBatchStage.INPUT:
-        raise RuntimeError("FG response frontier async group-build completed without group rows")
-    return built_batch
-
-
 def build_prepared_force_greats_response_frontier_group_rows_on_owner(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierPackedScoringBatch:
     """Build pruned group rows on the GPU owner thread (Taichi kernels only)."""
-    batch = _resolve_async_group_build_handle(batch)
     if fg_batch_stage(batch) is not FgBatchStage.INPUT:
         return batch
     from .response_group_build_kernels import build_response_group_rows_gpu
@@ -697,7 +677,6 @@ def build_prepared_force_greats_response_frontier_group_rows_on_owner(
         candidate_slices=candidate_slices,
         kept_stat_keys=kept_stat_keys,
         scoring_group_build_ms=group_build_ms,
-        group_build_handle=None,
     )
 
 

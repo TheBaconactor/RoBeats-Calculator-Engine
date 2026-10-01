@@ -95,9 +95,8 @@ still budget-bounded.
 Focused reference tests include:
 
 - `tests/test_timeline_frontier_reduction.py`;
-- `tests/test_gpu_timeline_frontier_cpu_gpu_exact.py`;
-- `tests/test_gpu_timeline_frontier_exact_bnb.py`; and
-- `tests/test_native_inflight_continuous_scheduler.py`.
+- `tests/test_gpu_timeline_frontier_cpu_gpu_exact.py`; and
+- `tests/test_gpu_timeline_frontier_exact_bnb.py`.
 
 Run CPU/reference coverage first:
 

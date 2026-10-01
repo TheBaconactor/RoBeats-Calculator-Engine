@@ -22,10 +22,6 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[..., Any]
 
 
-# Taichi/Vulkan init plus kernel warmup on a cold offline cache.
-GPU_EXECUTOR_INIT_TIMEOUT_S = 600.0
-
-
 def is_stop_abort_exception(exc: BaseException) -> bool:
     if isinstance(exc, concurrent.futures.CancelledError):
         return True

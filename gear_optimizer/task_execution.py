@@ -72,15 +72,17 @@ class TaskExecutionMixin:
 
     def _run_direct(self, tasks, post_queue, completed_songs, memory_resume_tracker) -> None:
             """The queue solved in this process (pipeline.solve.run_queue), posting to the run's post-processor."""
-            from gear_optimizer.pipeline.solve import SolveContext, run_queue
+            from gear_optimizer.pipeline.solve import run_queue
+            from gear_optimizer.solver.gpu_executor import get_gpu_executor
             from gear_optimizer.solver.native_inflight_lifecycle import PostSender
 
             post_sender = PostSender(post_queue, stop_requested=self._stop_requested_now)
-            ctx = SolveContext()
+            executor = get_gpu_executor()
+            executor.start()
             try:
                 run_queue(
                     tasks,
-                    ctx,
+                    executor,
                     post=post_sender.send,
                     completed_songs=completed_songs,
                     memory_resume_tracker=memory_resume_tracker,
@@ -89,7 +91,8 @@ class TaskExecutionMixin:
                 )
             finally:
                 post_sender.close(timeout=10.0)
-                ctx.close(stop_executor=not persistent_worker())
+                if not persistent_worker():
+                    executor.stop()  # persists Taichi's offline kernel cache
 
     def _start_post_processor(self, total_tasks: int):
             from gear_optimizer.pipeline.post_processor import run_post_processor

@@ -6,7 +6,7 @@ import pytest
 
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_tuple_from_job_context
-from gear_optimizer.solver.gpu_service import GpuFatalError, GpuServiceTimeoutError
+from gear_optimizer.solver.gpu_executor import GpuFatalError, GpuServiceTimeoutError
 
 
 def _make_minimal_app() -> GearOptimizerApp:
@@ -40,13 +40,16 @@ def _build_tasks(*, count: int = 2):
 def _patch_queue(monkeypatch, run_queue) -> dict:
     """The app's run with pipeline.solve.run_queue replaced: no GPU executor, no post-processor process."""
     from gear_optimizer.pipeline import solve as solve_module
-    from gear_optimizer.solver import native_inflight_lifecycle
+    from gear_optimizer.solver import gpu_executor, native_inflight_lifecycle
 
     seen: dict = {}
 
-    class _Context:
-        def close(self, *, stop_executor):
-            seen["stop_executor"] = stop_executor
+    class _Executor:
+        def start(self):
+            seen["started"] = True
+
+        def stop(self):
+            seen["stopped"] = True
 
     class _Sender:
         def __init__(self, _queue, *, stop_requested):
@@ -58,7 +61,7 @@ def _patch_queue(monkeypatch, run_queue) -> dict:
         def close(self, *, timeout):
             seen["sender_closed"] = True
 
-    monkeypatch.setattr(solve_module, "SolveContext", _Context)
+    monkeypatch.setattr(gpu_executor, "get_gpu_executor", _Executor)
     monkeypatch.setattr(solve_module, "run_queue", run_queue)
     monkeypatch.setattr(native_inflight_lifecycle, "PostSender", _Sender)
     return seen
@@ -66,13 +69,13 @@ def _patch_queue(monkeypatch, run_queue) -> dict:
 
 def test_the_run_solves_the_queue_with_run_queue_and_stops_the_executor(monkeypatch):
     calls = []
-    seen = _patch_queue(monkeypatch, lambda tasks, ctx, **kwargs: calls.append(tasks))
+    seen = _patch_queue(monkeypatch, lambda tasks, executor, **kwargs: calls.append(tasks))
     tasks = _build_tasks(count=2)
 
     _make_minimal_app()._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
     assert calls == [tasks] and seen["sender_closed"]
-    assert seen["stop_executor"] is True  # a batch run persists Taichi's offline cache
+    assert seen["started"] and seen["stopped"]  # a batch run persists Taichi's offline cache
 
 
 def test_a_failed_run_raises(monkeypatch):
@@ -97,7 +100,7 @@ def test_a_run_whose_songs_failed_raises_after_the_run(monkeypatch):
 
 def test_a_gpu_timeout_ends_the_run(monkeypatch):
     def _raise_timeout(*_args, **_kwargs):
-        raise GpuServiceTimeoutError("GPU service request gpu_native_ga_run timed out after 240.0s")
+        raise GpuServiceTimeoutError("GPU call _ga_turn timed out after 240.0s")
 
     _patch_queue(monkeypatch, _raise_timeout)
     with pytest.raises(GpuServiceTimeoutError, match="timed out"):

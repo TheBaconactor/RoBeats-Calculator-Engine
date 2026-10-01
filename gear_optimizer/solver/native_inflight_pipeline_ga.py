@@ -22,7 +22,7 @@ class InflightGAPipeline:
         # loudly in the owner handler (required state, no fallback).
         fg_scoring_bundle = song.runtime.fg.fg_response_scoring_bundle
         return {
-            "timed_song": song.gpu_inputs.timed_song,
+            "song": song.gpu_inputs.timed_song,
             "curves": song.gpu_inputs.curves,
             "song_slot": int(song.runtime.song_slot),
             "item_stats": song.gpu_inputs.item_stats,
