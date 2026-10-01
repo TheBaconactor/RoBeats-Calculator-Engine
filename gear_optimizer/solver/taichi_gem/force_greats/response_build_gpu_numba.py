@@ -2502,6 +2502,32 @@ def _numba_prereduce_edge_tails(
 
 
 @njit(cache=True, nogil=True)
+def _numba_emit_activation_edges(
+    generated, generated_scores, generated_seen, generated_score_matrix_holder, generated_score_matrix_count,
+    n: int, fill_pos: int, base_e: int, activation_hit: float, great_start: int, great_end: int,
+    activation_great_idx: int, great_floor_timestamps, real_fever_time: float, head, lo_pos: int, hi_pos: int,
+    min_surfaces: int, bounded_mode: int,
+):
+    """One activation's fever section as head candidates: the edge (activation at fill_pos, section end base_e, Greats
+    [great_start, great_end), activation_great_idx = the activation's own Great or -1) and, issue #44, its early-Great
+    extensions. Returns the candidates, the number added and the bounded mode."""
+    edge = _numba_pack_edge(
+        int(n), int(fill_pos), int(base_e), int(great_start), int(great_end), int(activation_great_idx)
+    )
+    generated, generated_scores, added, bounded_mode = _numba_append_head_generated_candidate(
+        generated, generated_scores, generated_seen, generated_score_matrix_holder, generated_score_matrix_count,
+        edge, int(base_e), head, int(lo_pos), int(hi_pos), int(min_surfaces), int(bounded_mode),
+    )
+    generated, generated_scores, added_early, bounded_mode = _numba_emit_early_great_edges(
+        generated, generated_scores, generated_seen, generated_score_matrix_holder, generated_score_matrix_count,
+        int(n), int(fill_pos), int(base_e), float(activation_hit), int(great_start), int(great_end),
+        int(activation_great_idx), great_floor_timestamps, float(real_fever_time), head, int(lo_pos), int(hi_pos),
+        int(min_surfaces), int(bounded_mode),
+    )
+    return generated, generated_scores, int(added) + int(added_early), int(bounded_mode)
+
+
+@njit(cache=True, nogil=True)
 def _numba_emit_region2_head_edges(
     generated,
     generated_scores,
@@ -5108,35 +5134,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
             ):
                 prev_fill = int(fill)
                 prev_edge_e = int(edge_e)
-                edge = _numba_pack_edge(
-                    int(n),
-                    int(activation),
-                    int(edge_e),
-                    int(forced_start),
-                    min(int(n), int(forced_start) + int(forced_count)),
-                    -1,
-                )
                 generated, generated_scores, added, bounded_mode = (
-                    _numba_append_head_generated_candidate(
-                        generated,
-                        generated_scores,
-                        generated_seen,
-                        generated_score_matrix_holder,
-                        generated_score_matrix_count,
-                        edge,
-                        int(edge_e),
-                        head,
-                        int(state_i),
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(bounded_mode),
-                    )
-                )
-                generated_count += int(added)
-                # Issue #44: early-Great extension of the Perfect-activation fever section. Each
-                # end e in (edge_e, eg_e] adds the tail [edge_e, e) as fever-greats.
-                generated, generated_scores, added, bounded_mode = (
-                    _numba_emit_early_great_edges(
+                    _numba_emit_activation_edges(
                         generated,
                         generated_scores,
                         generated_seen,
@@ -5182,34 +5181,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 prev_activation_fill = int(fill)
                 prev_activation_e = int(activation_e)
                 prev_activation_prefix = int(prefix_forced)
-                activation_edge = _numba_pack_edge(
-                    int(n),
-                    int(activation),
-                    int(activation_e),
-                    int(forced_start),
-                    min(int(n), int(forced_start) + int(prefix_forced)),
-                    int(activation),
-                )
                 generated, generated_scores, added, bounded_mode = (
-                    _numba_append_head_generated_candidate(
-                        generated,
-                        generated_scores,
-                        generated_seen,
-                        generated_score_matrix_holder,
-                        generated_score_matrix_count,
-                        activation_edge,
-                        int(activation_e),
-                        head,
-                        int(state_i),
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(bounded_mode),
-                    )
-                )
-                generated_count += int(added)
-                # Issue #44: early-Great extension of the late-Great-activation fever section.
-                generated, generated_scores, added, bounded_mode = (
-                    _numba_emit_early_great_edges(
+                    _numba_emit_activation_edges(
                         generated,
                         generated_scores,
                         generated_seen,
@@ -5575,34 +5548,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
             ):
                 prev_fill = int(fill)
                 prev_edge_e = int(edge_e)
-                edge = _numba_pack_edge(
-                    int(n),
-                    int(fill),
-                    int(edge_e),
-                    0,
-                    min(int(n), int(forced_count)),
-                    -1,
-                )
                 first_generated, first_generated_scores, added, first_bounded_mode = (
-                    _numba_append_head_generated_candidate(
-                        first_generated,
-                        first_generated_scores,
-                        first_generated_seen,
-                        first_generated_score_matrix_holder,
-                        first_generated_score_matrix_count,
-                        edge,
-                        int(edge_e),
-                        head,
-                        0,
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(first_bounded_mode),
-                    )
-                )
-                first_generated_count += int(added)
-                # Issue #44: early-Great extension (first section, head activation).
-                first_generated, first_generated_scores, added, first_bounded_mode = (
-                    _numba_emit_early_great_edges(
+                    _numba_emit_activation_edges(
                         first_generated,
                         first_generated_scores,
                         first_generated_seen,
@@ -5648,34 +5595,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 prev_activation_fill = int(fill)
                 prev_activation_e = int(activation_e)
                 prev_activation_prefix = int(prefix_forced)
-                activation_edge = _numba_pack_edge(
-                    int(n),
-                    int(fill),
-                    int(activation_e),
-                    0,
-                    min(int(n), int(prefix_forced)),
-                    int(fill),
-                )
                 first_generated, first_generated_scores, added, first_bounded_mode = (
-                    _numba_append_head_generated_candidate(
-                        first_generated,
-                        first_generated_scores,
-                        first_generated_seen,
-                        first_generated_score_matrix_holder,
-                        first_generated_score_matrix_count,
-                        activation_edge,
-                        int(activation_e),
-                        head,
-                        0,
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(first_bounded_mode),
-                    )
-                )
-                first_generated_count += int(added)
-                # Issue #44: early-Great extension (first section, head late-Great activation).
-                first_generated, first_generated_scores, added, first_bounded_mode = (
-                    _numba_emit_early_great_edges(
+                    _numba_emit_activation_edges(
                         first_generated,
                         first_generated_scores,
                         first_generated_seen,
