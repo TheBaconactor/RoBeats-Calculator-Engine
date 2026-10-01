@@ -38,6 +38,13 @@ _ELEMENT_FROM_STATS = {
     "Beat": "ColorOrange",
     "Vibe": "ColorGreen",
 }
+# Gears.csv stat columns after Type and Gear Name (Chill..Vibe, PPoint, CMult, FMult, Time, Fill, PTime).
+_GEAR_STAT_KEYS = (
+    *_ELEMENT_FROM_STATS.values(),
+    "PerfectPoints", "ComboMultiplier", "FeverMultiplier", "FeverTime", "FeverFillRate", "PerfectTime",
+)
+# A mini's fever stats (CbMlt, FvMlt, FvTim, FvFil); Minis.csv lists them at base (x4) and at level 1.
+_MINI_FEVER_KEYS = ("ComboMultiplier", "FeverMultiplier", "FeverTime", "FeverFillRate")
 _SONG_DATA_DIRS = ("Easy", "Normal", "Hard")
 
 _GEAR_CSV_HEADER = [
@@ -112,14 +119,14 @@ def default_exported_game_data_paths() -> ExportedGameDataPaths:
 
 
 def _blank_if_zero(value: int) -> str:
-    return "" if int(value) == 0 else str(value)
+    return "" if value == 0 else str(value)
 
 
 def _infer_mini_type(l1_elements: dict[str, int]) -> str:
     best_type = "Mini"
     best_value = -1
     for element in _ELEMENT_KEYS:
-        value = int(l1_elements.get(element, 0))
+        value = l1_elements[element]
         if value > best_value:
             best_value = value
             best_type = element
@@ -306,37 +313,7 @@ def _export_gears(payload: dict[str, Any]) -> list[list[str]]:
             stats = gear.get("stats", {})
             if not isinstance(stats, dict):
                 stats = {}
-
-            chill = _safe_int(stats.get("ColorBlue"))
-            flow = _safe_int(stats.get("ColorPurple"))
-            rush = _safe_int(stats.get("ColorRed"))
-            beat = _safe_int(stats.get("ColorOrange"))
-            vibe = _safe_int(stats.get("ColorGreen"))
-
-            ppoint = _safe_int(stats.get("PerfectPoints"))
-            cmult = _safe_int(stats.get("ComboMultiplier"))
-            fmult = _safe_int(stats.get("FeverMultiplier"))
-            ftime = _safe_int(stats.get("FeverTime"))
-            ffill = _safe_int(stats.get("FeverFillRate"))
-            ptime = _safe_int(stats.get("PerfectTime"))
-
-            rows.append(
-                [
-                    gear_type,
-                    name,
-                    _blank_if_zero(chill),
-                    _blank_if_zero(flow),
-                    _blank_if_zero(rush),
-                    _blank_if_zero(beat),
-                    _blank_if_zero(vibe),
-                    _blank_if_zero(ppoint),
-                    _blank_if_zero(cmult),
-                    _blank_if_zero(fmult),
-                    _blank_if_zero(ftime),
-                    _blank_if_zero(ffill),
-                    _blank_if_zero(ptime),
-                ]
-            )
+            rows.append([gear_type, name, *(_blank_if_zero(_safe_int(stats.get(key))) for key in _GEAR_STAT_KEYS)])
 
     expected = sum(len((entry or {}).get("gears", []) or []) for entry in source.values() if isinstance(entry, dict))
     if len(rows) != expected:
@@ -376,47 +353,22 @@ def _export_minis(payload: dict[str, Any]) -> list[list[str]]:
             if not isinstance(stats, dict):
                 stats = {}
 
+            # Level-1 stats; base (max level) elements are x5 and fever stats x4.
             l1_elements = {element: _safe_int(stats.get(stat_key)) for element, stat_key in _ELEMENT_FROM_STATS.items()}
-            mini_type = _infer_mini_type(l1_elements)
-
-            l1_cbmlt = _safe_int(stats.get("ComboMultiplier"))
-            l1_fvmlt = _safe_int(stats.get("FeverMultiplier"))
-            l1_fvtim = _safe_int(stats.get("FeverTime"))
-            l1_fvfil = _safe_int(stats.get("FeverFillRate"))
-
-            base_elements = {k: int(v) * 5 for k, v in l1_elements.items()}
-            base_cbmlt = l1_cbmlt * 4
-            base_fvmlt = l1_fvmlt * 4
-            base_fvtim = l1_fvtim * 4
-            base_fvfil = l1_fvfil * 4
+            l1_fever = [_safe_int(stats.get(key)) for key in _MINI_FEVER_KEYS]
             song_targets = _render_song_targets(mini, mini_name=name, song_names_by_id=song_names_by_id)
-
             rows.append(
                 [
-                    mini_type,
+                    _infer_mini_type(l1_elements),
                     str(star),
                     name,
-                    _blank_if_zero(base_elements["Chill"]),
-                    _blank_if_zero(base_elements["Flow"]),
-                    _blank_if_zero(base_elements["Rush"]),
-                    _blank_if_zero(base_elements["Beat"]),
-                    _blank_if_zero(base_elements["Vibe"]),
+                    *(_blank_if_zero(value * 5) for value in l1_elements.values()),
                     "",
-                    _blank_if_zero(base_cbmlt),
-                    _blank_if_zero(base_fvmlt),
-                    _blank_if_zero(base_fvtim),
-                    _blank_if_zero(base_fvfil),
+                    *(_blank_if_zero(value * 4) for value in l1_fever),
                     "",
-                    _blank_if_zero(l1_elements["Chill"]),
-                    _blank_if_zero(l1_elements["Flow"]),
-                    _blank_if_zero(l1_elements["Rush"]),
-                    _blank_if_zero(l1_elements["Beat"]),
-                    _blank_if_zero(l1_elements["Vibe"]),
+                    *(_blank_if_zero(value) for value in l1_elements.values()),
                     "",
-                    _blank_if_zero(l1_cbmlt),
-                    _blank_if_zero(l1_fvmlt),
-                    _blank_if_zero(l1_fvtim),
-                    _blank_if_zero(l1_fvfil),
+                    *(_blank_if_zero(value) for value in l1_fever),
                     song_targets,
                 ]
             )
@@ -437,7 +389,7 @@ def _render_csv(header: list[str], rows: list[list[str]]) -> str:
 
 def _source_stat(path: Path) -> tuple[int, int]:
     stat = path.stat()
-    return int(stat.st_size), int(stat.st_mtime_ns)
+    return stat.st_size, stat.st_mtime_ns
 
 
 def _sha256_file(path: Path) -> str:
@@ -457,20 +409,14 @@ def _read_sync_state(path: Path) -> dict[str, Any] | None:
     return payload
 
 
-def _write_sync_state(
-    path: Path,
-    *,
-    source_sha256: str,
-    source_size: int,
-    source_mtime_ns: int,
-) -> None:
+def _write_sync_state(path: Path, *, source_sha256: str, source_stat: tuple[int, int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": _SYNC_SCHEMA_VERSION,
-        "source_sha256": str(source_sha256),
-        "source_size": int(source_size),
-        "source_mtime_ns": int(source_mtime_ns),
-        "synced_at": float(time.time()),
+        "source_sha256": source_sha256,
+        "source_size": source_stat[0],
+        "source_mtime_ns": source_stat[1],
+        "synced_at": time.time(),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -481,42 +427,30 @@ def _remember_up_to_date(paths: ExportedGameDataPaths) -> None:
         _RUNTIME_UP_TO_DATE_FINGERPRINT = _source_stat(paths.exported_json)
 
 
-def _sync_reason(
-    paths: ExportedGameDataPaths,
-    *,
-    force: bool,
-) -> tuple[bool, str, str, tuple[int, int]]:
+def _sync_reason(paths: ExportedGameDataPaths, *, force: bool) -> tuple[bool, str, str]:
+    """(whether the CSVs need regenerating, why, the export's SHA-256 when this check already hashed it)."""
     if force:
-        return True, "forced", "", (0, 0)
+        return True, "forced", ""
     if not paths.exported_json.is_file():
-        return False, "exported_game_data_missing", "", (0, 0)
+        return False, "exported_game_data_missing", ""
     if not paths.gears_csv.is_file() or not paths.minis_csv.is_file():
-        source_stat = _source_stat(paths.exported_json)
-        return True, "csv_missing", "", source_stat
-
+        return True, "csv_missing", ""
     source_stat = _source_stat(paths.exported_json)
     state = _read_sync_state(paths.sync_state)
-    if state is not None and int(state.get("schema_version", 0) or 0) != _SYNC_SCHEMA_VERSION:
-        return True, "schema_changed", "", source_stat
+    if state is not None and state.get("schema_version") != _SYNC_SCHEMA_VERSION:
+        return True, "schema_changed", ""
     if paths == default_exported_game_data_paths() and _RUNTIME_UP_TO_DATE_FINGERPRINT == source_stat:
-        return False, "up_to_date", "", source_stat
-    if state is not None:
-        if (
-            int(state.get("source_size", -1)) == source_stat[0]
-            and int(state.get("source_mtime_ns", -1)) == source_stat[1]
-            and str(state.get("source_sha256") or "")
-        ):
-            _remember_up_to_date(paths)
-            return False, "up_to_date", str(state["source_sha256"]), source_stat
+        return False, "up_to_date", ""
     if state is None:
-        return True, "state_missing", "", source_stat
-
+        return True, "state_missing", ""
+    if (state.get("source_size"), state.get("source_mtime_ns")) == source_stat and state.get("source_sha256"):
+        _remember_up_to_date(paths)
+        return False, "up_to_date", ""
     current_sha = _sha256_file(paths.exported_json)
-    if str(state.get("source_sha256") or "") != current_sha:
-        return True, "exported_game_data_changed", current_sha, source_stat
-
+    if state.get("source_sha256") != current_sha:
+        return True, "exported_game_data_changed", current_sha
     _remember_up_to_date(paths)
-    return False, "up_to_date", current_sha, source_stat
+    return False, "up_to_date", ""
 
 
 def sync_exported_game_data(
@@ -525,20 +459,18 @@ def sync_exported_game_data(
     force: bool = False,
 ) -> SyncResult:
     resolved = paths or default_exported_game_data_paths()
-    should_sync, reason, known_sha, source_stat = _sync_reason(resolved, force=force)
+    should_sync, reason, known_sha = _sync_reason(resolved, force=force)
     if not should_sync:
         return SyncResult(synced=False, reason=reason)
 
     if not resolved.exported_json.is_file():
         raise FileNotFoundError(f"Missing exported game data: {resolved.exported_json}")
 
+    source_stat = _source_stat(resolved.exported_json)
     payload = _load_payload(resolved.exported_json)
     gear_rows = _export_gears(payload)
     mini_rows = _export_minis(payload)
     _validate_mini_song_targets_resolve_to_local_charts(mini_rows, data_dir=resolved.exported_json.parent)
-    source_sha = known_sha or _sha256_file(resolved.exported_json)
-    if source_stat == (0, 0):
-        source_stat = _source_stat(resolved.exported_json)
 
     gears_text = _render_csv(_GEAR_CSV_HEADER, gear_rows)
     minis_text = _render_csv(_MINI_CSV_HEADER, mini_rows)
@@ -555,10 +487,7 @@ def sync_exported_game_data(
         wrote_files = True
 
     _write_sync_state(
-        resolved.sync_state,
-        source_sha256=source_sha,
-        source_size=source_stat[0],
-        source_mtime_ns=source_stat[1],
+        resolved.sync_state, source_sha256=known_sha or _sha256_file(resolved.exported_json), source_stat=source_stat
     )
     _remember_up_to_date(resolved)
     if wrote_files:
@@ -620,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
         gears_out=args.gears_out,
         minis_out=args.minis_out,
     )
-    result = sync_exported_game_data(paths=paths, force=bool(args.force))
+    result = sync_exported_game_data(paths=paths, force=args.force)
     if result.synced:
         print(
             f"Wrote {result.gear_count} gears -> {paths.gears_csv} "
