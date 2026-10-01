@@ -7,12 +7,13 @@ This module handles:
 - bind_fields() to inject live field objects into kernels module
 """
 import logging
+import sys
 import taichi as ti
 from .runtime import is_initialized, init_taichi
 # Skyline uses this to select the 32-bit-atomic reduction path on macOS.
 # That includes MoltenVK (`ti.vulkan` on Darwin), whose shaders still compile
 # through Metal and therefore cannot use the packed-u64 atomic reduction.
-IS_METAL = False
+IS_METAL = sys.platform == "darwin"
 logger = logging.getLogger(__name__)
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
 MAX_GENOMES = 4608  # Active-population genome pool. Sized to fit a full GA batch
@@ -656,21 +657,12 @@ def allocate_grid_fields():
         GRID_SIZE,
         GRID_SIZE,
     )
-def bind_fields(kernels_module):
+def bind_fields(target):
     """
-    Bind live field objects to the kernels module.
-    This must be called AFTER field allocation, so that kernels can access
-    the actual ti.field objects rather than None placeholders.
-    If kernels is a package (has kernels_helpers submodule), binds to kernels_helpers.
-    Otherwise binds to the module directly.
-    Args:
-        kernels_module: The kernels module or package to bind fields to
+    Bind the live field objects into `target` (kernels.kernels_helpers, whose module globals the kernels read).
+    Called after every allocation (api.initialization), so the kernels see the actual ti.field objects rather
+    than None placeholders.
     """
-    try:
-        from . import kernels
-        target = kernels.kernels_helpers
-    except (ImportError, AttributeError):
-        target = kernels_module
     target.ref_pp_field = ref_pp_field
     target.ref_cm_field = ref_cm_field
     target.ref_fm_field = ref_fm_field
@@ -795,9 +787,7 @@ def bind_fields(kernels_module):
     target.island_elite_count = island_elite_count
 def ensure_fields_allocated():
     """
-    Ensure Taichi is initialized and fields are allocated.
-    This is the main entry point for ensuring the GPU is ready.
-    Initializes Taichi if needed, allocates fields, and binds them to kernels.
+    Ensure Taichi is initialized and fields are allocated (api.initialization binds them into the kernels).
     """
     if not is_initialized():
         init_taichi()
@@ -807,8 +797,6 @@ def ensure_fields_allocated():
         global song_timestamps
         if song_timestamps is None:
             song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
-        from . import kernels
-        bind_fields(kernels)
 def ensure_grid_fields_allocated():
     """
     Ensure grid fields are allocated for timeline lookups.
@@ -817,5 +805,3 @@ def ensure_grid_fields_allocated():
     ensure_fields_allocated()  # Main fields must be allocated first
     if not _grid_fields_allocated:
         allocate_grid_fields()
-        from . import kernels
-        bind_fields(kernels)

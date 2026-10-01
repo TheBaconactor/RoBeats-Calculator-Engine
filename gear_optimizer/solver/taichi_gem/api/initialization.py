@@ -244,9 +244,8 @@ def ensure_ready(curves=None):
     if not is_initialized():
         init_taichi()
 
-    # 2. Field allocation (includes bind_fields to kernels)
-    if not is_fields_allocated():
-        ensure_fields_allocated()
+    # 2. Field allocation (bound into the kernels)
+    _ensure_bound_fields()
 
     # 3. Stat curves - upload only when their content changes.
     if curves is not None and ((not _ref_loaded) or _last_curves_sig != _curves_sig(curves)):
@@ -255,8 +254,20 @@ def ensure_ready(curves=None):
     # 4. Grid fields - ALWAYS allocate because Taichi JIT traces both branches
     #    of _calc_score_selector regardless of runtime `mode` value, so accessing
     #    `grid_fever_masks_bits` during compilation fails if the field is None.
-    if not is_grid_fields_allocated():
+    _ensure_bound_fields(grid=True)
+
+
+def _ensure_bound_fields(*, grid: bool = False) -> None:
+    """Allocate the fields (with `grid`, the timeline grid fields too) and bind a new allocation into the kernels'
+    module: the kernels read the fields as module globals of kernels_helpers."""
+    allocated = not is_fields_allocated() or (grid and not is_grid_fields_allocated())
+    ensure_fields_allocated()
+    if grid:
         ensure_grid_fields_allocated()
+    if allocated:
+        from ..kernels import kernels_helpers
+
+        fields.bind_fields(kernels_helpers)
 
 
 # ============================================================================
@@ -273,7 +284,7 @@ def load_curves(curves: StatCurves):
     """
     global _ref_loaded, _last_curves_sig
 
-    ensure_fields_allocated()
+    _ensure_bound_fields()
     reset_ga_evaluation_cache()
     f32 = curves.f32
     fields.ref_pp_field.from_numpy(f32["Perfect Points"])

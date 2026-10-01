@@ -520,12 +520,6 @@ def init_taichi():
         _assert_darwin_main_thread_materialization()
         block_dim = get_block_dim()
         arch, backend_name = _detect_backend()
-        from . import fields as gpu_fields
-
-        # Skyline's packed-u64 atomic reduction is not available on macOS:
-        # `ti.vulkan` still lowers through MoltenVK into Metal shaders, which
-        # reject `atomic_fetch_max` on `ulong`.
-        gpu_fields.IS_METAL = bool(sys.platform == "darwin")
 
         if arch == ti.vulkan:
             _maybe_set_vulkan_visible_device()
