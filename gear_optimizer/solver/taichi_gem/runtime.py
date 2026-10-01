@@ -18,14 +18,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
-from ...core.output import (
-    restore_native_stdio,
-    restore_stderr,
-    restore_stdout,
-    suppress_native_stdio,
-    suppress_stderr,
-    suppress_stdout,
-)
+from ...core.output import quiet_stdio
 from gear_optimizer import settings
 
 # ============================================================================
@@ -49,21 +42,10 @@ def _taichi_verbose_enabled() -> bool:
     return settings.output_enabled()
 
 
-# Taichi prints a version banner at import-time via Python's print().
-# On Windows, spawned child processes can inherit an invalid console handle that makes
-# print() raise OSError [WinError 1].  Suppress both the Python-level sys.stdout/stderr
-# AND the OS-level fd 1/2 to cover both WindowsConsoleIO and native C writes.
-_ti_suppress = not _taichi_verbose_enabled()
-_ti_saved_stdout = suppress_stdout(_ti_suppress)
-_ti_saved_stderr = suppress_stderr(_ti_suppress)
-_ti_import_guard = suppress_native_stdio(_ti_suppress)
-try:
+# Taichi prints a version banner at import time. On Windows, spawned child processes can inherit an invalid console
+# handle that makes print() raise OSError [WinError 1]; quiet_stdio covers both Python-level and native writes.
+with quiet_stdio(not _taichi_verbose_enabled()):
     import taichi as ti  # noqa: E402
-finally:
-    restore_native_stdio(_ti_import_guard)
-    restore_stderr(_ti_saved_stderr)
-    restore_stdout(_ti_saved_stdout)
-del _ti_suppress, _ti_saved_stdout, _ti_saved_stderr, _ti_import_guard
 
 
 def is_initialized() -> bool:
@@ -490,18 +472,8 @@ def _get_offline_cache_dir() -> str:
 
 def _init_taichi_quietly(init_kwargs: dict, *, force_verbose: bool = False) -> None:
     """Run `ti.init()` without leaking backend banners to the console."""
-    if force_verbose or _taichi_verbose_enabled():
+    with quiet_stdio(not (force_verbose or _taichi_verbose_enabled())):
         ti.init(**init_kwargs)
-        return
-    old_stdout = suppress_stdout(True)
-    old_stderr = suppress_stderr(True)
-    native_guard = suppress_native_stdio(True)
-    try:
-        ti.init(**init_kwargs)
-    finally:
-        restore_native_stdio(native_guard)
-        restore_stderr(old_stderr)
-        restore_stdout(old_stdout)
 
 
 def init_taichi():
