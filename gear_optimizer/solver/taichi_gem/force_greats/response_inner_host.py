@@ -21,7 +21,6 @@ from gear_optimizer.solver.taichi_gem import api as gem_api
 
 from .response_inner_kernels import (
     SOLVER_NP_FP,
-    _fg_response_inner_batch_kernel,
     _fg_response_inner_group_kernel,
 )
 from .response_pp_bounds import build_pp_prefix_bounds
@@ -210,8 +209,7 @@ def _response_group_logical_surface_plan(
 @jit(nopython=True, cache=True)
 def _reduce_response_inner_chunk_jit(
     row_count,
-    chunk_scores,
-    chunk_details,
+    chunk_rows,
     chunk_owners,
     chunk_local_surfaces,
     best_scores,
@@ -221,10 +219,10 @@ def _reduce_response_inner_chunk_jit(
     while row < row_count:
         owner = int(chunk_owners[row])
         best_row = row
-        best_score = int(chunk_scores[row])
+        best_score = int(chunk_rows[row, 0])
         row += 1
         while row < row_count and int(chunk_owners[row]) == owner:
-            score = int(chunk_scores[row])
+            score = int(chunk_rows[row, 0])
             if score > best_score:
                 best_score = score
                 best_row = row
@@ -233,8 +231,8 @@ def _reduce_response_inner_chunk_jit(
             best_scores[owner] = best_score
             out_rows[owner, 0] = best_score
             out_rows[owner, 1] = int(chunk_local_surfaces[best_row])
-            for col in range(9):
-                out_rows[owner, col + 2] = int(chunk_details[best_row, col])
+            for col in range(2, 11):
+                out_rows[owner, col] = int(chunk_rows[best_row, col])
 
 
 def _precompute_surface_head_coeffs(
@@ -500,8 +498,8 @@ def _score_response_group_meta_gpu(
     # The enqueue cost is per-launch fixed overhead, not these arrays' re-staging
     # (~5MB/chunk); do not re-attempt residency for them without new evidence.
     chunk_capacity = max(1, min(int(max_surface_dispatch_rows), int(logical_surface_rows)))
-    chunk_scores = np.empty((chunk_capacity,), dtype=np.int32)
-    chunk_details = np.empty((chunk_capacity, 9), dtype=np.int32)
+    chunk_rows = np.empty((chunk_capacity, 11), dtype=np.int32)
+    one_surface = np.ones((chunk_capacity,), dtype=np.int32)
     chunk_start = 0
     while chunk_start < int(logical_surface_rows):
         row_stop = min(int(logical_surface_rows), int(chunk_start) + int(max_surface_dispatch_rows))
@@ -513,38 +511,30 @@ def _score_response_group_meta_gpu(
         row_count = int(chunk_stop) - int(chunk_start)
         if row_count <= 0:
             raise ValueError("response frontier logical surface chunk planner produced an empty chunk")
-        scores_view = chunk_scores[:row_count]
-        details_view = chunk_details[:row_count]
-        _fg_response_inner_batch_kernel(
+        owners = logical_owners_all[int(chunk_start) : int(chunk_stop)]
+        local_surfaces = logical_surfaces_all[int(chunk_start) : int(chunk_stop)]
+        rows_view = chunk_rows[:row_count]
+        # Each row is a one-surface group: its owner's meta and PP bound row, offset at its own surface.
+        _fg_response_inner_group_kernel(
             int(row_count),
             d_surface_pattern_ids,
             d_surface_pattern_words,
             d_surface_counts,
             d_surface_pattern_head_coeffs,
-            group_offsets_all,
-            logical_owners_all[int(chunk_start) : int(chunk_stop)],
-            logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
-            group_meta_all,
+            np.ascontiguousarray(group_offsets_all[owners] + local_surfaces, dtype=np.int32),
+            one_surface[:row_count],
+            np.ascontiguousarray(group_meta_all[owners], dtype=np.int32),
             flags,
             ref_pp,
             ref_cm,
             ref_fm,
             pp_prefix_bounds,
-            pp_bound_rows,
-            scores_view,
-            details_view,
+            np.ascontiguousarray(pp_bound_rows[owners], dtype=np.int32),
+            rows_view,
             bool(allow_pp),
         )
         ti.sync()
-        _reduce_response_inner_chunk_jit(
-            int(row_count),
-            scores_view,
-            details_view,
-            logical_owners_all[int(chunk_start) : int(chunk_stop)],
-            logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
-            best_scores,
-            out_rows,
-        )
+        _reduce_response_inner_chunk_jit(int(row_count), rows_view, owners, local_surfaces, best_scores, out_rows)
         chunk_start = int(chunk_stop)
     return out_rows, int(logical_surface_rows)
 

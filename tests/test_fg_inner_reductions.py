@@ -226,21 +226,20 @@ def test_reduced_search_matches_exhaustive_scores_gems_and_surface_witness(color
         out,
         allow_pp,
     )
-    batch_scores = np.empty(len(out) * 4, dtype=np.int32)
-    batch_details = np.empty((len(batch_scores), 9), dtype=np.int32)
-    device._fg_response_inner_batch_kernel(
-        len(batch_scores),
+    # Every surface alone: one-surface groups (the host's per-surface lane).
+    surface_owners = np.repeat(np.arange(len(out), dtype=np.int32), 4)
+    per_surface = np.empty((len(surface_owners), 11), dtype=np.int32)
+    device._fg_response_inner_group_kernel(
+        len(per_surface),
         *common,
-        b["group_offsets"],
-        np.repeat(np.arange(len(out), dtype=np.int32), 4),
-        np.tile(np.arange(4, dtype=np.int32), len(out)),
-        b["row_meta"],
+        (b["group_offsets"][surface_owners] + np.tile(np.arange(4, dtype=np.int32), len(out))).astype(np.int32),
+        np.ones(len(per_surface), dtype=np.int32),
+        b["row_meta"][surface_owners],
         b["color_flags"],
         *refs,
         bounds,
-        bound_rows,
-        batch_scores,
-        batch_details,
+        bound_rows[surface_owners],
+        per_surface,
         allow_pp,
     )
     cpu = host._score_fg_response_groups_native_f64(
@@ -264,8 +263,8 @@ def test_reduced_search_matches_exhaustive_scores_gems_and_surface_witness(color
         for surface in range(4):
             candidates = indices[rows[indices, 1] == surface]
             winner = candidates[np.argmax(scores[candidates, 1])]
-            assert batch_scores[owner * 4 + surface] == scores[winner, 1]
-            np.testing.assert_array_equal(batch_details[owner * 4 + surface], rows[winner, 2:])
+            assert per_surface[owner * 4 + surface, 0] == scores[winner, 1]
+            np.testing.assert_array_equal(per_surface[owner * 4 + surface, 2:], rows[winner, 2:])
         cpu_scores = np.array(
             [legacy_fg_score_native_f64(words, i, *counts[i], *stats[i], *factors[i]) for i in indices]
         )

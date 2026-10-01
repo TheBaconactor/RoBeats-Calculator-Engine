@@ -40,8 +40,10 @@ def _load_baseline(directory, revision):
     package = "gear_optimizer.solver.taichi_gem.force_greats"
     kernels = _load_revision_module(directory, revision, package, "response_inner_kernels")
     host = _load_revision_module(directory, revision, package, "response_inner_host")
-    host._fg_response_inner_group_kernel = kernels._fg_response_inner_group_kernel
-    host._fg_response_inner_batch_kernel = kernels._fg_response_inner_batch_kernel
+    # The baseline host calls the baseline's kernels (whichever inner kernels that revision has).
+    for name in dir(kernels):
+        if name.startswith("_fg_response_inner_") and name.endswith("_kernel"):
+            setattr(host, name, getattr(kernels, name))
     return host
 
 
