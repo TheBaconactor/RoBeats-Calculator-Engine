@@ -154,7 +154,6 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload
     timeline_api.reset_timeline_state()
     second = timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     assert second.cache_source == "disk"
-    assert int(second.total_notes) == 4
 
 
 _PAYLOAD_ARRAY_NAMES = (
@@ -341,7 +340,6 @@ def test_build_or_load_timeline_frontier_payload_builds_and_persists_live_cache_
     timeline_api.reset_timeline_state()
     loaded = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert loaded.cache_source == "disk"
-    assert int(loaded.total_notes) == 4
 
 
 def test_frontier_disk_cache_cleans_tmp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:

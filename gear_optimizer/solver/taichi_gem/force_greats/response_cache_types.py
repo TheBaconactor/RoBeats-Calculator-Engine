@@ -131,28 +131,6 @@ class FgResponseFrontierCachePayload:
         return tuple(out)
 
 
-@dataclass(frozen=True, slots=True)
-class FgResponseFrontierCacheInfo:
-    cache_key: tuple
-    disk_path: Path
-    cache_source: str
-    total_notes: int
-    long_notes: int
-    frontier_count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class FgResponseFrontierPrewarmResult:
-    payload: FgResponseFrontierCachePayload
-    cache_key: tuple
-    disk_path: Path
-    cache_source: str
-    elapsed_ms: float
-    total_notes: int
-    long_notes: int
-    frontier_count: int
-
-
 class _FrontierIdxByStatView:
     """Read-only ``(ft, ff) -> frontier index`` lookup over a ``frontier_idx_by_stat`` grid
     (``-1`` = stat key not loaded)."""

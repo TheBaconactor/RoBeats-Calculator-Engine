@@ -1,4 +1,4 @@
-"""The frontier caches' one storage layer: content-addressed files, version lineage, memory tiers, manifest, prebuild.
+"""The storage of both frontier caches: content-addressed files, version lineage, memory tiers, manifest, prebuild.
 
 Both persistent frontier caches -- the timeline (Perfect-window Base) grid payloads and the Force Great response
 bundles -- are directories of files named by a digest of their cache key. The key's first element is the version of
@@ -39,6 +39,7 @@ from gear_optimizer.solver.timing_envelope import TIMING_MODES, TimedSong, time_
 logger = logging.getLogger(__name__)
 
 V = TypeVar("V")
+P = TypeVar("P")
 
 # Manifest entries are keyed by the chart's content, so a chart published under a new directory (each engine deploy
 # publishes the charts under frontier_server_sources/<revision>) still hits its entry.
@@ -79,6 +80,26 @@ class FrontierCacheManifestPlan:
     @property
     def hit_count(self) -> int:
         return len(self.hit_paths)
+
+
+@dataclass(frozen=True)
+class FrontierCacheInfo:
+    """Whether a song's file is cached and where, found without loading it."""
+
+    cache_key: tuple
+    disk_path: Path
+    cache_source: str  # "memory", "disk" or "missing"
+
+
+@dataclass(frozen=True)
+class FrontierCacheLoad(Generic[P]):
+    """A song's payload with its key and file, and where it came from."""
+
+    payload: P
+    cache_key: tuple
+    disk_path: Path
+    cache_source: str  # "memory", "disk", "built", or "warmup_disposable" for a GPU warmup's own payload
+    elapsed_ms: float
 
 
 @dataclass(frozen=True)

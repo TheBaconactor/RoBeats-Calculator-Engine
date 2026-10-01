@@ -7,7 +7,6 @@ the cached grid/frontier payload for the active song slot.
 
 import io
 import time
-from dataclasses import dataclass
 from pathlib import Path
 import logging
 import numpy as np
@@ -23,7 +22,14 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _head_mask_coefficients_py,
     build_timeline_frontier_grid_payload,
 )
-from gear_optimizer.solver.frontier_cache import FrontierCache, MemoryLru, content_addressed_path, write_atomically
+from gear_optimizer.solver.frontier_cache import (
+    FrontierCache,
+    FrontierCacheInfo,
+    FrontierCacheLoad,
+    MemoryLru,
+    content_addressed_path,
+    write_atomically,
+)
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
@@ -279,26 +285,6 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-@dataclass(frozen=True)
-class TimelineFrontierPrewarmResult:
-    payload: TimelineFrontierGridPayload
-    cache_key: tuple
-    disk_path: Path
-    cache_source: str
-    elapsed_ms: float
-    total_notes: int
-    long_notes: int
-
-
-@dataclass(frozen=True)
-class TimelineFrontierCacheInfo:
-    cache_key: tuple
-    disk_path: Path
-    cache_source: str
-    total_notes: int
-    long_notes: int
-
-
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:
     return (
         _FRONTIER_DISK_CACHE_VERSION,
@@ -473,7 +459,7 @@ def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dic
     }
 
 
-def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) -> TimelineFrontierCacheInfo:
+def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) -> FrontierCacheInfo:
     """
     Return exact-frontier cache status without building group payloads or loading `.npz`.
 
@@ -489,12 +475,10 @@ def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) ->
         cache_source = "disk"
     else:
         cache_source = "missing"
-    return TimelineFrontierCacheInfo(
+    return FrontierCacheInfo(
         cache_key=cache_key,
         disk_path=readable or TIMELINE_FRONTIER_CACHE.file_path(cache_key),
         cache_source=cache_source,
-        total_notes=song.chart.total_notes,
-        long_notes=song.chart.long_notes,
     )
 
 
@@ -600,7 +584,9 @@ def _build_zero_ms_timeline_payload(song: TimedSong, curves: StatCurves) -> Time
     )
 
 
-def build_or_load_timeline_frontier_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
+def build_or_load_timeline_frontier_payload(
+    song: TimedSong, curves: StatCurves
+) -> FrontierCacheLoad[TimelineFrontierGridPayload]:
     """
     The song's exact timeline frontier payload: the memory or disk cache's, else built and persisted.
 
@@ -632,14 +618,12 @@ def build_or_load_timeline_frontier_payload(song: TimedSong, curves: StatCurves)
         _save_frontier_payload(cache_key, raw)
         _frontier_payload_memory.put(cache_key, raw)
         cache_source = "built"
-    return TimelineFrontierPrewarmResult(
+    return FrontierCacheLoad(
         payload=payload,
         cache_key=cache_key,
         disk_path=TIMELINE_FRONTIER_CACHE.file_path(cache_key),
         cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        total_notes=int(lookup["total_notes"]),
-        long_notes=int(lookup["long_notes"]),
     )
 
 
@@ -648,7 +632,7 @@ def precompute_timeline_gpu(
     curves: StatCurves,
     song_slot: int = 0,
     *,
-    prebuilt_frontier: "TimelineFrontierPrewarmResult | None" = None,
+    prebuilt_frontier: FrontierCacheLoad[TimelineFrontierGridPayload] | None = None,
 ) -> None:
     """
     Upload the startup-built exact timeline frontier for one song slot.
@@ -743,14 +727,12 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
         ref_ft=np.asarray(lookup["ref_ft"], dtype=np.float32),
         ref_ff=np.asarray(lookup["ref_ff"], dtype=np.float32),
     )
-    frontier_result = TimelineFrontierPrewarmResult(
+    frontier_result = FrontierCacheLoad(
         payload=payload,
         cache_key=cache_key,
         disk_path=TIMELINE_FRONTIER_CACHE.file_path(cache_key),
         cache_source="warmup_disposable",
         elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-        total_notes=int(lookup["total_notes"]),
-        long_notes=int(lookup["long_notes"]),
     )
     precompute_timeline_gpu(
         song,

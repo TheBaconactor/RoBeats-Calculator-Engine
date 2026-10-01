@@ -7,7 +7,11 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from gear_optimizer.solver.frontier_cache import FrontierCacheBuildResult, build_frontier_cache_for_chart
+from gear_optimizer.solver.frontier_cache import (
+    FrontierCacheBuildResult,
+    FrontierCacheInfo,
+    build_frontier_cache_for_chart,
+)
 from tests.curves_support import synthetic_curves
 
 
@@ -390,7 +394,6 @@ def _chart_text(name: str, timestamps: list[float]) -> str:
 
 def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import ensure_response_frontier_cache_for_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCacheInfo
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Cached Song", [1.0, 2.0]), encoding="utf-8")
@@ -398,14 +401,7 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
     cache_path.write_text("cache", encoding="utf-8")
 
     def _cache_info(_song, _curves, *, stat_keys):
-        return FgResponseFrontierCacheInfo(
-            cache_key=("cache",),
-            disk_path=cache_path,
-            cache_source="disk",
-            total_notes=2,
-            long_notes=0,
-            frontier_count=len(tuple(stat_keys)),
-        )
+        return FrontierCacheInfo(cache_key=("cache",), disk_path=cache_path, cache_source="disk")
 
     def _unexpected_build(*_args, **_kwargs):
         raise AssertionError("valid startup cache hit must not rebuild")
@@ -433,32 +429,19 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
 
 def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import ensure_response_frontier_cache_for_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCacheInfo
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Missing Song", [1.0, 2.0, 3.0]), encoding="utf-8")
     cache_path = tmp_path / "cache.npz"
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.fg_response_frontier_payload_cache_info",
-        lambda *_args, **_kwargs: FgResponseFrontierCacheInfo(
-            cache_key=("missing",),
-            disk_path=cache_path,
-            cache_source="missing",
-            total_notes=3,
-            long_notes=0,
-            frontier_count=0,
+        lambda *_args, **_kwargs: FrontierCacheInfo(
+            cache_key=("missing",), disk_path=cache_path, cache_source="missing"
         ),
     )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.build_or_load_response_frontier_payload",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            cache_source="built",
-            elapsed_ms=12.5,
-            total_notes=3,
-            long_notes=0,
-            frontier_count=1,
-            disk_path=cache_path,
-        ),
+        lambda *_args, **_kwargs: SimpleNamespace(cache_source="built", elapsed_ms=12.5, disk_path=cache_path),
     )
 
     result = build_frontier_cache_for_chart(

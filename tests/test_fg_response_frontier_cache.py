@@ -274,7 +274,7 @@ def test_fg_response_frontier_payload_reads_legacy_fixed_sidecars(tmp_path: Path
     for generated, legacy in zip(generated_sidecars, legacy_sidecars, strict=True):
         os.replace(generated, legacy)
     _remove_npz_array(first.disk_path, _SURFACE_GENERATION_ARRAY_NAME)
-    assert store._payload_file_info_if_complete(Path(first.disk_path), ((0, 0),)) is not None
+    assert store._payload_file_is_complete(Path(first.disk_path), ((0, 0),))
 
     reset_fg_response_frontier_payload_cache()
     restored = response_cache.build_or_load_response_frontier_payload(
@@ -482,7 +482,7 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
         _fg_response_disk_cache_path,
-        _payload_disk_info_if_complete,
+        _payload_disk_is_complete,
         _save_payload,
         _surface_sidecar_paths,
     )
@@ -518,7 +518,7 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     else:
         raise AssertionError(f"Unhandled cache mutation: {cache_mutation}")
 
-    assert _payload_disk_info_if_complete(cache_key, ((0, 0),)) is None
+    assert not _payload_disk_is_complete(cache_key, ((0, 0),))
 
 
 def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit(
@@ -611,7 +611,7 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
     reset_fg_response_frontier_payload_cache()
     monkeypatch.setattr(
         response_cache,
-        "_payload_disk_info_if_complete",
+        "_payload_disk_is_complete",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disk info probe should be skipped")),
     )
 
@@ -1541,7 +1541,6 @@ def test_fg_response_frontier_cache_info_ignores_obsolete_geometry_lru(monkeypat
     )
 
     assert info.cache_source == "missing"
-    assert info.frontier_count == 0
 
 
 def test_fg_response_frontier_prebuild_has_no_public_flags() -> None:

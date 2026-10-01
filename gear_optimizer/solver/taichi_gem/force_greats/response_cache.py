@@ -10,6 +10,7 @@ import numpy as np
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
+from gear_optimizer.solver.frontier_cache import FrontierCacheInfo, FrontierCacheLoad
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 
 from .response_build_gpu_batch import build_force_greats_response_first_frontiers_gpu_batch
@@ -26,7 +27,7 @@ from .response_cache_store import (
     _invalidate_bundle_array_views,
     _load_bundle_array_members,
     _load_payload,
-    _payload_disk_info_if_complete,
+    _payload_disk_is_complete,
     _payload_memory,
     _response_bundle_build_slots,
     _save_payload,
@@ -39,9 +40,7 @@ from .response_cache_types import (
     _SCORING_BUNDLE_ARRAY_NAMES,
     _SURFACE_BUNDLE_PATH_ARRAY_NAME,
     _SURFACE_GENERATION_ARRAY_NAME,
-    FgResponseFrontierCacheInfo,
     FgResponseFrontierCachePayload,
-    FgResponseFrontierPrewarmResult,
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
     all_response_stat_keys,
@@ -330,63 +329,22 @@ def fg_response_frontier_payload_cache_info(
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
-) -> FgResponseFrontierCacheInfo:
+) -> FrontierCacheInfo:
+    """Whether a payload with `stat_keys` is cached, checked without loading one: a request payload or the song's
+    bundle, in memory or as a complete file."""
     keys = normalize_fg_response_stat_keys(stat_keys)
     payload_key = fg_response_frontier_payload_cache_key(song, curves, keys)
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
-    payload = _payload_memory.get(payload_key)
-    if payload is not None:
-        return FgResponseFrontierCacheInfo(
-            cache_key=payload_key,
-            disk_path=FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key),
-            cache_source="memory",
-            total_notes=int(payload.total_notes),
-            long_notes=int(payload.long_notes),
-            frontier_count=int(len(payload.frontier_by_key)),
-        )
-    disk_info = _payload_disk_info_if_complete(payload_key, keys)
-    if disk_info is not None:
-        total_notes, long_notes, frontier_count = disk_info
-        return FgResponseFrontierCacheInfo(
-            cache_key=payload_key,
-            disk_path=FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key),
-            cache_source="disk",
-            total_notes=int(total_notes),
-            long_notes=int(long_notes),
-            frontier_count=int(frontier_count),
-        )
+    if _payload_memory.get(payload_key) is not None:
+        return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "memory")
+    if _payload_disk_is_complete(payload_key, keys):
+        return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "disk")
     bundle = _payload_memory.get(bundle_key)
-    if bundle is not None:
-        subset = _payload_subset(bundle, keys)
-        if subset is not None:
-            return FgResponseFrontierCacheInfo(
-                cache_key=payload_key,
-                disk_path=FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key),
-                cache_source="disk",
-                total_notes=int(subset.total_notes),
-                long_notes=int(subset.long_notes),
-                frontier_count=int(len(subset.frontier_by_key)),
-            )
-    bundle_disk_info = _payload_disk_info_if_complete(bundle_key, keys)
-    if bundle_disk_info is not None:
-        total_notes, long_notes, frontier_count = bundle_disk_info
-        return FgResponseFrontierCacheInfo(
-            cache_key=payload_key,
-            disk_path=FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key),
-            cache_source="disk",
-            total_notes=int(total_notes),
-            long_notes=int(long_notes),
-            frontier_count=int(frontier_count),
-        )
-    song_inputs = song.fg_inputs
-    return FgResponseFrontierCacheInfo(
-        cache_key=payload_key,
-        disk_path=FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key),
-        cache_source="missing",
-        total_notes=int(song_inputs.total_notes),
-        long_notes=int(song_inputs.long_notes),
-        frontier_count=0,
-    )
+    if (bundle is not None and _payload_subset(bundle, keys) is not None) or _payload_disk_is_complete(
+        bundle_key, keys
+    ):
+        return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key), "disk")
+    return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "missing")
 
 
 def _stat_key_index_rows(keys: tuple[tuple[int, int], ...]) -> np.ndarray:
@@ -515,7 +473,7 @@ def build_or_load_response_frontier_payload(
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
-) -> FgResponseFrontierPrewarmResult:
+) -> FrontierCacheLoad[FgResponseFrontierCachePayload]:
     started = time.perf_counter()
     keys = normalize_fg_response_stat_keys(stat_keys)
     cache_key = fg_response_frontier_payload_cache_key(song, curves, keys)
@@ -523,15 +481,12 @@ def build_or_load_response_frontier_payload(
     bundle_path = FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)
     payload = _payload_memory.get(cache_key)
     if payload is not None and _payload_subset(payload, keys) is not None:
-        return FgResponseFrontierPrewarmResult(
+        return FrontierCacheLoad(
             payload=payload,
             cache_key=cache_key,
             disk_path=bundle_path,
             cache_source="memory",
             elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-            total_notes=int(payload.total_notes),
-            long_notes=int(payload.long_notes),
-            frontier_count=int(len(payload.frontiers)),
         )
     source = "disk"
     request_payload = _load_payload(cache_key)
@@ -587,15 +542,12 @@ def build_or_load_response_frontier_payload(
                 if payload is None:
                     raise ValueError("FG response frontier bundle did not contain requested keys after build")
     _payload_memory.put(cache_key, payload)
-    return FgResponseFrontierPrewarmResult(
+    return FrontierCacheLoad(
         payload=payload,
         cache_key=cache_key,
         disk_path=FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key),
         cache_source=source,
         elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-        total_notes=int(payload.total_notes),
-        long_notes=int(payload.long_notes),
-        frontier_count=int(len(payload.frontiers)),
     )
 
 

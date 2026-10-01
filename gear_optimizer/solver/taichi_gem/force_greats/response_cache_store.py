@@ -1100,10 +1100,11 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
         return None
 
 
-def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) -> tuple[int, int, int] | None:
+def _payload_file_is_complete(path: Path, keys: Iterable[tuple[int, int]]) -> bool:
+    """A readable bundle of a compatible version with intact sidecars that covers `keys`."""
     requested = set(normalize_fg_response_stat_keys(keys))
     if not path.exists():
-        return None
+        return False
     required = {"version", *_SCORING_BUNDLE_ARRAY_NAMES}
     legacy_required = required - {_SURFACE_GENERATION_ARRAY_NAME}
     try:
@@ -1113,10 +1114,10 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
             # uncompressed sidecars validated below. Legacy fixed-sidecar bundles remain readable;
             # every new write includes one immutable sidecar generation.
             if files not in (required, legacy_required):
-                return None
+                return False
             version = str(data["version"].item())
             if version not in FG_RESPONSE_FRONTIER_CACHE.compatible_versions():
-                return None
+                return False
             surface_generation = _surface_generation_from_bundle_data(data)
             row_sidecar, pattern_sidecar = _surface_sidecar_paths(path, generation=surface_generation)
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
@@ -1132,50 +1133,44 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
             total_notes = int(np.asarray(data["total_notes"]).item())
             long_notes = int(np.asarray(data["long_notes"]).item())
             if int(stat_keys.ndim) != 2 or int(stat_keys.shape[1]) != 2:
-                return None
+                return False
             if int(frontier_ids.ndim) != 1 or int(stat_keys.shape[0]) != int(frontier_ids.shape[0]):
-                return None
+                return False
             if int(meta.ndim) != 2 or int(meta.shape[0]) <= 0:
-                return None
+                return False
             if int(first_offsets.shape[0]) != int(meta.shape[0]) or int(first_counts.shape[0]) != int(meta.shape[0]):
-                return None
+                return False
             if int(raw_fill_by_ff.shape[0]) != MAX_STAT + 1:
-                return None
+                return False
             if int(non_fever_base_by_ff.shape[0]) != MAX_STAT + 1 or int(real_time_by_ft.shape[0]) != MAX_STAT + 1:
-                return None
+                return False
             if total_notes < 0 or long_notes < 0 or long_notes > total_notes:
-                return None
+                return False
             if int(np.asarray(data["first_surface_head_len"]).item()) != min(total_notes, 100):
-                return None
+                return False
             if surface_row_count < 0 or surface_pattern_count <= 0:
-                return None
+                return False
             if bool(np.any(first_offsets < 0)) or bool(np.any(first_counts <= 0)):
-                return None
+                return False
             max_surface_end = int(np.max(first_offsets + first_counts))
             if surface_row_count < max_surface_end:
-                return None
+                return False
             row_header = _surface_sidecar_header(row_sidecar)
             pattern_header = _surface_sidecar_header(pattern_sidecar)
             if row_header != ((surface_row_count, SURFACE_ROW_COLUMNS), np.dtype(np.uint32)):
-                return None
+                return False
             if pattern_header != ((surface_pattern_count, SURFACE_PATTERN_COLUMNS), np.dtype(np.uint32)):
-                return None
+                return False
             present: set[tuple[int, int]] = set()
             for idx, key_row in enumerate(stat_keys):
                 frontier_idx = int(frontier_ids[int(idx)])
                 if frontier_idx < 0 or frontier_idx >= int(meta.shape[0]):
-                    return None
+                    return False
                 present.add(_normalize_stat_key((int(key_row[0]), int(key_row[1]))))
-            if not requested.issubset(present):
-                return None
-            return (
-                int(total_notes),
-                int(long_notes),
-                int(len(requested)),
-            )
+            return requested.issubset(present)
     except Exception:
         _remove_fg_response_bundle_files(path)
-        return None
+        return False
 
 
 def fg_response_cache_file_is_complete(cache_file: str | Path) -> bool:
@@ -1184,7 +1179,7 @@ def fg_response_cache_file_is_complete(cache_file: str | Path) -> bool:
         path = Path(cache_file)
     except TypeError:
         return False
-    return _payload_file_info_if_complete(path, all_response_stat_keys()) is not None
+    return _payload_file_is_complete(path, all_response_stat_keys())
 
 
 FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
@@ -1202,11 +1197,8 @@ FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
 )
 
 
-def _payload_disk_info_if_complete(
-    cache_key: tuple,
-    keys: Iterable[tuple[int, int]],
-) -> tuple[int, int, int] | None:
-    return _payload_file_info_if_complete(FG_RESPONSE_FRONTIER_CACHE.serving_path(cache_key), keys)
+def _payload_disk_is_complete(cache_key: tuple, keys: Iterable[tuple[int, int]]) -> bool:
+    return _payload_file_is_complete(FG_RESPONSE_FRONTIER_CACHE.serving_path(cache_key), keys)
 
 
 def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dict[str, np.ndarray]:
