@@ -58,8 +58,8 @@ def run_ga(song: Any, executor: Any) -> dict:
         song.runtime.song_slot = 0
 
 
-def finish_song(song: Any, ga_result: Any) -> SongSolve:
-    """The SongSolve of a song from its GA result (no GPU work)."""
+def finish_song(song: Any, ga_result: Any, progress_tracker=None) -> SongSolve:
+    """The SongSolve of a song from its GA result (no GPU work). `progress_tracker` (a run's) judges its records."""
     from gear_optimizer.solver.fg_materialization_worker import (
         build_fg_materialization_request,
         materialize_fg_request,
@@ -75,7 +75,8 @@ def finish_song(song: Any, ga_result: Any) -> SongSolve:
     try:
         prepare_fg_job_sync(song)
         song.runtime.fg.fg_dynamic_prep_done = True
-        apply_fg_materialization_result(song, materialize_fg_request(build_fg_materialization_request(song)))
+        apply_fg_materialization_result(song, materialize_fg_request(build_fg_materialization_request(song)),
+                                        progress_tracker=progress_tracker)
     finally:
         release_fg_song_surfaces(song)
     return song_solve(song)
@@ -143,7 +144,7 @@ def run_queue(
 
     def finish(task: tuple, song: Any, ga_result: Any) -> None:
         try:
-            post(finish_song(song, ga_result))
+            post(finish_song(song, ga_result, progress))
         except Exception as exc:
             fail(task, build_native_song_error_payload(song, exc=exc, trace=traceback.format_exc()))
             return
@@ -174,6 +175,10 @@ def run_queue(
                         song_name=task_song_name(task), queue_key=task_queue_label(task), exc=exc,
                         trace=traceback.format_exc()))
                     continue
+                # A song's records are judged against the run's bests: the stored ones and the earlier songs'.
+                progress.seed_valid_baseline(song.config.db_key, best_score=song.runtime.db.db_best_score,
+                                             best_fg=song.runtime.db.db_best_fg_score,
+                                             baseline_valid=song.runtime.db.db_baseline_valid)
                 try:
                     ga_result = run_ga(song, executor)
                 except GpuFatalError:

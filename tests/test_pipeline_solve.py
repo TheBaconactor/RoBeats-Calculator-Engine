@@ -16,15 +16,18 @@ def _task(name: str) -> tuple:
 
 def _song(task: tuple) -> SimpleNamespace:
     return SimpleNamespace(
-        config=SimpleNamespace(song_name=task_song_name(task), task_key=task_queue_label(task), fp=""),
-        runtime=SimpleNamespace(bundle=SimpleNamespace(bundle_parent_task=None), db=SimpleNamespace(record_info=None)),
+        config=SimpleNamespace(song_name=task_song_name(task), task_key=task_queue_label(task), fp="",
+                               db_key=task_song_name(task)),
+        runtime=SimpleNamespace(bundle=SimpleNamespace(bundle_parent_task=None),
+                                db=SimpleNamespace(record_info=None, db_best_score=100, db_best_fg_score=90,
+                                                   db_baseline_valid=True)),
     )
 
 
 def _stages(monkeypatch, *, prepare=_song, run_ga=None, finish=None) -> None:
     monkeypatch.setattr(native_inflight_lifecycle, "prepare_native_song", prepare)
     monkeypatch.setattr(solve_module, "run_ga", run_ga or (lambda song, _executor: f"ga {song.config.song_name}"))
-    monkeypatch.setattr(solve_module, "finish_song", finish or (lambda song, _ga: song.config.task_key))
+    monkeypatch.setattr(solve_module, "finish_song", finish or (lambda song, _ga, _tracker: song.config.task_key))
 
 
 def _run(names, *, executor=None, stop_requested=None) -> tuple[list, set]:
@@ -57,7 +60,7 @@ def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(m
             raise RuntimeError("gpu boom")
         return "ga"
 
-    def finish(song, _ga):
+    def finish(song, _ga, _tracker):
         if song.config.song_name == "Finish Fails":
             raise RuntimeError("fg boom")
         return song.config.task_key
@@ -67,6 +70,20 @@ def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(m
     assert _labels(posted) == ["A", ("Prep Fails", "bad chart"), ("GA Fails", "gpu boom"),
                                ("Finish Fails", "fg boom"), "B"]
     assert completed == {"A", "Prep Fails", "GA Fails", "Finish Fails", "B"}
+
+
+def test_each_song_is_judged_against_the_runs_bests_starting_from_the_stored_ones(monkeypatch):
+    trackers = []
+
+    def finish(song, _ga, tracker):
+        trackers.append((tracker, tracker.snapshot(song.config.db_key)))
+        tracker.update(song.config.db_key, best_score=150)  # as a record would: the next song must beat it
+        return song.config.task_key
+
+    _stages(monkeypatch, finish=finish)
+    _run(["A", "A"])
+    assert trackers[0][0] is trackers[1][0]
+    assert [snapshot for _, snapshot in trackers] == [(100, 90, True), (150, 90, True)]
 
 
 def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(monkeypatch):
@@ -82,7 +99,7 @@ def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(mon
             raise AssertionError("A was not finished or C not prepared while B's GA ran")
         return "ga"
 
-    def finish(song, _ga):
+    def finish(song, _ga, _tracker):
         if song.config.song_name == "A":
             a_finished.set()
         return song.config.task_key
@@ -94,7 +111,7 @@ def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(mon
 def test_a_stop_request_leaves_the_rest_of_the_queue_pending(monkeypatch):
     stop = threading.Event()
 
-    def finish(song, _ga):
+    def finish(song, _ga, _tracker):
         stop.set()
         return song.config.task_key
 
