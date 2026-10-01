@@ -96,6 +96,31 @@ def _write_fg_candidate_row_from_genome(
 
 
 @ti.func
+def _pack_fg_candidate_row0(table_slot: ti.i32, run_idx: ti.i32, n_slots: ti.i32, flags: GpuColorFlags):
+    """Row 0 of a run's GA->FG candidate table: the run's best tracked across generations (score + ids + result row
+    copied from ga_runs_payload_packed row 0, which stores genome ids), minis canonicalized (sorted; they are
+    order-invariant), base_stats7 recomputed from the item ids."""
+    _clear_fg_candidate_row(table_slot, run_idx, 0)
+    for c in ti.static(range(1 + 9 + _GA_FG_RESULTS_COLS)):
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, c] = kernels_helpers.ga_runs_payload_packed[
+            run_idx, 0, c
+        ]
+    m = _sort3_i32(
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 6],
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 7],
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 8],
+    )
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 6] = m[0]
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 7] = m[1]
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 8] = m[2]
+    b = kernels_helpers.base_stats7(
+        ti.Vector([kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] for s in ti.static(range(9))]), n_slots, flags
+    )
+    for i in ti.static(range(7)):
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 9 + _GA_FG_RESULTS_COLS + i] = b[i]
+
+
+@ti.func
 def _population_key_matches(
     genome_idx: ti.i32,
     g0: ti.i32,
@@ -196,64 +221,7 @@ def ga_pack_fg_candidates_table_segmented_kernel(
     for r in range(n_runs):
         run_idx = run_idx_start + r
 
-        # ------------------------------------------------------------------
-        # Row 0: best (tracked across generations).
-        # ------------------------------------------------------------------
-        _clear_fg_candidate_row(table_slot, run_idx, 0)
-
-        # Copy (score + ids + result_row) from ga_runs_payload_packed.
-        for c in ti.static(range(1 + 9 + _GA_FG_RESULTS_COLS)):
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, c] = kernels_helpers.ga_runs_payload_packed[
-                run_idx, 0, c
-            ]
-
-        # Canonicalize minis in the packed output (minis are order-invariant).
-        m = _sort3_i32(
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 6],
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 7],
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 8],
-        )
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 6] = m[0]
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 7] = m[1]
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 8] = m[2]
-
-        # Compute base_stats7 from item IDs (ga_runs_payload_packed row 0 stores genome IDs).
-        pp = kernels_helpers.base_fixed_stats[0]
-        cm = kernels_helpers.base_fixed_stats[1]
-        fm = kernels_helpers.base_fixed_stats[2]
-        ft_stat = kernels_helpers.base_fixed_stats[3]
-        ff_stat = kernels_helpers.base_fixed_stats[4]
-        beat = kernels_helpers.base_fixed_stats[5]
-        vibe = kernels_helpers.base_fixed_stats[6]
-        rush = kernels_helpers.base_fixed_stats[7]
-        flow = kernels_helpers.base_fixed_stats[8]
-        chill = kernels_helpers.base_fixed_stats[9]
-
-        for s in range(n_slots):
-            item_id = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s]
-            if item_id > 0:
-                pp += kernels_helpers.item_stats[item_id, 0]
-                cm += kernels_helpers.item_stats[item_id, 1]
-                fm += kernels_helpers.item_stats[item_id, 2]
-                ft_stat += kernels_helpers.item_stats[item_id, 3]
-                ff_stat += kernels_helpers.item_stats[item_id, 4]
-                beat += kernels_helpers.item_stats[item_id, 5]
-                vibe += kernels_helpers.item_stats[item_id, 6]
-                rush += kernels_helpers.item_stats[item_id, 7]
-                flow += kernels_helpers.item_stats[item_id, 8]
-                chill += kernels_helpers.item_stats[item_id, 9]
-
-        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
-        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
-
-        base_col0 = 1 + 9 + _GA_FG_RESULTS_COLS
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 0] = pp
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 1] = cm
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 2] = fm
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 3] = p_val
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 4] = s_val
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 5] = ft_stat
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 6] = ff_stat
+        _pack_fg_candidate_row0(table_slot, run_idx, n_slots, flags)
 
         # ------------------------------------------------------------------
         # Rows 1..K: top unique candidates from final population (per run).
@@ -720,11 +688,8 @@ def ga_refresh_fg_candidates_row0_kernel(
     flags: GpuColorFlags,
 ):
     """
-    Re-derive `ga_fg_candidates_packed` row 0 from `ga_runs_payload_packed` row 0.
-
-    Semantics are identical to the row-0 section of
-    ga_pack_fg_candidates_table_segmented_kernel (copy score+ids+results,
-    canonicalize minis, recompute base_stats7). Used after the 1-swap elite
+    Re-derive `ga_fg_candidates_packed` row 0 from `ga_runs_payload_packed` row 0 (as
+    ga_pack_fg_candidates_table_segmented_kernel packs it). Used after the 1-swap elite
     polish updates per-run bests so the FG funnel and the selected payload see
     the polished genomes without repacking rows 1..K (whose source population
     was consumed by the polish evaluation).
@@ -733,55 +698,4 @@ def ga_refresh_fg_candidates_row0_kernel(
     for r in range(n_runs):
         run_idx = run_idx_start + r
 
-        _clear_fg_candidate_row(table_slot, run_idx, 0)
-
-        for c in ti.static(range(1 + 9 + _GA_FG_RESULTS_COLS)):
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, c] = kernels_helpers.ga_runs_payload_packed[
-                run_idx, 0, c
-            ]
-
-        m = _sort3_i32(
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 6],
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 7],
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 8],
-        )
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 6] = m[0]
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 7] = m[1]
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 8] = m[2]
-
-        pp = kernels_helpers.base_fixed_stats[0]
-        cm = kernels_helpers.base_fixed_stats[1]
-        fm = kernels_helpers.base_fixed_stats[2]
-        ft_stat = kernels_helpers.base_fixed_stats[3]
-        ff_stat = kernels_helpers.base_fixed_stats[4]
-        beat = kernels_helpers.base_fixed_stats[5]
-        vibe = kernels_helpers.base_fixed_stats[6]
-        rush = kernels_helpers.base_fixed_stats[7]
-        flow = kernels_helpers.base_fixed_stats[8]
-        chill = kernels_helpers.base_fixed_stats[9]
-
-        for s in range(n_slots):
-            item_id = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s]
-            if item_id > 0:
-                pp += kernels_helpers.item_stats[item_id, 0]
-                cm += kernels_helpers.item_stats[item_id, 1]
-                fm += kernels_helpers.item_stats[item_id, 2]
-                ft_stat += kernels_helpers.item_stats[item_id, 3]
-                ff_stat += kernels_helpers.item_stats[item_id, 4]
-                beat += kernels_helpers.item_stats[item_id, 5]
-                vibe += kernels_helpers.item_stats[item_id, 6]
-                rush += kernels_helpers.item_stats[item_id, 7]
-                flow += kernels_helpers.item_stats[item_id, 8]
-                chill += kernels_helpers.item_stats[item_id, 9]
-
-        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
-        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
-
-        base_col0 = 1 + 9 + _GA_FG_RESULTS_COLS
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 0] = pp
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 1] = cm
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 2] = fm
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 3] = p_val
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 4] = s_val
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 5] = ft_stat
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 6] = ff_stat
+        _pack_fg_candidate_row0(table_slot, run_idx, n_slots, flags)

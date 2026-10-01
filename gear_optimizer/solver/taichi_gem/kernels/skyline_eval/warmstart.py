@@ -14,63 +14,6 @@ from .....rules import MAX_STAT
 from ..warmstart_common import solve_combo_warmstart_preloaded
 
 
-@ti.func
-def _compute_combo_key_warmstart_preloaded(
-    genome_idx: ti.i32,
-    combo_idx: ti.i32,
-    combo_budget: ti.i32,
-    gem_scale_fever: ti.i32,
-    flags: GpuColorFlags,
-    song_slot: ti.i32,
-    w_ft: ti.i32,
-    w_ff: ti.i32,
-    base_pp: ti.i32,
-    base_cm: ti.i32,
-    base_fm: ti.i32,
-    base_p_val: ti.i32,
-    base_s_val: ti.i32,
-    base_ft_stat: ti.i32,
-    base_ff_stat: ti.i32,
-    max_ft_gems: ti.i32,
-    max_ff_gems: ti.i32,
-    use_timing_response_antichain: ti.template(),
-    score_cull_threshold: ti.i32,
-) -> ti.u64:
-    """
-    Compute a packed max-key for a single (genome, combo) work item.
-
-    Returns:
-        u64 key in format: ((score + 1) << 32) | combo_idx
-        0 when the combo is invalid/pruned or yields a negative score.
-    """
-    res_vec = solve_combo_warmstart_preloaded(
-        genome_idx,
-        combo_idx,
-        combo_budget,
-        gem_scale_fever,
-        flags,
-        song_slot,
-        w_ft,
-        w_ff,
-        base_pp,
-        base_cm,
-        base_fm,
-        base_p_val,
-        base_s_val,
-        base_ft_stat,
-        base_ff_stat,
-        max_ft_gems,
-        max_ff_gems,
-        use_timing_response_antichain,
-        score_cull_threshold,
-    )
-    score = res_vec[0]
-    out_key = ti.u64(0)
-    if score >= 0:
-        out_key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-    return out_key
-
-
 @ti.kernel
 def skyline_find_best_combo_warmstart_kernel(
     n_genomes: ti.i32,
@@ -100,16 +43,9 @@ def skyline_find_best_combo_warmstart_kernel(
         combo_count: Number of combos in this chunk
         total_budget: Total gem budget
         gem_scale_fever: Gems per fever stat point
-        is_*: Color contribution flags (0/1)
+        flags: the song's color flags (GpuColorFlags)
         song_slot: Grid slot for batch coalescing
     """
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-
-    # FT/FF elemental contribution weights in base_value space (2*p + s).
-    # Each FT/FF gem adds GEM_STAT_TO_ELEMENT to the corresponding color stat.
-    w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ft << 1) + flags.is_s_ft)
-    w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ff << 1) + flags.is_s_ff)
-
     if ti.static(gpu_fields.IS_METAL):
         # Metal/MoltenVK has no u64 atomics, so it cannot atomic_max the packed (score, combo_idx)
         # key the way the Vulkan path below does. The previous Metal code split that into
@@ -148,15 +84,13 @@ def skyline_find_best_combo_warmstart_kernel(
             best_idx: ti.i32 = -1
             for local_c in range(combo_count):
                 combo_idx: ti.i32 = combo_offset + local_c
-                key = _compute_combo_key_warmstart_preloaded(
+                res_vec = solve_combo_warmstart_preloaded(
                     genome_idx,
                     combo_idx,
                     total_budget,  # combo_budget
                     gem_scale_fever,
                     flags,
                     song_slot,
-                    w_ft,
-                    w_ff,
                     base_pp,
                     base_cm,
                     base_fm,
@@ -169,8 +103,8 @@ def skyline_find_best_combo_warmstart_kernel(
                     use_timing_response_antichain,
                     score_cull_threshold,
                 )
-                if key != 0:
-                    score = ti.cast((key >> 32), ti.i32) - 1
+                score = res_vec[0]
+                if score >= 0:
                     # Match the Vulkan packed-key atomic_max tie-break (key = (score+1)<<32 |
                     # combo_idx): on equal score the HIGHEST combo_idx wins, so Mac (f32, serial
                     # reduction) and AMD (f64, u64 atomic) select the same gem layout, not just the
@@ -246,8 +180,6 @@ def skyline_find_best_combo_warmstart_kernel(
                     gem_scale_fever,
                     flags,
                     song_slot,
-                    w_ft,
-                    w_ff,
                     base_pp,
                     base_cm,
                     base_fm,

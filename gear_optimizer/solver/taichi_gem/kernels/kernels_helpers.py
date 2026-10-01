@@ -280,6 +280,23 @@ def _xorshift32(x: ti.u32) -> ti.u32:
     return x
 
 
+@ti.func
+def base_stats7(ids: ti.types.vector(9, ti.i32), n_slots: ti.i32, flags: GpuColorFlags) -> ti.types.vector(7, ti.i32):
+    """[PP, CM, FM, primary, secondary, FT, FF] of base_fixed_stats plus the items ids[:n_slots] (id 0 = empty slot).
+
+    item_stats layout: [PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill]; the primary / secondary value sums the
+    element stats its color flags select (Beat<-FT, Vibe<-FF, Rush<-FM, Flow<-CM, Chill<-PP).
+    """
+    st = ti.Vector([base_fixed_stats[c] for c in ti.static(range(10))])
+    for s in ti.static(range(9)):
+        if s < n_slots and ids[s] > 0:
+            for c in ti.static(range(10)):
+                st[c] += item_stats[ids[s], c]
+    p_val = (st[5] * flags.is_p_ft) + (st[6] * flags.is_p_ff) + (st[7] * flags.is_p_fm) + (st[8] * flags.is_p_cm) + (st[9] * flags.is_p_pp)
+    s_val = (st[5] * flags.is_s_ft) + (st[6] * flags.is_s_ff) + (st[7] * flags.is_s_fm) + (st[8] * flags.is_s_cm) + (st[9] * flags.is_s_pp)
+    return ti.Vector([st[0], st[1], st[2], p_val, s_val, st[3], st[4]])
+
+
 TimelineFrontierRecord = ti.types.struct(
     m0=ti.u32,
     m1=ti.u32,

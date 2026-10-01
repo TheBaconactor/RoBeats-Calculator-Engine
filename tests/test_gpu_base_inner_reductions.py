@@ -67,8 +67,6 @@ def _compare(
             3,
             row_flags,
             0,
-            0,
-            0,
             pp,
             cm,
             fm,

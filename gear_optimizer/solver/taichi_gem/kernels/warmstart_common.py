@@ -19,8 +19,6 @@ def solve_combo_warmstart_preloaded(
     gem_scale_fever: ti.i32,
     flags: GpuColorFlags,
     song_slot: ti.i32,
-    w_ft: ti.i32,
-    w_ff: ti.i32,
     base_pp: ti.i32,
     base_cm: ti.i32,
     base_fm: ti.i32,

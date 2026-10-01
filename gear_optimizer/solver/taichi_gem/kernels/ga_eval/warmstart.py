@@ -51,12 +51,9 @@ def ga_find_best_combo_warmstart_kernel(
         combo_count: Number of combos in this chunk
         total_budget: Total gem budget
         gem_scale_fever: Gems per fever stat point
-        is_*: Color contribution flags (0/1)
+        flags: the song's color flags (GpuColorFlags)
         song_slot: Grid slot for batch coalescing
     """
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ft << 1) + flags.is_s_ft)
-    w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ff << 1) + flags.is_s_ff)
     block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
     total_threads = n_genomes_launch * block_dim
     ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
@@ -112,8 +109,6 @@ def ga_find_best_combo_warmstart_kernel(
                 gem_scale_fever,
                 flags,
                 song_slot,
-                w_ft,
-                w_ff,
                 base_pp,
                 base_cm,
                 base_fm,

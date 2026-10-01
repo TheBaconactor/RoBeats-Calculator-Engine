@@ -12,12 +12,7 @@ during population evolution.
 import taichi as ti
 from . import kernels_helpers
 from .kernels_helpers import GpuColorFlags
-from .ga_eval.write_results import (
-    _best_combo_idx_from_chunk_state,
-    _materialize_best_combo_stats,
-    _refresh_live_score_from_chunk_state,
-    _write_run_best_payload_row,
-)
+from .ga_eval.write_results import refresh_scores_and_update_runs_best
 _GA_DIVERSE_PARENT_B_RATE = 0.125  # FG-proxy diversity bias (was GPU_GA_DIVERSE_PARENT_B_RATE)
 _GA_DIVERSE_PARENT_B_RATE_FP = int(_GA_DIVERSE_PARENT_B_RATE * 4294967295.0)
 @ti.func
@@ -62,25 +57,23 @@ def _next_genome_matches_parent(g: ti.i32, parent: ti.i32, n_slots: ti.i32) -> t
                     match = ti.i32(0)
     return match
 @ti.func
+def _repair_next_genome_minis(g: ti.i32, state: ti.u32) -> ti.u32:
+    """Re-draw next-generation genome g's duplicate minis (slots 6-8) and sort them (a pool of one is left alone)."""
+    mini_pool_start = kernels_helpers.slot_start[6]
+    mini_pool_count = kernels_helpers.slot_count[6]
+    if mini_pool_count > 1:
+        m0 = kernels_helpers.population_next_indices[g, 6]
+        m1 = kernels_helpers.population_next_indices[g, 7]
+        m2 = kernels_helpers.population_next_indices[g, 8]
+        m0, m1, m2, state = _repair_mini_uniqueness(m0, m1, m2, mini_pool_start, mini_pool_count, state)
+        kernels_helpers.population_next_indices[g, 6] = m0
+        kernels_helpers.population_next_indices[g, 7] = m1
+        kernels_helpers.population_next_indices[g, 8] = m2
+    return state
+@ti.func
 def _repair_next_genome_mini_uniqueness(g: ti.i32, n_slots: ti.i32, state: ti.u32) -> ti.u32:
     if n_slots >= 9:
-        mini_pool_start = kernels_helpers.slot_start[6]
-        mini_pool_count = kernels_helpers.slot_count[6]
-        if mini_pool_count > 1:
-            m0 = kernels_helpers.population_next_indices[g, 6]
-            m1 = kernels_helpers.population_next_indices[g, 7]
-            m2 = kernels_helpers.population_next_indices[g, 8]
-            m0, m1, m2, state = _repair_mini_uniqueness(
-                m0,
-                m1,
-                m2,
-                mini_pool_start,
-                mini_pool_count,
-                state,
-            )
-            kernels_helpers.population_next_indices[g, 6] = m0
-            kernels_helpers.population_next_indices[g, 7] = m1
-            kernels_helpers.population_next_indices[g, 8] = m2
+        state = _repair_next_genome_minis(g, state)
     return state
 @ti.func
 def _mutate_next_genome_slot(g: ti.i32, n_slots: ti.i32, state: ti.u32) -> ti.u32:
@@ -305,42 +298,15 @@ def ga_aggregate_genome_stats_kernel(
     Args:
         n_genomes: Number of genomes
         n_slots: Number of equipment slots
-        is_*: Color contribution flags (0/1) for primary/secondary
+        flags: the song's color flags (GpuColorFlags)
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
-        pp = kernels_helpers.base_fixed_stats[0]
-        cm = kernels_helpers.base_fixed_stats[1]
-        fm = kernels_helpers.base_fixed_stats[2]
-        ft = kernels_helpers.base_fixed_stats[3]
-        ff = kernels_helpers.base_fixed_stats[4]
-        beat = kernels_helpers.base_fixed_stats[5]
-        vibe = kernels_helpers.base_fixed_stats[6]
-        rush = kernels_helpers.base_fixed_stats[7]
-        flow = kernels_helpers.base_fixed_stats[8]
-        chill = kernels_helpers.base_fixed_stats[9]
-        for s in range(n_slots):
-            item_id = kernels_helpers.population_indices[g, s]
-            if item_id > 0:  # ID 0 is empty/invalid
-                pp += kernels_helpers.item_stats[item_id, 0]
-                cm += kernels_helpers.item_stats[item_id, 1]
-                fm += kernels_helpers.item_stats[item_id, 2]
-                ft += kernels_helpers.item_stats[item_id, 3]
-                ff += kernels_helpers.item_stats[item_id, 4]
-                beat += kernels_helpers.item_stats[item_id, 5]
-                vibe += kernels_helpers.item_stats[item_id, 6]
-                rush += kernels_helpers.item_stats[item_id, 7]
-                flow += kernels_helpers.item_stats[item_id, 8]
-                chill += kernels_helpers.item_stats[item_id, 9]
-        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
-        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
-        kernels_helpers.genome_base_stats[g][0] = ti.cast(pp, ti.i16)
-        kernels_helpers.genome_base_stats[g][1] = ti.cast(cm, ti.i16)
-        kernels_helpers.genome_base_stats[g][2] = ti.cast(fm, ti.i16)
-        kernels_helpers.genome_base_stats[g][3] = ti.cast(p_val, ti.i16)
-        kernels_helpers.genome_base_stats[g][4] = ti.cast(s_val, ti.i16)
-        kernels_helpers.genome_base_stats[g][5] = ti.cast(ft, ti.i16)
-        kernels_helpers.genome_base_stats[g][6] = ti.cast(ff, ti.i16)
+        b = kernels_helpers.base_stats7(
+            ti.Vector([kernels_helpers.population_indices[g, s] for s in ti.static(range(9))]), n_slots, flags
+        )
+        for i in ti.static(range(7)):
+            kernels_helpers.genome_base_stats[g][i] = ti.cast(b[i], ti.i16)
 @ti.func
 def _ga_next_generation_full_runs_impl(
     n_runs: ti.i32,
@@ -486,23 +452,7 @@ def _ga_next_generation_full_runs_impl(
                 state = kernels_helpers._xorshift32(state)
                 new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
                 kernels_helpers.population_next_indices[g, mut_slot] = new_item
-        m0 = kernels_helpers.population_next_indices[g, 6]
-        m1 = kernels_helpers.population_next_indices[g, 7]
-        m2 = kernels_helpers.population_next_indices[g, 8]
-        mini_pool_start = kernels_helpers.slot_start[6]
-        mini_pool_count = kernels_helpers.slot_count[6]
-        if mini_pool_count > 1:
-            m0, m1, m2, state = _repair_mini_uniqueness(
-                m0,
-                m1,
-                m2,
-                mini_pool_start,
-                mini_pool_count,
-                state,
-            )
-            kernels_helpers.population_next_indices[g, 6] = m0
-            kernels_helpers.population_next_indices[g, 7] = m1
-            kernels_helpers.population_next_indices[g, 8] = m2
+        state = _repair_next_genome_minis(g, state)
         if immigrant_rate_fp != ti.u32(0):
             state = kernels_helpers._xorshift32(state)
             if state < immigrant_rate_fp:
@@ -513,23 +463,7 @@ def _ga_next_generation_full_runs_impl(
                         state = kernels_helpers._xorshift32(state)
                         new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
                         kernels_helpers.population_next_indices[g, s] = new_item
-                m0 = kernels_helpers.population_next_indices[g, 6]
-                m1 = kernels_helpers.population_next_indices[g, 7]
-                m2 = kernels_helpers.population_next_indices[g, 8]
-                mini_pool_start = kernels_helpers.slot_start[6]
-                mini_pool_count = kernels_helpers.slot_count[6]
-                if mini_pool_count > 1:
-                    m0, m1, m2, state = _repair_mini_uniqueness(
-                        m0,
-                        m1,
-                        m2,
-                        mini_pool_start,
-                        mini_pool_count,
-                        state,
-                    )
-                    kernels_helpers.population_next_indices[g, 6] = m0
-                    kernels_helpers.population_next_indices[g, 7] = m1
-                    kernels_helpers.population_next_indices[g, 8] = m2
+                state = _repair_next_genome_minis(g, state)
                 pa = -1
         if pa >= 0 and novelty_repair_attempts > 0:
             state = _repair_parent_clone_child(g, pa, pb, n_slots, state, novelty_repair_attempts)
@@ -560,67 +494,23 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     This removes the tiny refresh launch from non-final, non-migration GA generations while
     preserving the existing "snapshot before population mutation" contract.
     """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    MAX_ELITES_PER_ISLAND: ti.i32 = 16
     n_runs_i: ti.i32 = n_runs
     n_genomes_per_run_i: ti.i32 = n_genomes_per_run
-    n_islands_i: ti.i32 = n_islands
-    elites_per_island_i: ti.i32 = elites_per_island
-    tournament_k_i: ti.i32 = tournament_k
     if n_runs_i < 1:
         n_runs_i = 1
     if n_genomes_per_run_i < 1:
         n_genomes_per_run_i = 1
-    if n_islands_i < 1:
-        n_islands_i = 1
-    if n_islands_i > n_genomes_per_run_i:
-        n_islands_i = n_genomes_per_run_i
-    if elites_per_island_i < 1:
-        elites_per_island_i = 1
-    if elites_per_island_i > MAX_ELITES_PER_ISLAND:
-        elites_per_island_i = MAX_ELITES_PER_ISLAND
-    if tournament_k_i < 1:
-        tournament_k_i = 1
     n_total: ti.i32 = n_runs_i * n_genomes_per_run_i
-    for genome_idx in range(n_total):
-        _refresh_live_score_from_chunk_state(
-            genome_idx,
-            total_budget,
-            gem_scale_fever,
-            flags,
-            song_slot,
-        )
-    for r in range(n_runs_i):
-        start_offset: ti.i32 = r * n_genomes_per_run_i
-        best_score: ti.i32 = -1
-        best_g: ti.i32 = start_offset
-        for local_g in range(n_genomes_per_run_i):
-            g = start_offset + local_g
-            score = kernels_helpers.ga_scores[g]
-            if score > best_score:
-                best_score = score
-                best_g = g
-        run_idx = run_idx_start + r
-        prev_best: ti.i32 = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0]
-        if best_score > prev_best:
-            combo_idx = _best_combo_idx_from_chunk_state(best_g)
-            if combo_idx >= 0:
-                result_stats = _materialize_best_combo_stats(
-                    best_g,
-                    combo_idx,
-                    total_budget,
-                    gem_scale_fever,
-                    flags,
-                    song_slot,
-                )
-                _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)
+    refresh_scores_and_update_runs_best(
+        run_idx_start, n_runs_i, n_genomes_per_run_i, n_slots, total_budget, gem_scale_fever, flags, song_slot
+    )
     _ga_next_generation_full_runs_impl(
         n_runs_i,
         n_genomes_per_run_i,
         n_slots,
-        n_islands_i,
-        elites_per_island_i,
-        tournament_k_i,
+        n_islands,
+        elites_per_island,
+        tournament_k,
         mutation_rate_fp,
         immigrant_rate_fp,
         novelty_repair_attempts,

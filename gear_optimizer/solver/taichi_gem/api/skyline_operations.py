@@ -129,7 +129,7 @@ def skyline_evaluate_population(
         total_budget: Total gem budget
         gem_scale_fever: Stat points per FT/FF gem (default 3)
         song_slot: Timeline grid slot (0 for single-song)
-        is_p_*, is_s_*: Color contribution flags
+        flags: the song's color flags (GpuColorFlags)
     """
     ensure_ready()
     n_genomes = int(n_genomes)

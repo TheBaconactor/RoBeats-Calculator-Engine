@@ -68,7 +68,7 @@ def solve_genomes_from_registry(
     Args:
         population_indices: (n_genomes, 9) int32 - encoded genome IDs from ItemRegistry
         song: the timed song whose timeline frontier the scoring reads
-        is_*: Color contribution flags (0/1)
+        flags: the song's color flags (GpuColorFlags)
         curves: Reference lookup arrays
         total_budget: Gem budget (default 90)
         gem_scale_fever: Stats per fever gem (default 3)

@@ -243,29 +243,30 @@ def response_score_upper_bound_relaxed(
     )
 
 
+# The (CM, FM)-invariant inputs of _exact_bound_ub_for_cm_fm for one solve.
+ExactBoundContext = ti.types.struct(
+    max_pp_gems=ti.i32,
+    cur_pp=ti.i32,
+    cur_cm=ti.i32,
+    cur_fm=ti.i32,
+    base_init=ti.i32,
+    w_cm=ti.i32,
+    w_fm=ti.i32,
+    w_ov=ti.i32,
+    flags_idx=ti.i32,
+    cur_pp_idx=ti.i32,
+    delta_pp_vs_ov=ti.i32,
+    count_fever=ti.i32,
+    count_normal=ti.i32,
+    n_hn=ti.i32,
+    n_hf=ti.i32,
+    sigma_hn=ti.i32,
+    sigma_hf=ti.i32,
+)
+
+
 @ti.func
-def _exact_bound_ub_for_cm_fm(
-    budget: ti.i32,
-    g_cm: ti.i32,
-    g_fm: ti.i32,
-    max_pp_gems: ti.i32,
-    cur_pp: ti.i32,
-    cur_cm: ti.i32,
-    cur_fm: ti.i32,
-    base_init: ti.i32,
-    w_cm: ti.i32,
-    w_fm: ti.i32,
-    w_ov: ti.i32,
-    flags_idx: ti.i32,
-    cur_pp_idx: ti.i32,
-    delta_pp_vs_ov: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-    n_hn: ti.i32,
-    n_hf: ti.i32,
-    sigma_hn: ti.i32,
-    sigma_hf: ti.i32,
-) -> ti.f32:
+def _exact_bound_ub_for_cm_fm(budget: ti.i32, g_cm: ti.i32, g_fm: ti.i32, ctx: ExactBoundContext) -> ti.f32:
     """
     Cheap semi-exact upper bound for a fixed (CM gems, FM gems) choice.
 
@@ -278,35 +279,35 @@ def _exact_bound_ub_for_cm_fm(
     ub: ti.f32 = ti.f32(-1.0e30)
     leftover: ti.i32 = budget - g_cm - g_fm
     if leftover >= 0:
-        cm_stat: ti.i32 = cur_cm + (g_cm * GEM_SCALE_NORMAL)
+        cm_stat: ti.i32 = ctx.cur_cm + (g_cm * GEM_SCALE_NORMAL)
         c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
 
-        fm_stat: ti.i32 = cur_fm + (g_fm * GEM_SCALE_FEVER)
+        fm_stat: ti.i32 = ctx.cur_fm + (g_fm * GEM_SCALE_FEVER)
         f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
 
-        max_pp_here: ti.i32 = max_pp_gems
+        max_pp_here: ti.i32 = ctx.max_pp_gems
         if max_pp_here > leftover:
             max_pp_here = leftover
 
         g_pp_best: ti.i32 = ti.cast(
-            kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here], ti.i32
+            kernels_helpers.exact_pp_best_gems_prefix[ctx.flags_idx, ctx.cur_pp_idx, max_pp_here], ti.i32
         )
-        pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
-        best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+        pp_stat: ti.i32 = ctx.cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+        best_pp_extra: ti.f32 = ti.cast(g_pp_best * ctx.delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
 
-        base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
+        base_linear: ti.i32 = ctx.base_init + (g_cm * ctx.w_cm) + (g_fm * ctx.w_fm) + (leftover * ctx.w_ov)
         base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
 
         ub = _semi_exact_upper_bound(
             base_value,
             c_mul,
             f_mul,
-            count_fever,
-            count_normal,
-            n_hn,
-            n_hf,
-            sigma_hn,
-            sigma_hf,
+            ctx.count_fever,
+            ctx.count_normal,
+            ctx.n_hn,
+            ctx.n_hf,
+            ctx.sigma_hn,
+            ctx.sigma_hf,
         )
 
     return ub
@@ -418,188 +419,64 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     best_p: ti.i32 = cur_p_val
     best_s: ti.i32 = cur_s_val
 
-    # Two tie-break variants (prefer CM vs prefer FM) to mitigate UB ties.
-    seed_best_cm0: ti.i32 = 0
-    seed_best_fm0: ti.i32 = 0
-    seed_best_ub0: ti.f32 = _exact_bound_ub_for_cm_fm(
-        budget,
-        0,
-        0,
-        max_pp_gems,
-        cur_pp,
-        cur_cm,
-        cur_fm,
-        base_init,
-        w_cm,
-        w_fm,
-        w_ov,
-        flags_idx,
-        cur_pp_idx,
-        delta_pp_vs_ov,
-        count_fever,
-        count_normal,
-        n_hn,
-        n_hf,
-        sigma_hn,
-        sigma_hf,
+    # Two greedy walks that differ only in the UB tie rule (walk 0 prefers CM, walk 1 FM), to mitigate UB ties; each
+    # keeps the highest-UB (CM, FM) point it passes.
+    ub_ctx = ExactBoundContext(
+        max_pp_gems=max_pp_gems, cur_pp=cur_pp, cur_cm=cur_cm, cur_fm=cur_fm, base_init=base_init, w_cm=w_cm,
+        w_fm=w_fm, w_ov=w_ov, flags_idx=flags_idx, cur_pp_idx=cur_pp_idx, delta_pp_vs_ov=delta_pp_vs_ov,
+        count_fever=count_fever, count_normal=count_normal, n_hn=n_hn, n_hf=n_hf, sigma_hn=sigma_hn,
+        sigma_hf=sigma_hf,
     )
-    seed_ub_init: ti.f32 = seed_best_ub0
-    seed_cm0: ti.i32 = 0
-    seed_fm0: ti.i32 = 0
-    step0: ti.i32 = 0
-    while step0 < budget:
-        can_add_cm = ti.cast((seed_cm0 < max_cm_gems) & ((seed_cm0 + seed_fm0 + 1) <= budget), ti.i32)
-        can_add_fm = ti.cast((seed_fm0 < max_fm_gems) & ((seed_cm0 + seed_fm0 + 1) <= budget), ti.i32)
-        if can_add_cm == 0 and can_add_fm == 0:
-            break
+    seed_ub_init: ti.f32 = _exact_bound_ub_for_cm_fm(budget, 0, 0, ub_ctx)
+    seed_best_cm = ti.Vector([0, 0], dt=ti.i32)
+    seed_best_fm = ti.Vector([0, 0], dt=ti.i32)
+    for w in ti.static(range(2)):
+        seed_best_ub: ti.f32 = seed_ub_init
+        seed_cm: ti.i32 = 0
+        seed_fm: ti.i32 = 0
+        step: ti.i32 = 0
+        while step < budget:
+            can_add_cm = ti.cast((seed_cm < max_cm_gems) & ((seed_cm + seed_fm + 1) <= budget), ti.i32)
+            can_add_fm = ti.cast((seed_fm < max_fm_gems) & ((seed_cm + seed_fm + 1) <= budget), ti.i32)
+            if can_add_cm == 0 and can_add_fm == 0:
+                break
 
-        ub_cm = ti.f32(-1.0e30)
-        ub_fm = ti.f32(-1.0e30)
-        if can_add_cm != 0:
-            ub_cm = _exact_bound_ub_for_cm_fm(
-                budget,
-                seed_cm0 + 1,
-                seed_fm0,
-                max_pp_gems,
-                cur_pp,
-                cur_cm,
-                cur_fm,
-                base_init,
-                w_cm,
-                w_fm,
-                w_ov,
-                flags_idx,
-                cur_pp_idx,
-                delta_pp_vs_ov,
-                count_fever,
-                count_normal,
-                n_hn,
-                n_hf,
-                sigma_hn,
-                sigma_hf,
-            )
-        if can_add_fm != 0:
-            ub_fm = _exact_bound_ub_for_cm_fm(
-                budget,
-                seed_cm0,
-                seed_fm0 + 1,
-                max_pp_gems,
-                cur_pp,
-                cur_cm,
-                cur_fm,
-                base_init,
-                w_cm,
-                w_fm,
-                w_ov,
-                flags_idx,
-                cur_pp_idx,
-                delta_pp_vs_ov,
-                count_fever,
-                count_normal,
-                n_hn,
-                n_hf,
-                sigma_hn,
-                sigma_hf,
-            )
+            ub_cm = ti.f32(-1.0e30)
+            ub_fm = ti.f32(-1.0e30)
+            if can_add_cm != 0:
+                ub_cm = _exact_bound_ub_for_cm_fm(budget, seed_cm + 1, seed_fm, ub_ctx)
+            if can_add_fm != 0:
+                ub_fm = _exact_bound_ub_for_cm_fm(budget, seed_cm, seed_fm + 1, ub_ctx)
 
-        # Prefer CM when tied.
-        cur_ub = ub_fm
-        if ub_cm >= ub_fm:
-            seed_cm0 += 1
-            cur_ub = ub_cm
-        else:
-            seed_fm0 += 1
-
-        if cur_ub > seed_best_ub0:
-            seed_best_ub0 = cur_ub
-            seed_best_cm0 = seed_cm0
-            seed_best_fm0 = seed_fm0
-
-        step0 += 1
-
-    seed_best_cm1: ti.i32 = 0
-    seed_best_fm1: ti.i32 = 0
-    seed_best_ub1: ti.f32 = seed_ub_init
-    seed_cm1: ti.i32 = 0
-    seed_fm1: ti.i32 = 0
-    step1: ti.i32 = 0
-    while step1 < budget:
-        can_add_cm = ti.cast((seed_cm1 < max_cm_gems) & ((seed_cm1 + seed_fm1 + 1) <= budget), ti.i32)
-        can_add_fm = ti.cast((seed_fm1 < max_fm_gems) & ((seed_cm1 + seed_fm1 + 1) <= budget), ti.i32)
-        if can_add_cm == 0 and can_add_fm == 0:
-            break
-
-        ub_cm = ti.f32(-1.0e30)
-        ub_fm = ti.f32(-1.0e30)
-        if can_add_cm != 0:
-            ub_cm = _exact_bound_ub_for_cm_fm(
-                budget,
-                seed_cm1 + 1,
-                seed_fm1,
-                max_pp_gems,
-                cur_pp,
-                cur_cm,
-                cur_fm,
-                base_init,
-                w_cm,
-                w_fm,
-                w_ov,
-                flags_idx,
-                cur_pp_idx,
-                delta_pp_vs_ov,
-                count_fever,
-                count_normal,
-                n_hn,
-                n_hf,
-                sigma_hn,
-                sigma_hf,
-            )
-        if can_add_fm != 0:
-            ub_fm = _exact_bound_ub_for_cm_fm(
-                budget,
-                seed_cm1,
-                seed_fm1 + 1,
-                max_pp_gems,
-                cur_pp,
-                cur_cm,
-                cur_fm,
-                base_init,
-                w_cm,
-                w_fm,
-                w_ov,
-                flags_idx,
-                cur_pp_idx,
-                delta_pp_vs_ov,
-                count_fever,
-                count_normal,
-                n_hn,
-                n_hf,
-                sigma_hn,
-                sigma_hf,
-            )
-
-        # Prefer FM when tied.
-        cur_ub = ub_cm
-        if ub_fm >= ub_cm:
-            seed_fm1 += 1
             cur_ub = ub_fm
-        else:
-            seed_cm1 += 1
+            if ti.static(w == 0):  # prefer CM when tied
+                if ub_cm >= ub_fm:
+                    seed_cm += 1
+                    cur_ub = ub_cm
+                else:
+                    seed_fm += 1
+            else:  # prefer FM when tied
+                cur_ub = ub_cm
+                if ub_fm >= ub_cm:
+                    seed_fm += 1
+                    cur_ub = ub_fm
+                else:
+                    seed_cm += 1
 
-        if cur_ub > seed_best_ub1:
-            seed_best_ub1 = cur_ub
-            seed_best_cm1 = seed_cm1
-            seed_best_fm1 = seed_fm1
+            if cur_ub > seed_best_ub:
+                seed_best_ub = cur_ub
+                seed_best_cm[w] = seed_cm
+                seed_best_fm[w] = seed_fm
 
-        step1 += 1
+            step += 1
 
     # Evaluate both seed candidates exactly to initialize best_score.
     # Candidate 0 (prefer CM ties)
-    seed_cm = seed_best_cm0
-    seed_fm = seed_best_fm0
+    seed_cm = seed_best_cm[0]
+    seed_fm = seed_best_fm[0]
     for _seed_pass in ti.static(range(2)):
         # Identical walks choose the same PP split as well as the same CM/FM pair.
-        if _seed_pass == 0 or seed_cm != seed_best_cm0 or seed_fm != seed_best_fm0:
+        if _seed_pass == 0 or seed_cm != seed_best_cm[0] or seed_fm != seed_best_fm[0]:
             leftover: ti.i32 = budget - seed_cm - seed_fm
             max_pp_here: ti.i32 = max_pp_gems
             if max_pp_here > leftover:
@@ -669,8 +546,8 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
                 )
 
         # Candidate 1 (prefer FM ties)
-        seed_cm = seed_best_cm1
-        seed_fm = seed_best_fm1
+        seed_cm = seed_best_cm[1]
+        seed_fm = seed_best_fm[1]
 
     g_cm: ti.i32 = 0
     while g_cm <= max_cm_gems:
@@ -688,8 +565,8 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
         g_fm: ti.i32 = 0
         while g_fm <= max_fm_here:
             # Both seeds were already scored and compared with the same tie ordering.
-            if (g_cm == seed_best_cm0 and g_fm == seed_best_fm0) or (
-                g_cm == seed_best_cm1 and g_fm == seed_best_fm1
+            if (g_cm == seed_best_cm[0] and g_fm == seed_best_fm[0]) or (
+                g_cm == seed_best_cm[1] and g_fm == seed_best_fm[1]
             ):
                 g_fm += 1
                 continue

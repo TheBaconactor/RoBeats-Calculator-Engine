@@ -147,9 +147,6 @@ def _make_exhaustive_reference_kernel():
         flags: GpuColorFlags,
         song_slot: ti.i32,
     ):
-        GEM_STAT_TO_ELEMENT: ti.i32 = 3
-        w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ft << 1) + flags.is_s_ft)
-        w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((flags.is_p_ff << 1) + flags.is_s_ff)
         block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
         total_threads = n_genomes * block_dim
         ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
@@ -190,8 +187,6 @@ def _make_exhaustive_reference_kernel():
                     gem_scale_fever,
                     flags,
                     song_slot,
-                    w_ft,
-                    w_ff,
                     base_pp,
                     base_cm,
                     base_fm,

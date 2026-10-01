@@ -69,7 +69,7 @@ def skyline_aggregate_and_init_best_kernel(
     Args:
         n_genomes: Number of genomes
         n_slots: Number of equipment slots
-        is_*: Color contribution flags (0/1) for primary/secondary
+        flags: the song's color flags (GpuColorFlags)
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
@@ -89,38 +89,8 @@ def skyline_aggregate_and_init_best_kernel(
         if reuse_exact_genome_base_stats != 0 and kernels_helpers.skyline_exact_eval_rep_idx[g] != g:
             continue
 
-        pp = kernels_helpers.base_fixed_stats[0]
-        cm = kernels_helpers.base_fixed_stats[1]
-        fm = kernels_helpers.base_fixed_stats[2]
-        ft = kernels_helpers.base_fixed_stats[3]
-        ff = kernels_helpers.base_fixed_stats[4]
-        beat = kernels_helpers.base_fixed_stats[5]
-        vibe = kernels_helpers.base_fixed_stats[6]
-        rush = kernels_helpers.base_fixed_stats[7]
-        flow = kernels_helpers.base_fixed_stats[8]
-        chill = kernels_helpers.base_fixed_stats[9]
-
-        for s in range(n_slots):
-            item_id = kernels_helpers.population_indices[g, s]
-            if item_id > 0:
-                pp += kernels_helpers.item_stats[item_id, 0]
-                cm += kernels_helpers.item_stats[item_id, 1]
-                fm += kernels_helpers.item_stats[item_id, 2]
-                ft += kernels_helpers.item_stats[item_id, 3]
-                ff += kernels_helpers.item_stats[item_id, 4]
-                beat += kernels_helpers.item_stats[item_id, 5]
-                vibe += kernels_helpers.item_stats[item_id, 6]
-                rush += kernels_helpers.item_stats[item_id, 7]
-                flow += kernels_helpers.item_stats[item_id, 8]
-                chill += kernels_helpers.item_stats[item_id, 9]
-
-        p_val = (beat * flags.is_p_ft) + (vibe * flags.is_p_ff) + (rush * flags.is_p_fm) + (flow * flags.is_p_cm) + (chill * flags.is_p_pp)
-        s_val = (beat * flags.is_s_ft) + (vibe * flags.is_s_ff) + (rush * flags.is_s_fm) + (flow * flags.is_s_cm) + (chill * flags.is_s_pp)
-
-        kernels_helpers.genome_base_stats[g][0] = ti.cast(pp, ti.i16)
-        kernels_helpers.genome_base_stats[g][1] = ti.cast(cm, ti.i16)
-        kernels_helpers.genome_base_stats[g][2] = ti.cast(fm, ti.i16)
-        kernels_helpers.genome_base_stats[g][3] = ti.cast(p_val, ti.i16)
-        kernels_helpers.genome_base_stats[g][4] = ti.cast(s_val, ti.i16)
-        kernels_helpers.genome_base_stats[g][5] = ti.cast(ft, ti.i16)
-        kernels_helpers.genome_base_stats[g][6] = ti.cast(ff, ti.i16)
+        b = kernels_helpers.base_stats7(
+            ti.Vector([kernels_helpers.population_indices[g, s] for s in ti.static(range(9))]), n_slots, flags
+        )
+        for i in ti.static(range(7)):
+            kernels_helpers.genome_base_stats[g][i] = ti.cast(b[i], ti.i16)

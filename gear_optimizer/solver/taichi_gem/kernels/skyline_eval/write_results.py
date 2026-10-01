@@ -11,62 +11,7 @@ import taichi as ti
 from ... import fields as gpu_fields
 from .. import kernels_helpers
 from ..kernels_helpers import GpuColorFlags
-from ..kernels_scoring import score_solution_from_gems_frontier
-from ..write_results_common import solve_best_combo_uncached
-
-
-@ti.func
-def _score_cached_combo_from_gems(
-    genome_idx: ti.i32,
-    ft: ti.i32,
-    ff: ti.i32,
-    pp_gems: ti.i32,
-    cm_gems: ti.i32,
-    fm_gems: ti.i32,
-    ov_gems: ti.i32,
-    gem_scale_fever: ti.i32,
-    flags: GpuColorFlags,
-    song_slot: ti.i32,
-) -> ti.i32:
-    MAX_STAT: ti.i32 = 160
-
-    stats = kernels_helpers.genome_base_stats[genome_idx]
-    base_pp: ti.i32 = stats[0]
-    base_cm: ti.i32 = stats[1]
-    base_fm: ti.i32 = stats[2]
-    base_p_val: ti.i32 = stats[3]
-    base_s_val: ti.i32 = stats[4]
-    base_ft_stat: ti.i32 = stats[5]
-    base_ff_stat: ti.i32 = stats[6]
-
-    ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-    ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-    ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-    ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-
-    head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
-
-    return score_solution_from_gems_frontier(
-        ft,
-        ff,
-        pp_gems,
-        cm_gems,
-        fm_gems,
-        ov_gems,
-        base_pp,
-        base_cm,
-        base_fm,
-        base_p_val,
-        base_s_val,
-        base_ft_stat,
-        base_ff_stat,
-        gem_scale_fever,
-        flags,
-        song_slot,
-        ft_idx,
-        ff_idx,
-        head_len,
-    )
+from ..write_results_common import score_combo_gems, solve_best_combo_uncached
 
 
 @ti.func
@@ -123,7 +68,8 @@ def _materialize_best_combo_stats(
     fm_gems: ti.i32 = 0
     ov_gems: ti.i32 = 0
 
-    if ti.static(not gpu_fields.IS_METAL):
+    cached: ti.i32 = 0
+    if ti.static(not gpu_fields.IS_METAL):  # Vulkan keeps the winner's gem counts: rescore them when they are valid
         pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
         cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
         fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
@@ -131,45 +77,12 @@ def _materialize_best_combo_stats(
 
         cached_sum: ti.i32 = pp_gems + cm_gems + fm_gems + ov_gems
         if cached_sum == budget and pp_gems >= 0 and cm_gems >= 0 and fm_gems >= 0 and ov_gems >= 0:
-            score = _score_cached_combo_from_gems(
-                genome_idx,
-                ft,
-                ff,
-                pp_gems,
-                cm_gems,
-                fm_gems,
-                ov_gems,
-                gem_scale_fever,
-                flags,
-                song_slot,
+            score = score_combo_gems(
+                genome_idx, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems, gem_scale_fever, flags, song_slot
             )
-        else:
-            uncached = solve_best_combo_uncached(
-                genome_idx,
-                ft,
-                ff,
-                total_budget,
-                gem_scale_fever,
-                flags,
-                song_slot,
-                False,
-            )
-            score = uncached[0]
-            pp_gems = uncached[1]
-            cm_gems = uncached[2]
-            fm_gems = uncached[3]
-            ov_gems = uncached[4]
-    else:
-        uncached = solve_best_combo_uncached(
-            genome_idx,
-            ft,
-            ff,
-            total_budget,
-            gem_scale_fever,
-            flags,
-            song_slot,
-            False,
-        )
+            cached = 1
+    if cached == 0:
+        uncached = solve_best_combo_uncached(genome_idx, ft, ff, total_budget, gem_scale_fever, flags, song_slot, False)
         score = uncached[0]
         pp_gems = uncached[1]
         cm_gems = uncached[2]

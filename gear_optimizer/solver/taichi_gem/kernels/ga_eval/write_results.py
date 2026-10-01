@@ -45,13 +45,7 @@ def _materialize_best_combo_stats(
     ov_gems: ti.i32 = uncached[4]
     return ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
 @ti.func
-def _refresh_live_score_from_chunk_state(
-    genome_idx: ti.i32,
-    total_budget: ti.i32,
-    gem_scale_fever: ti.i32,
-    flags: GpuColorFlags,
-    song_slot: ti.i32,
-):
+def _refresh_live_score_from_chunk_state(genome_idx: ti.i32):
     combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
     if combo_idx < 0:
         kernels_helpers.ga_scores[genome_idx] = -1
@@ -69,8 +63,8 @@ def _write_run_best_payload_row(
         kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.population_indices[best_g, s]
     for j in ti.static(range(7)):
         kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + j] = result_stats[j]
-@ti.kernel
-def ga_refresh_scores_and_update_runs_best_kernel(
+@ti.func
+def refresh_scores_and_update_runs_best(
     run_idx_start: ti.i32,
     n_runs: ti.i32,
     n_genomes_per_run: ti.i32,
@@ -89,13 +83,7 @@ def ga_refresh_scores_and_update_runs_best_kernel(
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     n_total = n_runs * n_genomes_per_run
     for genome_idx in range(n_total):
-        _refresh_live_score_from_chunk_state(
-            genome_idx,
-            total_budget,
-            gem_scale_fever,
-            flags,
-            song_slot,
-        )
+        _refresh_live_score_from_chunk_state(genome_idx)
     for r in range(n_runs):
         start_offset: ti.i32 = r * n_genomes_per_run
         best_score: ti.i32 = -1
@@ -120,3 +108,17 @@ def ga_refresh_scores_and_update_runs_best_kernel(
                     song_slot,
                 )
                 _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)
+@ti.kernel
+def ga_refresh_scores_and_update_runs_best_kernel(
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    flags: GpuColorFlags,
+    song_slot: ti.i32,
+):
+    refresh_scores_and_update_runs_best(
+        run_idx_start, n_runs, n_genomes_per_run, n_slots, total_budget, gem_scale_fever, flags, song_slot
+    )
