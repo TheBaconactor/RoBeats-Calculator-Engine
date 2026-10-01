@@ -196,11 +196,8 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
                          "curves": "curves", "cfg_data": {"selected_color": "rush"}}]
 
 
-def test_only_a_cancelled_future_or_an_executor_abort_counts_as_a_stop_abort():
-    import concurrent.futures
-
+def test_only_an_executor_abort_counts_as_a_stop_abort():
     from gear_optimizer.solver.gpu_executor import is_stop_abort_exception
 
-    assert is_stop_abort_exception(concurrent.futures.CancelledError()) is True
     assert is_stop_abort_exception(RuntimeError("GpuExecutor aborted: hotkey stop")) is True
     assert is_stop_abort_exception(RuntimeError("other failure")) is False

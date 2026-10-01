@@ -9,10 +9,10 @@ from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.pipeline.song import NativeSong
-from gear_optimizer.solver.fg_materialization_worker import FgMaterializationResult
 
 if TYPE_CHECKING:
     from gear_optimizer.pipeline.progress import ProgressTracker
+    from gear_optimizer.solver.fg_materialization_worker import FgMaterializationResult
 
 
 def prepare_fg_static(song: NativeSong) -> None:
@@ -26,50 +26,36 @@ def prepare_fg_static(song: NativeSong) -> None:
     ResponseFrontierStore.ensure_song_bundle(song)
 
 
-def prepare_ga_candidate_surface_for_fg(
-    song: NativeSong,
-    *,
-    fg_candidate_limit: int,
-) -> tuple[list[dict], int, bool]:
-    runtime = getattr(song, "runtime", song)
-    gpu_inputs = getattr(song, "gpu_inputs", song)
-    # ``ga_candidates`` carries the raw GPU-deduped candidate pool from decode (no
-    # decode-side select anymore). This is the single canonical color-folded select
-    # over that raw pool -- the FG funnel + persistence authority. It runs exactly
-    # once per song (prepare_fg_plan), then overwrites ga_candidates with the selected surface below.
-    source_candidates = runtime.decode.ga_candidates
-    preselect_count = len(source_candidates or [])
+def prepare_ga_candidate_surface_for_fg(song: NativeSong, *, fg_candidate_limit: int) -> list[dict]:
+    """The song's GA candidates selected for FG, with their stats, stored over the raw GPU-deduped pool decode left on
+    the song: the single canonical color-folded select (the FG funnel and the persistence authority), once per song."""
+    runtime, gpu_inputs = song.runtime, song.gpu_inputs
+    selected_color = str(gpu_inputs.cfg_data.get("selected_color", "") or "")
     selected = select_top_base_ga_candidates(
-        list(source_candidates or []),
+        list(runtime.decode.ga_candidates or []),
         limit=int(fg_candidate_limit),
-        registry=getattr(gpu_inputs, "registry", None),
-        minis_by_name=getattr(gpu_inputs, "minis_by_name", None),
+        registry=gpu_inputs.registry,
+        minis_by_name=gpu_inputs.minis_by_name,
         primary_color=str(gpu_inputs.meta_primary_color or ""),
         secondary_color=str(gpu_inputs.meta_secondary_color or ""),
-        selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
+        selected_color=selected_color,
     )
-    hydrated = False
     if selected:
-        hydrated = True
         hydrate_fg_candidate_stats(
             selected,
             base_stats_fixed=gpu_inputs.fixed_stats,
-            selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
-            song=song.gpu_inputs.timed_song,
-            curves=song.gpu_inputs.curves,
+            selected_color=selected_color,
+            song=gpu_inputs.timed_song,
+            curves=gpu_inputs.curves,
         )
     runtime.decode.ga_candidates = selected
     runtime.decode.fg_surface_prepared = True
-    return selected, int(preselect_count), bool(hydrated)
+    return selected
 
 
 def prepare_fg_plan(song: NativeSong) -> None:
-    runtime = getattr(song, "runtime", song)
-    fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
-    ga_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
-        song,
-        fg_candidate_limit=int(fg_candidate_limit),
-    )
+    runtime = song.runtime
+    ga_candidates = prepare_ga_candidate_surface_for_fg(song, fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT))
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     # Fused GA->FG handoff (Slice 3): the GPU owner scores FG in the GA turn from the
@@ -81,27 +67,20 @@ def prepare_fg_plan(song: NativeSong) -> None:
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(
             "FG dynamic prep did not materialize the exact response frontier plan "
-            f"for {getattr(song.config, 'task_key', '') or getattr(song.config, 'song_name', '')}"
+            f"for {song.config.task_key or song.config.song_name}"
         )
 
 
 def release_fg_song_surfaces(song: NativeSong) -> None:
-    """Release a song's ~0.5-1.5 GB FG response surfaces once its FG scoring is complete.
+    """Release a song's FG response surfaces (~0.5-1.5 GB) once its FG results are materialized.
 
-    After this job's `materialize_from_owner_score_map`, nothing else reads the per-song scoring
-    bundle, prepared plan, or owner score map -- the fused GA turn and the FG planner are the only
-    other readers and both run earlier. Left alone, each song's surface pool stays resident, pinned
-    by BOTH the per-song bundle handle and the process-global response-frontier caches, until the
-    song object is garbage-collected and the entry-count LRU evicts it. A standalone optimizer run
-    never runs the serving-mode idle sweep, so ~prep_limit songs' worth accumulates and trips the
-    memory guard after only a few dozen songs. Dropping all three references here bounds resident FG
-    surfaces to the songs actively scoring. Lossless: any later access rebuilds from the on-disk
-    bundle. Best-effort -- a cleanup error must not fail the already-complete FG job.
+    Nothing reads its scoring bundle, FG plan or owner score map afterwards (the GA turn and the FG planner ran
+    earlier). Left alone, its surfaces stay pinned by the song and by the process-wide response-frontier caches until
+    the song is collected and the caches' LRU evicts them; a standalone run has no idle sweep, so they accumulate and
+    trip the memory guard after a few dozen songs. Lossless: a later access rebuilds from the on-disk bundle.
     """
     fg = song.runtime.fg
-    if fg is None:
-        return
-    bundle = getattr(fg, "fg_response_scoring_bundle", None)
+    bundle = fg.fg_response_scoring_bundle
     if bundle is not None:
         from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
             release_fg_response_song_memory,
@@ -120,12 +99,7 @@ def apply_fg_materialization_result(
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
     """The song's FG results, and its records judged against `progress_tracker` (a run's bests) when given."""
-
-    if not isinstance(result, FgMaterializationResult):
-        raise TypeError("FG materialization worker returned an invalid result")
-
     from gear_optimizer.pipeline.progress import evaluate_fg_progress_record_update
 
-    runtime = getattr(song, "runtime", song)
-    runtime.fg.fg_results = result.results
-    runtime.db.record_info = evaluate_fg_progress_record_update(song, progress_tracker)
+    song.runtime.fg.fg_results = result.results
+    song.runtime.db.record_info = evaluate_fg_progress_record_update(song, progress_tracker)

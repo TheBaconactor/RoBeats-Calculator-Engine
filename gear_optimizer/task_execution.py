@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
-import queue
-import time
 
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.settings import persistent_worker
@@ -74,23 +72,20 @@ class TaskExecutionMixin:
             """The queue solved in this process (pipeline.solve.run_queue), posting to the run's post-processor."""
             from gear_optimizer.pipeline.solve import run_queue
             from gear_optimizer.solver.gpu_executor import get_gpu_executor
-            from gear_optimizer.pipeline.post_processor import PostSender
 
-            post_sender = PostSender(post_queue, stop_requested=self._stop_requested_now)
             executor = get_gpu_executor()
             executor.start()
             try:
                 run_queue(
                     tasks,
                     executor,
-                    post=post_sender.send,
+                    post=post_queue.put,
                     completed_songs=completed_songs,
                     memory_resume_tracker=memory_resume_tracker,
                     stop_requested=self._stop_requested_now,
                     progress_cb=self._progress_event,
                 )
             finally:
-                post_sender.close(timeout=10.0)
                 if not persistent_worker():
                     executor.stop()  # persists Taichi's offline kernel cache
 
@@ -108,26 +103,13 @@ class TaskExecutionMixin:
             return post_queue, post_proc
 
     def _stop_post_processor(self, post_queue, post_proc) -> bool:
-            """Stop the post-processor; True when it finished every song it was given without a failure."""
-            sentinel_sent = False
-            if post_queue is not None:
-                # Bounded post queues (POST_PIPELINE_QUEUE) can be full at shutdown. A single short
-                # timeout can miss the sentinel and make the join wait the full timeout.
-                deadline = time.perf_counter() + 15.0
-                while not sentinel_sent:
-                    try:
-                        post_queue.put(None, block=True, timeout=0.5)
-                        sentinel_sent = True
-                    except queue.Full:
-                        if post_proc is None or not post_proc.is_alive() or time.perf_counter() >= deadline:
-                            break
-            if post_proc is not None:
-                if not sentinel_sent:
-                    logger.warning(
-                        "[POST] Failed to enqueue shutdown sentinel in time; forcing post-processor shutdown."
-                    )
-                post_proc.join(timeout=120.0 if sentinel_sent else 5.0)
-            if post_proc is not None and post_proc.is_alive():
+            """Stop the post-processor once it handled every message; True when it stored every song it was given
+            without a failure (or never started)."""
+            if post_proc is None:
+                return True
+            post_queue.put(None)
+            post_proc.join(timeout=120.0)
+            if post_proc.is_alive():
                 post_proc.terminate()
                 post_proc.join(timeout=5.0)
-            return post_proc is None or (sentinel_sent and post_proc.exitcode == 0)
+            return post_proc.exitcode == 0

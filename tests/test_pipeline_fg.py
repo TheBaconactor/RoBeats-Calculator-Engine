@@ -202,7 +202,7 @@ def test_prepare_fg_plan_builds_the_plan_without_an_owner_round_trip(monkeypatch
     monkeypatch.setattr(
         fg_pipeline,
         "prepare_ga_candidate_surface_for_fg",
-        lambda _song, *, fg_candidate_limit: ([{"candidate": 1}], 1, False),
+        lambda _song, *, fg_candidate_limit: [{"candidate": 1}],
     )
     monkeypatch.setattr(FgPlanner, "plan_many", staticmethod(lambda *_args, **_kwargs: plan))
 

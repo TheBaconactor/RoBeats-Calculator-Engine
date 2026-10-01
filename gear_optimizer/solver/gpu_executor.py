@@ -75,10 +75,8 @@ def is_fatal_gpu_error(exc: BaseException) -> bool:
 
 
 def is_stop_abort_exception(exc: BaseException) -> bool:
-    if isinstance(exc, concurrent.futures.CancelledError):
-        return True
-    msg = str(exc or "")
-    return "GpuExecutor aborted:" in msg
+    """Whether `exc` is a GPU call stopped or refused by request_abort ("GpuExecutor aborted: <reason>")."""
+    return "GpuExecutor aborted:" in str(exc)
 
 
 def _stop_this_process(message: str) -> None:

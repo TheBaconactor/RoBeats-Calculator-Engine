@@ -1,4 +1,5 @@
 import os
+import queue
 import sys
 import types
 
@@ -14,7 +15,7 @@ def _make_minimal_app() -> GearOptimizerApp:
     app._progress = None
     app._progress_counts_driven = False
     app._stop_requested_now = lambda: False
-    app._start_post_processor = lambda _total: (object(), object())
+    app._start_post_processor = lambda _total: (queue.Queue(), object())
     app._stop_post_processor = lambda _queue, _proc: True  # every song stored
     app._set_runtime_progress_counts = lambda **_kwargs: None
     app._progress_event = lambda **_kwargs: None
@@ -38,7 +39,6 @@ def _build_tasks(*, count: int = 2):
 
 def _patch_queue(monkeypatch, run_queue) -> dict:
     """The app's run with pipeline.solve.run_queue replaced: no GPU executor, no post-processor process."""
-    from gear_optimizer.pipeline import post_processor
     from gear_optimizer.pipeline import solve as solve_module
     from gear_optimizer.solver import gpu_executor
 
@@ -51,30 +51,22 @@ def _patch_queue(monkeypatch, run_queue) -> dict:
         def stop(self):
             seen["stopped"] = True
 
-    class _Sender:
-        def __init__(self, _queue, *, stop_requested):
-            pass
-
-        def send(self, item):
-            pass
-
-        def close(self, *, timeout):
-            seen["sender_closed"] = True
-
     monkeypatch.setattr(gpu_executor, "get_gpu_executor", _Executor)
     monkeypatch.setattr(solve_module, "run_queue", run_queue)
-    monkeypatch.setattr(post_processor, "PostSender", _Sender)
     return seen
 
 
-def test_the_run_solves_the_queue_with_run_queue_and_stops_the_executor(monkeypatch):
+def test_the_run_solves_the_queue_with_run_queue_posting_to_the_post_processor(monkeypatch):
     calls = []
-    seen = _patch_queue(monkeypatch, lambda tasks, executor, **kwargs: calls.append(tasks))
+    seen = _patch_queue(monkeypatch, lambda tasks, executor, *, post, **kwargs: calls.append((tasks, post)))
     tasks = _build_tasks(count=2)
+    app = _make_minimal_app()
+    post_queue: queue.Queue = queue.Queue()
+    app._start_post_processor = lambda _total: (post_queue, object())
 
-    _make_minimal_app()._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
-    assert calls == [tasks] and seen["sender_closed"]
+    assert calls == [(tasks, post_queue.put)]
     assert seen["started"] and seen["stopped"]  # a batch run persists Taichi's offline cache
 
 

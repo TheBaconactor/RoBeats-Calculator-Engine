@@ -37,21 +37,15 @@ def ga_payload(song: NativeSong) -> dict[str, Any]:
     }
 
 
-def decode_ga_result(song: NativeSong, ga_result: Any) -> tuple[dict, list, list, list[dict]]:
-    gpu_inputs = getattr(song, "gpu_inputs", song)
-    song_key = str(song.config.task_key or song.config.song_name or "")
-    # The fused GA->FG owner continuation (Slice 3) returns
-    # {runs_payload, fg_owner_score}: the GA payload plus the owner-scored FG result
-    # map. Unpack the map onto the song for the FG worker; decode consumes the payload.
-    if not isinstance(ga_result, dict) or "runs_payload" not in ga_result:
-        raise RuntimeError(f"GPU-native GA result must be a fused {{runs_payload, fg_owner_score}} dict for {song_key}")
-    runs_payload = ga_result["runs_payload"]
-    song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
-    decode_cfg_data = dict(song.gpu_inputs.cfg_data or {})
+def decode_ga_result(song: NativeSong, ga_result: dict) -> tuple[dict, list, list, list[dict]]:
+    """The decoded GA result {runs_payload, fg_owner_score} (pipeline.solve.run_ga); the FG owner score map, scored
+    in the GA turn, goes onto the song for the FG materialization."""
+    gpu_inputs = song.gpu_inputs
+    song.runtime.fg.fg_owner_score_map = ga_result["fg_owner_score"]
     return decode_gpu_native_ga_runs_payload(
-        runs_payload=runs_payload,
+        runs_payload=ga_result["runs_payload"],
         registry=gpu_inputs.registry,
-        cfg_data=decode_cfg_data,
+        cfg_data=dict(gpu_inputs.cfg_data),
         base_stats_fixed=gpu_inputs.fixed_stats,
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
