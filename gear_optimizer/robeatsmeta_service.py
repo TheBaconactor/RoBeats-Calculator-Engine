@@ -16,6 +16,7 @@ import queue
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1446,6 +1447,24 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
         sys.stderr.write("[robeatsmeta-service] " + (fmt % args) + "\n")
 
 
+_LISTENER_FD_ENV = "ROBEATSMETA_SERVICE_LISTENER_FD"
+
+
+def _http_server(host: str, port: int) -> ThreadingHTTPServer:
+    """The service's HTTP server. After a self-update exec it serves on the listening socket the previous image
+    handed over: the port is never unbound, so a supervisor watching the port owner never starts a second service
+    (the hub's start() did, whenever its tick fell between the old image's close and the new one's bind)."""
+    inherited = os.environ.pop(_LISTENER_FD_ENV, "")
+    if not inherited:
+        return ThreadingHTTPServer((host, port), RoBeatsMetaServiceHandler)
+    server = ThreadingHTTPServer((host, port), RoBeatsMetaServiceHandler, bind_and_activate=False)
+    server.socket.close()
+    server.socket = socket.socket(fileno=int(inherited))
+    server.server_address = server.socket.getsockname()
+    server.server_name, server.server_port = str(host), int(port)
+    return server
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="RoBeatsMeta optimizer service")
     settings = service_settings()
@@ -1461,7 +1480,7 @@ def main(argv: list[str] | None = None) -> int:
     # Reclaim workspaces orphaned by a crash/SIGKILL: _solve_isolated cleans up in its finally, but
     # nothing else ever sweeps here. Safe because launchd runs a single service instance.
     shutil.rmtree(_service_run_root(), ignore_errors=True)
-    server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
+    server = _http_server(args.host, int(args.port))
     server.daemon_threads = True
     _activate_last_complete_publication(_FRONTIER_DISTRIBUTION)
     restart_revision: list[str] = []
@@ -1525,12 +1544,16 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         _stop_persistent_solve_worker()
         maintainer.stop()
-        server.server_close()
+        if not restart_revision:
+            server.server_close()
     if restart_revision:
         print(
             f"[robeatsmeta-service] restarting into fetched revision {restart_revision[0][:12]}",
             flush=True,
         )
+        # The next image serves on this listening socket (connections wait in its backlog meanwhile).
+        server.socket.set_inheritable(True)
+        os.environ[_LISTENER_FD_ENV] = str(server.socket.fileno())
         command_args = list(sys.argv[1:] if argv is None else argv)
         os.execv(
             sys.executable,

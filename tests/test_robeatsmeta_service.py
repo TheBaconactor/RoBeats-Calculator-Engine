@@ -3,7 +3,9 @@ from __future__ import annotations
 import concurrent.futures
 import io
 import json
+import os
 import queue
+import socket
 import sqlite3
 import shutil
 import subprocess
@@ -141,6 +143,81 @@ def test_external_catalog_cache_invalidates_when_a_chart_is_added(data_root, mon
         "First Imported Chart",
         "Second Imported Chart",
     ]
+
+
+def test_the_next_image_serves_on_the_handed_over_listening_socket(monkeypatch):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    monkeypatch.setenv(service._LISTENER_FD_ENV, str(listener.fileno()))
+    server = service._http_server("127.0.0.1", listener.getsockname()[1])
+    try:
+        assert server.socket.fileno() == listener.fileno()
+        assert server.server_address == listener.getsockname()
+        assert service._LISTENER_FD_ENV not in os.environ
+    finally:
+        server.socket.detach()
+        listener.close()
+
+
+def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    calls: list[str] = []
+    maintainer_kwargs: dict[str, object] = {}
+    executed: dict[str, object] = {}
+
+    class _Server:
+        daemon_threads = False
+
+        def __init__(self, *_args, **_kwargs):
+            self.socket = listener
+
+        def serve_forever(self):
+            maintainer_kwargs["restart_requested"]("abc123def4567890")
+
+        def shutdown(self):
+            calls.append("shutdown")
+
+        def server_close(self):
+            calls.append("close")
+
+    class _Thread:
+        def __init__(self, *, target, **_kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    class _Maintainer:
+        def __init__(self, **kwargs):
+            maintainer_kwargs.update(kwargs)
+
+        def serve_forever(self):
+            pass
+
+        def stop(self):
+            calls.append("stop")
+
+    monkeypatch.delenv(service._LISTENER_FD_ENV, raising=False)
+    monkeypatch.setattr(service, "ThreadingHTTPServer", _Server)
+    monkeypatch.setattr(service.threading, "Thread", _Thread)
+    monkeypatch.setattr(service, "_activate_last_complete_publication", lambda _state: True)
+    monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
+    monkeypatch.setattr(service, "_reap_idle_persistent_worker_forever", lambda: None)
+    monkeypatch.setattr(service, "_finish_server_code_update", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        service.os, "execv", lambda _exe, args: executed.update(args=args, fd=os.environ[service._LISTENER_FD_ENV])
+    )
+    try:
+        service.main(["--host", "127.0.0.1", "--port", "0"])
+        assert calls == ["shutdown", "stop"]  # the listening socket stays open across the exec
+        assert executed["fd"] == str(listener.fileno()) and listener.get_inheritable()
+        assert executed["args"][1:3] == ["-m", "gear_optimizer.robeatsmeta_service"]
+    finally:
+        os.environ.pop(service._LISTENER_FD_ENV, None)
+        listener.close()
 
 
 def test_configured_external_library_requires_all_difficulty_directories(data_root, monkeypatch):
