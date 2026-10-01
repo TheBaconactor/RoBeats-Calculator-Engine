@@ -300,7 +300,7 @@ def _trace_timing_fields(
 
 
 def _centered_hit_window_for_exit(
-    n: int, activation_idx: int, 
+    n: int, activation_idx: int,
     legal_lo: float, legal_hi: float, real_fever_time: float, target_end_idx: int,
     perfect_floor_timestamps: np.ndarray,
 ) -> tuple[float, float, float]:
@@ -1077,7 +1077,7 @@ def _option_with_witness(
     """
     w = option["_witness"]
     centered_start_time, hit_lo, hit_hi = _centered_hit_window_for_exit(
-        int(n), int(w["activation_idx"]), 
+        int(n), int(w["activation_idx"]),
         float(w["lo"]), float(w["hi"]),
         float(real_fever_time), int(w["target_end"]),
         perfect_floor_timestamps,
