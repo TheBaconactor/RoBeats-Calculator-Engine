@@ -1,6 +1,3 @@
-from __future__ import annotations
-import logging
-
 """
 TeamBuff helpers (tier definitions, normalization, and baseline resolution).
 
@@ -14,9 +11,10 @@ This module centralizes:
 - the fixed optimizer baseline TeamBuff (OPTIMIZER_BASELINE_TEAM_BUFF)
 """
 
+from __future__ import annotations
+
 from typing import Any, Sequence
 
-logger = logging.getLogger(__name__)
 TEAM_BUFF_TIER_EFFECTS: dict[str, dict[str, int]] = {
     "NONE": {"PP": 0, "Elem": 0},
     "T1": {"PP": 25, "Elem": 35},
@@ -96,8 +94,8 @@ def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     if not tier:
         return {}
 
-    pp_add = int(tier.get("PP", 0) or 0)
-    elem_add = int(tier.get("Elem", 0) or 0)
+    pp_add = tier["PP"]
+    elem_add = tier["Elem"]
     out: dict[str, int] = {}
     if pp_add:
         out["Perfect Points"] = pp_add

@@ -14,13 +14,13 @@ def _row(song_name, gear, score, *, gems, mini="Mini", difficulty=None):
         "details_json": json.dumps(
             {
                 "GemCounts": {
-                    "PP": int(gems.get("PP", 0)),
-                    "CM": int(gems.get("CM", 0)),
-                    "FM": int(gems.get("FM", 0)),
-                    "Element": int(gems.get("Element", 0)),
+                    "Perfect Points": gems.get("PP", 0),
+                    "Combo Multiplier": gems.get("CM", 0),
+                    "Fever Multiplier": gems.get("FM", 0),
+                    "Element": gems.get("Element", 0),
                 },
-                "FT": int(gems.get("FT", 0)),
-                "FF": int(gems.get("FF", 0)),
+                "FT": gems.get("FT", 0),
+                "FF": gems.get("FF", 0),
             }
         ),
         **({"difficulty": difficulty} if difficulty else {}),
