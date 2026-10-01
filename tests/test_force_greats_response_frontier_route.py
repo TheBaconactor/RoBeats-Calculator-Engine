@@ -450,7 +450,7 @@ def test_prepare_fg_static_loads_and_session_prunes_canonical_scoring_bundle(mon
     from types import SimpleNamespace
 
     import gear_optimizer.pipeline.fg as stages
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_types
 
     seen: dict[str, object] = {"session_prune": 0}
     canonical_keys = ((0, 0), (1, 1))
@@ -461,7 +461,7 @@ def test_prepare_fg_static_loads_and_session_prunes_canonical_scoring_bundle(mon
         return bundle
 
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _fake_load_bundle)
-    monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
+    monkeypatch.setattr(response_cache_types, "all_response_stat_keys", lambda: canonical_keys)
 
     def _fake_session_prune(loaded_bundle, curves):
         assert loaded_bundle is bundle

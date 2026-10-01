@@ -36,7 +36,7 @@ REWRITE_STAGE5_VERSION = "fg-response-frontier-visible-first-v31+logic-8c948e5e1
 )
 def test_inner_reductions_reuse_exact_persisted_frontiers(tmp_path, monkeypatch, persisted_version, current_version):
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache.reset_fg_response_frontier_payload_cache()
+    response_cache_store.reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", persisted_version)
     previous = response_cache.build_or_load_response_frontier_payload(
@@ -44,7 +44,7 @@ def test_inner_reductions_reuse_exact_persisted_frontiers(tmp_path, monkeypatch,
     )
     assert previous.cache_source == "built"
     previous_path = Path(previous.disk_path)
-    response_cache.reset_fg_response_frontier_payload_cache()
+    response_cache_store.reset_fg_response_frontier_payload_cache()
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
 
     scoring = response_cache.load_response_frontier_scoring_bundle(

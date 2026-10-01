@@ -133,7 +133,7 @@ def build_fixed_timing_fg_replays(
         )
 
     from ...solver.scoring.exact_rescore import score_base_exact_batch
-    from ..taichi_gem.force_greats.response_cache import release_fg_response_song_memory
+    from ..taichi_gem.force_greats.response_cache_store import release_fg_response_song_memory
     from ..taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from .reducer import FgTraceMaterializationCache, materialize_force_payload_from_response_frontier
 

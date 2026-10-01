@@ -12,10 +12,10 @@ class ResponseFrontierStore:
     @staticmethod
     def ensure_song_bundle(song: NativeSong) -> Any:
         from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-            all_response_stat_keys,
             load_response_frontier_scoring_bundle,
             session_prune_scoring_bundle,
         )
+        from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
 
         timed_song = song.gpu_inputs.timed_song
         if timed_song is None:

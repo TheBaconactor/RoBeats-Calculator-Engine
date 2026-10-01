@@ -67,10 +67,8 @@ def _solve_one_batch(
 
 def _prebuild_response_bundle(song, curves, base_stats_list, *, total_budget: int) -> None:
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        build_or_load_response_frontier_payload,
-        reset_fg_response_frontier_payload_cache,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import build_or_load_response_frontier_payload
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
 
     _ = base_stats_list, total_budget
     reset_fg_response_frontier_payload_cache()

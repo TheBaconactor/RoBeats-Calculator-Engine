@@ -282,7 +282,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
         raise AssertionError("session prune must not expand V30 logical rows")
 
     monkeypatch.setattr(response_cache, "load_first_surface_scoring_patterns", _load_compact)
-    monkeypatch.setattr(response_cache, "load_first_surface_scoring_rows", _expanded_loader_must_not_run)
+    monkeypatch.setattr(response_cache, "load_first_surface_scoring_rows", _expanded_loader_must_not_run, raising=False)
     bundle = FgResponseFrontierScoringBundle(
         cache_key=("test",),
         frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),

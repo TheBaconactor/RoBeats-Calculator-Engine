@@ -101,7 +101,7 @@ def materialize_fg_request(request: FgMaterializationRequest) -> FgMaterializati
     finally:
         # Geometry/frontier memo entries are useful only inside this song's materialization.
         # Drop them before the worker accepts another song so a long live run stays bounded.
-        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
             release_fg_response_song_memory,
         )
 
