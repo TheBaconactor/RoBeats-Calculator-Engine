@@ -166,8 +166,10 @@ def _reduce_first_frontier_group(
         raise ValueError("FG region-table group cannot be empty")
     canonical = context.canonical
     representative = group_items[0]
-    perfect_run_starts, perfect_run_ends = _exact_action_fill_runs(representative[5])
-    late_run_starts, late_run_ends = _exact_action_fill_runs(representative[5], representative[9])
+    fill_runs = (
+        *_exact_action_fill_runs(representative[5]),
+        *_exact_action_fill_runs(representative[5], representative[9]),
+    )
     real_time_index = np.ascontiguousarray(
         np.asarray(
             [canonical.real_time_index_by_source[int(item[0])] for item in group_items],
@@ -175,33 +177,11 @@ def _reduce_first_frontier_group(
         )
     )
     common = {
-        "n": int(context.n),
+        "context": context,
         "chunk": group_items,
-        "timestamps": context.timestamps,
-        "perfect_candidate_timestamps": context.perfect_candidate_timestamps,
-        "great_candidate_timestamps": context.great_candidate_timestamps,
-        "perfect_floor_timestamps": context.perfect_floor_timestamps,
-        "great_floor_timestamps": context.great_floor_timestamps,
-        "lanes": context.lanes,
-        "prefix_perfect_hit": context.prefix_perfect_hit,
-        "prefix_perfect_valid": context.prefix_perfect_valid,
-        "prefix_late_hit": context.prefix_late_hit,
-        "prefix_late_valid": context.prefix_late_valid,
-        "region_hit_token_to_id": context.region_hit_token_to_id,
-        "region_perfect_end_by_real_time": context.region_perfect_end_by_real_time,
-        "region_great_end_by_real_time": context.region_great_end_by_real_time,
-        "capped_perfect_edge_e": canonical.capped_perfect_edge_e,
-        "capped_late_edge_e": canonical.capped_late_edge_e,
-        "capped_eg_perfect_e": canonical.capped_eg_perfect_e,
-        "capped_eg_late_e": canonical.capped_eg_late_e,
         "real_time_index": real_time_index,
-        "use_forced_great_timing": bool(context.use_forced_great_timing),
-        "perfect_run_starts": perfect_run_starts,
-        "perfect_run_ends": perfect_run_ends,
-        "late_run_starts": late_run_starts,
-        "late_run_ends": late_run_ends,
+        "fill_runs": fill_runs,
         "region_table": region_table,
-        "workspace_plan": context.workspace_plan,
     }
     geometry_count = len(group_items)
     if int(reducer_threads) <= 1:

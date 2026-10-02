@@ -333,45 +333,19 @@ def _first_frontier_reducer_executor(max_workers: int) -> concurrent.futures.Thr
 
 def _first_frontier_result_from_precomputed_end_indices(
     *,
-    n: int,
-    action_count: int,
-    non_fever_base: int,
-    raw_fever_fill: float,
-    action_k: np.ndarray,
-    later_fill: np.ndarray,
-    first_fill: np.ndarray,
-    later_forced: np.ndarray,
-    first_forced: np.ndarray,
-    later_activation_forced: np.ndarray,
-    first_activation_forced: np.ndarray,
-    perfect_run_starts: np.ndarray,
-    perfect_run_ends: np.ndarray,
-    late_run_starts: np.ndarray,
-    late_run_ends: np.ndarray,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    lanes: np.ndarray,
-    prefix_perfect_hit: np.ndarray,
-    prefix_perfect_valid: np.ndarray,
-    prefix_late_hit: np.ndarray,
-    prefix_late_valid: np.ndarray,
-    region_hit_token_to_id: np.ndarray,
-    region_perfect_end_by_real_time: np.ndarray,
-    region_great_end_by_real_time: np.ndarray,
-    capped_perfect_edge_e: np.ndarray,
-    capped_late_edge_e: np.ndarray,
-    capped_eg_perfect_e: np.ndarray,
-    capped_eg_late_e: np.ndarray,
-    real_fever_time: float,
+    context,
+    item: tuple,
     real_time_idx: int,
-    use_forced_great_timing: bool,
+    fill_runs: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     region_table: tuple,
     workspace: _FirstFrontierStampWorkspace,
 ) -> FgResponseFrontierResult:
+    """Reduce one canonical geometry. `item` = (source index, non-Fever base, raw fill, fever time, then the seven
+    action arrays); `context` is the song's _FirstFrontierGroupContext; `fill_runs` = the Perfect and late-Great
+    fill runs of the item's action table."""
     successor_epoch = workspace.next_successor_epoch()
+    region_perfect_end_by_real_time = context.region_perfect_end_by_real_time
+    region_great_end_by_real_time = context.region_great_end_by_real_time
     if (
         int(region_perfect_end_by_real_time.ndim) != 2
         or int(region_great_end_by_real_time.ndim) != 2
@@ -380,8 +354,10 @@ def _first_frontier_result_from_precomputed_end_indices(
         raise ValueError("FG region endpoint tables must be aligned two-dimensional arrays")
     if int(real_time_idx) < 0 or int(real_time_idx) >= int(region_perfect_end_by_real_time.shape[0]):
         raise ValueError("FG region real-time index escaped its endpoint tables")
-    region_perfect_end_by_hit = region_perfect_end_by_real_time[int(real_time_idx)]
-    region_great_end_by_hit = region_great_end_by_real_time[int(real_time_idx)]
+    action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
+        np.ascontiguousarray(values, dtype=np.int32) for values in item[4:11]
+    )
+    canonical = context.canonical
     (
         first_rows,
         states_evaluated,
@@ -393,10 +369,10 @@ def _first_frontier_result_from_precomputed_end_indices(
         branch_a_epoch,
     ) = (
         _first_frontier_from_precomputed_end_indices_numba(
-            int(n),
-            int(action_count),
+            int(context.n),
+            int(later_fill.shape[0]),
             int(action_k.shape[0]),
-            float(raw_fever_fill),
+            float(item[2]),
             action_k,
             later_fill,
             first_fill,
@@ -404,27 +380,24 @@ def _first_frontier_result_from_precomputed_end_indices(
             first_forced,
             later_activation_forced,
             first_activation_forced,
-            perfect_run_starts,
-            perfect_run_ends,
-            late_run_starts,
-            late_run_ends,
-            timestamps,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
-            perfect_floor_timestamps,
-            great_floor_timestamps,
-            lanes,
-            prefix_perfect_hit,
-            prefix_perfect_valid,
-            prefix_late_hit,
-            prefix_late_valid,
-            capped_perfect_edge_e,
-            capped_late_edge_e,
-            capped_eg_perfect_e,
-            capped_eg_late_e,
-            float(real_fever_time),
+            *fill_runs,
+            context.timestamps,
+            context.perfect_candidate_timestamps,
+            context.great_candidate_timestamps,
+            context.perfect_floor_timestamps,
+            context.great_floor_timestamps,
+            context.lanes,
+            context.prefix_perfect_hit,
+            context.prefix_perfect_valid,
+            context.prefix_late_hit,
+            context.prefix_late_valid,
+            canonical.capped_perfect_edge_e,
+            canonical.capped_late_edge_e,
+            canonical.capped_eg_perfect_e,
+            canonical.capped_eg_late_e,
+            float(item[3]),
             int(real_time_idx),
-            1 if bool(use_forced_great_timing) else 0,
+            1 if bool(context.use_forced_great_timing) else 0,
             # Head cone-dominance size gate, read at call time so tools/verify/validate_cone_lossless.py can
             # disable the prune (no njit recompile) and compare against the full reduce-only frontier.
             int(_rb_numba._HEAD_FILTER_MIN_SURFACES),
@@ -436,9 +409,9 @@ def _first_frontier_result_from_precomputed_end_indices(
             region_table[5],
             region_table[6],
             region_table[7],
-            region_hit_token_to_id,
-            region_perfect_end_by_hit,
-            region_great_end_by_hit,
+            context.region_hit_token_to_id,
+            region_perfect_end_by_real_time[int(real_time_idx)],
+            region_great_end_by_real_time[int(real_time_idx)],
             workspace.pair_values,
             workspace.pair_stamps,
             workspace.pair_touched,
@@ -461,95 +434,38 @@ def _first_frontier_result_from_precomputed_end_indices(
         first_frontier=SurfaceRowsFirstFrontier(first_rows),
         state_frontiers={},
         states_evaluated=int(states_evaluated),
-        actions=int(action_count),
+        actions=int(later_fill.shape[0]),
         transitions_evaluated=0,
         generated_surfaces=int(generated_surfaces),
         retained_surfaces_total=int(retained_total),
         max_state_frontier=int(max_state_frontier),
-        non_fever_base=int(non_fever_base),
+        non_fever_base=int(item[1]),
         seconds=0.0,
     )
 
 
 def _first_frontier_results_for_precomputed_range(
     *,
-    n: int,
+    context,
     chunk: list[tuple],
     start: int,
     stop: int,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    lanes: np.ndarray,
-    prefix_perfect_hit: np.ndarray,
-    prefix_perfect_valid: np.ndarray,
-    prefix_late_hit: np.ndarray,
-    prefix_late_valid: np.ndarray,
-    region_hit_token_to_id: np.ndarray,
-    region_perfect_end_by_real_time: np.ndarray,
-    region_great_end_by_real_time: np.ndarray,
-    capped_perfect_edge_e: np.ndarray,
-    capped_late_edge_e: np.ndarray,
-    capped_eg_perfect_e: np.ndarray,
-    capped_eg_late_e: np.ndarray,
     real_time_index: np.ndarray,
-    use_forced_great_timing: bool,
-    perfect_run_starts: np.ndarray,
-    perfect_run_ends: np.ndarray,
-    late_run_starts: np.ndarray,
-    late_run_ends: np.ndarray,
+    fill_runs: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     region_table: tuple,
-    workspace_plan: _FirstFrontierWorkspacePlan,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
-    results: list[tuple[int, FgResponseFrontierResult]] = []
-    workspace = workspace_plan.thread_workspace()
-    for local_idx in range(int(start), int(stop)):
-        item = chunk[int(local_idx)]
-        source_idx = int(item[0])
-        results.append(
-            (
-                source_idx,
-                _first_frontier_result_from_precomputed_end_indices(
-                    n=int(n),
-                    action_count=int(item[5].shape[0]),
-                    non_fever_base=int(item[1]),
-                    raw_fever_fill=float(item[2]),
-                    action_k=np.ascontiguousarray(item[4], dtype=np.int32),
-                    later_fill=np.ascontiguousarray(item[5], dtype=np.int32),
-                    first_fill=np.ascontiguousarray(item[6], dtype=np.int32),
-                    later_forced=np.ascontiguousarray(item[7], dtype=np.int32),
-                    first_forced=np.ascontiguousarray(item[8], dtype=np.int32),
-                    later_activation_forced=np.ascontiguousarray(item[9], dtype=np.int32),
-                    first_activation_forced=np.ascontiguousarray(item[10], dtype=np.int32),
-                    perfect_run_starts=perfect_run_starts,
-                    perfect_run_ends=perfect_run_ends,
-                    late_run_starts=late_run_starts,
-                    late_run_ends=late_run_ends,
-                    timestamps=timestamps,
-                    perfect_candidate_timestamps=perfect_candidate_timestamps,
-                    great_candidate_timestamps=great_candidate_timestamps,
-                    perfect_floor_timestamps=perfect_floor_timestamps,
-                    great_floor_timestamps=great_floor_timestamps,
-                    lanes=lanes,
-                    prefix_perfect_hit=prefix_perfect_hit,
-                    prefix_perfect_valid=prefix_perfect_valid,
-                    prefix_late_hit=prefix_late_hit,
-                    prefix_late_valid=prefix_late_valid,
-                    region_hit_token_to_id=region_hit_token_to_id,
-                    region_perfect_end_by_real_time=region_perfect_end_by_real_time,
-                    region_great_end_by_real_time=region_great_end_by_real_time,
-                    capped_perfect_edge_e=capped_perfect_edge_e,
-                    capped_late_edge_e=capped_late_edge_e,
-                    capped_eg_perfect_e=capped_eg_perfect_e,
-                    capped_eg_late_e=capped_eg_late_e,
-                    real_fever_time=float(item[3]),
-                    real_time_idx=int(real_time_index[int(local_idx)]),
-                    use_forced_great_timing=bool(use_forced_great_timing),
-                    region_table=region_table,
-                    workspace=workspace,
-                ),
-            )
+    workspace = context.workspace_plan.thread_workspace()
+    return [
+        (
+            int(chunk[int(local_idx)][0]),
+            _first_frontier_result_from_precomputed_end_indices(
+                context=context,
+                item=chunk[int(local_idx)],
+                real_time_idx=int(real_time_index[int(local_idx)]),
+                fill_runs=fill_runs,
+                region_table=region_table,
+                workspace=workspace,
+            ),
         )
-    return results
+        for local_idx in range(int(start), int(stop))
+    ]
