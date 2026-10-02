@@ -4,10 +4,8 @@ catalog), and its GA-invariant FG preparation."""
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
 from collections import OrderedDict
-from typing import Optional
 
 import numpy as np
 
@@ -26,8 +24,6 @@ from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
-
-logger = logging.getLogger(__name__)
 
 _POOL_CACHE_MAX = 32
 _REGISTRY_CACHE_MAX = 32
@@ -94,161 +90,120 @@ def _catalog_digest(gears, song_minis) -> str:
     return digest.hexdigest()
 
 
-def prepare_native_song(task: SongTask) -> NativeSong:
-    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
-    from gear_optimizer.helpers.ga_helpers import initialize_pools
+# The GA's heuristic-seeded initial genomes: copies of the top-k items per slot.
+_INIT_HEURISTIC_COPIES = 25
+_SLOTS = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
 
-    task_key = task.label
-    ga_seed = task.ga_seed
-    run_context = task.context
-    fp = task.file_path
-    found_song_name = task.song_name
-    multi_start = run_context.multi_start
-    curves = run_context.curves
-    gears = run_context.gears
-    ga_depth = run_context.ga_depth
-    prepared_core = build_prepared_song_core(
-        fp=fp,
-        found_song_name=found_song_name,
-        minis=run_context.minis,
-    )
-    timed_song = prepared_core.song
-    song_minis = prepared_core.minis
-    meta_primary_color = timed_song.chart.primary
-    meta_secondary_color = timed_song.chart.secondary
-    fixed_stats = prepared_core.fixed_stats
-    db_context = prepared_core.db_context
-    db_key = db_context.db_key
-    p_color = timed_song.chart.primary
-    s_color = timed_song.chart.secondary
-    selected_color = p_color
-    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+
+def _ga_registry(gears, song_minis, primary: str, secondary: str):
+    """The song's item registry, its GPU arrays and the GA's initial-heuristic top-k items, cached per pool key."""
+    from gear_optimizer.helpers.ga_helpers import initialize_pools
+    from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
+    from gear_optimizer.solver.taichi_gem.fields import GA_INIT_HEURISTIC_K
+
     # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
     targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
-    pool_key = (str(p_color), str(s_color), tuple(slots), targeting_minis, _catalog_digest(gears, song_minis))
-    def _build_pools():
-        return initialize_pools(gears, song_minis, p_color, slots, s_color=s_color)
-
+    pool_key = (primary, secondary, _SLOTS, targeting_minis, _catalog_digest(gears, song_minis))
     gear_pool, mini_pool = _prep_cache_get_or_build(
         _POOL_CACHE,
         pool_key,
-        _build_pools,
+        lambda: initialize_pools(gears, song_minis, primary, list(_SLOTS), s_color=secondary),
         cache_name="pools",
         maxsize=_POOL_CACHE_MAX,
     )
 
-    def _build_registry_gpu():
-        registry = ItemRegistry(gear_pool, mini_pool, slots)
-        gpu_data = registry.to_gpu_arrays()
-        return registry, gpu_data
+    def build_registry():
+        registry = ItemRegistry(gear_pool, mini_pool, list(_SLOTS))
+        return registry, registry.to_gpu_arrays()
 
     registry, gpu_data = _prep_cache_get_or_build(
-        _REGISTRY_GPU_CACHE,
-        pool_key,
-        _build_registry_gpu,
-        cache_name="registry",
-        maxsize=_REGISTRY_CACHE_MAX,
-    )
-    cfg_data = {
-        "selected_color": selected_color,
-        "primary_color": str(p_color or ""),
-        "secondary_color": str(s_color or ""),
-        "fg_require_stats": True,
-    }
-    base_fixed_stats_arr = build_stats_array(fixed_stats)
-    num_runs = max(1, int(multi_start))
-    ga_depth = int(ga_depth or 0)
-    if ga_depth <= 0:
-        ga_depth = 1
-    gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
-    n_genomes = int(GA_POPULATION_SIZE)
-    init_heuristic_topk: Optional[np.ndarray] = None
-    init_heuristic_k = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HEURISTIC_K)
-    init_heuristic_copies = 25
-    from gear_optimizer.solver.genetic_pipeline import (
-        build_ga_init_heuristic_topk,
+        _REGISTRY_GPU_CACHE, pool_key, build_registry, cache_name="registry", maxsize=_REGISTRY_CACHE_MAX
     )
 
-    if init_heuristic_k > 0:
-        cache_key = (pool_key, int(init_heuristic_k))
-
-        def _build_init_heuristic_topk():
-            built = build_ga_init_heuristic_topk(
-                    item_stats=gpu_data["item_stats"],
-                    slot_start=gpu_data["slot_start"],
-                    slot_count=gpu_data["slot_count"],
-                    primary_color=str(p_color or ""),
-                    secondary_color=str(s_color or ""),
-                    heuristic_k=int(init_heuristic_k),
-                    n_slots=9,
-                )
-            if built is None:
-                raise RuntimeError("GA initial heuristic builder returned None for an enabled heuristic")
-            return np.asarray(built, dtype=np.int32)
-
-        init_heuristic_topk = _prep_cache_get_or_build(
-            _INIT_HEURISTIC_TOPK_CACHE,
-            cache_key,
-            _build_init_heuristic_topk,
-            cache_name="heur",
-            maxsize=_INIT_HEURISTIC_CACHE_MAX,
-        )
-    if init_heuristic_topk is None or init_heuristic_k <= 0:
-        init_heuristic_topk = None
-        init_heuristic_k = 0
-        init_heuristic_copies = 0
-    color_flags = build_color_flags(p_color, s_color, selected_color)
-    fg_gear_name_rank, fg_mini_sig_id = effective_tables_for_context(
-        registry,
-        primary_color=str(p_color or ""),
-        secondary_color=str(s_color or ""),
-        selected_color=str(selected_color or ""),
-    )
-    song = NativeSong(
-        config=NativeSongConfig(
-            fp=str(fp),
-            song_name=str(found_song_name),
-            task_key=str(task_key),
-            ga_seed=int(ga_seed) if ga_seed is not None else None,
-            db_key=str(db_key),
-        ),
-        gpu_inputs=NativeSongGPUInputs(
-            curves=curves,
-            minis_by_name={mini.name: mini for mini in song_minis},
-            timed_song=timed_song,
-            meta_primary_color=meta_primary_color,
-            meta_secondary_color=meta_secondary_color,
-            fixed_stats=fixed_stats,
-            registry=registry,
-            cfg_data=cfg_data,
-            color_flags=color_flags,
-            gens_per_run=int(gens_per_run),
-            num_runs=int(num_runs),
-            n_genomes=int(n_genomes),
+    def build_heuristic_topk():
+        built = build_ga_init_heuristic_topk(
             item_stats=gpu_data["item_stats"],
             slot_start=gpu_data["slot_start"],
             slot_count=gpu_data["slot_count"],
-            base_fixed_stats_arr=np.asarray(base_fixed_stats_arr, dtype=np.int32),
+            primary_color=primary,
+            secondary_color=secondary,
+            heuristic_k=GA_INIT_HEURISTIC_K,
+            n_slots=9,
+        )
+        return np.asarray(built, dtype=np.int32)
+
+    topk = _prep_cache_get_or_build(
+        _INIT_HEURISTIC_TOPK_CACHE,
+        (pool_key, GA_INIT_HEURISTIC_K),
+        build_heuristic_topk,
+        cache_name="heur",
+        maxsize=_INIT_HEURISTIC_CACHE_MAX,
+    )
+    return registry, gpu_data, topk
+
+
+def prepare_native_song(task: SongTask) -> NativeSong:
+    """The task's song ready for its GA: the GA inputs (the meta GA selects the song's primary element), the FG
+    static preparation, and the timeline frontier payload built or loaded here, off the GPU owner thread."""
+    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.taichi_gem.fields import GA_INIT_HEURISTIC_K
+
+    context = task.context
+    core = build_prepared_song_core(fp=task.file_path, found_song_name=task.song_name, minis=context.minis)
+    timed_song = core.song
+    primary, secondary = timed_song.chart.primary, timed_song.chart.secondary
+    registry, gpu_data, init_heuristic_topk = _ga_registry(context.gears, core.minis, primary, secondary)
+    fg_gear_name_rank, fg_mini_sig_id = effective_tables_for_context(
+        registry, primary_color=primary, secondary_color=secondary, selected_color=primary
+    )
+    num_runs = max(1, context.multi_start)
+    song = NativeSong(
+        config=NativeSongConfig(
+            fp=task.file_path,
+            song_name=task.song_name,
+            task_key=task.label,
+            ga_seed=task.ga_seed,
+            db_key=core.db_context.db_key,
+        ),
+        gpu_inputs=NativeSongGPUInputs(
+            curves=context.curves,
+            minis_by_name={mini.name: mini for mini in core.minis},
+            timed_song=timed_song,
+            meta_primary_color=primary,
+            meta_secondary_color=secondary,
+            fixed_stats=core.fixed_stats,
+            registry=registry,
+            cfg_data={
+                "selected_color": primary,
+                "primary_color": primary,
+                "secondary_color": secondary,
+                "fg_require_stats": True,
+            },
+            color_flags=build_color_flags(primary, secondary, primary),
+            gens_per_run=max(1, (max(1, context.ga_depth) + num_runs - 1) // num_runs),
+            num_runs=num_runs,
+            n_genomes=GA_POPULATION_SIZE,
+            item_stats=gpu_data["item_stats"],
+            slot_start=gpu_data["slot_start"],
+            slot_count=gpu_data["slot_count"],
+            base_fixed_stats_arr=np.asarray(build_stats_array(core.fixed_stats), dtype=np.int32),
             init_heuristic_topk=init_heuristic_topk,
-            init_heuristic_k=int(init_heuristic_k),
-            init_heuristic_copies=int(init_heuristic_copies),
+            init_heuristic_k=GA_INIT_HEURISTIC_K,
+            init_heuristic_copies=_INIT_HEURISTIC_COPIES,
             fg_gear_name_rank=fg_gear_name_rank,
             fg_mini_sig_id=fg_mini_sig_id,
         ),
         runtime=NativeSongRuntimeState(
             db=NativeSongDBState(
-                db_best_score=db_context.best_score,
-                db_best_fg_score=db_context.best_fg_score,
-                db_baseline_valid=db_context.valid,
+                db_best_score=core.db_context.best_score,
+                db_best_fg_score=core.db_context.best_fg_score,
+                db_baseline_valid=core.db_context.valid,
             ),
         ),
     )
     prepare_fg_static(song)
-    # Hydrate the in-memory timeline-frontier payload cache from this prep worker so
-    # the owner thread's upload at the GA turn hits the "memory" branch instead of
-    # re-reading the .npz from disk at the song boundary (host-side: no Taichi; a payload
-    # the startup cache lacks is built and persisted here, off the owner).
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-
+    # Hydrate the in-memory timeline-frontier payload cache here (host side, no Taichi) so the GPU owner's upload at
+    # the GA turn hits memory; a payload the startup cache lacks is built and persisted here, off the owner.
     build_or_load_timeline_frontier_payload(song.gpu_inputs.timed_song, song.gpu_inputs.curves)
     return song
