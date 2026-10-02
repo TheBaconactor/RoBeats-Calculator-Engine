@@ -42,11 +42,7 @@ def prepare_ga_candidate_surface_for_fg(song: NativeSong, *, fg_candidate_limit:
     )
     if selected:
         hydrate_fg_candidate_stats(
-            selected,
-            base_stats_fixed=gpu_inputs.fixed_stats,
-            selected_color=selected_color,
-            song=gpu_inputs.timed_song,
-            curves=gpu_inputs.curves,
+            selected, selected_color=selected_color, song=gpu_inputs.timed_song, curves=gpu_inputs.curves
         )
     runtime.decode.ga_candidates = selected
     runtime.decode.fg_surface_prepared = True

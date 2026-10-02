@@ -43,7 +43,7 @@ def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_geno
         },
     }
 
-    hydrate_fg_candidate_stats([cand], base_stats_fixed={}, selected_color="Rush")
+    hydrate_fg_candidate_stats([cand], selected_color="Rush")
 
     stats = cand["Data"]["Stats"]
     assert cand["Data"]["BaseStats"]["Perfect Points"] == 10
@@ -87,7 +87,6 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
 
     hydrate_fg_candidate_stats(
         [cand],
-        base_stats_fixed={},
         selected_color="Rush",
         song=song,
         curves=curves,
@@ -135,7 +134,6 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_pat
 
     hydrate_fg_candidate_stats(
         [cand],
-        base_stats_fixed={},
         selected_color="Rush",
         song=song,
         curves=curves,

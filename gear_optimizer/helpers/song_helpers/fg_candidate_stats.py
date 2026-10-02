@@ -1,203 +1,54 @@
+"""The GA candidates selected for FG, given their gem-applied stats and canonical base scores."""
+
 from __future__ import annotations
 
-import numpy as np
-
-from gear_optimizer.gamedata import Gear, SongMini, StatCurves
+from gear_optimizer.gamedata import StatCurves
 from ...core.gem_defs import element_gem_count
-from ...core.utils import get_selected_element, safe_int
-from ...solver.base_stats import build_stats_dict, build_stats_list
+from ...core.utils import get_selected_element
 from ...solver.scoring.exact_rescore import score_stats_exact_batch
 from ...solver.timing_envelope import TimedSong
-from ...stats import apply_gems, gems, total
-
-
-
-def _as_genome(candidate: dict) -> list[Gear | SongMini | None]:
-    genome = candidate.get("Genome")
-    if isinstance(genome, list) and genome:
-        out = list(genome[:9])
-        return out + [None] * (9 - len(out))
-    gear = list(candidate.get("Gear") or [])[:6]
-    minis = list(candidate.get("Minis") or [])[:3]
-    return gear + [None] * (6 - len(gear)) + minis + [None] * (3 - len(minis))
-
-
-def _candidate_genome(candidate: dict) -> list[Gear | SongMini | None]:
-    genome = candidate.get("Genome")
-    if isinstance(genome, list) and genome:
-        return _as_genome(candidate)
-
-    registry = candidate.get("_ga_registry")
-    genome_ids = candidate.get("GenomeIDs")
-    if registry is not None and genome_ids is not None:
-        genome = registry.decode_genome(np.asarray(genome_ids, dtype=np.int32))
-        if isinstance(genome, list) and genome:
-            candidate["Genome"] = genome
-            return _as_genome(candidate)
-
-    return _as_genome(candidate)
-
-
-def _candidate_gem_config(cand: dict, data: dict) -> tuple[int, int, dict, int, int, int, int]:
-    """Read the candidate's (FT, FF, GemCounts, per-type gem counts) with the
-    data-then-candidate precedence the hydration contract defines."""
-    ft = int(data.get("FT", cand.get("FT", 0) or 0) or 0)
-    ff = int(data.get("FF", cand.get("FF", 0) or 0) or 0)
-    gem_counts = cand.get("GemCounts") or data.get("GemCounts") or {}
-    if not isinstance(gem_counts, dict):
-        gem_counts = {}
-    g_pp = safe_int(gem_counts.get("Perfect Points", 0), 0)
-    g_cm = safe_int(gem_counts.get("Combo Multiplier", 0), 0)
-    g_fm = safe_int(gem_counts.get("Fever Multiplier", 0), 0)
-    g_ov = element_gem_count(gem_counts)
-    return ft, ff, gem_counts, g_pp, g_cm, g_fm, g_ov
-
-
-def _resolve_candidate_stats(
-    cand: dict,
-    data: dict,
-    *,
-    sel: str,
-    selected_color: str,
-    ft: int,
-    ff: int,
-    g_pp: int,
-    g_cm: int,
-    g_fm: int,
-    g_ov: int,
-    base_fixed_stats,
-) -> tuple[dict, str]:
-    """Resolve the candidate's gem-applied Stats (and effective element).
-
-    Precedence: existing Data.Stats verbatim -> gems re-applied over carried
-    BaseStats -> genome-accumulated stats over the song's fixed base. Mutates
-    only data["BaseStats"] (the pre-gem row downstream FG code reads).
-    """
-    stats_existing = data.get("Stats")
-    if isinstance(stats_existing, dict) and stats_existing:
-        stats = dict(stats_existing)
-        base_stats = data.get("BaseStats")
-        if not (isinstance(base_stats, dict) and base_stats):
-            base_stats = cand.get("BaseStats")
-        if isinstance(base_stats, dict) and base_stats:
-            data["BaseStats"] = dict(base_stats)
-        return stats, sel
-
-    base_stats = data.get("BaseStats")
-    if not (isinstance(base_stats, dict) and base_stats):
-        base_stats = cand.get("BaseStats")
-
-    allocation = gems(pp=g_pp, cm=g_cm, fm=g_fm, ft=ft, ff=ff, element=g_ov)
-    if isinstance(base_stats, dict) and base_stats:
-        data["BaseStats"] = dict(base_stats)
-        return apply_gems(base_stats, allocation, str(sel)), sel
-
-    genome = _candidate_genome(cand)
-    if not sel:
-        sel = selected_color
-    stats = total(base_fixed_stats(), *(item.stats for item in genome[:9] if item is not None))
-    data["BaseStats"] = dict(stats)
-    return apply_gems(stats, allocation, str(sel)), sel
+from ...stats import apply_gems, gems
 
 
 def hydrate_fg_candidate_stats(
     candidates: list[dict],
     *,
-    base_stats_fixed: dict,
     selected_color: str,
     song: TimedSong | None = None,
     curves: StatCurves | None = None,
 ) -> None:
-    """
-    Ensure FG candidates carry `Data["Stats"]` before finder/exact-DP work.
-
-    Some GA/decode paths intentionally keep candidates lightweight and omit fully
-    materialized `Data` payloads. This helper hydrates only the retained subset so
-    downstream FG code can read a stable shape without rebuilding stats ad hoc.
-    """
+    """Give the GA candidates selected for FG (decode_gpu_native_ga_runs_payload's: the best with its Data["Stats"],
+    the GPU rows with their pre-gem Data["BaseStats"]) their gem-applied Data["Stats"] and selected element. The
+    GA's own score is kept as RawGASearchScore; with `song` and `curves` the base score becomes the exact replay of
+    the Stats."""
     if not candidates:
         return
-
-    selected_color = str(selected_color or "")
-
-    base_fixed: dict[str, int] | None = None
-
-    def _base_fixed_stats() -> dict[str, int]:
-        nonlocal base_fixed
-        if base_fixed is None:
-            base_fixed = build_stats_dict(build_stats_list(base_stats_fixed))
-        return base_fixed
-
     if (song is None) != (curves is None):
         raise ValueError("song and curves must be provided together for canonical FG candidate scores")
-
     for cand in candidates:
-        if not isinstance(cand, dict):
-            continue
-
-        data = cand.get("Data")
-        if not isinstance(data, dict):
-            data = {}
-
-        ft, ff, gem_counts, g_pp, g_cm, g_fm, g_ov = _candidate_gem_config(cand, data)
-        sel = get_selected_element(data, "") or get_selected_element(cand, "") or str(selected_color or "")
-        stats, sel = _resolve_candidate_stats(
-            cand,
-            data,
-            sel=sel,
-            selected_color=selected_color,
-            ft=ft,
-            ff=ff,
-            g_pp=g_pp,
-            g_cm=g_cm,
-            g_fm=g_fm,
-            g_ov=g_ov,
-            base_fixed_stats=_base_fixed_stats,
-        )
-
-        raw_ga_search_score = safe_int(
-            cand.get("RawGASearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)),
-            0,
-        )
-        base_score = int(raw_ga_search_score)
-        cand["RawGASearchScore"] = int(raw_ga_search_score)
-        cand["Score"] = int(base_score)
-        cand["BaseScore"] = int(base_score)
-        data["RawGASearchScore"] = int(raw_ga_search_score)
-        data["Score"] = int(base_score)
-        data["BaseScore"] = int(base_score)
-        data["FT"] = int(ft)
-        data["FF"] = int(ff)
-        data["GemCounts"] = gem_counts
+        data = cand["Data"]
+        sel = get_selected_element(data) or selected_color
+        if data.get("Stats"):
+            stats = dict(data["Stats"])
+        else:
+            data["BaseStats"] = dict(data["BaseStats"])
+            counts = data["GemCounts"]
+            allocation = gems(
+                pp=counts["Perfect Points"],
+                cm=counts["Combo Multiplier"],
+                fm=counts["Fever Multiplier"],
+                ft=data["FT"],
+                ff=data["FF"],
+                element=element_gem_count(counts),
+            )
+            stats = apply_gems(data["BaseStats"], allocation, sel)
+        score = cand["BaseScore"]
+        cand["RawGASearchScore"] = score
+        data["RawGASearchScore"] = score
         data["Selected Element"] = sel
         data["Stats"] = stats
-        cand["Data"] = data
-
     if song is None:
         return
-
-    stats_rows = []
-    candidates_with_stats = []
-    for cand in candidates:
-        if not isinstance(cand, dict):
-            continue
-        data = cand.get("Data")
-        if not isinstance(data, dict):
-            continue
-        stats = data.get("Stats")
-        if not isinstance(stats, dict) or not stats:
-            raise ValueError("FG candidate hydration produced a candidate without replayable Stats")
-        stats_rows.append(stats)
-        candidates_with_stats.append(cand)
-
-    exact_scores = score_stats_exact_batch(stats_rows, song, curves)
-    if len(exact_scores) != len(candidates_with_stats):
-        raise ValueError("FG candidate exact score batch returned the wrong number of scores")
-    for cand, base_score in zip(candidates_with_stats, exact_scores, strict=True):
-        data = cand.get("Data")
-        if not isinstance(data, dict):
-            raise ValueError("FG candidate exact score batch lost candidate Data")
-        cand["Score"] = int(base_score)
-        cand["BaseScore"] = int(base_score)
-        data["Score"] = int(base_score)
-        data["BaseScore"] = int(base_score)
+    exact_scores = score_stats_exact_batch([cand["Data"]["Stats"] for cand in candidates], song, curves)
+    for cand, score in zip(candidates, exact_scores, strict=True):
+        cand["Score"] = cand["BaseScore"] = cand["Data"]["Score"] = cand["Data"]["BaseScore"] = int(score)
