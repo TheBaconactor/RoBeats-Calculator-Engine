@@ -1,1 +1,1 @@
-"""Console UI helpers (separate process TUI)."""
+"""The batch run's console progress line."""

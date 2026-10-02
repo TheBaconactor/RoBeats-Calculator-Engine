@@ -67,11 +67,9 @@ def rotate_mini_groups_for_slot_display(groups: list[list[str]]) -> list[list[st
     """
     Rotate mini variant groups so the representative for each slot becomes the first element.
 
-    Legacy DB behavior:
-    - Minis are persisted as "variant groups" per equipped slot, e.g. [["A","B"], ["A","B"], ["C"]].
-    - Many consumers historically treated `group[0]` as the displayed/representative mini name.
-    - When a variant group repeats across slots, rotate representatives so the first elements are
-      distinct when possible (A/B, A/B, C -> A/B, B/A, C).
+    Minis are stored as "variant groups" per equipped slot, e.g. [["A","B"], ["A","B"], ["C"]], and
+    consumers show `group[0]` as the slot's mini. When a variant group repeats across slots, the
+    representatives rotate so the first elements are distinct when possible (A/B, A/B, C -> A/B, B/A, C).
 
     This preserves determinism while keeping the full variant set in each slot group.
     """
