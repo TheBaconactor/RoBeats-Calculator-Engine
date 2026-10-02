@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 import typing
 import zlib
 
@@ -65,21 +66,7 @@ class QueueTaskCoordinator:
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self.get_filter_params(run)
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
-        song_queue_limit = int(run.song_queue_limit)
-
-        _presence_lookup_cache: dict[tuple[str, ...], set[str]] = {}
-
-        def _lookup_song_presence(song_names: typing.Iterable[str]) -> set[str]:
-            names = tuple(sorted({str(name or "").strip() for name in (song_names or []) if str(name or "").strip()}))
-            if not names:
-                return set()
-            cached = _presence_lookup_cache.get(names)
-            if cached is not None:
-                return cached
-            present = _songs_in_database(names)
-            _presence_lookup_cache[names] = present
-            return present
-
+        song_queue_limit = run.song_queue_limit
         resume_seed_queue: list[SongQueueItem] = []
         resume_known_path_keys: set[str] | None = None
         resume_has_known_paths = False
@@ -139,10 +126,11 @@ class QueueTaskCoordinator:
             resume_known_path_keys = {queue_path_key(item) for item in song_queue}
         logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={run.difficulty})")
         song_names_present_in_db: set[str] = set()
-        try:
-            song_names_present_in_db = _lookup_song_presence((item[1] for item in song_queue))
-        except Exception as exc:
-            logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
+        if song_queue:
+            try:
+                song_names_present_in_db = _songs_in_database({name for _fp, name, _difficulty in song_queue})
+            except (sqlite3.Error, schema.StoreVersionError) as exc:
+                logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
         finalized = finalize_song_queue(
             discovered_queue=song_queue,
