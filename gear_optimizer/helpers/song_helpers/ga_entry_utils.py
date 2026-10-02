@@ -72,9 +72,8 @@ def candidate_loadout_hash(
     primary_color: str = "",
     secondary_color: str = "",
     selected_color: str = "",
-    mutate: bool = True,
 ) -> str | None:
-    """Resolve a candidate to the same song-context hash used by DB persistence."""
+    """Resolve a candidate to the same song-context hash used by DB persistence (the candidate is not changed)."""
     if not isinstance(candidate, dict):
         return None
 
@@ -82,14 +81,7 @@ def candidate_loadout_hash(
     if explicit:
         return str(explicit)
 
-    def _remember(loadout_hash: str) -> str:
-        loadout_hash = str(loadout_hash)
-        if mutate and loadout_hash:
-            candidate["loadout_hash"] = loadout_hash
-            candidate["_resolved_loadout_hash"] = loadout_hash
-        return loadout_hash
-
-    gear_names, mini_names = materialize_candidate_names(candidate, registry=registry, mutate=mutate)
+    gear_names, mini_names = materialize_candidate_names(candidate, registry=registry, mutate=False)
     if not gear_names and not mini_names:
         return ga_candidate_key(candidate.get("GenomeIDs"))
 
@@ -109,8 +101,8 @@ def candidate_loadout_hash(
             effective_mini_signature_for_name(str(name), minis_by_name, primary_color, secondary_color, selected_color)
             for name in mini_names
         ]
-        return _remember(effective_loadout_hash_from_names(list(gear_names), mini_sigs))
+        return effective_loadout_hash_from_names(list(gear_names), mini_sigs)
 
     from .loadout_hashing import resolve_loadout_hash
 
-    return _remember(resolve_loadout_hash(gear_names, mini_names))
+    return resolve_loadout_hash(gear_names, mini_names)

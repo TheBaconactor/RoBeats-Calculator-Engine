@@ -28,7 +28,6 @@ def select_top_base_ga_candidates(
             primary_color=primary_color,
             secondary_color=secondary_color,
             selected_color=selected_color,
-            mutate=False,
         )
         if not loadout_hash:
             continue
