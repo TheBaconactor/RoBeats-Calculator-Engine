@@ -284,6 +284,7 @@ def test_reducer_payload_accepts_hoisted_song_inputs_byte_identical(monkeypatch)
         great_candidates=[0.0],
         perfect_floor=[0.0],
         great_floor=[0.0],
+        late_great_floor=None,
         lanes=[0],
         use_forced_great_timing=True,
     )

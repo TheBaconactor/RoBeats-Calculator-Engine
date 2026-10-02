@@ -12,6 +12,7 @@ The song's timing mode (song.mode) is the timing the replay answers: zero_ms put
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from heapq import nsmallest
@@ -28,11 +29,13 @@ from ...core.utils import get_selected_element, safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...gamedata import Gear, Mini, SongMini, StatCurves, load_gears, load_minis, song_minis
 from ...settings import paths
+from ...solver.fg_response_scoring.note_graph import UnplayableTrace
 from ...solver.timing_envelope import TimedSong
 from ...stats import total
 from .fg_payload import require_response_surface
 from .song_config import baseline_fixed_stats
 
+logger = logging.getLogger(__name__)
 _SOURCE_KEYS = ("source_score", "source_fg_base_score", "source_fg_score")
 
 
@@ -665,7 +668,14 @@ def build_team_buff_tier_db_batches(
             }
             if surface != "fg":
                 row["score"] = scores["score"]
-                row["details"] = _tier_details(orig, base_witnesses.get(tier, {}).get(h), tier, song, curves)
+                try:
+                    row["details"] = _tier_details(orig, base_witnesses.get(tier, {}).get(h), tier, song, curves)
+                except UnplayableTrace as exc:
+                    if song.mode != "frame_robust":
+                        raise
+                    # As an unplayable FG plan's loadout gets no FG row: no frame timing plays this Base plan.
+                    logger.warning("%s: no %s row for %s, its Base plan is unplayable: %s", song.chart.name, tier, h, exc)
+                    continue
             if surface != "meta":
                 witness = fg_witnesses.get(tier, {}).get(h)
                 row["fg_score"] = scores["fg_score"]

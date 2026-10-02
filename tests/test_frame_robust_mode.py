@@ -14,12 +14,16 @@ import numpy as np
 import pytest
 
 from gear_optimizer.chart import load_chart
+from gear_optimizer.rules import FEVER_FILL_PER_NOTE, MAX_STAT
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_song_cache_key
 from gear_optimizer.solver.timing_envelope import (
     FRAME_MARGIN_MS,
     HELD_TAIL_WINDOW_SCALE,
+    fever_fill_is_order_sensitive,
+    fever_fill_raw,
     fever_window_times,
     judgment_bounds,
+    perfect_window_envelopes,
     time_song,
 )
 
@@ -56,6 +60,54 @@ def test_song_has_its_own_envelopes_and_cache_identity() -> None:
     assert np.array_equal(robust.perfect_floor, window.perfect_floor)  # early edges do not move
     assert robust.timeline_key != window.timeline_key
     assert fg_response_frontier_song_cache_key(robust) != fg_response_frontier_song_cache_key(window)
+
+
+def test_late_great_floor_starts_at_the_band() -> None:
+    # perfect_window plans a late Great from 1 ms past its latest Perfect. frame_robust's latest Perfect ends a margin
+    # early and a hit in between is Perfect or Great by the frame, so its late Greats start at the band itself.
+    ts = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
+    types = np.asarray([1, 3, 2], dtype=np.int16)
+    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust")
+    assert np.array_equal(window.late_great_floor, window.perfect_candidates + np.float32(0.001))
+    assert np.rint((robust.late_great_floor.astype(np.float64) - ts) * 1000.0).tolist() == [41.0, 81.0, 41.0]
+
+
+def test_fill_curve_is_the_games() -> None:
+    from gear_optimizer.solver.timing_envelope import _game_fever_fill_factor
+    from tools.verify import game_sim
+
+    for points in range(MAX_STAT + 1):
+        assert _game_fever_fill_factor(points) == game_sim._fN(0.6, 0.5, 0.333, 0.166, 0.1, points), points
+
+
+def test_fever_fill_counts_perfects_as_the_game_does() -> None:
+    # T6: at Fever Fill 80 the game's denominator is hit objects x 0.1 exactly; 280 x (1 / 28) sums to one ulp under 1, so
+    # the game needs 29 Perfects where the exported (truncated) factor gives 28.
+    factors = np.linspace(0.5, 2.0, MAX_STAT + 1, dtype=np.float32)
+    window = fever_fill_raw(280, factors, "perfect_window")
+    assert np.array_equal(window, 280 * FEVER_FILL_PER_NOTE * factors.astype(np.float64))
+    robust = fever_fill_raw(280, factors, "frame_robust")
+    assert int(np.ceil(robust[80])) == 29 and fever_fill_is_order_sensitive(float(robust[80]))
+    assert int(np.ceil(robust[79])) == 29 and not fever_fill_is_order_sensitive(float(robust[79]))
+
+
+def test_late_great_activation_is_never_planned_in_the_frame_judged_gap() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_build_prefix_activation_hit_tables,
+    )
+
+    # A Perfect 10 ms after the activation must come after it: the activation's latest hit is that Perfect's latest
+    # (+32 ms here under frame_robust), short of the late-Great band (+41), so no late-Great activation exists.
+    ts = np.asarray([1.0, 1.010], dtype=np.float32)
+    types = np.asarray([1, 1], dtype=np.int16)
+    for mode, late_valid in (("perfect_window", 1), ("frame_robust", 0)):
+        env = perfect_window_envelopes(ts, types, mode)
+        _hit, _valid, late_hit, valid = _numba_build_prefix_activation_hit_tables(
+            2, ts, env.perfect_candidates, env.great_candidates, env.late_great_floor
+        )
+        assert int(valid[0]) == late_valid, mode
+        if late_valid:
+            assert late_hit[0] >= env.late_great_floor[0]
 
 
 def _base_plans(chart, mode: str, ft: int, ff: int):

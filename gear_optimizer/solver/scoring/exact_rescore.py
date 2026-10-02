@@ -14,10 +14,10 @@ from typing import Any
 import numpy as np
 
 from ... import score as core_score
-from gear_optimizer.rules import FEVER_FILL_PER_NOTE, MAX_STAT
+from gear_optimizer.rules import MAX_STAT
 from ...gamedata import STATS, StatCurves
 from ...timing import fixed_timeline_cell
-from ..timing_envelope import TimedSong, fever_window_times
+from ..timing_envelope import TimedSong, fever_fill_raw, fever_window_times
 
 # Base timeline-trace memo: the reconstructed trace is a pure function of
 # (frontier payload cache_key, FT cell, FF cell, winning pool row) -- stats enter only
@@ -220,8 +220,7 @@ def _timeline_trace_for_payload_surface(
 
     total_notes_i = int(song_inputs.total_notes)
     long_notes_i = int(song_inputs.long_notes)
-    non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * float(FEVER_FILL_PER_NOTE)
-    raw_fever_fill = float(non_fever_cas) * float(ref_ff[ff_idx])
+    raw_fever_fill = float(fever_fill_raw(max(0, total_notes_i - long_notes_i), ref_ff, song.mode)[ff_idx])
     fill_count = int(np.ceil(raw_fever_fill))
     fill_count = max(1, int(fill_count))
     real_fever_time = float(fever_window_times(song_inputs.last_note_time, ref_ft[ft_idx : ft_idx + 1], song.mode)[0])

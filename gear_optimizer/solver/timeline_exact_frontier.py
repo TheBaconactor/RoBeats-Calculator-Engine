@@ -12,7 +12,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gear_optimizer.rules import FEVER_FILL_PER_NOTE
 
 from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 
@@ -143,17 +142,18 @@ def build_timeline_frontier_grid_payload(
     perfect_floor_timestamps: np.ndarray,
     lanes: np.ndarray,
     fever_times: np.ndarray,
-    ref_ff: np.ndarray,
+    fever_fills: np.ndarray,
 ) -> TimelineFrontierGridPayload:
     """Build every FT/FF Base cell from exact lane-aware all-Perfect producer surfaces.
 
-    `fever_times` holds each Fever Time row's window time (timing_envelope.fever_window_times)."""
+    `fever_times` holds each Fever Time row's window time (timing_envelope.fever_window_times), `fever_fills` each Fever
+    Fill Rate row's fill in Perfects (timing_envelope.fever_fill_raw)."""
     real_times = np.asarray(fever_times, dtype=np.float64).reshape(-1)
-    ref_ff = np.asarray(ref_ff, dtype=np.float32).reshape(-1)
+    fills = np.asarray(fever_fills, dtype=np.float64).reshape(-1)
     if int(real_times.shape[0]) != GRID_SIZE:
         raise ValueError(f"Fever Time axis must be shape ({GRID_SIZE},), got {real_times.shape}")
-    if int(ref_ff.shape[0]) != GRID_SIZE:
-        raise ValueError(f"Fever Fill Rate axis must be shape ({GRID_SIZE},), got {ref_ff.shape}")
+    if int(fills.shape[0]) != GRID_SIZE:
+        raise ValueError(f"Fever Fill Rate axis must be shape ({GRID_SIZE},), got {fills.shape}")
 
     n = int(total_notes)
     timestamps, perfect_candidates, perfect_floor = (
@@ -166,8 +166,7 @@ def build_timeline_frontier_grid_payload(
     if bool(np.any(timestamps[1:] < timestamps[:-1])):
         raise ValueError("timeline frontier timestamps must be sorted in chart order")
 
-    non_fever_base = float(max(0, n - int(long_notes))) * float(FEVER_FILL_PER_NOTE)
-    fill_counts = np.maximum(np.ceil(non_fever_base * ref_ff.astype(np.float64)).astype(np.int32), np.int32(1))
+    fill_counts = np.maximum(np.ceil(fills).astype(np.int32), np.int32(1))
     unique_fill_counts, fill_inverse = np.unique(fill_counts, return_inverse=True)
     unique_real_times, time_inverse = np.unique(real_times, return_inverse=True)
 

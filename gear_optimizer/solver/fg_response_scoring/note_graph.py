@@ -1661,6 +1661,7 @@ def timeline_frontier_note_graph(
                 frontier_trace=frontier_trace,
                 total_notes=n,
                 note_types=note_types,
+                lanes=lanes,
             ))
             _assign_exact_input_order(notes, input_order_constraints)
         if mode == "frame_robust":

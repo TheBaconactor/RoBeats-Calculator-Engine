@@ -16,6 +16,7 @@ held tail keeps its own x2 reach.
 from __future__ import annotations
 
 import hashlib
+import math
 import threading
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
@@ -27,7 +28,7 @@ from cachetools import LRUCache
 from ..chart import Chart
 from ..core.array_signature import array_sig16
 from ..core.time_quantize import quantize_to_int_ms
-from ..rules import FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
+from ..rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
 
 # The game removes an unhit note once `now - hit > 200` ms (decompiled Constants.lua:19 NOTE_REMOVE_TIME = -200; the
 # same edge for taps (Note.lua:191), hold heads and the hold despawn (HeldNote.lua:219/231)). A held tail's late-Great
@@ -49,6 +50,9 @@ HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
 # time minus the margin and out of it only from the fever time plus the margin, and two presses whose order matters
 # are planned at least the margin apart.
 FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
+# Bumped with every change to frame_robust's frontier payloads or bundles. The byte gate only proves the prebuilt modes,
+# so a version that ratifies its predecessors would otherwise serve their frame_robust caches too.
+FRAME_ROBUST_REVISION = 2
 
 
 class Band(NamedTuple):
@@ -83,9 +87,9 @@ def judgment_bounds(scale: int, mode: str) -> JudgmentBounds:
 
 def judgment_windows_ms(
     note_types: np.ndarray, mode: str = "perfect_window"
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Per-note reachable hit offsets (int32 ms, see judgment_bounds): earliest Perfect, latest Perfect, earliest
-    early-Great and latest late-Great."""
+    early-Great, latest late-Great and earliest late-Great."""
     tap, tail = judgment_bounds(1, mode), judgment_bounds(HELD_TAIL_WINDOW_SCALE, mode)
     is_tail = np.asarray(note_types) == HELD_TAIL_TYPE
     return tuple(
@@ -95,6 +99,7 @@ def judgment_windows_ms(
             (tap.perfect.latest, tail.perfect.latest),
             (tap.early_great.earliest, tail.early_great.earliest),
             (tap.late_great.latest, tail.late_great.latest),
+            (tap.late_great.earliest, tail.late_great.earliest),
         )
     )
 
@@ -104,6 +109,7 @@ class Envelopes(NamedTuple):
     perfect_floor: np.ndarray
     great_floor: np.ndarray
     great_candidates: np.ndarray
+    late_great_floor: np.ndarray
 
 
 def _envelope_sec(timestamps: np.ndarray, offset_ms: np.ndarray, *, prefix_max: bool = False) -> np.ndarray:
@@ -115,9 +121,9 @@ def _envelope_sec(timestamps: np.ndarray, offset_ms: np.ndarray, *, prefix_max: 
 
 
 def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mode: str = "perfect_window") -> Envelopes:
-    """The four hit envelopes of a chart in a windowed mode (timestamps in float32 seconds, chart order)."""
+    """The five hit envelopes of a chart in a windowed mode (timestamps in float32 seconds, chart order)."""
     ts = np.asarray(timestamps, dtype=np.float32)
-    perfect_low, perfect_high, great_low, great_high = judgment_windows_ms(note_types, mode)
+    perfect_low, perfect_high, great_low, great_high, late_great_low = judgment_windows_ms(note_types, mode)
     # The judge compares the decoded hit with the float32 chart time in float64, so the integer-ms edge encoded as
     # float32 seconds can round one step past Perfect (#161): cap each latest Perfect hit at the latest float32 still
     # inside its hard edge.
@@ -125,11 +131,21 @@ def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mod
     safe_high = hard_high.astype(np.float32)
     overshot = safe_high.astype(np.float64) > hard_high
     safe_high[overshot] = np.nextafter(safe_high[overshot], np.float32(-np.inf))
+    perfect_candidates = np.minimum(_envelope_sec(ts, perfect_high), safe_high)
+    # The earliest planned late-Great hit. perfect_window plans it 1 ms past the latest Perfect (in float32, one step
+    # under the band's own encoding on most notes; kept as built). frame_robust's latest Perfect ends a margin early and
+    # the hits between are judged by the frame, so its late Greats start at the band itself, encoded as the
+    # materializer reads it (fill_crossing.exact_label_hit_intervals).
+    if mode == "frame_robust":
+        late_great_floor = _envelope_sec(ts, late_great_low)
+    else:
+        late_great_floor = perfect_candidates + np.float32(0.001)
     return Envelopes(
-        perfect_candidates=np.minimum(_envelope_sec(ts, perfect_high), safe_high),
+        perfect_candidates=perfect_candidates,
         perfect_floor=_envelope_sec(ts, perfect_low, prefix_max=True),
         great_floor=_envelope_sec(ts, great_low, prefix_max=True),
         great_candidates=_envelope_sec(ts, great_high),
+        late_great_floor=late_great_floor,
     )
 
 
@@ -143,6 +159,90 @@ def fever_window_times(last_note_time: float, time_factors: np.ndarray, mode: st
         0.0,
     )
     return np.maximum(real - FRAME_MARGIN_MS / 1000.0, 0.0) if mode == "frame_robust" else real
+
+
+def _bezier(a: float, b: float, c: float, d: float, t: float) -> float:
+    u = 1.0 - t
+    return u * u * u * a + 3 * t * u * u * b + 3 * t * t * u * c + t * t * t * d
+
+
+def _eased(x2: float, y2: float, x3: float, y3: float, pct: float) -> float:
+    """CurveUtil BezierDist (BezierDist.lua): the Bezier (0,0) (x2,y2) (x3,y3) (1,1) at `pct` of its arc length, measured
+    over 10 segments (the same arithmetic as tools/verify/game_sim.py)."""
+    ts, dists = [0.0], [0.0]
+    t = dist = px = py = 0.0
+    for _ in range(10):
+        t += 1.0 / 10
+        cx, cy = _bezier(0, x2, x3, 1, t), _bezier(0, y2, y3, 1, t)
+        dist += math.hypot(cx - px, cy - py)
+        ts.append(t)
+        dists.append(dist)
+        px, py = cx, cy
+    v = min(max(dist * pct, 0.0), dist)
+    if v == dist:
+        return _bezier(0, y2, y3, 1, 1.0)
+    lo, hi = 0, 10
+    while hi - lo > 1:
+        mid = lo + (hi - lo) // 2
+        lo, hi = (mid, hi) if dists[mid] < v else (lo, mid)
+    return _bezier(0, y2, y3, 1, ts[lo] + (ts[lo + 1] - ts[lo]) * ((v - dists[lo]) / (dists[lo + 1] - dists[lo])))
+
+
+@lru_cache(maxsize=None)
+def _game_fever_fill_factor(points: int) -> float:
+    """The game's fill curve at `points` (0..MAX_STAT) gear points: GearStats f_N(0.6, 0.5, 0.333, 0.166, 0.1, points),
+    the exact double the exported Stats.txt factor truncates."""
+
+    def pct(x1: int, x2: int) -> float:
+        slope = (0 - 1) / (x1 - x2)
+        return slope * points + (0 - slope * x1)
+
+    def lerp(a: float, b: float, t: float) -> float:
+        return (b - a) * t + a
+
+    if points == 0:
+        return 0.333
+    if points < 40:
+        return lerp(0.333, 0.166, _eased(0, 0.4, 0.7, 0.9, pct(0, 40)))
+    if points > 80:
+        return lerp(0.1, 0.1 + (0.1 - 0.166) * 0.35, _eased(0, 0.5, 0.6, 1, pct(80, 160)))
+    return lerp(0.166, 0.1, _eased(0.2, 0.1, 0.4, 1, pct(40, 80)))
+
+
+# A fill this close to a whole (or, for Great half-fills, half) number of Perfects is decided by the game's double sum.
+_FILL_BOUNDARY = 1e-6
+
+
+@lru_cache(maxsize=4096)
+def _frame_robust_fever_fills(hit_objects: int, points: int) -> tuple[float, ...]:
+    fills = []
+    for ff in range(points):
+        fill = float(hit_objects) * _game_fever_fill_factor(ff)
+        whole = round(fill)
+        if fill > 0.0 and abs(fill - whole) < _FILL_BOUNDARY:
+            bar, step = 0.0, 1.0 / fill
+            for _ in range(whole):
+                bar = min(bar + step, 1.0)
+            fill = whole - 0.5 if bar >= 1.0 else whole + 0.5
+        fills.append(fill)
+    return tuple(fills)
+
+
+def fever_fill_raw(hit_objects: int, fill_factors: np.ndarray, mode: str) -> np.ndarray:
+    """Per Fever Fill Rate point, the fever fill in Perfects (float64; its ceil is the Perfects that fill the bar): hit
+    objects (notes - long notes) x FEVER_FILL_PER_NOTE x the exported float32 factor. frame_robust fills as the game does
+    (T6): its double bar adds 1 / (hit objects x the curve value) per Perfect and activates at >= 1, so at a whole
+    denominator the sum can end one ulp short and the game needs one more Perfect; there the fill is the game's count
+    less half a Perfect (fever_fill_is_order_sensitive)."""
+    if mode != "frame_robust":
+        return float(hit_objects) * FEVER_FILL_PER_NOTE * np.asarray(fill_factors, dtype=np.float32).astype(np.float64)
+    return np.asarray(_frame_robust_fever_fills(int(hit_objects), len(fill_factors)), dtype=np.float64)
+
+
+def fever_fill_is_order_sensitive(fill: float) -> bool:
+    """Whether a fill sits on a half-Perfect boundary: Great half-fills can reach it exactly, and whether the game's double
+    sum then activates depends on the order of the adds, so frame_robust plans no Force Greats there."""
+    return abs(2.0 * fill - round(2.0 * fill)) < _FILL_BOUNDARY
 
 
 def baseline_hit_timeline(
@@ -193,6 +293,7 @@ class TimedSong:
     perfect_floor: np.ndarray | None = None
     great_floor: np.ndarray | None = None
     great_candidates: np.ndarray | None = None
+    late_great_floor: np.ndarray | None = None
 
     @cached_property
     def fg_inputs(self):
@@ -225,10 +326,15 @@ class TimedSong:
             bytes(nt_sig),
             bytes(lane_sig),
             "TIMING_ENVELOPE",
-            self.mode,
+            self.cache_mode,
             self.baseline_hash,
             0,
         )
+
+    @property
+    def cache_mode(self) -> str:
+        """The timing mode as the frontier cache keys name it: frame_robust carries FRAME_ROBUST_REVISION."""
+        return f"frame_robust@{FRAME_ROBUST_REVISION}" if self.mode == "frame_robust" else self.mode
 
 
 _TIMED_SONG_CACHE: LRUCache = LRUCache(maxsize=128)

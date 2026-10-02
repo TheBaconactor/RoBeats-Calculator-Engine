@@ -9,7 +9,7 @@ pytestmark = pytest.mark.gpu
 
 def _cpu_frontier_payload(song, curves):
     from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
-    from gear_optimizer.solver.timing_envelope import fever_window_times
+    from gear_optimizer.solver.timing_envelope import fever_fill_raw, fever_window_times
 
     return build_timeline_frontier_grid_payload(
         total_notes=song.chart.total_notes,
@@ -19,7 +19,9 @@ def _cpu_frontier_payload(song, curves):
         perfect_floor_timestamps=song.perfect_floor,
         lanes=song.chart.lanes,
         fever_times=fever_window_times(song.chart.last_note_time, curves.f32["Fever Time"], song.mode),
-        ref_ff=curves.f32["Fever Fill Rate"],
+        fever_fills=fever_fill_raw(
+            max(0, song.chart.total_notes - song.chart.long_notes), curves.f32["Fever Fill Rate"], song.mode
+        ),
     )
 
 

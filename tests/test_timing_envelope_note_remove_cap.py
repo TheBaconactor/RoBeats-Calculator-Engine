@@ -25,13 +25,14 @@ TAP, HEAD, TAIL = 1, 2, 3
 
 
 def test_reachable_windows_per_note_type() -> None:
-    perfect_low, perfect_high, great_low, great_high = judgment_windows_ms(np.asarray([TAP, HEAD, TAIL]))
+    perfect_low, perfect_high, great_low, great_high, late_great_low = judgment_windows_ms(np.asarray([TAP, HEAD, TAIL]))
     # The early edges are exclusive (+1 after the held-tail x2); the late edges inclusive.
     assert perfect_low.tolist() == [-19, -19, -39]
     assert perfect_high.tolist() == [40, 40, 80]
     assert great_low.tolist() == [-94, -94, -189]
     # The tap/head late-Great edge (40 + 150) is already deliverable; the tail's 380 is capped at removal.
     assert great_high.tolist() == [190, 190, NOTE_REMOVE_LATE_CAP_MS]
+    assert late_great_low.tolist() == [41, 41, 81]
 
 
 def test_great_candidate_envelope_emits_capped_tail_candidates() -> None:

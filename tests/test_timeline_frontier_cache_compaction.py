@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
-from gear_optimizer.solver.timing_envelope import fever_window_times
+from gear_optimizer.solver.timing_envelope import fever_fill_raw, fever_window_times
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
 from tests.songs_support import make_song
 
@@ -39,7 +39,7 @@ def _build_small_payload():
         perfect_floor_timestamps=timestamps - np.float32(0.019),
         lanes=np.arange(6, dtype=np.int32),
         fever_times=fever_window_times(1.8, ref_ft, "perfect_window"),
-        ref_ff=ref_ff,
+        fever_fills=fever_fill_raw(6, ref_ff, "perfect_window"),
     )
     return payload
 

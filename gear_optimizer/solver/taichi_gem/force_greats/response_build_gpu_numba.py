@@ -57,10 +57,17 @@ PacketQueue = namedtuple(
     "PacketQueue",
     ["back_alpha", "back_pk_off", "back_ag_start", "back_ag_end", "back_len", "back_pk_arenas", "back_ag_arenas"],
 )
-# The Perfect / Great floor and candidate hit times of every note (the reachability and region-core checks).
+# The Perfect / Great floor and candidate hit times of every note and its earliest planned late-Great hit (the
+# reachability and region-core checks).
 HitTimes = namedtuple(
     "HitTimes",
-    ["perfect_floor_timestamps", "perfect_candidate_timestamps", "great_floor_timestamps", "great_candidate_timestamps"],
+    [
+        "perfect_floor_timestamps",
+        "perfect_candidate_timestamps",
+        "great_floor_timestamps",
+        "great_candidate_timestamps",
+        "late_great_floor_timestamps",
+    ],
 )
 # The stamp-radix scratch of the body-pair reduction (values, stamps and touched list per (normal Great, fever Great)
 # pair; the Fenwick prefix-max arrays of the per-state hull).
@@ -352,6 +359,7 @@ def _numba_late_great_activation_hit_for_run(
     timestamps,
     perfect_candidate_timestamps,
     great_candidate_timestamps,
+    late_great_floor_timestamps,
     great_start: int,
     great_count: int,
     section_end: int,
@@ -360,7 +368,7 @@ def _numba_late_great_activation_hit_for_run(
     n = min(int(section_end), int(timestamps.shape[0]))
     if int(a) < 0 or int(a) >= int(n):
         return 0.0, 0, -1
-    hit_lo = float(np.float32(np.float32(perfect_candidate_timestamps[int(a)]) + np.float32(0.001)))
+    hit_lo = float(late_great_floor_timestamps[int(a)])
     hit_hi = float(great_candidate_timestamps[int(a)])
     return _numba_latest_activation_hit_for_contiguous_great_run(
         int(a),
@@ -382,6 +390,7 @@ def _numba_build_prefix_activation_hit_tables(
     timestamps,
     perfect_candidate_timestamps,
     great_candidate_timestamps,
+    late_great_floor_timestamps,
 ):
     perfect_hit = np.zeros(int(n), dtype=np.float64)
     perfect_valid = np.zeros(int(n), dtype=np.int8)
@@ -404,6 +413,7 @@ def _numba_build_prefix_activation_hit_tables(
             timestamps,
             perfect_candidate_timestamps,
             great_candidate_timestamps,
+            late_great_floor_timestamps,
             int(activation),
             1,
             int(n),
@@ -517,7 +527,13 @@ def _numba_exact_surface_signature_lane_prefix_reachable(
     chart-order prefix.  This packed DP decides the exact pair ``(event count, Great count)``;
     full lane-ID equality owns identity and hashes are not involved.
     """
-    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
+    (
+        perfect_floor_timestamps,
+        perfect_candidate_timestamps,
+        great_floor_timestamps,
+        great_candidate_timestamps,
+        late_great_floor_timestamps,
+    ) = hit_times
     a = int(activation_index)
     start = int(section_start)
     end = int(section_end)
@@ -678,7 +694,13 @@ def _numba_activation_reachable_contiguous_run(
     great_count: int,
     activation_great_i: int,
 ) -> bool:
-    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
+    (
+        perfect_floor_timestamps,
+        perfect_candidate_timestamps,
+        great_floor_timestamps,
+        great_candidate_timestamps,
+        late_great_floor_timestamps,
+    ) = hit_times
     a = int(activation_index)
     start = int(section_start)
     end = int(section_end)
@@ -804,7 +826,13 @@ def _numba_minimal_reachable_region_great_end(
     lanes,
     n: int,
 ):
-    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
+    (
+        perfect_floor_timestamps,
+        perfect_candidate_timestamps,
+        great_floor_timestamps,
+        great_candidate_timestamps,
+        late_great_floor_timestamps,
+    ) = hit_times
     a = int(activation)
     hit_hi = great_candidate_timestamps[a]
     max_great_end = int(a) + 1
@@ -816,6 +844,7 @@ def _numba_minimal_reachable_region_great_end(
             timestamps,
             perfect_candidate_timestamps,
             great_candidate_timestamps,
+            late_great_floor_timestamps,
             int(run_start),
             int(great_end) - int(run_start),
             int(n),
@@ -908,7 +937,13 @@ def _numba_region_run_core_for_offset(
     Returns ``(activation, great_end, is_great, perfect_valid, activation_hit_token,
     perfect_hit_token, valid)``. Tokens are selected alongside the exact producer hit and resolve
     to that value through the song-owned intern table."""
-    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
+    (
+        perfect_floor_timestamps,
+        perfect_candidate_timestamps,
+        great_floor_timestamps,
+        great_candidate_timestamps,
+        late_great_floor_timestamps,
+    ) = hit_times
     run_start = int(section_start) + int(offset)
     activation, is_great = _numba_fill_crossing_run(
         int(section_start), int(run_start), int(k), float(raw_fever_fill), int(n)
@@ -1084,7 +1119,13 @@ def _numba_region_run_edge_for_offset(
     perfect_end_by_hit,
     great_end_by_hit,
 ):
-    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
+    (
+        perfect_floor_timestamps,
+        perfect_candidate_timestamps,
+        great_floor_timestamps,
+        great_candidate_timestamps,
+        late_great_floor_timestamps,
+    ) = hit_times
     (
         activation,
         great_end,
@@ -1180,7 +1221,13 @@ def _numba_build_region_core_table(
     perfect_hit_ids, perfect_valids)`` with ``starts`` of length ``n + 2``. Hit IDs resolve
     through the song-owned exact value universe and remove repeated float64 timestamps from every
     table row."""
-    perfect_floor_timestamps, perfect_candidate_timestamps, great_floor_timestamps, great_candidate_timestamps = hit_times
+    (
+        perfect_floor_timestamps,
+        perfect_candidate_timestamps,
+        great_floor_timestamps,
+        great_candidate_timestamps,
+        late_great_floor_timestamps,
+    ) = hit_times
     if int(lanes.shape[0]) != int(n):
         raise ValueError("FG region-core lane rows must match n")
     denom = float(raw_fever_fill)
@@ -4211,6 +4258,7 @@ def _numba_region2_packet_queue_push_activation(
     great_candidate_timestamps,
     perfect_floor_timestamps,
     great_floor_timestamps,
+    late_great_floor_timestamps,
     lanes,
     hit_token_to_id,
     region,
@@ -4298,7 +4346,7 @@ def _numba_region2_packet_queue_push_activation(
                 float(raw_fever_fill),
                 timestamps,
                 HitTimes(perfect_floor_timestamps, perfect_candidate_timestamps,
-                         great_floor_timestamps, great_candidate_timestamps),
+                         great_floor_timestamps, great_candidate_timestamps, late_great_floor_timestamps),
                 lanes,
                 hit_token_to_id,
                 region_perfect_end_by_hit,
@@ -4498,6 +4546,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     great_candidate_timestamps,
     perfect_floor_timestamps,
     great_floor_timestamps,
+    late_great_floor_timestamps,
     lanes,
     region,
     region_hit_token_to_id,
@@ -4687,6 +4736,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         great_candidate_timestamps,
                         perfect_floor_timestamps,
                         great_floor_timestamps,
+                        late_great_floor_timestamps,
                         lanes,
                         region_hit_token_to_id,
                         region,
@@ -5063,6 +5113,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
     great_candidate_timestamps,
     perfect_floor_timestamps,
     great_floor_timestamps,
+    late_great_floor_timestamps,
     lanes,
     prefix_perfect_hit,
     prefix_perfect_valid,
@@ -5221,6 +5272,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
         great_candidate_timestamps,
         perfect_floor_timestamps,
         great_floor_timestamps,
+        late_great_floor_timestamps,
         lanes,
         region,
         region_hit_token_to_id,
@@ -5459,6 +5511,7 @@ def _numba_trace_edge_action_arrays(
     great_ts,
     perfect_floor_timestamps,
     great_floor_timestamps,
+    late_great_floor_timestamps,
     lanes,
     raw_fever_fill: float,
     real_fever_time: float,
@@ -5542,7 +5595,9 @@ def _numba_trace_edge_action_arrays(
                 a,
                 cap,
                 timestamps,
-                HitTimes(perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts),
+                HitTimes(
+                    perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts, late_great_floor_timestamps
+                ),
                 lanes,
                 denom,
                 int(section_start),
@@ -5572,7 +5627,7 @@ def _numba_trace_edge_action_arrays(
             eg_e = int(n)
         eg_e_out[idx] = eg_e
 
-        late_lo = float(perfect_ts[a] + np.float32(0.001))
+        late_lo = float(late_great_floor_timestamps[a])
         great_hi = float(great_ts[a])
         late_lo_out[idx] = late_lo
 
@@ -5601,7 +5656,9 @@ def _numba_trace_edge_action_arrays(
                 a,
                 cap2,
                 timestamps,
-                HitTimes(perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts),
+                HitTimes(
+                    perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts, late_great_floor_timestamps
+                ),
                 lanes,
                 denom,
                 int(section_start),

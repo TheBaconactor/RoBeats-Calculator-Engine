@@ -30,6 +30,7 @@ class _FirstFrontierGroupContext:
     great_candidate_timestamps: np.ndarray
     perfect_floor_timestamps: np.ndarray
     great_floor_timestamps: np.ndarray
+    late_great_floor_timestamps: np.ndarray
     lanes: np.ndarray
     prefix_perfect_hit: np.ndarray
     prefix_perfect_valid: np.ndarray
@@ -265,6 +266,7 @@ def _build_region_table(
             context.perfect_candidate_timestamps,
             context.great_floor_timestamps,
             context.great_candidate_timestamps,
+            context.late_great_floor_timestamps,
         ),
         context.lanes,
         context.region_hit_token_to_id,

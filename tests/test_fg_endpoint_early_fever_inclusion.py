@@ -263,7 +263,7 @@ def test_fg_edge_end_models_endpoint_early_inclusion():
 
 def _per_note_windows_ms(note_types):
     """Per-note (lo, hi) Perfect windows in ms, held-tail-aware (matches the production builder)."""
-    low, high, _great_low, _great_high = judgment_windows_ms(np.asarray(note_types, np.int16))
+    low, high, *_ = judgment_windows_ms(np.asarray(note_types, np.int16))
     return np.asarray(low, np.int64), np.asarray(high, np.int64)
 
 
@@ -305,7 +305,7 @@ def _grouped_floor_candidate_sec(chart_sec, note_types):
     lows), group_high = min(per-note highs) -- the genuine pre-fix chord intersection (built
     here directly, independent of the production grouper, which now splits chords by window)."""
     nt = np.asarray(note_types, np.int16)
-    low, high, _great_low, _great_high = judgment_windows_ms(nt)
+    low, high, *_ = judgment_windows_ms(nt)
     low = np.asarray(low, np.int64)
     high = np.asarray(high, np.int64)
     ts_ms = np.asarray(quantize_to_int_ms(np.asarray(chart_sec, np.float32)), np.int64)
@@ -355,7 +355,7 @@ def test_production_envelope_models_chord_tied_held_tail_exactly():
         assert gt == expected
         chart_sec = np.asarray(chart, np.float32) / np.float32(1000.0)
         nt = np.asarray(types, np.int16)
-        cand, floor, _great_floor, _great_cand = perfect_window_envelopes(chart_sec, nt)
+        cand, floor, *_ = perfect_window_envelopes(chart_sec, nt)
         e, _s, _c = edge_end_oracle(
             n=len(chart), a=int(a), activation_great=False,
             real_fever_time=float(rft) / 1000.0, use_forced_great_timing=False,

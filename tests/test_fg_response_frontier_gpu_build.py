@@ -399,7 +399,8 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
         response_build_gpu_numba.HitTimes(timestamps - np.float32(0.04),
         perfect_hi,
         timestamps - np.float32(0.09),
-        great_hi),
+        great_hi,
+        perfect_hi + np.float32(0.001)),
         np.arange(12, dtype=np.int32),
         hit_token_to_id,
     )
@@ -454,15 +455,16 @@ def test_fg_region_hit_universe_resolves_exact_producer_values() -> None:
     n = int(timestamps.shape[0])
     for activation in range(n):
         for great_start, great_count in ((activation, 0), (max(0, activation - 1), 2)):
-            for selector in (
-                response_build_gpu_numba._numba_perfect_activation_hit_for_run,
-                response_build_gpu_numba._numba_late_great_activation_hit_for_run,
+            for selector, late_floor in (
+                (response_build_gpu_numba._numba_perfect_activation_hit_for_run, ()),
+                (response_build_gpu_numba._numba_late_great_activation_hit_for_run, (perfect_hi + np.float32(0.001),)),
             ):
                 hit, valid, token = selector(
                     activation,
                     timestamps,
                     perfect_hi,
                     great_hi,
+                    *late_floor,
                     great_start,
                     great_count,
                     n,
@@ -840,6 +842,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
         timestamps,
         perfect_hi,
         great_hi,
+        perfect_hi + np.float32(0.001),
     )
 
     for activation in range(n):
@@ -861,6 +864,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
                 timestamps,
                 perfect_hi,
                 great_hi,
+                perfect_hi + np.float32(0.001),
                 activation,
                 1,
                 n,
@@ -889,6 +893,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
                     timestamps,
                     perfect_hi,
                     great_hi,
+                    perfect_hi + np.float32(0.001),
                     great_start,
                     great_count,
                     n,
@@ -970,7 +975,8 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                     rb.HitTimes(perfect_floor,
                     perfect_candidates,
                     great_floor,
-                    great_candidates),
+                    great_candidates,
+                    perfect_candidates + np.float32(0.001)),
                     lanes,
                     hit_token_to_id,
                     perfect_end_by_hit,
@@ -1434,6 +1440,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             song_inputs.timestamps,
             song_inputs.perfect_candidates,
             song_inputs.great_candidates,
+            song_inputs.late_great_floor,
         )
     )
     (
@@ -1907,6 +1914,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         timestamps,
         perfect_candidates,
         great_candidates,
+        perfect_candidates + np.float32(0.001),
     )
     real_times = np.asarray([0.45, 1.0, 2.25], dtype=np.float32)
     (
@@ -2116,7 +2124,8 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
                 HitTimes(perfect_floor,
                 perfect_candidates,
                 great_floor,
-                great_candidates),
+                great_candidates,
+                perfect_candidates + np.float32(0.001)),
                 lanes,
                 denom,
                 section_start,

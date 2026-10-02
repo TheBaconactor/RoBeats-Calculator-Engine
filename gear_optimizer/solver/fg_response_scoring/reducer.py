@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import TimedSong
+from gear_optimizer.solver.timing_envelope import TimedSong, fever_fill_is_order_sensitive
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
@@ -119,6 +119,10 @@ def materialize_force_payload_from_response_frontier(
     trace_cache: FgTraceMaterializationCache | None = None,
     song_inputs: Any | None = None,
 ) -> dict[str, Any]:
+    if song.mode == "frame_robust" and fever_fill_is_order_sensitive(float(result.raw_fever_fill)):
+        # Great half-fills can end exactly on this fill, where the game's double sum activates or not by the order of
+        # its adds (T6): no plan holds at every frame timing.
+        raise UnplayableTrace(f"the fever fill {result.raw_fever_fill} is order-sensitive")
     if trace_cache is not None:
         trace_cache.bind(song)
     frontier = result.frontier
@@ -168,6 +172,7 @@ def materialize_force_payload_from_response_frontier(
             great_candidate_timestamps=song_inputs.great_candidates,
             perfect_floor_timestamps=song_inputs.perfect_floor,
             great_floor_timestamps=song_inputs.great_floor,
+            late_great_floor_timestamps=song_inputs.late_great_floor,
             lanes=song_lanes,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),

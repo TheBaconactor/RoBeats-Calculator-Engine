@@ -386,6 +386,7 @@ def _first_frontier_result_from_precomputed_end_indices(
             context.great_candidate_timestamps,
             context.perfect_floor_timestamps,
             context.great_floor_timestamps,
+            context.late_great_floor_timestamps,
             context.lanes,
             context.prefix_perfect_hit,
             context.prefix_perfect_valid,

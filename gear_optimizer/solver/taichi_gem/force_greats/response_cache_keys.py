@@ -7,10 +7,10 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import TimedSong, fever_window_times
+from gear_optimizer.solver.timing_envelope import TimedSong, fever_fill_raw, fever_window_times
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.rules import FEVER_FILL_PER_NOTE, MAX_STAT
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.settings import paths
 
@@ -66,8 +66,9 @@ def fg_response_frontier_song_cache_key(song: TimedSong) -> tuple:
         bytes(array_sig16(perfect_floor)),
         bytes(array_sig16(great_floor)),
         bytes(array_sig16(lanes)),
-        # frame_robust shares perfect_window's envelopes but not its fever windows; the older modes' keys stay as built.
-        *(("frame_robust",) if song.mode == "frame_robust" else ()),
+        # frame_robust's envelopes and fever windows differ from perfect_window's, and it carries its revision; the older
+        # modes' keys stay as built.
+        *((song.cache_mode,) if song.mode == "frame_robust" else ()),
     )
 
 
@@ -130,8 +131,8 @@ def _response_axes(song: TimedSong, curves: StatCurves) -> tuple[Any, np.ndarray
     ref_ff = curves.f32["Fever Fill Rate"]
     if int(ref_ft.shape[0]) <= MAX_STAT or int(ref_ff.shape[0]) <= MAX_STAT:
         raise ValueError("FG response cache requires full Fever Time and Fever Fill Rate ref arrays")
-    base_fill = max(0.0, float(song_inputs.total_notes - int(song_inputs.long_notes)) * float(FEVER_FILL_PER_NOTE))
-    raw_fill_by_ff = np.asarray([base_fill * float(ref_ff[idx]) for idx in range(MAX_STAT + 1)], dtype=np.float64)
+    hit_objects = max(0, int(song_inputs.total_notes) - int(song_inputs.long_notes))
+    raw_fill_by_ff = fever_fill_raw(hit_objects, ref_ff[: MAX_STAT + 1], song.mode)
     non_fever_base_by_ff = np.asarray([int(ceil(float(v))) for v in raw_fill_by_ff], dtype=np.int32)
     real_time_by_ft = fever_window_times(song_inputs.last_note_time, ref_ft[: MAX_STAT + 1], song.mode)
     return song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft

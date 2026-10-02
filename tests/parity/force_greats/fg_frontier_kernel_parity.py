@@ -89,6 +89,7 @@ def build_kernel_args(
             ts,
             perfect_ts,
             great_ts,
+            perfect_ts + np.float32(0.001),
         )
     )
     (

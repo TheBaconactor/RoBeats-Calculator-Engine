@@ -89,6 +89,7 @@ class _ActivationReachabilityContext:
     perfect_candidate_timestamps: np.ndarray
     great_floor_timestamps: np.ndarray
     great_candidate_timestamps: np.ndarray
+    late_great_floor_timestamps: np.ndarray
     lanes: np.ndarray
     fever_fill_denom: float
 
@@ -102,6 +103,7 @@ def _build_activation_reachability_context(
     great_candidate_timestamps: Any,
     lanes: Any,
     fever_fill_denom: float,
+    late_great_floor_timestamps: Any | None = None,
 ) -> _ActivationReachabilityContext:
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_floor = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
@@ -112,13 +114,18 @@ def _build_activation_reachability_context(
     great_candidates = np.ascontiguousarray(
         np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1)
     )
+    late_great_floor = (
+        perfect_candidates + np.float32(0.001)
+        if late_great_floor_timestamps is None
+        else np.ascontiguousarray(np.asarray(late_great_floor_timestamps, dtype=np.float32).reshape(-1))
+    )
     lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
     n = int(ts.shape[0])
     if n <= 0:
         raise ValueError("FG activation reachability requires at least one note")
     if any(
         int(values.shape[0]) != n
-        for values in (perfect_floor, perfect_candidates, great_floor, great_candidates, lane_arr)
+        for values in (perfect_floor, perfect_candidates, great_floor, great_candidates, late_great_floor, lane_arr)
     ):
         raise ValueError("FG activation reachability arrays must match timestamps")
     return _ActivationReachabilityContext(
@@ -127,6 +134,7 @@ def _build_activation_reachability_context(
         perfect_candidate_timestamps=perfect_candidates,
         great_floor_timestamps=great_floor,
         great_candidate_timestamps=great_candidates,
+        late_great_floor_timestamps=late_great_floor,
         lanes=lane_arr,
         fever_fill_denom=float(fever_fill_denom),
     )
@@ -138,9 +146,11 @@ def _song_arrays(
     great_candidate_timestamps: Any | None,
     perfect_floor_timestamps: Any,
     great_floor_timestamps: Any,
+    late_great_floor_timestamps: Any | None,
     lanes: Any | None,
 ) -> tuple[np.ndarray, ...]:
-    """Coerce and check one song's per-note arrays (candidates default to the chart timestamps)."""
+    """Coerce and check one song's per-note arrays (candidates default to the chart timestamps, the late-Great floor to
+    1 ms past the latest Perfect: perfect_window's)."""
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     n = int(ts.shape[0])
     if bool(np.any(ts[1:] < ts[:-1])):
@@ -162,12 +172,17 @@ def _song_arrays(
     # Both floors are REQUIRED (issues #42/#44): searching chart instead would under-count endpoint-early fever.
     floor_ts = _f32(perfect_floor_timestamps, "perfect_floor_timestamps")
     great_floor_ts = _f32(great_floor_timestamps, "great_floor_timestamps")
+    late_great_floor_ts = (
+        perfect_ts + np.float32(0.001)
+        if late_great_floor_timestamps is None
+        else _f32(late_great_floor_timestamps, "late_great_floor_timestamps")
+    )
     if lanes is None:
         raise ValueError("lanes are required for input-engine-aware FG response build")
     lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
-    return ts, perfect_ts, great_ts, floor_ts, great_floor_ts, lane_arr
+    return ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, lane_arr
 
 
 def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
@@ -496,6 +511,7 @@ def _activation_reachable(
                 context.perfect_candidate_timestamps,
                 context.great_floor_timestamps,
                 context.great_candidate_timestamps,
+                context.late_great_floor_timestamps,
             ),
             context.lanes,
             float(context.fever_fill_denom),
@@ -584,7 +600,7 @@ def _minimal_reachable_region_great_end(
     great_ts: np.ndarray,
 ) -> tuple[int, float] | None:
     hit_hi = float(great_ts[int(a)])
-    hit_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
+    hit_lo = float(reachability_context.late_great_floor_timestamps[int(a)])
     max_great_end = int(a) + 1
     while max_great_end < int(n) and float(perfect_ts[int(max_great_end)]) < hit_hi:
         max_great_end += 1
@@ -777,6 +793,7 @@ def _edge_surface_options(
         reachability_context.great_candidate_timestamps,
         reachability_context.perfect_floor_timestamps,
         reachability_context.great_floor_timestamps,
+        reachability_context.late_great_floor_timestamps,
         reachability_context.lanes,
         float(raw_fever_fill),
         float(real_fever_time),
@@ -962,7 +979,7 @@ def _edge_surface_options(
                     ):
                         continue
                     chart_time = float(timestamps[int(a_region)])
-                    late_lo = float(np.float32(np.float32(perfect_ts[int(a_region)]) + np.float32(0.001)))
+                    late_lo = float(reachability_context.late_great_floor_timestamps[int(a_region)])
                     base = _section_option(
                         k=int(actual_great_end_i) - int(run_start),
                         judgment="late_great",
@@ -1199,6 +1216,7 @@ def reconstruct_force_greats_response_counts(
     real_fever_time: float,
     lanes: Any | None = None,
     use_forced_great_timing: bool = True,
+    late_great_floor_timestamps: Any | None = None,
 ) -> tuple[int, ...]:
     # Thin adapter for the solve path, which has the full frontier in hand; forward only
     # the one field the reconstruction primitive consumes (its `non_fever_base`).
@@ -1210,6 +1228,7 @@ def reconstruct_force_greats_response_counts(
         great_candidate_timestamps=great_candidate_timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
         great_floor_timestamps=great_floor_timestamps,
+        late_great_floor_timestamps=late_great_floor_timestamps,
         lanes=lanes,
         raw_fever_fill=float(raw_fever_fill),
         real_fever_time=float(real_fever_time),
@@ -1232,13 +1251,14 @@ def reconstruct_force_greats_response_trace(
     lanes: Any | None = None,
     use_forced_great_timing: bool = True,
     edge_options_cache: FgTraceEdgeOptionsCache | None = None,
+    late_great_floor_timestamps: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     n = int(np.asarray(timestamps).reshape(-1).shape[0])
     if n <= 0 or target_surface == _EMPTY_SURFACE:
         return ()
-    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, lane_arr = _song_arrays(
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, lane_arr = _song_arrays(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
-        great_floor_timestamps, lanes,
+        great_floor_timestamps, late_great_floor_timestamps, lanes,
     )
     reachability_context: _ActivationReachabilityContext | None = None
 
@@ -1251,6 +1271,7 @@ def reconstruct_force_greats_response_trace(
                 perfect_candidate_timestamps=perfect_ts,
                 great_floor_timestamps=great_floor_ts,
                 great_candidate_timestamps=great_ts,
+                late_great_floor_timestamps=late_great_floor_ts,
                 lanes=lane_arr,
                 fever_fill_denom=float(raw_fever_fill),
             )
@@ -1274,6 +1295,7 @@ def reconstruct_force_greats_response_trace(
             great_candidate_timestamps,
             perfect_floor_timestamps,
             great_floor_timestamps,
+            late_great_floor_timestamps,
             lanes,
         ),
         note_count=n,

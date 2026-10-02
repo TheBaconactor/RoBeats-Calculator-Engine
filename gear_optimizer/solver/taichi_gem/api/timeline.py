@@ -31,7 +31,7 @@ from gear_optimizer.solver.frontier_cache import (
     write_atomically,
 )
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
-from gear_optimizer.solver.timing_envelope import TimedSong, fever_window_times
+from gear_optimizer.solver.timing_envelope import TimedSong, fever_fill_raw, fever_window_times
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
@@ -648,7 +648,9 @@ def build_or_load_timeline_frontier_payload(
                 perfect_floor_timestamps=lookup["perfect_floor"],
                 lanes=lookup["lanes"],
                 fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
-                ref_ff=lookup["ref_ff"],
+                fever_fills=fever_fill_raw(
+                    max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"], song.mode
+                ),
             )
         raw = _encode_frontier_payload_npz(payload)
         _save_frontier_payload(cache_key, raw)
@@ -759,7 +761,9 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
         lanes=np.asarray(lookup["lanes"], dtype=np.int32),
         fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
-        ref_ff=np.asarray(lookup["ref_ff"], dtype=np.float32),
+        fever_fills=fever_fill_raw(
+            max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"], song.mode
+        ),
     )
     frontier_result = FrontierCacheLoad(
         payload=payload,

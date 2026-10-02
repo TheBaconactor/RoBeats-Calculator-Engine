@@ -156,6 +156,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
     lanes: Any | None = None,
     use_forced_great_timing: bool = True,
     stats_sink: dict[str, Any] | None = None,
+    late_great_floor_timestamps: Any | None = None,
 ) -> tuple[FgResponseFrontierResult, ...]:
     """Build the exact FG first frontier for every geometry of ONE song, in one call.
 
@@ -182,9 +183,9 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         return ()
     if n <= 0:
         return tuple(FgResponseFrontierResult((_EMPTY_SURFACE,), {}, 0, 0, 0, 0, 1, 1, 0, 0.0) for _ in geometry_rows)
-    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, lane_arr = _song_arrays(
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, lane_arr = _song_arrays(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
-        great_floor_timestamps, lanes,
+        great_floor_timestamps, late_great_floor_timestamps, lanes,
     )
     if bool(use_forced_great_timing):
         region_hit_values, region_hit_token_to_id = _region_hit_value_universe(ts, perfect_ts, great_ts)
@@ -192,7 +193,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         region_hit_values = np.empty(0, dtype=np.float64)
         region_hit_token_to_id = np.empty(0, dtype=np.int32)
     prefix_perfect_hit, prefix_perfect_valid, prefix_late_hit, prefix_late_valid = (
-        _rb_numba._numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts)
+        _rb_numba._numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts, late_great_floor_ts)
     )
     prepared = _prepared_geometries(geometry_rows, bool(use_forced_great_timing))
 
@@ -255,6 +256,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
             great_candidate_timestamps=great_ts,
             perfect_floor_timestamps=floor_ts,
             great_floor_timestamps=great_floor_ts,
+            late_great_floor_timestamps=late_great_floor_ts,
             lanes=lane_arr,
             prefix_perfect_hit=prefix_perfect_hit,
             prefix_perfect_valid=prefix_perfect_valid,
