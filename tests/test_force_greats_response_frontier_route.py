@@ -474,7 +474,7 @@ def test_prepare_fg_static_loads_and_session_prunes_canonical_scoring_bundle(mon
     assert seen == {"session_prune": 1, "stat_keys": canonical_keys}
 
 
-def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace_cache(monkeypatch):
+def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.solver.fg_response_scoring.reducer import (
@@ -491,7 +491,6 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     scoring_frontier = FgResponseFrontierResult((surface,), {}, 1, 1, 1, 1, 1, 1, 7, 0.0)
-    full_frontier = FgResponseFrontierResult((surface,), {0: (surface,)}, 9, 3, 17, 5, 8, 4, 11, 0.0)
     result = FgResponseFrontierSolveResult(
         best_score=1234,
         ft=1,
@@ -529,51 +528,43 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
     trace_cache = FgTraceMaterializationCache()
     song = _stub_song(1)
     payload = materialize_force_payload_from_response_frontier(
-        eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
         song=song,
         curves={},
-        reconstruction_frontier=full_frontier,
         trace_cache=trace_cache,
     )
     second_payload = materialize_force_payload_from_response_frontier(
-        eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
         song=song,
         curves={},
-        reconstruction_frontier=full_frontier,
         trace_cache=trace_cache,
     )
 
-    # The supplied reconstruction_frontier (non_fever_base=11) is honored over the scoring
-    # frontier (non_fever_base=7): the trace primitive receives the override's non_fever_base.
-    assert seen["non_fever_base"] == full_frontier.non_fever_base
+    assert seen["non_fever_base"] == scoring_frontier.non_fever_base
     assert payload["BaseScore"] == 1000
     assert [row["forced_count"] for row in payload["ForceGreats"]["frontier_trace"]] == [1, 0, 1]
     assert payload["Score"] == 1230
     assert payload["ForceGreats"]["final_score"] == 1230
-    assert payload["ForceGreats"]["frontier_states"] == 9
-    assert payload["ForceGreats"]["non_fever_base"] == 11
+    assert payload["ForceGreats"]["frontier_states"] == 1
+    assert payload["ForceGreats"]["non_fever_base"] == 7
     assert second_payload["ForceGreats"]["frontier_trace"] == payload["ForceGreats"]["frontier_trace"]
     assert seen["reconstruct_calls"] == 1
     assert seen["validate_calls"] == 1
     assert seen["physical_calls"] == 1
     with pytest.raises(ValueError, match="cannot be reused across song owners"):
         materialize_force_payload_from_response_frontier(
-            eval_data={"Selected Element": "Rush"},
             base_stats={"Perfect Points": 1},
             paired_base_score=1000,
             selected_element="Rush",
             result=result,
             song=_stub_song(1),
             curves={},
-            reconstruction_frontier=full_frontier,
             trace_cache=trace_cache,
         )
 
@@ -620,7 +611,6 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = materialize_force_payload_from_response_frontier(
-        eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
         selected_element="Rush",
@@ -722,7 +712,6 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 4321)
 
     payload = materialize_force_payload_from_response_frontier(
-        eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1, "Rush": 9},
         paired_base_score=4000,
         selected_element="Rush",

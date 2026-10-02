@@ -110,20 +110,18 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
 
 def materialize_force_payload_from_response_frontier(
     *,
-    eval_data: dict[str, Any],
     base_stats: dict[str, Any],
     paired_base_score: int,
     selected_element: str,
     result: FgResponseFrontierSolveResult,
     song: TimedSong,
     curves: StatCurves,
-    reconstruction_frontier=None,
     trace_cache: FgTraceMaterializationCache | None = None,
     song_inputs: Any | None = None,
 ) -> dict[str, Any]:
     if trace_cache is not None:
         trace_cache.bind(song)
-    frontier = reconstruction_frontier or result.frontier
+    frontier = result.frontier
     # ``song_inputs`` is a pure function of ``song``; a batch materializer sharing one
     # song owner hoists it once and threads it in (mirrors the trace_cache lifetime).
     # Defaults to the standalone per-call extraction for single-payload callers.
@@ -211,7 +209,7 @@ def materialize_force_payload_from_response_frontier(
         raise ValueError("ForceGreats response frontier exact surface replay failed")
     final_score = int(final_score_obj)
 
-    payload = dict(eval_data)
+    payload: dict[str, Any] = {}
     payload["BaseStats"] = dict(base_stats)
     payload["Stats"] = dict(result.stats)
     payload["BaseScore"] = int(paired_base)
@@ -299,7 +297,6 @@ class FgResultReducer:
                 song_inputs = song.fg_inputs
             try:
                 payload = materialize_force_payload_from_response_frontier(
-                    eval_data={},
                     base_stats=job.base_stats,
                     paired_base_score=job.paired,
                     selected_element=job.selected,

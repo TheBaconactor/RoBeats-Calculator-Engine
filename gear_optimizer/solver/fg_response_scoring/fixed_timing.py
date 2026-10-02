@@ -154,7 +154,6 @@ def build_fixed_timing_fg_replays(
         trace_cache = FgTraceMaterializationCache()
         for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
             force = materialize_force_payload_from_response_frontier(
-                eval_data={},
                 base_stats=dict(base_stats),
                 paired_base_score=int(paired_base),
                 selected_element=str(selected_color or ""),

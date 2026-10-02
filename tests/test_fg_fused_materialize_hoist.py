@@ -291,7 +291,6 @@ def test_reducer_payload_accepts_hoisted_song_inputs_byte_identical(monkeypatch)
     extract_calls = {"extract": 0}
     song = _CountingSong(extract_calls, lambda: song_inputs)
     common = dict(
-        eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
         selected_element="Rush",

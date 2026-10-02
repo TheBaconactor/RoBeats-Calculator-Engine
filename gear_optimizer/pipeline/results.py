@@ -59,7 +59,7 @@ def song_solve(song: Any) -> SongSolve:
         raise RuntimeError(f"{song.config.task_key}: results are read after the FG stage")
     loadouts = []
     for candidate in runtime.decode.ga_candidates:
-        gear, minis = materialize_candidate_names(candidate, registry=song.gpu_inputs.registry, mutate=False)
+        gear, minis = materialize_candidate_names(candidate, registry=song.gpu_inputs.registry)
         loadouts.append(SolvedLoadout(tuple(gear), tuple(minis)))
     index = {x: i for i, x in enumerate(loadouts)}
     fg = []

@@ -37,7 +37,6 @@ def materialize_candidate_names(
     candidate: Any,
     *,
     registry: Any = None,
-    mutate: bool = True,
 ) -> tuple[list[str], list[str]]:
     if not isinstance(candidate, dict):
         return [], []
@@ -56,12 +55,7 @@ def materialize_candidate_names(
         return [], []
 
     names = registry_obj.decode_names(np.asarray(genome_ids, dtype=np.int32))  # an ItemRegistry: 9 names
-    gear_names = names[:6]
-    mini_names = names[6:9]
-    if mutate:
-        candidate["Gear"] = list(gear_names)
-        candidate["Minis"] = list(mini_names)
-    return gear_names, mini_names
+    return names[:6], names[6:9]
 
 
 def candidate_loadout_hash(
@@ -81,7 +75,7 @@ def candidate_loadout_hash(
     if explicit:
         return str(explicit)
 
-    gear_names, mini_names = materialize_candidate_names(candidate, registry=registry, mutate=False)
+    gear_names, mini_names = materialize_candidate_names(candidate, registry=registry)
     if not gear_names and not mini_names:
         return ga_candidate_key(candidate.get("GenomeIDs"))
 

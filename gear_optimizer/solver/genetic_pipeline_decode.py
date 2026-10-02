@@ -80,7 +80,7 @@ def decode_gpu_native_ga_runs_payload(
     run_idx, row_idx, packed = rows[:, 0], rows[:, 1], rows[:, 2 : 2 + packed_cols]
     scores, ids = packed[:, 0], packed[:, 1 : 1 + n_slots]
     results, base_stats7 = packed[:, 1 + n_slots : 8 + n_slots], packed[:, 8 + n_slots : 15 + n_slots]
-    keep, _ = select_exact_unique_row_indices(genome_ids_mat=ids, scores=scores, exact=True)
+    keep = select_exact_unique_row_indices(genome_ids_mat=ids, scores=scores)
     if int(keep.size) != int(ids.shape[0]):
         run_idx, row_idx, scores, ids, results, base_stats7 = (
             a[keep] for a in (run_idx, row_idx, scores, ids, results, base_stats7)

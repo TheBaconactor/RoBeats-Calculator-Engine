@@ -106,7 +106,7 @@ class FgPlanner:
             paired = int(candidate.get("BaseScore") or candidate.get("Score", 0) or 0)
             if paired <= 0:
                 raise ValueError(f"ForceGreats GA candidate {idx} is missing a positive BaseScore.")
-            gear, minis = materialize_candidate_names(candidate, registry=ga_registry, mutate=False)
+            gear, minis = materialize_candidate_names(candidate, registry=ga_registry)
             selected = str(eval_data.get("Selected Element") or meta_primary_color or "")
             base_stats = FgPlanner.base_stats_for_response_frontier(eval_data, selected=selected)
             key = (selected, tuple(sorted((str(k), safe_int(v, 0)) for k, v in base_stats.items())))

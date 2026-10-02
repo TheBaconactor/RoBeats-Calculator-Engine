@@ -5,7 +5,7 @@ import numpy as np
 from gear_optimizer.helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 
 
-def test_select_exact_unique_row_indices_collapses_duplicates_and_keeps_best_payload():
+def test_duplicates_collapse_to_each_genomes_best_row():
     genome_ids_mat = np.asarray(
         [
             [11, 12, 13, 14, 15, 16, 31, 32, 33],
@@ -14,35 +14,13 @@ def test_select_exact_unique_row_indices_collapses_duplicates_and_keeps_best_pay
         ],
         dtype=np.int32,
     )
-    scores = np.asarray([100, 90, 130], dtype=np.int32)
-
-    survivor_idx, stats = select_exact_unique_row_indices(genome_ids_mat=genome_ids_mat, scores=scores, exact=True)
-
+    survivor_idx = select_exact_unique_row_indices(genome_ids_mat=genome_ids_mat, scores=np.asarray([100, 90, 130]))
     assert survivor_idx.tolist() == [2, 1]
-    assert stats.seen == 3
-    assert stats.unique == 2
-    assert stats.duplicate_hits == 1
-    assert stats.replacements == 1
-    assert stats.skipped_non_exact == 0
-
-
-def test_non_exact_rows_are_never_kept():
-    genome_ids_mat = np.asarray([[11, 12, 13, 14, 15, 16, 31, 32, 33]] * 2, dtype=np.int32)
-
-    survivor_idx, stats = select_exact_unique_row_indices(genome_ids_mat=genome_ids_mat, scores=[100, 125], exact=False)
-
-    assert survivor_idx.tolist() == []
-    assert stats.skipped_non_exact == 2
-    assert stats.unique == 0
 
 
 def test_mini_order_does_not_split_a_genome_and_its_best_row_keeps_the_first_position():
     genome_ids_mat = np.asarray(
         [[1, 2, 3, 4, 5, 6, 9, 7, 8], [10, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 4, 5, 6, 7, 8, 9]], dtype=np.int32
     )
-
-    survivor_idx, stats = select_exact_unique_row_indices(genome_ids_mat=genome_ids_mat, scores=[100, 130, 140])
-
+    survivor_idx = select_exact_unique_row_indices(genome_ids_mat=genome_ids_mat, scores=[100, 130, 140])
     assert survivor_idx.tolist() == [2, 1]
-    assert stats.duplicate_hits == 1
-    assert stats.replacements == 1
