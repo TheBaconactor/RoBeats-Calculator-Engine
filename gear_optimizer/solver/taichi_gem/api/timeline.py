@@ -224,6 +224,20 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Engine rewrite r8 (producer refactors, one perfect_window envelope builder, one fever-time function, the
+    # frame_robust mode whose payloads have their own keys): the 40-chart sample's timeline payloads (both older modes)
+    # are byte-identical, one to one, to the e0f26c1952cc producer's builds (gate r5/g10), as the deployed
+    # f06c1b1fe6ca's are. Keep everything the deployed service accepts readable (non-transitive).
+    "exact-frontier-v12+logic-b38e47923b2b": (
+        "exact-frontier-v12+logic-f06c1b1fe6ca",
+        "exact-frontier-v12+logic-56a41dacb9b6",
+        "exact-frontier-v12+logic-e0f26c1952cc",
+        "exact-frontier-v12+logic-dac3ca4b6278",
+        "exact-frontier-v12+logic-ede645c00a02",
+        "exact-frontier-v12+logic-e2108556084d",
+        "exact-frontier-v12+logic-920bc4af7ee6",
+        "exact-frontier-v12+logic-be26caca62b4",
+    ),
     # Engine rewrite R5 (FG builder argument tuples; the builder is a timeline fingerprint input): the 40-chart
     # sample's timeline payloads (both timing modes) are byte-identical, one to one, to the e0f26c1952cc producer's
     # builds (gate r5/g6), as the deployed 56a41dacb9b6's are. Keep everything the deployed service accepts
