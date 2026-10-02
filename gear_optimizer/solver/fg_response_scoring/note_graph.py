@@ -49,21 +49,24 @@ so there is no candidate-dependent re-solve and no bulky per-note persistence.
 from __future__ import annotations
 
 import heapq
-from typing import Any, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 
 from gear_optimizer.core.time_quantize import snap_near_int_ms
+from gear_optimizer.score import HEAD_NOTES
 
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
 from gear_optimizer.solver.timing_envelope import (
-    GREAT_LOWER_EXTRA_MS,
-    GREAT_UPPER_EXTRA_MS,
+    FRAME_MARGIN_MS,
     HELD_TAIL_TYPE,
     HELD_TAIL_WINDOW_SCALE,
-    NOTE_REMOVE_LATE_CAP_MS,
-    PERFECT_LOWER_MS,
     PERFECT_UPPER_MS,
+    TIMING_MODES,
+    JudgmentBounds,
+    judgment_bounds,
 )
 
 __all__ = [
@@ -75,7 +78,20 @@ __all__ = [
 ]
 
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
-_TIMING_MODES = frozenset({"perfect_window", "zero_ms"})
+# frame_robust: a note left out of a window is hit at least this long after the window's (margin-shortened) end, i.e.
+# the margin past the game's fever end.
+_FRAME_ROBUST_EXIT_GAP_MS = 2.0 * FRAME_MARGIN_MS
+# The timing mode of the graph being built, which sets its judgment bounds; the public builders set it for a build.
+_BUILD_MODE: ContextVar[str] = ContextVar("note_graph_build_mode", default="perfect_window")
+
+
+@contextmanager
+def _building(mode: str) -> Iterator[None]:
+    token = _BUILD_MODE.set(mode)
+    try:
+        yield
+    finally:
+        _BUILD_MODE.reset(token)
 
 
 class UnplayableTrace(ValueError):
@@ -84,7 +100,7 @@ class UnplayableTrace(ValueError):
 
 def _normalize_timing_mode(timing_mode: str) -> str:
     mode = str(timing_mode or "perfect_window").strip().lower()
-    if mode not in _TIMING_MODES:
+    if mode not in TIMING_MODES:
         raise ValueError(f"note_graph: unknown timing_mode {timing_mode!r}")
     return mode
 
@@ -109,28 +125,23 @@ def _window_scale(note_types: np.ndarray, j: int) -> int:
     return HELD_TAIL_WINDOW_SCALE if int(note_types[j]) == HELD_TAIL_TYPE else 1
 
 
-# Reachable hit offsets (ms) per judgment, as timing_envelope.judgment_windows_ms: the judge's bands are
-# `lower < delta <= upper`, so the earliest reachable hit is the exclusive edge + 1 ms (after the held-tail x2).
+def _bounds_at(note_types: np.ndarray, j: int) -> JudgmentBounds:
+    """Note j's reachable planned offsets (ms) per judgment in the build's mode (timing_envelope.judgment_bounds): the
+    early-Great band ends at the inclusive Perfect lower edge (judged Great, issue #68), the late-Great band at the
+    note removal."""
+    return judgment_bounds(_window_scale(note_types, j), _BUILD_MODE.get())
+
+
 def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
-    scale = _window_scale(note_types, j)
-    return float(PERFECT_LOWER_MS * scale + 1), float(PERFECT_UPPER_MS * scale)
+    return tuple(float(v) for v in _bounds_at(note_types, j).perfect)
 
 
 def _early_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
-    """Early-Great-only bounds for note j (issue #68): from the cumulative early-Great edge + 1 ms (-94 / tail -189)
-    to the inclusive Perfect lower edge (-20 / tail -40), which is judged Great."""
-    scale = _window_scale(note_types, j)
-    return float((PERFECT_LOWER_MS + GREAT_LOWER_EXTRA_MS) * scale + 1), float(PERFECT_LOWER_MS * scale)
+    return tuple(float(v) for v in _bounds_at(note_types, j).early_great)
 
 
 def _late_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
-    """Late-Great bounds for note j: past the Perfect upper edge, up to the Great edge capped at the note removal (a
-    held tail's +380 classification edge is unreachable past +200)."""
-    scale = _window_scale(note_types, j)
-    return (
-        float(PERFECT_UPPER_MS * scale + 1),
-        float(min((PERFECT_UPPER_MS + GREAT_UPPER_EXTRA_MS) * scale, NOTE_REMOVE_LATE_CAP_MS)),
-    )
+    return tuple(float(v) for v in _bounds_at(note_types, j).late_great)
 
 
 def _selector_default_delta_ms(note_types: np.ndarray, j: int, result: str, delta: Any) -> float:
@@ -1383,6 +1394,85 @@ def _mark_fever_exit_push_delta(
         j += 1
 
 
+def _require_frame_robust_play(
+    notes: list[dict[str, Any]],
+    *,
+    frontier_trace: Sequence[Mapping[str, Any]],
+    note_types: Sequence[int] | np.ndarray | None,
+    lanes: Sequence[int] | np.ndarray | None,
+) -> None:
+    """frame_robust: the play must score the same at every frame timing (frame_mode/FRAME_TIMING_SPEC.md, section 4).
+    Its judgments sit inside the margin-shortened bands by construction; this checks the rest, in planned press times:
+    - fever: after each activation and before the next, a fever note is pressed before the window's end (the
+      activation press + the trace's window time, already FRAME_MARGIN_MS short of the game's fever time) and every
+      other note at least FRAME_MARGIN_MS past the game's fever end;
+    - same lane: a press comes at least FRAME_MARGIN_MS after the lane's previous input, or the game merges the two
+      presses (or reads a press before the release that precedes it);
+    - order: the game reads one frame's inputs in a fixed lane order, so two inputs on different lanes less than
+      FRAME_MARGIN_MS apart may score in either order. That changes the score when their judgments differ and one of
+      them is in the combo ramp, an activation, or the first note after a window (whose fill is wasted)."""
+    if note_types is None or lanes is None:
+        raise ValueError("note_graph: a frame_robust play is checked against chart note_types and lanes")
+    nt = np.asarray(note_types).reshape(-1)
+    lane_arr = np.asarray(lanes).reshape(-1)
+    events = [
+        float(note["hit_time_ms"]) + _selector_default_delta_ms(nt, j, str(note["note_result"]), note["delta_ms"])
+        for j, note in enumerate(notes)
+    ]
+    order = [int(note["input_order"]) for note in notes]
+    by_order = sorted(range(len(notes)), key=order.__getitem__)
+    order_sensitive: set[int] = set()
+    sections = sorted(frontier_trace, key=lambda sec: order[int(sec["activation_index"])])
+    for k, sec in enumerate(sections):
+        a = int(sec["activation_index"])
+        duration_ms = _trace_fever_duration_ms(sec, activation_chart_ms=float(notes[a]["hit_time_ms"]))
+        if duration_ms is None:
+            raise ValueError(f"note_graph: frame_robust window at note {a} has no fever duration")
+        end_ms = events[a] + float(duration_ms)
+        stop = order[int(sections[k + 1]["activation_index"])] if k + 1 < len(sections) else len(notes)
+        order_sensitive.add(a)
+        first_out = None
+        for j in by_order:
+            if not order[a] < order[j] < stop:
+                continue
+            if notes[j]["fever"] and not events[j] < end_ms:
+                raise UnplayableTrace(
+                    f"note_graph: frame_robust fever note {j} is hit at {events[j]:.3f} ms, not before its window's "
+                    f"end {end_ms:.3f} ms"
+                )
+            if not notes[j]["fever"]:
+                if events[j] < end_ms + _FRAME_ROBUST_EXIT_GAP_MS:
+                    raise UnplayableTrace(
+                        f"note_graph: frame_robust note {j} after the window ending {end_ms:.3f} ms is hit at "
+                        f"{events[j]:.3f} ms, inside the frame-dependent band"
+                    )
+                if first_out is None:
+                    first_out = j
+        if first_out is not None:
+            order_sensitive.add(first_out)
+    previous_on_lane: dict[int, int] = {}
+    for j in by_order:
+        previous = previous_on_lane.get(int(lane_arr[j]))
+        if previous is not None and int(nt[j]) != HELD_TAIL_TYPE and events[j] - events[previous] < FRAME_MARGIN_MS:
+            raise UnplayableTrace(
+                f"note_graph: frame_robust note {j} is pressed {events[j] - events[previous]:.3f} ms after lane "
+                f"{int(lane_arr[j])}'s previous input (note {previous}), inside one frame"
+            )
+        previous_on_lane[int(lane_arr[j])] = j
+    for position, x in enumerate(by_order):
+        for y in by_order[position + 1:]:
+            if events[y] - events[x] >= FRAME_MARGIN_MS:
+                break
+            if lane_arr[x] == lane_arr[y] or notes[x]["note_result"] == notes[y]["note_result"]:
+                continue
+            if min(order[x], order[y]) < HEAD_NOTES or x in order_sensitive or y in order_sensitive:
+                raise UnplayableTrace(
+                    f"note_graph: frame_robust notes {x} ({notes[x]['note_result']}) and {y} "
+                    f"({notes[y]['note_result']}) are {events[y] - events[x]:.3f} ms apart on different lanes, and "
+                    "their order changes the score"
+                )
+
+
 def timeline_frontier_note_graph(
     *,
     frontier_trace: Sequence[Mapping[str, Any]],
@@ -1400,80 +1490,86 @@ def timeline_frontier_note_graph(
     """
 
     n = int(total_notes)
-    apply_guidance = _normalize_timing_mode(timing_mode) == "perfect_window"
+    mode = _normalize_timing_mode(timing_mode)
+    apply_guidance = mode != "zero_ms"
+    exit_gap_ms = _FRAME_ROBUST_EXIT_GAP_MS if mode == "frame_robust" else 0.0
     has_exact_schedule = bool(
         frontier_trace
         and all(int(section.get("activation_schedule_schema_version", 0) or 0) == 1 for section in frontier_trace)
     )
-    if apply_guidance and has_exact_schedule and lanes is None:
-        raise ValueError("note_graph: canonical Base producer trace requires chart lanes")
-    notes = _perfect_note_graph(n, timestamps)
-    for sec in frontier_trace:
-        section = int(sec.get("section", 0))
-        a = int(sec["activation_index"])
-        e = int(sec["fever_end_index"])
-        w = int(sec["fever_start_note_index"])
-        if int(w) != int(a):
-            raise ValueError(
-                "note_graph: base frontier activation witness differs from its score-bearing "
-                f"boundary ({w} != {a})"
+    with _building(mode):
+        if apply_guidance and has_exact_schedule and lanes is None:
+            raise ValueError("note_graph: canonical Base producer trace requires chart lanes")
+        notes = _perfect_note_graph(n, timestamps)
+        for sec in frontier_trace:
+            section = int(sec.get("section", 0))
+            a = int(sec["activation_index"])
+            e = int(sec["fever_end_index"])
+            w = int(sec["fever_start_note_index"])
+            if int(w) != int(a):
+                raise ValueError(
+                    "note_graph: base frontier activation witness differs from its score-bearing "
+                    f"boundary ({w} != {a})"
+                )
+            for j in range(max(0, a), min(e, n)):
+                notes[j]["fever"] = True
+                if notes[j]["section"] == 0:
+                    notes[j]["section"] = section
+            if apply_guidance and 0 <= w < n:
+                notes[w]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+                notes[w]["is_activation_witness"] = True
+                notes[w]["section"] = section
+            # The last note of the fever run is the fever-end witness (largest-cushion cutoff);
+            # any fever note at/after that cutoff is shown with its LARGEST-CUSHION legal early hit --
+            # the center of its legal in-fever range, the timing with the most error margin (issue #42).
+            # Display-only: the per-note timing keeps the scored fever set unchanged.
+            fever_end_ms = sec.get("fever_window_end_ms")
+            _mark_fever_end_witness(
+                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                fever_window_end_ms=fever_end_ms, section=section,
             )
-        for j in range(max(0, a), min(e, n)):
-            notes[j]["fever"] = True
-            if notes[j]["section"] == 0:
-                notes[j]["section"] = section
-        if apply_guidance and 0 <= w < n:
-            notes[w]["delta_ms"] = float(sec["activation_hit_offset_ms"])
-            notes[w]["is_activation_witness"] = True
-            notes[w]["section"] = section
-        # The last note of the fever run is the fever-end witness (largest-cushion cutoff);
-        # any fever note at/after that cutoff is shown with its LARGEST-CUSHION legal early hit --
-        # the center of its legal in-fever range, the timing with the most error margin (issue #42).
-        # Display-only: the per-note timing keeps the scored fever set unchanged.
-        fever_end_ms = sec.get("fever_window_end_ms")
-        _mark_fever_end_witness(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, section=section,
-        )
+            if apply_guidance:
+                guidance_start = int(a)
+                _mark_endpoint_early_hits(
+                    notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
+                    fever_window_end_ms=fever_end_ms, note_types=note_types,
+                )
+                _mark_fever_end_cluster_safe_delta(
+                    notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
+                    fever_window_end_ms=fever_end_ms, note_types=note_types,
+                )
+                # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
+                # drain excludes it exactly as the served surface does (keeps replay == card).
+                _mark_fever_exit_push_delta(
+                    notes, fever_end_index=e, total_notes=n,
+                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms) + exit_gap_ms,
+                    note_types=note_types,
+                )
+
         if apply_guidance:
-            guidance_start = int(a)
-            _mark_endpoint_early_hits(
-                notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, note_types=note_types,
+            # The base frontier prices a delayed activation clock, but the replay wire is a stream of
+            # physical inputs sorted by ``chart time + delta``. Materialize the already-priced order:
+            # every following input that would otherwise land before the activation must be delayed to
+            # the activation clock. Without this pass, a same-time chord sibling left at 0ms can fill
+            # the bar first in game even though the frontier scored the activation witness at +40ms.
+            # FG has always applied this same canonical materialization below.
+            input_order_constraints = _materialize_base_preactivation_schedules(
+                notes,
+                frontier_trace=frontier_trace,
+                total_notes=n,
+                note_types=note_types,
             )
-            _mark_fever_end_cluster_safe_delta(
-                notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, note_types=note_types,
-            )
-            # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
-            # drain excludes it exactly as the served surface does (keeps replay == card).
-            _mark_fever_exit_push_delta(
-                notes, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, note_types=note_types,
-            )
+            input_order_constraints.extend(_mark_activation_preemptor_order_deltas(
+                notes,
+                frontier_trace=frontier_trace,
+                total_notes=n,
+                note_types=note_types,
+            ))
+            _assign_exact_input_order(notes, input_order_constraints)
+        if mode == "frame_robust":
+            _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
 
-    if apply_guidance:
-        # The base frontier prices a delayed activation clock, but the replay wire is a stream of
-        # physical inputs sorted by ``chart time + delta``. Materialize the already-priced order:
-        # every following input that would otherwise land before the activation must be delayed to
-        # the activation clock. Without this pass, a same-time chord sibling left at 0ms can fill
-        # the bar first in game even though the frontier scored the activation witness at +40ms.
-        # FG has always applied this same canonical materialization below.
-        input_order_constraints = _materialize_base_preactivation_schedules(
-            notes,
-            frontier_trace=frontier_trace,
-            total_notes=n,
-            note_types=note_types,
-        )
-        input_order_constraints.extend(_mark_activation_preemptor_order_deltas(
-            notes,
-            frontier_trace=frontier_trace,
-            total_notes=n,
-            note_types=note_types,
-        ))
-        _assign_exact_input_order(notes, input_order_constraints)
-
-    return notes
+        return notes
 
 
 def base_note_graph(
@@ -1542,156 +1638,162 @@ def force_greats_note_graph(
     All other notes are Perfect (delta 0). A note may be both fever and Great.
     """
     n = int(total_notes)
-    apply_guidance = _normalize_timing_mode(timing_mode) == "perfect_window"
-    if apply_guidance:
-        if note_types is None or lanes is None:
-            raise ValueError(
-                "note_graph: perfect-window FG replay requires chart note_types and lanes"
-            )
-        if int(np.asarray(note_types).reshape(-1).shape[0]) != n or int(
-            np.asarray(lanes).reshape(-1).shape[0]
-        ) != n:
-            raise ValueError("note_graph: note_types and lanes must match total_notes")
-    notes = _perfect_note_graph(n, timestamps)
-
-    # Score-bearing labels are global inputs to every activation cap. Materialize the complete map
-    # before selecting any timing witness; otherwise an earlier section can misread a Great owned
-    # by a later section as Perfect and reject the producer's exact schedule.
-    for sec in frontier_trace:
-        section = int(sec.get("section", 0))
-        a = int(sec["activation_index"])
-        e = int(sec["fever_end_index"])
-        fs = int(sec["forced_run_start_index"])
-        fc = int(sec["forced_run_count"])
-
-        for j in range(max(0, fs), min(fs + fc, n)):     # forced (selector) Greats
-            notes[j]["note_result"] = "Great"
-            notes[j]["delta_ms"] = None                   # selectors have NO timing witness (v3)
-            if notes[j]["section"] == 0:
-                notes[j]["section"] = section
-
-        for j in range(max(0, a), min(e, n)):             # fever window
-            notes[j]["fever"] = True
-            if notes[j]["section"] == 0:
-                notes[j]["section"] = section
-
-        if str(sec.get("activation_judgment", "")) == "late_great" and 0 <= a < n:
-            notes[a]["note_result"] = "Great"
-
-    for sec in frontier_trace:
-        section = int(sec.get("section", 0))
-        a = int(sec["activation_index"])
-        e = int(sec["fever_end_index"])
-
-        # Fever-end witness: last note of the fever run, carrying the centered score-parity
-        # cutoff (`fever_window_end_ms`). Symmetric to the base note-graph.
-        fever_end_ms = sec.get("fever_window_end_ms")
-        materialized_activation_delta_ms: float | None = None
-
+    mode = _normalize_timing_mode(timing_mode)
+    apply_guidance = mode != "zero_ms"
+    exit_gap_ms = _FRAME_ROBUST_EXIT_GAP_MS if mode == "frame_robust" else 0.0
+    with _building(mode):
         if apply_guidance:
-            activation_judgment = str(sec.get("activation_judgment", ""))
-            if activation_judgment == "late_great" and 0 <= a < n:
-                materialized_activation_delta_ms = _activation_materialized_delta_ms(
-                    sec,
-                    notes=notes,
-                    total_notes=n,
-                    note_types=note_types,
-                    lanes=lanes,
-                    note_index=a,
-                    judgment=activation_judgment,
+            if note_types is None or lanes is None:
+                raise ValueError(
+                    "note_graph: perfect-window FG replay requires chart note_types and lanes"
                 )
-                notes[a]["delta_ms"] = float(materialized_activation_delta_ms)
-                notes[a]["is_activation_witness"] = True
-                notes[a]["section"] = section
-            elif (
-                activation_judgment == "perfect"
-                and 0 <= a < n
-                and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
-            ):
-                materialized_activation_delta_ms = _activation_materialized_delta_ms(
+            if int(np.asarray(note_types).reshape(-1).shape[0]) != n or int(
+                np.asarray(lanes).reshape(-1).shape[0]
+            ) != n:
+                raise ValueError("note_graph: note_types and lanes must match total_notes")
+        notes = _perfect_note_graph(n, timestamps)
+
+        # Score-bearing labels are global inputs to every activation cap. Materialize the complete map
+        # before selecting any timing witness; otherwise an earlier section can misread a Great owned
+        # by a later section as Perfect and reject the producer's exact schedule.
+        for sec in frontier_trace:
+            section = int(sec.get("section", 0))
+            a = int(sec["activation_index"])
+            e = int(sec["fever_end_index"])
+            fs = int(sec["forced_run_start_index"])
+            fc = int(sec["forced_run_count"])
+
+            for j in range(max(0, fs), min(fs + fc, n)):     # forced (selector) Greats
+                notes[j]["note_result"] = "Great"
+                notes[j]["delta_ms"] = None                   # selectors have NO timing witness (v3)
+                if notes[j]["section"] == 0:
+                    notes[j]["section"] = section
+
+            for j in range(max(0, a), min(e, n)):             # fever window
+                notes[j]["fever"] = True
+                if notes[j]["section"] == 0:
+                    notes[j]["section"] = section
+
+            if str(sec.get("activation_judgment", "")) == "late_great" and 0 <= a < n:
+                notes[a]["note_result"] = "Great"
+
+        for sec in frontier_trace:
+            section = int(sec.get("section", 0))
+            a = int(sec["activation_index"])
+            e = int(sec["fever_end_index"])
+
+            # Fever-end witness: last note of the fever run, carrying the centered score-parity
+            # cutoff (`fever_window_end_ms`). Symmetric to the base note-graph.
+            fever_end_ms = sec.get("fever_window_end_ms")
+            materialized_activation_delta_ms: float | None = None
+
+            if apply_guidance:
+                activation_judgment = str(sec.get("activation_judgment", ""))
+                if activation_judgment == "late_great" and 0 <= a < n:
+                    materialized_activation_delta_ms = _activation_materialized_delta_ms(
+                        sec,
+                        notes=notes,
+                        total_notes=n,
+                        note_types=note_types,
+                        lanes=lanes,
+                        note_index=a,
+                        judgment=activation_judgment,
+                    )
+                    notes[a]["delta_ms"] = float(materialized_activation_delta_ms)
+                    notes[a]["is_activation_witness"] = True
+                    notes[a]["section"] = section
+                elif (
+                    activation_judgment == "perfect"
+                    and 0 <= a < n
+                    and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
+                ):
+                    materialized_activation_delta_ms = _activation_materialized_delta_ms(
+                        sec,
+                        notes=notes,
+                        total_notes=n,
+                        note_types=note_types,
+                        lanes=lanes,
+                        note_index=a,
+                        judgment=activation_judgment,
+                    )
+                    notes[a]["delta_ms"] = float(materialized_activation_delta_ms)
+                    notes[a]["is_activation_witness"] = True
+                    notes[a]["section"] = section
+
+                fever_end_ms = _materialized_fever_window_end_ms(
                     sec,
-                    notes=notes,
-                    total_notes=n,
-                    note_types=note_types,
-                    lanes=lanes,
-                    note_index=a,
-                    judgment=activation_judgment,
+                    activation_delta_ms=materialized_activation_delta_ms,
+                    activation_chart_ms=float(notes[a]["hit_time_ms"]) if 0 <= a < n else None,
                 )
-                notes[a]["delta_ms"] = float(materialized_activation_delta_ms)
-                notes[a]["is_activation_witness"] = True
-                notes[a]["section"] = section
 
-            fever_end_ms = _materialized_fever_window_end_ms(
-                sec,
-                activation_delta_ms=materialized_activation_delta_ms,
-                activation_chart_ms=float(notes[a]["hit_time_ms"]) if 0 <= a < n else None,
-            )
-
-        _mark_fever_end_witness(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, section=section,
-        )
-
-        if apply_guidance:
-            # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
-            # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
-            # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
-            # None) are skipped.
-            early_great_start = int(sec.get("early_great_start", -1))
-            early_great_end = int(sec.get("early_great_end", -1))
-            early_great_range = None
-            if early_great_start >= 0 and early_great_end >= 0:
-                start = max(int(a), int(early_great_start), 0)
-                end = min(int(early_great_end), int(e), int(n))
-                if end > start:
-                    early_great_range = (start, end)
-            _mark_endpoint_early_hits(
-                notes,
-                activation_index=a,
-                fever_end_index=e,
-                total_notes=n,
-                fever_window_end_ms=fever_end_ms,
-                note_types=note_types,
-                skip_range=early_great_range,
-            )
-            _mark_endpoint_early_great_hits(
-                notes,
-                activation_index=a,
-                total_notes=n,
-                fever_window_end_ms=fever_end_ms,
-                note_types=note_types,
-                early_great_range=early_great_range,
-            )
-            _mark_fever_end_cluster_safe_delta(
+            _mark_fever_end_witness(
                 notes, activation_index=a, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, note_types=note_types,
-            )
-            # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
-            # drain excludes it exactly as the served surface does (keeps replay == card).
-            _mark_fever_exit_push_delta(
-                notes, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, note_types=note_types,
+                fever_window_end_ms=fever_end_ms, section=section,
             )
 
-    if apply_guidance:
-        _mark_same_time_selector_order_deltas(
-            notes,
-            total_notes=n,
-            note_types=note_types,
-        )
-        input_order_constraints = _mark_activation_preemptor_order_deltas(
-            notes,
-            frontier_trace=frontier_trace,
-            total_notes=n,
-            note_types=note_types,
-            lanes=lanes,
-            require_exact_schedule=True,
-        )
-        _materialize_remaining_selector_deltas(notes, note_types=note_types)
-        _assign_exact_input_order(notes, input_order_constraints)
-        _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)
+            if apply_guidance:
+                # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
+                # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
+                # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
+                # None) are skipped.
+                early_great_start = int(sec.get("early_great_start", -1))
+                early_great_end = int(sec.get("early_great_end", -1))
+                early_great_range = None
+                if early_great_start >= 0 and early_great_end >= 0:
+                    start = max(int(a), int(early_great_start), 0)
+                    end = min(int(early_great_end), int(e), int(n))
+                    if end > start:
+                        early_great_range = (start, end)
+                _mark_endpoint_early_hits(
+                    notes,
+                    activation_index=a,
+                    fever_end_index=e,
+                    total_notes=n,
+                    fever_window_end_ms=fever_end_ms,
+                    note_types=note_types,
+                    skip_range=early_great_range,
+                )
+                _mark_endpoint_early_great_hits(
+                    notes,
+                    activation_index=a,
+                    total_notes=n,
+                    fever_window_end_ms=fever_end_ms,
+                    note_types=note_types,
+                    early_great_range=early_great_range,
+                )
+                _mark_fever_end_cluster_safe_delta(
+                    notes, activation_index=a, fever_end_index=e, total_notes=n,
+                    fever_window_end_ms=fever_end_ms, note_types=note_types,
+                )
+                # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
+                # drain excludes it exactly as the served surface does (keeps replay == card).
+                _mark_fever_exit_push_delta(
+                    notes, fever_end_index=e, total_notes=n,
+                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms) + exit_gap_ms,
+                    note_types=note_types,
+                )
 
-    return notes
+        if apply_guidance:
+            _mark_same_time_selector_order_deltas(
+                notes,
+                total_notes=n,
+                note_types=note_types,
+            )
+            input_order_constraints = _mark_activation_preemptor_order_deltas(
+                notes,
+                frontier_trace=frontier_trace,
+                total_notes=n,
+                note_types=note_types,
+                lanes=lanes,
+                require_exact_schedule=True,
+            )
+            _materialize_remaining_selector_deltas(notes, note_types=note_types)
+            _assign_exact_input_order(notes, input_order_constraints)
+            _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)
+        if mode == "frame_robust":
+            _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
+
+        return notes
 
 
 def _head_set_from_words(words: Sequence[int], head_limit: int) -> set[int]:

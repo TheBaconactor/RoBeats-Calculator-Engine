@@ -14,10 +14,10 @@ from typing import Any
 import numpy as np
 
 from ... import score as core_score
-from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
+from gear_optimizer.rules import FEVER_FILL_PER_NOTE, MAX_STAT
 from ...gamedata import STATS, StatCurves
 from ...timing import fixed_timeline_cell
-from ..timing_envelope import TimedSong
+from ..timing_envelope import TimedSong, fever_window_times
 
 # Base timeline-trace memo: the reconstructed trace is a pure function of
 # (frontier payload cache_key, FT cell, FF cell, winning pool row) -- stats enter only
@@ -221,11 +221,10 @@ def _timeline_trace_for_payload_surface(
     total_notes_i = int(song_inputs.total_notes)
     long_notes_i = int(song_inputs.long_notes)
     non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * float(FEVER_FILL_PER_NOTE)
-    fever_time_cas = float(song_inputs.last_note_time) * FEVER_TIME_PER_SECOND + FEVER_TIME_OFFSET
     raw_fever_fill = float(non_fever_cas) * float(ref_ff[ff_idx])
     fill_count = int(np.ceil(raw_fever_fill))
     fill_count = max(1, int(fill_count))
-    real_fever_time = max(0.0, float(fever_time_cas) * float(ref_ft[ft_idx]))
+    real_fever_time = float(fever_window_times(song_inputs.last_note_time, ref_ft[ft_idx : ft_idx + 1], song.mode)[0])
 
     trace = reconstruct_timeline_physical_trace(
         head_bits=(int(words[0]), int(words[1]), int(words[2]), int(words[3])),
@@ -255,6 +254,7 @@ def _timeline_trace_for_payload_surface(
         lanes=song.chart.lanes,
         fill_count=int(fill_count),
         fever_duration_ms=float(real_fever_time) * 1000.0,
+        timing_mode=song.mode,
     )
     return {
         "frontier_trace": [dict(section) for section in trace],

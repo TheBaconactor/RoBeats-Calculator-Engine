@@ -1,8 +1,9 @@
-"""The timing models a chart is prepared for (TimedSong) and the per-note hit envelopes of perfect_window.
+"""The timing models a chart is prepared for (TimedSong) and the per-note hit envelopes of the windowed models.
 
 perfect_window: every note may be hit anywhere inside its judgment window, so FG reads four per-note envelopes
 (float32 seconds): the latest Perfect hit (fever activations), the earliest Perfect and earliest early-Great hits (fever
-boundaries; prefix maxima, so one searchsorted finds a boundary exactly) and the latest late-Great hit. zero_ms: every
+boundaries; prefix maxima, so one searchsorted finds a boundary exactly) and the latest late-Great hit. frame_robust:
+the same windows, claiming fever only for notes in fever at every frame timing (fever_window_times). zero_ms: every
 note is hit at its chart time (or the chart plus a custom per-note offset) and has no envelopes.
 
 The judge's bands are `lower < delta <= upper` (SPUtil.timedelta_to_result, WebPort judgeWithEdges): the early edge is
@@ -17,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cached_property, lru_cache
 from typing import NamedTuple
 
 import numpy as np
@@ -26,27 +27,75 @@ from cachetools import LRUCache
 from ..chart import Chart
 from ..core.array_signature import array_sig16
 from ..core.time_quantize import quantize_to_int_ms
+from ..rules import FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
 
 # The game removes an unhit note once `now - hit > 200` ms (decompiled Constants.lua:19 NOTE_REMOVE_TIME = -200; the
 # same edge for taps (Note.lua:191), hold heads and the hold despawn (HeldNote.lua:219/231)). A held tail's late-Great
 # classification edge reaches +380, but an input scheduled past +200 races the per-frame sweep and lands only if no
 # frame ticks inside the gap, which no frame rate guarantees: no hit is ever planned later than this.
 NOTE_REMOVE_LATE_CAP_MS = 200
-TIMING_MODES = ("perfect_window", "zero_ms")
+TIMING_MODES = ("perfect_window", "zero_ms", "frame_robust")
+# The modes whose frontier caches the service prebuilds for every catalog chart; frame_robust builds a song's caches on
+# its first use.
+PREBUILT_TIMING_MODES = ("perfect_window", "zero_ms")
 PERFECT_LOWER_MS, PERFECT_UPPER_MS = -20, 40
 GREAT_LOWER_EXTRA_MS, GREAT_UPPER_EXTRA_MS = -75, 150
 HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
+# frame_robust plans for every frame timing (frame_mode/FRAME_TIMING_SPEC.md). The game reads inputs once per frame and
+# judges them, fills and drains fever at that frame's song clock, and its server re-scores the event times floored to
+# whole ms. So a planned press is judged up to one frame (1/60 s at >= 60 fps; the web port's clock steps up to
+# 17.27 ms) plus the 1 ms floor late, never early. This margin covers both: a band's latest planned offset is its late
+# edge minus the margin, a note is planned in fever only when it follows the activation press by at most the fever
+# time minus the margin and out of it only from the fever time plus the margin, and two presses whose order matters
+# are planned at least the margin apart.
+FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
 
 
-def judgment_windows_ms(note_types: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Per-note reachable hit offsets (int32 ms): earliest Perfect, latest Perfect, earliest early-Great and latest
-    late-Great (capped at the note removal)."""
-    scale = np.where(np.asarray(note_types) == HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE, 1).astype(np.int32)
-    return (
-        PERFECT_LOWER_MS * scale + 1,
-        PERFECT_UPPER_MS * scale,
-        (PERFECT_LOWER_MS + GREAT_LOWER_EXTRA_MS) * scale + 1,
-        np.minimum((PERFECT_UPPER_MS + GREAT_UPPER_EXTRA_MS) * scale, np.int32(NOTE_REMOVE_LATE_CAP_MS)),
+class Band(NamedTuple):
+    earliest: int
+    latest: int
+
+
+class JudgmentBounds(NamedTuple):
+    perfect: Band
+    early_great: Band
+    late_great: Band
+
+
+@lru_cache(maxsize=None)
+def judgment_bounds(scale: int, mode: str) -> JudgmentBounds:
+    """A note's reachable planned hit offsets (ms) per judgment; `scale` is its window scale (2 for a held tail). The
+    late-Great band ends at the note removal; frame_robust ends every band FRAME_MARGIN_MS earlier (whole ms)."""
+    margin = FRAME_MARGIN_MS if mode == "frame_robust" else 0.0
+
+    def latest(edge_ms: int) -> int:
+        return int(np.floor(edge_ms - margin))
+
+    return JudgmentBounds(
+        perfect=Band(PERFECT_LOWER_MS * scale + 1, latest(PERFECT_UPPER_MS * scale)),
+        early_great=Band((PERFECT_LOWER_MS + GREAT_LOWER_EXTRA_MS) * scale + 1, latest(PERFECT_LOWER_MS * scale)),
+        late_great=Band(
+            PERFECT_UPPER_MS * scale + 1,
+            latest(min((PERFECT_UPPER_MS + GREAT_UPPER_EXTRA_MS) * scale, NOTE_REMOVE_LATE_CAP_MS)),
+        ),
+    )
+
+
+def judgment_windows_ms(
+    note_types: np.ndarray, mode: str = "perfect_window"
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Per-note reachable hit offsets (int32 ms, see judgment_bounds): earliest Perfect, latest Perfect, earliest
+    early-Great and latest late-Great."""
+    tap, tail = judgment_bounds(1, mode), judgment_bounds(HELD_TAIL_WINDOW_SCALE, mode)
+    is_tail = np.asarray(note_types) == HELD_TAIL_TYPE
+    return tuple(
+        np.where(is_tail, tail_value, tap_value).astype(np.int32)
+        for tap_value, tail_value in (
+            (tap.perfect.earliest, tail.perfect.earliest),
+            (tap.perfect.latest, tail.perfect.latest),
+            (tap.early_great.earliest, tail.early_great.earliest),
+            (tap.late_great.latest, tail.late_great.latest),
+        )
     )
 
 
@@ -65,10 +114,10 @@ def _envelope_sec(timestamps: np.ndarray, offset_ms: np.ndarray, *, prefix_max: 
     return event_ms.astype(np.float32) * np.float32(0.001)
 
 
-def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray) -> Envelopes:
-    """The four perfect_window hit envelopes of a chart (timestamps in float32 seconds, chart order)."""
+def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mode: str = "perfect_window") -> Envelopes:
+    """The four hit envelopes of a chart in a windowed mode (timestamps in float32 seconds, chart order)."""
     ts = np.asarray(timestamps, dtype=np.float32)
-    perfect_low, perfect_high, great_low, great_high = judgment_windows_ms(note_types)
+    perfect_low, perfect_high, great_low, great_high = judgment_windows_ms(note_types, mode)
     # The judge compares the decoded hit with the float32 chart time in float64, so the integer-ms edge encoded as
     # float32 seconds can round one step past Perfect (#161): cap each latest Perfect hit at the latest float32 still
     # inside its hard edge.
@@ -82,6 +131,18 @@ def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray) -> 
         great_floor=_envelope_sec(ts, great_low, prefix_max=True),
         great_candidates=_envelope_sec(ts, great_high),
     )
+
+
+def fever_window_times(last_note_time: float, time_factors: np.ndarray, mode: str) -> np.ndarray:
+    """Per Fever Time factor (the float32 curve values), how long a planned fever window extends past its activation
+    press, in float64 seconds: the game's fever time, (last note time x 0.15 + 0.15) x the factor; under frame_robust
+    FRAME_MARGIN_MS shorter, the longest offset at which a note is in fever at every frame timing."""
+    real = np.maximum(
+        (float(last_note_time) * FEVER_TIME_PER_SECOND + FEVER_TIME_OFFSET)
+        * np.asarray(time_factors, dtype=np.float32).astype(np.float64),
+        0.0,
+    )
+    return np.maximum(real - FRAME_MARGIN_MS / 1000.0, 0.0) if mode == "frame_robust" else real
 
 
 def baseline_hit_timeline(
@@ -120,8 +181,8 @@ class TimedSong:
     """A chart prepared for one timing model.
 
     hit_timestamps is the timeline FG scores against: the chart itself, or the chart plus a custom per-note offset
-    under zero_ms. perfect_window adds the per-note Perfect/Great candidate and floor envelopes that make FG
-    carry-aware; zero_ms has none (every hit lands at its hit time).
+    under zero_ms. perfect_window and frame_robust add the per-note Perfect/Great candidate and floor envelopes that
+    make FG carry-aware; zero_ms has none (every hit lands at its hit time).
     """
 
     chart: Chart
@@ -204,10 +265,10 @@ def time_song(chart: Chart, mode: str | None = None, baseline_offset: np.ndarray
     else:
         song = TimedSong(
             chart=chart,
-            mode="perfect_window",
+            mode=timing_mode,
             baseline_hash="",
             hit_timestamps=chart_ts,
-            **perfect_window_envelopes(chart_ts, chart.note_types)._asdict(),
+            **perfect_window_envelopes(chart_ts, chart.note_types, timing_mode)._asdict(),
         )
     with _TIMED_SONG_CACHE_LOCK:
         _TIMED_SONG_CACHE[cache_key] = song

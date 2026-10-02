@@ -98,6 +98,10 @@ from typing import Sequence
 import numpy as np
 
 from gear_optimizer.core.time_quantize import quantize_to_int_ms
+from gear_optimizer.solver.timing_envelope import HELD_TAIL_WINDOW_SCALE, judgment_bounds
+
+# The timing modes whose hits move inside their judgment windows.
+_WINDOWED_MODES = ("perfect_window", "frame_robust")
 
 # Fill in PERFECT-UNITS: a Perfect contributes 1.0, a Great half (0.5).  The bar is full at
 # ``fever_fill_denom`` perfect-units (== normalized bar 1.0, since denom == feverFillDenom).  This is
@@ -195,19 +199,32 @@ def exact_label_hit_intervals(
         invalid_high = np.full(n, np.float32(-np.inf), dtype=np.float32)
         return chart.copy(), chart.copy(), invalid_low, invalid_high
 
-    perfect_high_ms = np.rint(np.asarray(perfect_high, dtype=np.float64) * 1000.0).astype(np.int64)
-    perfect_upper_ms = perfect_high_ms - chart_ms
-    if bool(np.any((perfect_upper_ms != 40) & (perfect_upper_ms != 80))):
-        raise ValueError("Perfect candidate envelope must use the exact +40ms/+80ms engine windows")
-    width = perfect_upper_ms // 40
-    perfect_low_ms = chart_ms + (-20 * width + 1)
-    great_early_low_ms = chart_ms + (-95 * width + 1)
-    great_early_high_ms = chart_ms - 20 * width
-    great_late_low_ms = chart_ms + 40 * width + 1
-    expected_great_high_ms = chart_ms + np.minimum(190 * width, 200)
+    perfect_upper_ms = np.rint(np.asarray(perfect_high, dtype=np.float64) * 1000.0).astype(np.int64) - chart_ms
+    # The latest Perfect offsets name the windowed mode that planned the envelope and each note's window scale.
+    mode = next(
+        (
+            m
+            for m in _WINDOWED_MODES
+            if np.isin(perfect_upper_ms, [judgment_bounds(s, m).perfect.latest for s in (1, HELD_TAIL_WINDOW_SCALE)]).all()
+        ),
+        None,
+    )
+    if mode is None:
+        raise ValueError("Perfect candidate envelope must use one windowed mode's exact latest Perfect offsets")
+    tap, tail = judgment_bounds(1, mode), judgment_bounds(HELD_TAIL_WINDOW_SCALE, mode)
+    is_tail = perfect_upper_ms == tail.perfect.latest
+
+    def offsets_ms(tap_ms: int, tail_ms: int) -> np.ndarray:
+        return chart_ms + np.where(is_tail, tail_ms, tap_ms).astype(np.int64)
+
+    perfect_low_ms = offsets_ms(tap.perfect.earliest, tail.perfect.earliest)
+    great_early_low_ms = offsets_ms(tap.early_great.earliest, tail.early_great.earliest)
+    great_early_high_ms = offsets_ms(tap.early_great.latest, tail.early_great.latest)
+    great_late_low_ms = offsets_ms(tap.late_great.earliest, tail.late_great.earliest)
+    expected_great_high_ms = offsets_ms(tap.late_great.latest, tail.late_great.latest)
     actual_great_high_ms = np.rint(np.asarray(great_high, dtype=np.float64) * 1000.0).astype(np.int64)
     if not bool(np.array_equal(actual_great_high_ms, expected_great_high_ms)):
-        raise ValueError("Great candidate envelope must use the exact +190ms/+200ms engine cap")
+        raise ValueError("Great candidate envelope must use the mode's exact latest late-Great offsets")
 
     raw_perfect_low = perfect_low_ms.astype(np.float32) * np.float32(0.001)
     raw_great_low = great_early_low_ms.astype(np.float32) * np.float32(0.001)

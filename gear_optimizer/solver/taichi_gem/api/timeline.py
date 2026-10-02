@@ -31,7 +31,7 @@ from gear_optimizer.solver.frontier_cache import (
     write_atomically,
 )
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
-from gear_optimizer.solver.timing_envelope import TimedSong
+from gear_optimizer.solver.timing_envelope import TimedSong, fever_window_times
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
@@ -627,15 +627,13 @@ def build_or_load_timeline_frontier_payload(
             payload = _build_zero_ms_timeline_payload(song, curves)
         else:
             payload = build_timeline_frontier_grid_payload(
-                song_slot=0,
                 total_notes=int(lookup["total_notes"]),
                 long_notes=int(lookup["long_notes"]),
-                last_note_time=float(lookup["last_note_time"]),
                 timestamps=lookup["timestamps"],
                 perfect_candidate_timestamps=lookup["perfect_candidates"],
                 perfect_floor_timestamps=lookup["perfect_floor"],
                 lanes=lookup["lanes"],
-                ref_ft=lookup["ref_ft"],
+                fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
                 ref_ff=lookup["ref_ff"],
             )
         raw = _encode_frontier_payload_npz(payload)
@@ -740,15 +738,13 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
     lookup = _timeline_payload_lookup_context(song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload = build_timeline_frontier_grid_payload(
-        song_slot=0,
         total_notes=int(lookup["total_notes"]),
         long_notes=int(lookup["long_notes"]),
-        last_note_time=float(lookup["last_note_time"]),
         timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
         perfect_candidate_timestamps=np.asarray(lookup["perfect_candidates"], dtype=np.float32),
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
         lanes=np.asarray(lookup["lanes"], dtype=np.int32),
-        ref_ft=np.asarray(lookup["ref_ft"], dtype=np.float32),
+        fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
         ref_ff=np.asarray(lookup["ref_ff"], dtype=np.float32),
     )
     frontier_result = FrontierCacheLoad(

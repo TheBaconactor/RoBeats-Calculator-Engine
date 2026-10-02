@@ -34,7 +34,7 @@ from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.settings import DIFFICULTIES, paths
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
-from gear_optimizer.solver.timing_envelope import TIMING_MODES, TimedSong, time_song
+from gear_optimizer.solver.timing_envelope import PREBUILT_TIMING_MODES, TimedSong, time_song
 
 logger = logging.getLogger(__name__)
 
@@ -646,7 +646,7 @@ def prebuild_frontier_cache(
     data_root: str | os.PathLike[str] | None = None,
     build_missing: bool = True,
     authorize_destructive_rotation: bool = False,
-    timing_modes: Iterable[str] = TIMING_MODES,
+    timing_modes: Iterable[str] = PREBUILT_TIMING_MODES,
 ) -> FrontierCachePrebuildSummary:
     """Verify the cache files of the queued charts (all charts under `data_root` for an empty queue) in each timing
     mode and build the missing ones; with `build_missing` False a missing file counts as a failure."""

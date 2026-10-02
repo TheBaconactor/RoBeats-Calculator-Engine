@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
+from gear_optimizer.rules import FEVER_FILL_PER_NOTE
 
 from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 
@@ -136,24 +136,22 @@ def reconstruct_timeline_physical_trace(
 
 def build_timeline_frontier_grid_payload(
     *,
-    song_slot: int,
     total_notes: int,
     long_notes: int,
-    last_note_time: float,
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,
     lanes: np.ndarray,
-    ref_ft: np.ndarray,
+    fever_times: np.ndarray,
     ref_ff: np.ndarray,
 ) -> TimelineFrontierGridPayload:
-    """Build every FT/FF Base cell from exact lane-aware all-Perfect producer surfaces."""
-    if int(song_slot) < 0:
-        raise ValueError(f"song_slot out of range: {int(song_slot)}")
-    ref_ft = np.asarray(ref_ft, dtype=np.float32).reshape(-1)
+    """Build every FT/FF Base cell from exact lane-aware all-Perfect producer surfaces.
+
+    `fever_times` holds each Fever Time row's window time (timing_envelope.fever_window_times)."""
+    real_times = np.asarray(fever_times, dtype=np.float64).reshape(-1)
     ref_ff = np.asarray(ref_ff, dtype=np.float32).reshape(-1)
-    if int(ref_ft.shape[0]) != GRID_SIZE:
-        raise ValueError(f"Fever Time axis must be shape ({GRID_SIZE},), got {ref_ft.shape}")
+    if int(real_times.shape[0]) != GRID_SIZE:
+        raise ValueError(f"Fever Time axis must be shape ({GRID_SIZE},), got {real_times.shape}")
     if int(ref_ff.shape[0]) != GRID_SIZE:
         raise ValueError(f"Fever Fill Rate axis must be shape ({GRID_SIZE},), got {ref_ff.shape}")
 
@@ -169,9 +167,7 @@ def build_timeline_frontier_grid_payload(
         raise ValueError("timeline frontier timestamps must be sorted in chart order")
 
     non_fever_base = float(max(0, n - int(long_notes))) * float(FEVER_FILL_PER_NOTE)
-    fever_time_base = float(last_note_time) * float(FEVER_TIME_PER_SECOND) + float(FEVER_TIME_OFFSET)
     fill_counts = np.maximum(np.ceil(non_fever_base * ref_ff.astype(np.float64)).astype(np.int32), np.int32(1))
-    real_times = np.maximum(fever_time_base * ref_ft.astype(np.float64), np.float64(0.0))
     unique_fill_counts, fill_inverse = np.unique(fill_counts, return_inverse=True)
     unique_real_times, time_inverse = np.unique(real_times, return_inverse=True)
 

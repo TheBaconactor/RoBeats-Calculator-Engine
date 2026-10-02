@@ -35,9 +35,10 @@ def _minimal_fg_song(note_count: int = 4):
 
 
 def _stub_song(note_count: int):
-    """A song reduced to what the FG planner/reducer read: its FG inputs and chart note types."""
+    """A song reduced to what the FG planner/reducer read: its timing mode, FG inputs and chart note types."""
     ts = [float(i) for i in range(int(note_count))]
     return SimpleNamespace(
+        mode="perfect_window",
         fg_inputs=SimpleNamespace(
             total_notes=int(note_count),
             timestamps=ts,

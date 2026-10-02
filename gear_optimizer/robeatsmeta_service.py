@@ -43,6 +43,7 @@ from gear_optimizer.store import db, legacy, schema
 from gear_optimizer.store.db import present_songs
 from gear_optimizer.data.exported_game_data_sync import exported_song_names
 from gear_optimizer.frontier_auth import FrontierRequestAuthenticator
+from gear_optimizer.solver.timing_envelope import TIMING_MODES
 from gear_optimizer.frontier_server import (
     FrontierDistributionState,
     FrontierServerMaintainer,
@@ -576,7 +577,7 @@ def _job_slug(value: Any) -> str:
 
 def _normalize_timing_mode(value: Any) -> str:
     mode = str(value or "perfect_window").strip().lower()
-    if mode not in {"perfect_window", "zero_ms"}:
+    if mode not in TIMING_MODES:
         raise RequestError(f"unknown timingMode {value!r}")
     return mode
 

@@ -114,6 +114,7 @@ def _base_graph_physical_replay(
     lanes: Sequence[int] | np.ndarray,
     fill_count: int,
     fever_duration_ms: float,
+    timing_mode: str,
 ) -> tuple[list[dict[str, object]], BasePhysicalReplay]:
     """Build and replay one Base graph through the engine's physical input order."""
     ts = np.asarray(timestamps, dtype=np.float64).reshape(-1)
@@ -131,7 +132,7 @@ def _base_graph_physical_replay(
         timestamps=ts,
         note_types=nt,
         lanes=lane_arr,
-        timing_mode="perfect_window",
+        timing_mode=timing_mode,
     )
     if response_surface is not None:
         reconcile_base_note_graph(graph, total_notes=n, response_surface=response_surface)
@@ -193,8 +194,10 @@ def validate_base_physical_replay(
     lanes: Sequence[int] | np.ndarray,
     fill_count: int,
     fever_duration_ms: float,
+    timing_mode: str = "perfect_window",
 ) -> BasePhysicalReplay:
-    """Fail loudly unless a persisted Base witness is already canonical and score-exact."""
+    """Fail loudly unless a persisted Base witness is already canonical and score-exact (its graph built in
+    `timing_mode`: perfect_window or frame_robust)."""
     graph, replay = _base_graph_physical_replay(
         frontier_trace=frontier_trace,
         response_surface=response_surface,
@@ -203,6 +206,7 @@ def validate_base_physical_replay(
         lanes=lanes,
         fill_count=fill_count,
         fever_duration_ms=fever_duration_ms,
+        timing_mode=timing_mode,
     )
     expected_fever = tuple(bool(note["fever"]) for note in graph)
     if replay.fever_mask != expected_fever:
@@ -383,8 +387,11 @@ def validate_force_greats_physical_replay(
     lanes: Sequence[int] | np.ndarray,
     raw_fever_fill: float,
     real_fever_time: float,
+    timing_mode: str = "perfect_window",
 ) -> FgPhysicalReplay:
-    """Fail loudly unless one persisted witness replays to its exact score-bearing surface."""
+    """Fail loudly unless one persisted witness replays to its exact score-bearing surface. The graph is built with
+    the windowed guidance (`timing_mode` perfect_window, also for zero_ms traces, which carry no offsets, or
+    frame_robust)."""
     ts = np.asarray(timestamps, dtype=np.float64).reshape(-1)
     nt = np.asarray(note_types, dtype=np.int32).reshape(-1)
     lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
@@ -398,7 +405,7 @@ def validate_force_greats_physical_replay(
         timestamps=ts,
         note_types=nt,
         lanes=lane_arr,
-        timing_mode="perfect_window",
+        timing_mode=timing_mode,
     )
     reconcile_force_greats_note_graph(
         graph,
