@@ -246,7 +246,6 @@ def ga_generate_initial_populations(
     n_genomes: int,
     n_slots: int = 9,
     seed: int,
-    heuristic_prob: float = 0.0,
     heuristic_k: int = 0,
     heuristic_copies: int = 0,
 ) -> None:
@@ -271,9 +270,6 @@ def ga_generate_initial_populations(
         raise ValueError(f"Too many genomes: {n_genomes} > {fields.MAX_GA_RUN_GENOMES}")
     if n_slots > fields.MAX_SLOTS:
         raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
-    heuristic_prob = float(heuristic_prob)
-    heuristic_prob = max(0.0, min(1.0, heuristic_prob))
-    heuristic_prob_fp = probability_to_u32_fp(heuristic_prob)
     heuristic_k = int(heuristic_k)
     if heuristic_k < 0:
         heuristic_k = 0
@@ -290,7 +286,6 @@ def ga_generate_initial_populations(
         int(n_genomes),
         int(n_slots),
         np.uint32(int(seed) & 0xFFFFFFFF),
-        heuristic_prob_fp,
         int(heuristic_k),
         int(heuristic_copies),
     )

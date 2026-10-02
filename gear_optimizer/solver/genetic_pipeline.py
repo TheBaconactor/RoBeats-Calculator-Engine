@@ -457,7 +457,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             n_genomes=n_genomes,
             n_slots=n_slots,
             seed=seed_base,
-            heuristic_prob=0.0,
             heuristic_k=init_heuristic_k,
             heuristic_copies=int(init_heuristic_copies),
         )

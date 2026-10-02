@@ -213,7 +213,6 @@ def ga_generate_initial_populations_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
     seed: ti.u32,
-    heuristic_prob_fp: ti.u32,  # [0..2^32-1]
     heuristic_k: ti.i32,
     heuristic_copies: ti.i32,
 ):
@@ -244,13 +243,7 @@ def ga_generate_initial_populations_kernel(
                     kernels_helpers.ga_initial_populations[run_id, g, s] = 0
                     continue
                 state = kernels_helpers._xorshift32(state)
-                use_heuristic = False
-                if hk > 0:
-                    if heuristic_copies > 0 and g < heuristic_copies:
-                        use_heuristic = True
-                    elif heuristic_prob_fp > ti.u32(0) and state < heuristic_prob_fp:
-                        use_heuristic = True
-                if use_heuristic:
+                if hk > 0 and g < heuristic_copies:
                     state = kernels_helpers._xorshift32(state)
                     idx = ti.cast(state % ti.cast(hk, ti.u32), ti.i32)
                     kernels_helpers.ga_initial_populations[run_id, g, s] = kernels_helpers.ga_init_heuristic_topk[

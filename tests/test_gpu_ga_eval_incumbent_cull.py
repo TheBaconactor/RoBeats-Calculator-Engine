@@ -256,7 +256,6 @@ def eval_device_state():
             n_genomes=_N_GENOMES,
             n_slots=_N_SLOTS,
             seed=20260612,
-            heuristic_prob=0.0,
             heuristic_k=0,
             heuristic_copies=0,
         )
