@@ -1877,6 +1877,7 @@ def test_fg_response_interval_successor_skips_removed_indices() -> None:
 
 def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        ActivationEnds,
         HitTimes,
         RegionTables,
         _numba_build_prefix_activation_hit_tables,
@@ -1997,16 +1998,16 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
             perfect_run_ends,
             late_run_starts,
             late_run_ends,
-            common["prefix_perfect_hit"],
-            common["prefix_perfect_valid"],
-            common["prefix_late_hit"],
-            common["prefix_late_valid"],
-            common["capped_perfect_edge_e"],
-            common["capped_late_edge_e"],
-            common["capped_eg_perfect_e"],
-            common["capped_eg_late_e"],
+            ActivationEnds(
+                common["prefix_perfect_hit"],
+                common["prefix_perfect_valid"],
+                common["prefix_late_hit"],
+                common["prefix_late_valid"],
+                *(table[int(real_time_idx)] for table in (
+                    capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e
+                )),
+            ),
             float(common["real_fever_time"]),
-            int(common["real_time_idx"]),
             int(common["use_forced_great_timing_i"]),
             RegionTables(common["region_starts"],
             common["region_activations"],

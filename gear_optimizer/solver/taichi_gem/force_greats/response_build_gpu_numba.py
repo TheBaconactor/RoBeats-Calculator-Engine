@@ -62,6 +62,13 @@ HitTimes = namedtuple(
     "HitTimes",
     ["perfect_floor_timestamps", "perfect_candidate_timestamps", "great_floor_timestamps", "great_candidate_timestamps"],
 )
+# One fever time's per-activation tables: each note's latest reachable Perfect / late-Great activation hit (valid where
+# `*_valid` != 0) and the window ends those hits reach on the Perfect floor (`perfect_e`, `late_e`) and on the
+# early-Great floor (`eg_perfect_e`, `eg_late_e`), clamped to (activation, n].
+ActivationEnds = namedtuple(
+    "ActivationEnds",
+    ["perfect_hit", "perfect_valid", "late_hit", "late_valid", "perfect_e", "late_e", "eg_perfect_e", "eg_late_e"],
+)
 _HEAD_BASIS_FEVER_LO = 0
 _HEAD_BASIS_FEVER_HI = 1
 _HEAD_BASIS_GREAT_LO = 2
@@ -1350,19 +1357,11 @@ def _numba_successor_remove(
 
 @njit(cache=True, nogil=True, inline="always")
 def _numba_mark_perfect_activation_closure(
-    reachable,
-    n: int,
-    activation: int,
-    real_time_idx: int,
-    prefix_perfect_hit,
-    prefix_perfect_valid,
-    capped_perfect_edge_e,
-    great_floor_timestamps,
-    real_fever_time: float,
+    reachable, n: int, activation: int, ends, great_floor_timestamps, real_fever_time: float
 ) -> int:
-    if int(prefix_perfect_valid[int(activation)]) == 0:
+    if int(ends.perfect_valid[int(activation)]) == 0:
         return 0
-    edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
+    edge_e = int(ends.perfect_e[int(activation)])
     if int(edge_e) < 0:
         return 0
     reachable[int(edge_e)] = True
@@ -1371,7 +1370,7 @@ def _numba_mark_perfect_activation_closure(
         int(n),
         int(activation),
         int(edge_e),
-        float(prefix_perfect_hit[int(activation)]),
+        float(ends.perfect_hit[int(activation)]),
         great_floor_timestamps,
         float(real_fever_time),
     )
@@ -1379,30 +1378,18 @@ def _numba_mark_perfect_activation_closure(
 
 @njit(cache=True, nogil=True, inline="always")
 def _numba_mark_late_activation_closure(
-    reachable,
-    n: int,
-    activation: int,
-    real_time_idx: int,
-    prefix_perfect_valid,
-    prefix_late_hit,
-    prefix_late_valid,
-    capped_perfect_edge_e,
-    capped_late_edge_e,
-    capped_eg_perfect_e,
-    capped_eg_late_e,
-    great_floor_timestamps,
-    real_fever_time: float,
+    reachable, n: int, activation: int, ends, great_floor_timestamps, real_fever_time: float
 ) -> int:
     edge_e = -1
     edge_eg_e = 0
-    if int(prefix_perfect_valid[int(activation)]) != 0:
-        edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
-        edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
+    if int(ends.perfect_valid[int(activation)]) != 0:
+        edge_e = int(ends.perfect_e[int(activation)])
+        edge_eg_e = int(ends.eg_perfect_e[int(activation)])
     activation_e = -1
     activation_eg_e = 0
-    if int(prefix_late_valid[int(activation)]) != 0:
-        activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
-        activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
+    if int(ends.late_valid[int(activation)]) != 0:
+        activation_e = int(ends.late_e[int(activation)])
+        activation_eg_e = int(ends.eg_late_e[int(activation)])
     if not _numba_late_edge_extends(
         int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
     ):
@@ -1413,7 +1400,7 @@ def _numba_mark_late_activation_closure(
         int(n),
         int(activation),
         int(activation_e),
-        float(prefix_late_hit[int(activation)]),
+        float(ends.late_hit[int(activation)]),
         great_floor_timestamps,
         float(real_fever_time),
     )
@@ -1429,16 +1416,8 @@ def _numba_first_frontier_reachability_prepass(
     perfect_run_ends,
     late_run_starts,
     late_run_ends,
-    prefix_perfect_hit,
-    prefix_perfect_valid,
-    prefix_late_hit,
-    prefix_late_valid,
-    capped_perfect_edge_e,
-    capped_late_edge_e,
-    capped_eg_perfect_e,
-    capped_eg_late_e,
+    ends,
     real_fever_time: float,
-    real_time_idx: int,
     use_forced_great_timing_i: int,
     region,
     great_floor_timestamps,
@@ -1513,10 +1492,7 @@ def _numba_first_frontier_reachability_prepass(
                 reachable,
                 int(n),
                 int(fill),
-                int(real_time_idx),
-                prefix_perfect_hit,
-                prefix_perfect_valid,
-                capped_perfect_edge_e,
+                ends,
                 great_floor_timestamps,
                 float(real_fever_time),
             )
@@ -1545,14 +1521,7 @@ def _numba_first_frontier_reachability_prepass(
                 reachable,
                 int(n),
                 int(fill),
-                int(real_time_idx),
-                prefix_perfect_valid,
-                prefix_late_hit,
-                prefix_late_valid,
-                capped_perfect_edge_e,
-                capped_late_edge_e,
-                capped_eg_perfect_e,
-                capped_eg_late_e,
+                ends,
                 great_floor_timestamps,
                 float(real_fever_time),
             )
@@ -1599,10 +1568,7 @@ def _numba_first_frontier_reachability_prepass(
                     reachable,
                     int(n),
                     int(activation),
-                    int(real_time_idx),
-                    prefix_perfect_hit,
-                    prefix_perfect_valid,
-                    capped_perfect_edge_e,
+                    ends,
                     great_floor_timestamps,
                     float(real_fever_time),
                 )
@@ -1635,14 +1601,7 @@ def _numba_first_frontier_reachability_prepass(
                         reachable,
                         int(n),
                         int(activation),
-                        int(real_time_idx),
-                        prefix_perfect_valid,
-                        prefix_late_hit,
-                        prefix_late_valid,
-                        capped_perfect_edge_e,
-                        capped_late_edge_e,
-                        capped_eg_perfect_e,
-                        capped_eg_late_e,
+                        ends,
                         great_floor_timestamps,
                         float(real_fever_time),
                     )
@@ -2505,6 +2464,79 @@ def _numba_emit_activation_edges(
         int(min_surfaces), int(bounded_mode),
     )
     return generated, generated_scores, int(added) + int(added_early), int(bounded_mode)
+
+
+@njit(cache=True, nogil=True)
+def _numba_emit_section_edges(
+    generated, generated_scores, generated_seen, generated_score_matrix_holder, generated_score_matrix_count,
+    bounded_mode: int, n: int, action_count: int, state: int, section_start: int, fills, forced, activation_forced,
+    ends, use_forced_great_timing_i: int, great_floor_timestamps, real_fever_time: float, head, head_limit: int,
+    head_filter_min: int,
+):
+    """Every action's activation edges for one section starting at `section_start` (activation = state + fill; head
+    candidates are filtered from position `state`): the Perfect-activation edge and, when it carries more than that
+    edge (see _numba_late_edge_extends), the late-Great one. Returns the candidates, the number added and the bounded
+    mode."""
+    added_total = 0
+    prev_fill = -1
+    prev_edge_e = -1
+    prev_activation_fill = -1
+    prev_activation_e = -1
+    prev_activation_prefix = -1
+    for action_idx in range(int(action_count)):
+        fill = int(fills[int(action_idx)])
+        activation = int(state) + int(fill)
+        if int(activation) >= int(n):
+            break
+        if int(activation) < int(section_start):
+            continue
+        forced_count = int(forced[int(action_idx)])
+        perfect_hit = float(ends.perfect_hit[int(activation)])
+        # forced_count < 0 = region-3 sentinel from the compaction: the forced run would swallow or pre-cross the
+        # Perfect activation; the normal edge (and its early-Great extension) must not exist. Late-activation
+        # variants gate separately on their own sentinel.
+        if int(ends.perfect_valid[int(activation)]) == 0 or int(forced_count) < 0:
+            edge_e = -1
+        else:
+            edge_e = int(ends.perfect_e[int(activation)])
+        if int(edge_e) >= 0 and (int(fill) != int(prev_fill) or int(edge_e) != int(prev_edge_e)):
+            prev_fill = int(fill)
+            prev_edge_e = int(edge_e)
+            generated, generated_scores, added, bounded_mode = _numba_emit_activation_edges(
+                generated, generated_scores, generated_seen, generated_score_matrix_holder,
+                generated_score_matrix_count, int(n), int(activation), int(edge_e), float(perfect_hit),
+                int(section_start), min(int(n), int(section_start) + int(forced_count)), -1, great_floor_timestamps,
+                float(real_fever_time), head, int(state), int(head_limit), int(head_filter_min), int(bounded_mode),
+            )
+            added_total += int(added)
+        prefix_forced = int(activation_forced[int(action_idx)])
+        activation_hit = 0.0
+        activation_e = -1
+        if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0:
+            activation_hit = float(ends.late_hit[int(activation)])
+            if int(ends.late_valid[int(activation)]) != 0:
+                activation_e = int(ends.late_e[int(activation)])
+        if not _numba_late_edge_extends(
+            int(edge_e), int(activation_e), int(ends.eg_late_e[int(activation)]), int(ends.eg_perfect_e[int(activation)])
+        ):
+            continue
+        if (
+            int(fill) == int(prev_activation_fill)
+            and int(activation_e) == int(prev_activation_e)
+            and int(prefix_forced) == int(prev_activation_prefix)
+        ):
+            continue
+        prev_activation_fill = int(fill)
+        prev_activation_e = int(activation_e)
+        prev_activation_prefix = int(prefix_forced)
+        generated, generated_scores, added, bounded_mode = _numba_emit_activation_edges(
+            generated, generated_scores, generated_seen, generated_score_matrix_holder, generated_score_matrix_count,
+            int(n), int(activation), int(activation_e), float(activation_hit), int(section_start),
+            min(int(n), int(section_start) + int(prefix_forced)), int(activation), great_floor_timestamps,
+            float(real_fever_time), head, int(state), int(head_limit), int(head_filter_min), int(bounded_mode),
+        )
+        added_total += int(added)
+    return generated, generated_scores, int(added_total), int(bounded_mode)
 
 
 @njit(cache=True, nogil=True)
@@ -4084,13 +4116,7 @@ def _numba_packet_queue_push_activation(
     body_starts,
     body_counts,
     use_forced_great_timing_i: int,
-    prefix_perfect_valid,
-    prefix_late_valid,
-    capped_perfect_edge_e,
-    capped_late_edge_e,
-    capped_eg_perfect_e,
-    capped_eg_late_e,
-    real_time_idx: int,
+    ends,
     family_idx: int,
     seg_base: int,
     seg_limit: int,
@@ -4099,19 +4125,19 @@ def _numba_packet_queue_push_activation(
     back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
     if int(activation) < 100 or int(activation) >= int(n):
         return
-    if int(prefix_perfect_valid[int(activation)]) == 0:
+    if int(ends.perfect_valid[int(activation)]) == 0:
         return
-    perfect_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
+    perfect_e = int(ends.perfect_e[int(activation)])
     edge_e = int(perfect_e)
-    edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
+    edge_eg_e = int(ends.eg_perfect_e[int(activation)])
     fever_great_delta = 0
     if int(mode) != 0:
         if int(use_forced_great_timing_i) == 0:
             return
-        if int(prefix_late_valid[int(activation)]) == 0:
+        if int(ends.late_valid[int(activation)]) == 0:
             return
-        late_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
-        late_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
+        late_e = int(ends.late_e[int(activation)])
+        late_eg_e = int(ends.eg_late_e[int(activation)])
         if not _numba_late_edge_extends(
             int(perfect_e), int(late_e), int(late_eg_e), int(edge_eg_e)
         ):
@@ -4470,13 +4496,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     lanes,
     region,
     region_hit_token_to_id,
-    prefix_perfect_valid,
-    prefix_late_valid,
-    capped_perfect_edge_e,
-    capped_late_edge_e,
-    capped_eg_perfect_e,
-    capped_eg_late_e,
-    real_time_idx: int,
+    ends,
     pair_mod: int,
     best_fever_by_pair,
     pair_stamp,
@@ -4616,13 +4636,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                     body_starts,
                     body_counts,
                     int(use_forced_great_timing_i),
-                    prefix_perfect_valid,
-                    prefix_late_valid,
-                    capped_perfect_edge_e,
-                    capped_late_edge_e,
-                    capped_eg_perfect_e,
-                    capped_eg_late_e,
-                    int(real_time_idx),
+                    ends,
                     int(family_idx),
                     int(seg_off[int(family_idx)]),
                     int(seg_off[int(family_idx) + 1]),
@@ -4864,6 +4878,17 @@ def _first_frontier_from_precomputed_end_indices_numba(
         region_perfect_end_by_hit,
         region_great_end_by_hit,
     )
+    rt = int(real_time_idx)
+    ends = ActivationEnds(
+        prefix_perfect_hit,
+        prefix_perfect_valid,
+        prefix_late_hit,
+        prefix_late_valid,
+        capped_perfect_edge_e[rt],
+        capped_late_edge_e[rt],
+        capped_eg_perfect_e[rt],
+        capped_eg_late_e[rt],
+    )
     reachable, max_eg_width = _numba_first_frontier_reachability_prepass(
         int(n),
         int(action_count),
@@ -4873,16 +4898,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
         perfect_run_ends,
         late_run_starts,
         late_run_ends,
-        prefix_perfect_hit,
-        prefix_perfect_valid,
-        prefix_late_hit,
-        prefix_late_valid,
-        capped_perfect_edge_e,
-        capped_late_edge_e,
-        capped_eg_perfect_e,
-        capped_eg_late_e,
+        ends,
         float(real_fever_time),
-        int(real_time_idx),
         int(use_forced_great_timing_i),
         region,
         great_floor_timestamps,
@@ -4970,13 +4987,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
         lanes,
         region,
         region_hit_token_to_id,
-        prefix_perfect_valid,
-        prefix_late_valid,
-        capped_perfect_edge_e,
-        capped_late_edge_e,
-        capped_eg_perfect_e,
-        capped_eg_late_e,
-        int(real_time_idx),
+        ends,
         int(pair_mod),
         best_fever_by_pair,
         pair_stamp,
@@ -5016,112 +5027,12 @@ def _first_frontier_from_precomputed_end_indices_numba(
         generated_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
         generated_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
         generated_score_matrix_count = np.zeros(1, dtype=np.int64)
-        generated_count = 0
-        bounded_mode = 0
-        prev_fill = -1
-        prev_edge_e = -1
-        prev_activation_fill = -1
-        prev_activation_e = -1
-        prev_activation_prefix = -1
-        for action_idx in range(int(action_count)):
-            fill = int(later_fill[int(action_idx)])
-            forced_start = int(state_i) + 1
-            activation = int(state_i) + int(fill)
-            if int(activation) >= int(n):
-                break
-            if int(activation) < int(forced_start):
-                continue
-            forced_count = int(later_forced[int(action_idx)])
-            perfect_hit = float(prefix_perfect_hit[int(activation)])
-            perfect_valid = int(prefix_perfect_valid[int(activation)])
-            # forced_count < 0 = region-3 sentinel from the compaction: the forced run would
-            # swallow or pre-cross the Perfect activation (record 16.28 follow-up); the normal
-            # edge (and its early-Great extension) must not exist. Late-activation variants gate
-            # separately on their own sentinel.
-            if int(perfect_valid) == 0 or int(forced_count) < 0:
-                edge_e = -1
-            else:
-                edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
-            if (
-                int(edge_e) >= 0
-                and (
-                    int(fill) != int(prev_fill)
-                    or int(edge_e) != int(prev_edge_e)
-                )
-            ):
-                prev_fill = int(fill)
-                prev_edge_e = int(edge_e)
-                generated, generated_scores, added, bounded_mode = (
-                    _numba_emit_activation_edges(
-                        generated,
-                        generated_scores,
-                        generated_seen,
-                        generated_score_matrix_holder,
-                        generated_score_matrix_count,
-                        int(n),
-                        int(activation),
-                        int(edge_e),
-                        float(perfect_hit),
-                        int(forced_start),
-                        min(int(n), int(forced_start) + int(forced_count)),
-                        -1,
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                        head,
-                        int(state_i),
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(bounded_mode),
-                    )
-                )
-                generated_count += int(added)
-            prefix_forced = int(later_activation_forced[int(action_idx)])
-            activation_hit = 0.0
-            activation_e = -1
-            if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0:
-                activation_hit = float(prefix_late_hit[int(activation)])
-                activation_valid = int(prefix_late_valid[int(activation)])
-                if int(activation_valid) != 0:
-                    activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
-            if _numba_late_edge_extends(
-                int(edge_e),
-                int(activation_e),
-                int(capped_eg_late_e[int(real_time_idx), int(activation)]),
-                int(capped_eg_perfect_e[int(real_time_idx), int(activation)]),
-            ):
-                if (
-                    int(fill) == int(prev_activation_fill)
-                    and int(activation_e) == int(prev_activation_e)
-                    and int(prefix_forced) == int(prev_activation_prefix)
-                ):
-                    continue
-                prev_activation_fill = int(fill)
-                prev_activation_e = int(activation_e)
-                prev_activation_prefix = int(prefix_forced)
-                generated, generated_scores, added, bounded_mode = (
-                    _numba_emit_activation_edges(
-                        generated,
-                        generated_scores,
-                        generated_seen,
-                        generated_score_matrix_holder,
-                        generated_score_matrix_count,
-                        int(n),
-                        int(activation),
-                        int(activation_e),
-                        float(activation_hit),
-                        int(forced_start),
-                        min(int(n), int(forced_start) + int(prefix_forced)),
-                        int(activation),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                        head,
-                        int(state_i),
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(bounded_mode),
-                    )
-                )
-                generated_count += int(added)
+        generated, generated_scores, generated_count, bounded_mode = _numba_emit_section_edges(
+            generated, generated_scores, generated_seen, generated_score_matrix_holder, generated_score_matrix_count,
+            0, int(n), int(action_count), int(state_i), int(state_i) + 1, later_fill, later_forced,
+            later_activation_forced, ends, int(use_forced_great_timing_i), great_floor_timestamps,
+            float(real_fever_time), head, int(head_limit), int(head_filter_min),
+        )
         generated, generated_scores, added, bounded_mode, region_node_surface, region_node_next = (
             _numba_emit_region2_head_edges(
                 generated,
@@ -5195,18 +5106,18 @@ def _first_frontier_from_precomputed_end_indices_numba(
             forced_count = int(first_forced[int(action_idx)])
             edge_valid = 0
             if int(fill) < int(n):
-                edge_valid = int(prefix_perfect_valid[int(fill)])
+                edge_valid = int(ends.perfect_valid[int(fill)])
             edge_e = -1
             if int(edge_valid) != 0 and int(forced_count) >= 0:
-                edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(fill)])
+                edge_e = int(ends.perfect_e[int(fill)])
             first_edge_e_by_action[int(action_idx)] = int(edge_e)
             first_normal_head_by_action[int(action_idx)] = min(100, max(0, int(forced_count)))
             prefix_forced = int(first_activation_forced[int(action_idx)])
             activation_e = -1
             if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0 and int(fill) < int(n):
-                activation_valid = int(prefix_late_valid[int(fill)])
+                activation_valid = int(ends.late_valid[int(fill)])
                 if int(activation_valid) != 0:
-                    activation_e = int(capped_late_edge_e[int(real_time_idx), int(fill)])
+                    activation_e = int(ends.late_e[int(fill)])
             first_activation_e_by_action[int(action_idx)] = int(activation_e)
             first_activation_prefix_by_action[int(action_idx)] = int(prefix_forced)
             first_activation_head_by_action[int(action_idx)] = min(100, max(0, int(prefix_forced)))
@@ -5236,8 +5147,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
             if int(activation_e) >= 100 and _numba_late_edge_extends(
                 int(edge_e),
                 int(activation_e),
-                int(capped_eg_late_e[int(real_time_idx), int(first_fill[int(action_idx)])]),
-                int(capped_eg_perfect_e[int(real_time_idx), int(first_fill[int(action_idx)])]),
+                int(ends.eg_late_e[int(first_fill[int(action_idx)])]),
+                int(ends.eg_perfect_e[int(first_fill[int(action_idx)])]),
             ):
                 hgc = int(first_activation_head_by_action[int(action_idx)])
                 activation_bucket_offsets[int(hgc) + 1] += 1
@@ -5259,8 +5170,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
             if int(activation_e) >= 100 and _numba_late_edge_extends(
                 int(edge_e),
                 int(activation_e),
-                int(capped_eg_late_e[int(real_time_idx), int(first_fill[int(action_idx)])]),
-                int(capped_eg_perfect_e[int(real_time_idx), int(first_fill[int(action_idx)])]),
+                int(ends.eg_late_e[int(first_fill[int(action_idx)])]),
+                int(ends.eg_perfect_e[int(first_fill[int(action_idx)])]),
             ):
                 hgc = int(first_activation_head_by_action[int(action_idx)])
                 pos = int(activation_bucket_offsets[int(hgc)]) + int(activation_bucket_write[int(hgc)])
@@ -5314,7 +5225,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     # first_fill >= 100, so every extended end is in the body (head_great_count
                     # unchanged -> same bucket). Bucket membership (edge_e >= 100) proves the
                     # staged hit was prefix_perfect_hit[fill] -> the capped table is exact.
-                    eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(fill)])
+                    eg_e = int(ends.eg_perfect_e[int(fill)])
                     for end_e in range(int(edge_e) + 1, int(eg_e) + 1):
                         edge_eg = _numba_pack_edge_eg(
                             int(n), int(fill), int(end_e), 0,
@@ -5370,7 +5281,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 # Issue #44: early-Great extension of the first late-Great-activation section.
                 # Bucket membership (activation_e >= 100) proves the staged hit was
                 # prefix_late_hit[fill] -> the capped table is exact.
-                eg_e_late = int(capped_eg_late_e[int(real_time_idx), int(fill)])
+                eg_e_late = int(ends.eg_late_e[int(fill)])
                 for end_e in range(int(activation_e) + 1, int(eg_e_late) + 1):
                     activation_edge_eg = _numba_pack_edge_eg(
                         int(n), int(fill), int(end_e), 0,
@@ -5439,103 +5350,13 @@ def _first_frontier_from_precomputed_end_indices_numba(
         first_generated_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
         first_generated_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
         first_generated_score_matrix_count = np.zeros(1, dtype=np.int64)
-        first_bounded_mode = 0
-        prev_fill = -1
-        prev_edge_e = -1
-        prev_activation_fill = -1
-        prev_activation_e = -1
-        prev_activation_prefix = -1
-        for action_idx in range(int(action_count)):
-            fill = int(first_fill[int(action_idx)])
-            if int(fill) >= int(n):
-                break
-            forced_count = int(first_forced[int(action_idx)])
-            perfect_hit = float(prefix_perfect_hit[int(fill)])
-            perfect_valid = int(prefix_perfect_valid[int(fill)])
-            if int(perfect_valid) == 0 or int(forced_count) < 0:
-                edge_e = -1
-            else:
-                edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(fill)])
-            if (
-                int(edge_e) >= 0
-                and (
-                    int(fill) != int(prev_fill)
-                    or int(edge_e) != int(prev_edge_e)
-                )
-            ):
-                prev_fill = int(fill)
-                prev_edge_e = int(edge_e)
-                first_generated, first_generated_scores, added, first_bounded_mode = (
-                    _numba_emit_activation_edges(
-                        first_generated,
-                        first_generated_scores,
-                        first_generated_seen,
-                        first_generated_score_matrix_holder,
-                        first_generated_score_matrix_count,
-                        int(n),
-                        int(fill),
-                        int(edge_e),
-                        float(perfect_hit),
-                        0,
-                        min(int(n), int(forced_count)),
-                        -1,
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                        head,
-                        0,
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(first_bounded_mode),
-                    )
-                )
-                first_generated_count += int(added)
-            prefix_forced = int(first_activation_forced[int(action_idx)])
-            activation_hit = 0.0
-            activation_e = -1
-            if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0:
-                activation_hit = float(prefix_late_hit[int(fill)])
-                activation_valid = int(prefix_late_valid[int(fill)])
-                if int(activation_valid) != 0:
-                    activation_e = int(capped_late_edge_e[int(real_time_idx), int(fill)])
-            if _numba_late_edge_extends(
-                int(edge_e),
-                int(activation_e),
-                int(capped_eg_late_e[int(real_time_idx), int(fill)]),
-                int(capped_eg_perfect_e[int(real_time_idx), int(fill)]),
-            ):
-                if (
-                    int(fill) == int(prev_activation_fill)
-                    and int(activation_e) == int(prev_activation_e)
-                    and int(prefix_forced) == int(prev_activation_prefix)
-                ):
-                    continue
-                prev_activation_fill = int(fill)
-                prev_activation_e = int(activation_e)
-                prev_activation_prefix = int(prefix_forced)
-                first_generated, first_generated_scores, added, first_bounded_mode = (
-                    _numba_emit_activation_edges(
-                        first_generated,
-                        first_generated_scores,
-                        first_generated_seen,
-                        first_generated_score_matrix_holder,
-                        first_generated_score_matrix_count,
-                        int(n),
-                        int(fill),
-                        int(activation_e),
-                        float(activation_hit),
-                        0,
-                        min(int(n), int(prefix_forced)),
-                        int(fill),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                        head,
-                        0,
-                        int(head_limit),
-                        int(head_filter_min),
-                        int(first_bounded_mode),
-                    )
-                )
-                first_generated_count += int(added)
+        first_generated, first_generated_scores, added, first_bounded_mode = _numba_emit_section_edges(
+            first_generated, first_generated_scores, first_generated_seen, first_generated_score_matrix_holder,
+            first_generated_score_matrix_count, 0, int(n), int(action_count), 0, 0, first_fill, first_forced,
+            first_activation_forced, ends, int(use_forced_great_timing_i), great_floor_timestamps,
+            float(real_fever_time), head, int(head_limit), int(head_filter_min),
+        )
+        first_generated_count += int(added)
         first_generated, first_generated_scores, added, first_bounded_mode, region_node_surface, region_node_next = (
             _numba_emit_region2_head_edges(
                 first_generated,
