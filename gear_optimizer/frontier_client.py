@@ -251,7 +251,7 @@ def _download_manifest(session: requests.Session, base_url: str, credentials) ->
 
 
 def _bundle_is_current(bundle: dict, previous: dict, code_root: Path | None = None) -> bool:
-    if str(previous.get("sha256") or "") != str(bundle["sha256"]):
+    if str(previous.get("sha256") or "") != bundle["sha256"]:
         return False
     previous_files = {
         (str(entry.get("scope") or ""), str(entry.get("path") or "")): entry
@@ -267,8 +267,8 @@ def _bundle_is_current(bundle: dict, previous: dict, code_root: Path | None = No
             return False
         if (
             not isinstance(recorded, dict)
-            or int(file_stat.st_size) != int(entry["size"])
-            or int(recorded.get("local_mtime_ns", -1)) != int(file_stat.st_mtime_ns)
+            or file_stat.st_size != entry["size"]
+            or int(recorded.get("local_mtime_ns", -1)) != file_stat.st_mtime_ns
         ):
             return False
     return True
@@ -290,11 +290,11 @@ def _download_bundle(session: requests.Session, base_url: str, credentials, revi
                 if not chunk:
                     continue
                 size += len(chunk)
-                if size > int(bundle["size"]) or size > _MAX_BUNDLE_BYTES:
+                if size > bundle["size"] or size > _MAX_BUNDLE_BYTES:
                     raise RuntimeError("MetaFinder frontier bundle exceeded its declared size")
                 digest.update(chunk)
                 handle.write(chunk)
-        if size != int(bundle["size"]) or digest.hexdigest() != bundle["sha256"]:
+        if size != bundle["size"] or digest.hexdigest() != bundle["sha256"]:
             raise RuntimeError("MetaFinder frontier bundle failed SHA-256 verification")
         return temporary
     except Exception:
@@ -314,7 +314,7 @@ def _install_bundle(archive_path: Path, bundle: dict, code_root: Path | None = N
                     entry is None
                     or member.name in seen
                     or not member.isfile()
-                    or int(member.size) != int(entry["size"])
+                    or member.size != entry["size"]
                 ):
                     raise RuntimeError("MetaFinder frontier bundle contains an unexpected file")
                 source = archive.extractfile(member)
@@ -331,9 +331,9 @@ def _install_bundle(archive_path: Path, bundle: dict, code_root: Path | None = N
                             written += len(chunk)
                             digest.update(chunk)
                             output.write(chunk)
-                    if written != int(entry["size"]) or digest.hexdigest() != entry["sha256"]:
+                    if written != entry["size"] or digest.hexdigest() != entry["sha256"]:
                         raise RuntimeError("MetaFinder frontier file failed SHA-256 verification")
-                    os.chmod(temporary, 0o755 if int(member.mode) & 0o111 else 0o644)
+                    os.chmod(temporary, 0o755 if member.mode & 0o111 else 0o644)
                     os.replace(temporary, destination)
                 finally:
                     temporary.unlink(missing_ok=True)
@@ -380,7 +380,7 @@ def _sync_scopes(
                     continue
                 archive = _download_bundle(session, base_url, credentials, manifest["revision"], bundle)
                 downloaded_bundles += 1
-                downloaded_bytes += int(bundle["size"])
+                downloaded_bytes += bundle["size"]
                 if scopes == frozenset({"code"}):
                     staged_code_bundles.append((archive, bundle))
                 else:
@@ -415,9 +415,7 @@ def _sync_scopes(
     state_manifest = {**manifest, "bundles": json.loads(json.dumps(selected_bundles))}
     for bundle in state_manifest["bundles"]:
         for entry in bundle["files"]:
-            entry["local_mtime_ns"] = int(
-                _destination(entry["scope"], entry["path"], code_root).stat().st_mtime_ns
-            )
+            entry["local_mtime_ns"] = _destination(entry["scope"], entry["path"], code_root).stat().st_mtime_ns
     _write_state(state_filename, {"schema": 1, **state_manifest})
     result = FrontierSyncResult(
         enabled=True,
