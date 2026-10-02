@@ -24,17 +24,6 @@ _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
 _CORE_DIR = _SOLVER_DIR.parent / "core"
 _RULES = _SOLVER_DIR.parent / "rules.py"
-# Canonical game-engine inputs to the cached transition producer. Keep this ownership explicit:
-# cache compaction may reuse exact producer output, but it must never make timing, input-order,
-# lane-reachability, fever, or witness semantics invisible to cache compatibility.
-_FG_GAME_ENGINE_SOURCES = (
-    _RULES,
-    _CORE_DIR / "time_quantize.py",
-    _SOLVER_DIR / "input_engine_breakpoints.py",
-    _SOLVER_DIR / "timing_envelope.py",
-    _SOLVER_DIR / "scoring" / "fg_policy.py",
-    _SOLVER_DIR / "fg_response_scoring" / "note_graph.py",
-)
 # Shared exact frontier producer used by both Base (Perfect-only actions) and FG. Base cache
 # identity imports this tuple directly so a producer edit can never leave one product surface on
 # stale bytes while the other rotates correctly.

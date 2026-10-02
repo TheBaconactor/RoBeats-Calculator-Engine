@@ -617,21 +617,19 @@ def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
 def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_types
 
-    relative_sources = {
+    fingerprinted = {
         source.relative_to(response_cache_types._SOLVER_DIR.parent).as_posix()
-        for source in response_cache_types._FG_GAME_ENGINE_SOURCES
+        for source in response_cache_types._FG_DP_SOURCES
     }
-    assert relative_sources == {
+    # The game-engine inputs (timing, input order, lane reachability, fever, witnesses) must rotate the FG cache.
+    assert {
         "core/time_quantize.py",
         "rules.py",
         "solver/fg_response_scoring/note_graph.py",
         "solver/input_engine_breakpoints.py",
         "solver/scoring/fg_policy.py",
         "solver/timing_envelope.py",
-    }
-    assert set(response_cache_types._FG_GAME_ENGINE_SOURCES).issubset(
-        response_cache_types._FG_DP_SOURCES
-    )
+    } <= fingerprinted
 
 
 def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -> None:
