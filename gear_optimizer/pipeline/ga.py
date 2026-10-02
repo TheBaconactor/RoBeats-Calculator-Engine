@@ -16,17 +16,17 @@ def ga_payload(song: NativeSong) -> dict[str, Any]:
     return {
         "song": song.gpu_inputs.timed_song,
         "curves": song.gpu_inputs.curves,
-        "song_slot": int(song.runtime.song_slot),
+        "song_slot": song.runtime.song_slot,
         "item_stats": song.gpu_inputs.item_stats,
         "slot_start": song.gpu_inputs.slot_start,
         "slot_count": song.gpu_inputs.slot_count,
         "base_fixed_stats_arr": song.gpu_inputs.base_fixed_stats_arr,
-        "num_runs": int(song.gpu_inputs.num_runs),
-        "n_genomes": int(song.gpu_inputs.n_genomes),
+        "num_runs": song.gpu_inputs.num_runs,
+        "n_genomes": song.gpu_inputs.n_genomes,
         "init_heuristic_topk": song.gpu_inputs.init_heuristic_topk,
-        "init_heuristic_k": int(song.gpu_inputs.init_heuristic_k),
-        "init_heuristic_copies": int(song.gpu_inputs.init_heuristic_copies),
-        "n_generations": int(song.gpu_inputs.gens_per_run),
+        "init_heuristic_k": song.gpu_inputs.init_heuristic_k,
+        "init_heuristic_copies": song.gpu_inputs.init_heuristic_copies,
+        "n_generations": song.gpu_inputs.gens_per_run,
         "color_flags": dict(song.gpu_inputs.color_flags),
         "cfg_data": dict(song.gpu_inputs.cfg_data),
         "ga_seed": song.config.ga_seed,
@@ -46,7 +46,7 @@ def decode_ga_result(song: NativeSong, ga_result: dict) -> tuple[dict, list, lis
         registry=gpu_inputs.registry,
         cfg_data=dict(gpu_inputs.cfg_data),
         base_stats_fixed=gpu_inputs.fixed_stats,
-        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        fg_candidate_limit=LOADOUTS_PER_SONG_LIMIT,
     )
 
 
@@ -55,7 +55,6 @@ def store_decode_result(song: NativeSong, decode_result: tuple[Any, Any, Any, An
     song.runtime.decode.best_data = best_data
     song.runtime.decode.best_gear = best_gear
     song.runtime.decode.best_minis = best_minis
-    # Raw GPU-deduped candidate pool (decode no longer selects). The single
-    # canonical color-folded select runs later at the FG-prep funnel layer
-    # (prepare_ga_candidate_surface_for_fg) and overwrites this in place.
+    # The raw GPU-deduped candidate pool (decode does not select): the canonical color-folded select runs at the
+    # FG-prep funnel (prepare_ga_candidate_surface_for_fg) and replaces it.
     song.runtime.decode.ga_candidates = list(ga_candidates or [])

@@ -30,14 +30,14 @@ def prepare_ga_candidate_surface_for_fg(song: NativeSong, *, fg_candidate_limit:
     """The song's GA candidates selected for FG, with their stats, stored over the raw GPU-deduped pool decode left on
     the song: the single canonical color-folded select (the FG funnel and the persistence authority), once per song."""
     runtime, gpu_inputs = song.runtime, song.gpu_inputs
-    selected_color = str(gpu_inputs.cfg_data.get("selected_color", "") or "")
+    selected_color = gpu_inputs.cfg_data.get("selected_color", "")
     selected = select_top_base_ga_candidates(
         list(runtime.decode.ga_candidates or []),
-        limit=int(fg_candidate_limit),
+        limit=fg_candidate_limit,
         registry=gpu_inputs.registry,
         minis_by_name=gpu_inputs.minis_by_name,
-        primary_color=str(gpu_inputs.meta_primary_color or ""),
-        secondary_color=str(gpu_inputs.meta_secondary_color or ""),
+        primary_color=gpu_inputs.meta_primary_color,
+        secondary_color=gpu_inputs.meta_secondary_color,
         selected_color=selected_color,
     )
     if selected:
@@ -51,14 +51,12 @@ def prepare_ga_candidate_surface_for_fg(song: NativeSong, *, fg_candidate_limit:
 
 def prepare_fg_plan(song: NativeSong) -> None:
     runtime = song.runtime
-    ga_candidates = prepare_ga_candidate_surface_for_fg(song, fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT))
+    ga_candidates = prepare_ga_candidate_surface_for_fg(song, fg_candidate_limit=LOADOUTS_PER_SONG_LIMIT)
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
-    # Fused GA->FG handoff (Slice 3): the GPU owner scores FG in the GA turn from the
-    # device base_stats7, so FG prep only builds the plan (candidate select + per-batch
-    # base_components, paired-base + cache_key dedup). The plan's base_components key the
-    # lookup into the owner score map at materialize time; no BUILD/SCORE owner round-trip
-    # is prefetched here anymore (the former prefetch_group_builds + finalize step is gone).
+    # The GPU owner scored FG in the GA turn from the device base_stats7, so the FG prep only plans (candidate select,
+    # per-batch base_components, paired-base + cache_key dedup); the plan's base_components key the lookup into the
+    # owner score map when the results are materialized.
     runtime.fg.fg_response_frontier_plan = FgPlanner.plan_prepared_ga_candidates(song, ga_candidates)
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(
