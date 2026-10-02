@@ -59,21 +59,21 @@ logger = logging.getLogger(__name__)
 #   GET  /songs     -> the official chart list (from Data/ headers)
 #   POST /optimize  -> solve one chart (official `targetSongId` OR custom `chartText`) and return
 #                      its full T5 baseline leaderboard (top 51 base + 51 FG by hash), in the exact
-#                      shape `get_best_loadouts` yields for the catalog. A host may persist this
+#                      shape store.legacy.best_loadouts yields for the catalog. A host may persist this
 #                      into a per-job evolution.db-format file and replay it through the same
 #                      on-demand rescore path used by the catalog.
 #
-# Every solve runs in a throwaway per-request dir with the song source, run state and output DB
-# redirected via the ROBEATSMETA_OPTIMIZER_* path overrides. After a clean official solve finishes,
-# its canonical-format leaderboard is merged into evolution.db; custom inputs remain isolated.
-# Each activated publication also solves the official charts evolution.db has no build for yet,
-# so a newly published song reaches the catalog without waiting for someone to optimize it.
+# Official charts are solved on one warm persistent worker process (service_worker); an uploaded chart
+# runs `main.py run` in a throwaway per-request dir with its own frontier caches, the song source, run
+# state and output DB redirected via the ROBEATSMETA_OPTIMIZER_* path overrides. After a clean official
+# solve finishes, its canonical-format leaderboard is merged into evolution.db; custom inputs remain
+# isolated. Each activated publication also solves the official charts evolution.db has no build for
+# yet, so a newly published song reaches the catalog without waiting for someone to optimize it.
 #
-# The service is a concurrent pool: ThreadingHTTPServer handles requests in parallel, and a bounded
-# semaphore caps concurrent solves (default 10). Each solve spawns main.py as a subprocess; the
-# subprocesses share MetaFinder's canonical timeline and FG frontier caches. A valid uploaded or
-# previously-built entry is reused forever; a cache miss is built by the canonical runtime owner and
-# persisted for every later solve.
+# ThreadingHTTPServer handles requests in parallel; a bounded semaphore and a free-memory gate admit
+# the solves. Official solves share MetaFinder's canonical timeline and FG frontier caches: a valid
+# uploaded or previously-built entry is reused forever; a cache miss is built and persisted for every
+# later solve.
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = REPO_ROOT / "Data"
@@ -821,11 +821,9 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
     """SIGKILL the solve subprocess and its whole process group so no GPU/worker child lingers."""
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError, AttributeError):
-        try:
-            proc.kill()  # fallback (non-POSIX, or the group is already gone)
-        except OSError:
-            pass
+    except (OSError, AttributeError):
+        # The process is gone already (Popen.kill is then a no-op), or there are no process groups (Windows).
+        proc.kill()
 
 
 class _PersistentSolveWorker:
@@ -841,12 +839,8 @@ class _PersistentSolveWorker:
         self._idle_since = time.monotonic()
 
     def _read_stdout(self, proc: subprocess.Popen[str], responses: queue.Queue[dict[str, Any]]) -> None:
-        stdout = proc.stdout
-        if stdout is None:
-            responses.put({"ok": False, "error": "persistent solver has no stdout pipe", "eof": True})
-            return
         try:
-            for line in stdout:
+            for line in proc.stdout:
                 try:
                     payload = json.loads(line)
                 except json.JSONDecodeError:
@@ -859,10 +853,7 @@ class _PersistentSolveWorker:
 
     @staticmethod
     def _drain_stderr(proc: subprocess.Popen[str]) -> None:
-        stderr = proc.stderr
-        if stderr is None:
-            return
-        for line in stderr:
+        for line in proc.stderr:
             text = line.rstrip()
             if text:
                 logger.debug("[persistent-solver] %s", text)
@@ -926,14 +917,14 @@ class _PersistentSolveWorker:
         _kill_process_group(proc)
         try:
             proc.wait(timeout=5.0)
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
+            logger.warning("persistent solver pid %s did not exit within 5 s of SIGKILL", proc.pid)
+        proc.stdout.close()
+        proc.stderr.close()
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:  # flushing a request the killed worker never read
             pass
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            try:
-                if stream is not None:
-                    stream.close()
-            except OSError:
-                pass
 
     def request(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         with self._lock:
@@ -942,9 +933,6 @@ class _PersistentSolveWorker:
                 if proc is None or proc.poll() is not None or self._gear_source != GEAR_DIR:
                     self._stop_locked()
                     proc = self._start_locked()
-                if proc.stdin is None:
-                    self._stop_locked()
-                    raise RuntimeError("persistent solver has no stdin pipe")
                 try:
                     proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
                     proc.stdin.flush()
@@ -990,10 +978,6 @@ class _PersistentSolveWorker:
 _PERSISTENT_SOLVE_WORKER: _PersistentSolveWorker | None = None
 
 
-def _persistent_worker_enabled() -> bool:
-    return service_settings().persistent_solver
-
-
 def _get_persistent_solve_worker() -> _PersistentSolveWorker:
     global _PERSISTENT_SOLVE_WORKER
     if _PERSISTENT_SOLVE_WORKER is None:
@@ -1019,25 +1003,18 @@ def _reap_idle_persistent_worker_forever() -> None:
 
 def _solve_persistent(
     job: str,
-    chart_text: str,
+    chart: str,
     result_song_name: str,
     repeats: int,
     reasoning: str,
-    timing_mode: str,
     *,
     promote_to: str | None = None,
     custom_pool: dict[str, list[Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Solve on the warm persistent worker; a custom pool travels as a per-request Gears.csv / Minis.csv copy
-    (built and validated exactly as for an isolated solve) that the worker loads for this request only."""
-    normalized_chart = _normalize_chart(chart_text, result_song_name, timing_mode)
-    payload = {
-        "jobId": job,
-        "chartText": normalized_chart,
-        "songName": result_song_name,
-        "repeats": int(repeats),
-        "reasoning": reasoning,
-    }
+    """Solve `chart` (_normalize_chart) on the warm persistent worker; a custom pool travels as a per-request
+    Gears.csv / Minis.csv copy (built and validated exactly as for an isolated solve) that the worker loads for this
+    request only."""
+    payload = {"jobId": job, "chartText": chart, "songName": result_song_name, "repeats": repeats, "reasoning": reasoning}
     if promote_to:
         payload["promoteTo"] = promote_to
     with contextlib.ExitStack() as stack:
@@ -1059,16 +1036,16 @@ def _solve_persistent(
 
 def _solve_isolated(
     job: str,
-    chart_text: str,
+    chart: str,
     result_song_name: str,
     repeats: int,
     reasoning: str = "default",
-    timing_mode: str = "perfect_window",
     ephemeral_frontiers: bool = False,
     custom_pool: dict[str, list[dict[str, Any]]] | None = None,
     promote_to: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the canonical optimizer pipeline in an execution-owned workspace (`promote_to`: see _promotion_target)."""
+    """Run the canonical optimizer pipeline on `chart` (_normalize_chart) in an execution-owned workspace
+    (`promote_to`: see _promotion_target)."""
     run_root = _service_run_root()
     run_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"{job}-", dir=run_root) as workspace:
@@ -1080,16 +1057,11 @@ def _solve_isolated(
             # Per-request copies only — the catalog Data/Gear CSVs are never touched.
             _remove_excluded_rows(data_dir / "Gear", custom_pool)
             _append_custom_pool_rows(data_dir / "Gear", custom_pool)
-        (data_dir / "Hard" / f"{job}.txt").write_text(
-            _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),
-            encoding="utf-8",
-        )
-        # Reasoning effort scales the GA search knobs. Only write them above "default" so the default
-        # path stays byte-identical to before this knob existed (config.py's own fallbacks apply).
-        level = _normalize_reasoning(reasoning)
+        (data_dir / "Hard" / f"{job}.txt").write_text(chart, encoding="utf-8")
+        # Reasoning effort scales the GA search knobs; "default" writes none (the run settings' defaults apply).
         reasoning_lines = ""
-        if level != "default":
-            depth, multi_start = reasoning_search(level)
+        if reasoning != "default":
+            depth, multi_start = reasoning_search(reasoning)
             reasoning_lines = f"GA_SearchDepth = {depth}\nGA_MultiStart = {multi_start}\n"
         # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
         # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
@@ -1153,11 +1125,11 @@ def _solve_isolated(
 
 
 def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
-    """Solve one chart in an isolated per-request workspace and return its full T5 leaderboard.
+    """Solve one chart and return its full T5 leaderboard.
 
     The returned list is the merged top-N base + FG leaderboard (ranked by score / fg_score, deduped
-    by loadout_hash) exactly as `get_best_loadouts` yields for the catalog. A host can persist the
-    result into an evolution.db-format file and replay it through the catalog's on-demand rescore
+    by loadout_hash) exactly as store.legacy.best_loadouts yields for the catalog. A host can persist
+    the result into an evolution.db-format file and replay it through the catalog's on-demand rescore
     path.
     """
     job = _job_slug(request.get("jobId") or request.get("resultKey"))
@@ -1181,31 +1153,22 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         return state.wait()
     try:
         custom_chart = bool(str(request.get("chartText") or "").strip())
-        custom_items = any(custom_pool.get(key) for key in ("gear", "minis", "excludeGear", "excludeMinis"))
-        custom_request = custom_chart or custom_items
         promote_to = _promotion_target(request, timing_mode=timing_mode, custom_pool=custom_pool)
+        chart = _normalize_chart(chart_text, result_song_name, timing_mode)
         # An uploaded chart keeps the isolated path (its frontier caches must stay out of the shared ones); a
         # custom item pool on an official chart is solved warm.
-        if _persistent_worker_enabled() and not custom_chart:
+        if service_settings().persistent_solver and not custom_chart:
             state.result = _solve_persistent(
-                job,
-                chart_text,
-                result_song_name,
-                repeats,
-                reasoning,
-                timing_mode,
-                promote_to=promote_to,
-                custom_pool=custom_pool if custom_items else None,
+                job, chart, result_song_name, repeats, reasoning, promote_to=promote_to, custom_pool=custom_pool
             )
         else:
             state.result = _solve_isolated(
                 job,
-                chart_text,
+                chart,
                 result_song_name,
                 repeats,
                 reasoning,
-                timing_mode,
-                ephemeral_frontiers=custom_request,
+                ephemeral_frontiers=custom_chart or any(custom_pool.values()),
                 custom_pool=custom_pool,
                 promote_to=promote_to,
             )
@@ -1525,9 +1488,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         serving.set()
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        server.serve_forever()  # SIGINT/SIGTERM shut it down through handle_shutdown_signal
     finally:
         _stop_persistent_solve_worker()
         maintainer.stop()

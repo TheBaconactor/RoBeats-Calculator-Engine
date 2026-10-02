@@ -29,8 +29,8 @@ def test_persistent_worker_reuses_one_process(monkeypatch):
 
     class FakeProcess:
         stdin = FakeStdin()
-        stdout = None
-        stderr = None
+        stdout = io.StringIO()
+        stderr = io.StringIO()
         pid = 1
 
         @staticmethod
@@ -70,8 +70,8 @@ def _fake_persistent_worker(monkeypatch):
 
     class FakeProcess:
         stdin = FakeStdin()
-        stdout = None
-        stderr = None
+        stdout = io.StringIO()
+        stderr = io.StringIO()
         pid = 1
 
         @staticmethod
@@ -129,9 +129,9 @@ def test_persistent_worker_stop_is_idempotent(monkeypatch):
 
     class FakeProcess:
         pid = 123
-        stdin = None
-        stdout = None
-        stderr = None
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
 
         @staticmethod
         def poll():

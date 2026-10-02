@@ -500,7 +500,7 @@ def test_a_persistent_solve_asks_the_worker_to_promote(monkeypatch):
     monkeypatch.setattr(service, "_acquire_solve_slot", lambda: None)
     monkeypatch.setattr(service, "_release_solve_slot", lambda: None)
     for promote_to in ("/catalog/evolution.db", None):
-        service._solve_persistent("job", "chart", "Song", 1, "default", "perfect_window", promote_to=promote_to)
+        service._solve_persistent("job", "chart", "Song", 1, "default", promote_to=promote_to)
     assert payloads[0]["promoteTo"] == "/catalog/evolution.db"
     assert "promoteTo" not in payloads[1]
 
