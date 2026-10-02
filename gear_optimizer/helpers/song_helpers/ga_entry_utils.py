@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 
 from gear_optimizer.gamedata import SongMini
 
 from .item_utils import names_list
-
 
 
 def canonicalize_genome_ids(genome_ids: Any) -> tuple[int, ...] | None:
@@ -34,18 +33,6 @@ def candidate_genome_ids(candidate: Any) -> tuple[int, ...] | None:
     return canonicalize_genome_ids(candidate.get("GenomeIDs"))
 
 
-def _decode_names_from_registry(registry: Any, genome_ids: tuple[int, ...]) -> list[str]:
-    ids_arr = np.asarray(genome_ids, dtype=np.int32)
-    decode_names = getattr(registry, "decode_names", None)
-    if callable(decode_names):
-        decoded = cast(Any, decode_names)(ids_arr)
-        return [str(x if x is not None else "None") for x in list(decoded)]
-    decode_genome = getattr(registry, "decode_genome", None)
-    if callable(decode_genome):
-        return names_list(decode_genome(ids_arr))
-    return []
-
-
 def materialize_candidate_names(
     candidate: Any,
     *,
@@ -68,12 +55,9 @@ def materialize_candidate_names(
     if registry_obj is None:
         return [], []
 
-    names = _decode_names_from_registry(registry_obj, genome_ids)
-    if len(names) < 9:
-        return [], []
-
-    gear_names = list(names[:6])
-    mini_names = list(names[6:9])
+    names = registry_obj.decode_names(np.asarray(genome_ids, dtype=np.int32))  # an ItemRegistry: 9 names
+    gear_names = names[:6]
+    mini_names = names[6:9]
     if mutate:
         candidate["Gear"] = list(gear_names)
         candidate["Minis"] = list(mini_names)
