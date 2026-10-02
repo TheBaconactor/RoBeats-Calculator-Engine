@@ -160,7 +160,6 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     num_runs = max(1, context.multi_start)
     song = NativeSong(
         config=NativeSongConfig(
-            fp=task.file_path,
             song_name=task.song_name,
             task_key=task.label,
             ga_seed=task.ga_seed,

@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 @dataclass
 class NativeSongConfig:
-    fp: str = ""
     song_name: str = ""
     task_key: str = ""
     ga_seed: int | None = None
@@ -58,8 +57,6 @@ class NativeSongDecodeState:
     ga_candidates: Optional[list[JsonDict]] = None
     fg_surface_prepared: bool = False
     best_data: Optional[JsonDict] = None
-    best_gear: Optional[list[Any]] = None
-    best_minis: Optional[list[Any]] = None
 
 
 @dataclass

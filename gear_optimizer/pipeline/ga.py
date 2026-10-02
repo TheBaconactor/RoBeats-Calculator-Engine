@@ -51,10 +51,8 @@ def decode_ga_result(song: NativeSong, ga_result: dict) -> tuple[dict, list, lis
 
 
 def store_decode_result(song: NativeSong, decode_result: tuple[Any, Any, Any, Any]) -> None:
-    best_data, best_gear, best_minis, ga_candidates = decode_result
+    best_data, _best_gear, _best_minis, ga_candidates = decode_result
     song.runtime.decode.best_data = best_data
-    song.runtime.decode.best_gear = best_gear
-    song.runtime.decode.best_minis = best_minis
     # The raw GPU-deduped candidate pool (decode does not select): the canonical color-folded select runs at the
     # FG-prep funnel (prepare_ga_candidate_surface_for_fg) and replaces it.
     song.runtime.decode.ga_candidates = list(ga_candidates or [])

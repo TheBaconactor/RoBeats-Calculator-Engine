@@ -14,7 +14,7 @@ def _task(name: str) -> SongTask:
 
 def _song(task: SongTask) -> SimpleNamespace:
     return SimpleNamespace(
-        config=SimpleNamespace(song_name=task.song_name, task_key=task.label, fp="", db_key=task.song_name),
+        config=SimpleNamespace(song_name=task.song_name, task_key=task.label, db_key=task.song_name),
         runtime=SimpleNamespace(db=SimpleNamespace(record_info=None, db_best_score=100, db_best_fg_score=90,
                                                    db_baseline_valid=True)),
     )

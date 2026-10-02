@@ -93,7 +93,6 @@ def _make_fg_song(plan, owner_score_map, **overrides):
         db_best_fg_score=0,
         song_name="Fused FG (Hard) by pytest",
         db_key="fused-fg-hard",
-        fp="Data/Hard/Fused FG (Hard) by pytest.txt",
         fg_results=(),
     )
     kwargs.update(overrides)
@@ -218,7 +217,6 @@ def test_prepare_fg_plan_builds_the_plan_without_an_owner_round_trip(monkeypatch
         db_best_fg_score=0,
         song_name="Prep No RoundTrip (Hard) by pytest",
         db_key="prep-no-roundtrip-hard",
-        fp="Data/Hard/Prep No RoundTrip (Hard) by pytest.txt",
         fg_results=(),
     )
 

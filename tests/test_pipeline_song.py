@@ -17,12 +17,11 @@ from tests.native_song_factory import _FIELD_PATH_BY_NAME, make_native_song
 
 def test_native_song_groups_keep_pipeline_fields_explicit():
     song = NativeSong(
-        config=NativeSongConfig(fp="file.txt", song_name="demo", task_key="task"),
+        config=NativeSongConfig(song_name="demo", task_key="task"),
         gpu_inputs=NativeSongGPUInputs(meta_primary_color="Rush"),
         runtime=NativeSongRuntimeState(song_slot=3),
     )
 
-    assert song.config.fp == "file.txt"
     assert song.config.song_name == "demo"
     assert song.gpu_inputs.meta_primary_color == "Rush"
     assert song.runtime.song_slot == 3
@@ -38,13 +37,13 @@ def test_native_song_groups_keep_pipeline_fields_explicit():
 def test_make_native_song_routes_flat_fields_to_nested_groups():
     marker = object()
     song = make_native_song(
-        fp="file.txt",
+        song_name="demo",
         meta_primary_color="Rush",
         song_slot=3,
         fg_owner_score_map=marker,
     )
 
-    assert song.config.fp == "file.txt"
+    assert song.config.song_name == "demo"
     assert song.gpu_inputs.meta_primary_color == "Rush"
     assert song.runtime.song_slot == 3
     assert song.runtime.fg.fg_owner_score_map is marker
