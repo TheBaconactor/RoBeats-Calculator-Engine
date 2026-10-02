@@ -117,7 +117,6 @@ def ga_find_best_combo_warmstart_kernel(
                 base_ff_stat,
                 max_ft_gems,
                 max_ff_gems,
-                False,
                 cull_threshold,
             )
             score = res_vec[0]

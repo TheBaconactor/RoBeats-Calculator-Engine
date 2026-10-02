@@ -179,7 +179,6 @@ __all__ = [
     "skyline_copy_population_indices_from_ndarray_kernel",
     "skyline_aggregate_and_init_best_kernel",
     "skyline_find_best_combo_warmstart_kernel",
-    "skyline_write_scores_from_key_kernel",
     "skyline_write_best_results_from_key_kernel",
 ]
 
@@ -190,6 +189,5 @@ from .kernels_skyline import (
 )
 from .skyline_eval import (
     skyline_find_best_combo_warmstart_kernel,
-    skyline_write_scores_from_key_kernel,
     skyline_write_best_results_from_key_kernel,
 )

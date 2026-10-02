@@ -47,17 +47,6 @@ def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
     n_genomes = min(64, int(getattr(gpu_fields, "MAX_SKYLINE_RUN_GENOMES", 250) or 250), int(gpu_fields.MAX_GENOMES))
     skyline_upload_population_indices(np.zeros((int(n_genomes), 9), dtype=np.int32), n_slots=9)
 
-    evaluate = dict(
-        n_slots=9,
-        total_budget=min(90, int(gpu_fields.MAX_TOTAL_BUDGET)),
-        gem_scale_fever=3,
-        song_slot=0,
-        flags=gpu_color_flags(None),
-    )
-    skyline_evaluate_population(int(n_genomes), materialize_mode="none", **evaluate)
-    ti.sync()
-
-    # The production registry solve: upload an encoded population, materialize, download.
-    skyline_upload_population_indices(np.zeros((int(n_genomes), 9), dtype=np.int32), n_slots=9)
-    skyline_evaluate_population(int(n_genomes), materialize_mode="results_only", **evaluate)
+    # The production registry solve: upload an encoded population, evaluate, download.
+    skyline_evaluate_population(int(n_genomes), n_slots=9, song_slot=0, flags=gpu_color_flags(None))
     assert skyline_download_results(int(n_genomes)).shape == (int(n_genomes), 7)

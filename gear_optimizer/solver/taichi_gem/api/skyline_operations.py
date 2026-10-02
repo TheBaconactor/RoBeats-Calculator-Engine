@@ -13,7 +13,6 @@ These functions are called from parallel_solvers.py and tests.
 
 from __future__ import annotations
 
-import logging
 
 import numpy as np
 
@@ -22,14 +21,10 @@ from ..fields import MAX_EVALS_PER_DISPATCH
 from ..combo_chunking import compute_combo_chunk
 from ..kernel_loader import get_kernels
 
-from .initialization import (
-    ensure_ready,
-    _ensure_ftff_combo_tables,
-    _ensure_timing_response_combo_tables,
-    _upload_timing_response_genome_rows,
-)
+from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_FEVER
 
-logger = logging.getLogger(__name__)
+from .initialization import _ensure_ftff_combo_tables, ensure_ready
+
 
 _SKYLINE_COMBO_CHUNK_MIN = 1024
 _SKYLINE_COMBO_CHUNK_MAX = 4096
@@ -68,13 +63,7 @@ def skyline_upload_population_indices(population_indices_np: np.ndarray, *, n_sl
         raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
 
     src = np.ascontiguousarray(population_indices_np[:n_genomes, : int(n_slots)], dtype=np.int32)
-    try:
-        kernels.skyline_copy_population_indices_from_ndarray_kernel(int(n_genomes), int(n_slots), src)
-    except Exception as e:
-        logger.debug(f"skyline_operations:skyline_upload_population_indices: {e}")
-        pop_buf = np.zeros((fields.MAX_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
-        pop_buf[:n_genomes, : int(n_slots)] = src
-        fields.population_indices.from_numpy(pop_buf)
+    kernels.skyline_copy_population_indices_from_ndarray_kernel(int(n_genomes), int(n_slots), src)
     return n_genomes
 
 
@@ -90,101 +79,15 @@ def skyline_upload_base_fixed_stats(base_stats_np: np.ndarray) -> None:
     upload_base_fixed_stats(base_stats_np)
 
 
-def skyline_evaluate_population(
-    n_genomes: int,
-    n_slots: int = 9,
-    *,
-    total_budget: int,
-    gem_scale_fever: int = 3,
-    song_slot: int = 0,
-    flags,
-    max_ft_gems_global: int | None = None,
-    max_ff_gems_global: int | None = None,
-    timing_response_combo_ft: np.ndarray | None = None,
-    timing_response_combo_ff: np.ndarray | None = None,
-    timing_response_genome_offsets: np.ndarray | None = None,
-    timing_response_genome_lengths: np.ndarray | None = None,
-    timing_response_max_combos: int | None = None,
-    timing_response_cache_key: object | None = None,
-    score_cull_threshold: int | None = None,
-    materialize_mode: str = "none",
-) -> None:
-    """
-    GPU-native population evaluation: aggregate stats + evaluate + materialize.
-
-    This is the main skyline evaluation function for GPU-native mode. It:
-    1. Aggregates item stats and initializes each genome's best key (skyline_aggregate_and_init_best_kernel)
-    2. Searches all (ft, ff) combos in chunks (skyline_find_best_combo_warmstart_kernel)
-    3. Writes scores ("scores_only") or full results ("results_only"), or nothing ("none")
-
-    PREREQUISITES:
-    - Call skyline_upload_population_indices() with encoded population
-    - Call skyline_upload_item_stats() with item stats and slot pools
-    - Call skyline_upload_base_fixed_stats() with base stats
-    - Precompute the exact timeline frontier using precompute_timeline_gpu()
-
-    Args:
-        n_genomes: Number of genomes to evaluate
-        n_slots: Slots per genome (default 9)
-        total_budget: Total gem budget
-        gem_scale_fever: Stat points per FT/FF gem (default 3)
-        song_slot: Timeline grid slot (0 for single-song)
-        flags: the song's color flags (GpuColorFlags)
-    """
+def skyline_evaluate_population(n_genomes: int, n_slots: int = 9, *, song_slot: int = 0, flags) -> None:
+    """Aggregate the genomes' stats, search every FT/FF combo of the full gem budget in chunks, and write each
+    genome's best allocation to genome_result_stats. Needs the population, item stats, base stats and the song's
+    exact timeline frontier uploaded first."""
     ensure_ready()
     n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-
-    kernels.skyline_aggregate_and_init_best_kernel(
-        n_genomes,
-        n_slots,
-        flags,
-        0,
-    )
-
-    # Step 2: Evaluate genomes using existing FT/FF iteration kernel
-    total_budget_i = int(total_budget)
-    gem_scale_fever_i = int(gem_scale_fever)
-    song_slot_i = int(song_slot)
-    score_cull_threshold_i = -1 if score_cull_threshold is None else int(score_cull_threshold)
-
-    use_timing_response_antichain = (
-        timing_response_combo_ft is not None
-        and timing_response_combo_ff is not None
-        and timing_response_genome_offsets is not None
-        and timing_response_genome_lengths is not None
-        and timing_response_max_combos is not None
-    )
-    if use_timing_response_antichain and materialize_mode != "scores_only":
-        raise ValueError("timing response antichain is score-only; materialize retained candidates with the full table")
-
-    # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
-    max_ft_gems_i = int(total_budget_i) if max_ft_gems_global is None else int(max_ft_gems_global)
-    max_ff_gems_i = int(total_budget_i) if max_ff_gems_global is None else int(max_ff_gems_global)
-    max_ft_gems_i = max(0, min(int(total_budget_i), int(max_ft_gems_i)))
-    max_ff_gems_i = max(0, min(int(total_budget_i), int(max_ff_gems_i)))
-    if use_timing_response_antichain:
-        _ensure_timing_response_combo_tables(
-            combo_ft=np.asarray(timing_response_combo_ft, dtype=np.int32),
-            combo_ff=np.asarray(timing_response_combo_ff, dtype=np.int32),
-            cache_key=timing_response_cache_key,
-        )
-        _upload_timing_response_genome_rows(
-            genome_offsets=np.asarray(timing_response_genome_offsets, dtype=np.int32),
-            genome_lengths=np.asarray(timing_response_genome_lengths, dtype=np.int32),
-            n_genomes=int(n_genomes),
-        )
-        n_combos = int(timing_response_max_combos or 0)
-        if n_combos <= 0:
-            raise ValueError("timing response antichain max combo count must be positive")
-    else:
-        n_combos = _ensure_ftff_combo_tables(
-            total_budget_i,
-            max_ft_gems=max_ft_gems_i,
-            max_ff_gems=max_ff_gems_i,
-        )
-    eval_budget = int(MAX_EVALS_PER_DISPATCH)
-    max_evals = max(int(eval_budget), int(n_genomes))
+    kernels.skyline_aggregate_and_init_best_kernel(n_genomes, int(n_slots), flags)
+    n_combos = _ensure_ftff_combo_tables(GEM_BUDGET, max_ft_gems=GEM_BUDGET, max_ff_gems=GEM_BUDGET)
+    max_evals = max(int(MAX_EVALS_PER_DISPATCH), n_genomes)
     combo_chunk = compute_combo_chunk(
         n_genomes=n_genomes,
         n_combos=n_combos,
@@ -194,86 +97,18 @@ def skyline_evaluate_population(
     )
     if combo_chunk <= 0:
         combo_chunk = int(n_combos)
-
     offset = 0
     while offset < n_combos:
         chunk_len = int(min(combo_chunk, n_combos - offset))
         # If the remainder is tiny, fold it into this dispatch to avoid a "tail kernel" launch.
-        if _SKYLINE_COMBO_TAIL_MERGE_MAX > 0:
-            rem = int(n_combos - (offset + chunk_len))
-            if 0 < rem <= int(_SKYLINE_COMBO_TAIL_MERGE_MAX):
-                merged = int(chunk_len + rem)
-                if int(n_genomes) * int(merged) <= int(max_evals):
-                    chunk_len = merged
+        rem = int(n_combos - (offset + chunk_len))
+        if 0 < rem <= _SKYLINE_COMBO_TAIL_MERGE_MAX and n_genomes * (chunk_len + rem) <= max_evals:
+            chunk_len += rem
         kernels.skyline_find_best_combo_warmstart_kernel(
-            n_genomes,
-            int(offset),
-            int(chunk_len),
-            total_budget_i,
-            gem_scale_fever_i,
-            flags,
-            song_slot_i,
-            0,
-            int(bool(use_timing_response_antichain)),
-            int(score_cull_threshold_i),
+            n_genomes, int(offset), chunk_len, GEM_BUDGET, STAT_GEM_GAIN_FEVER, flags, int(song_slot)
         )
-        offset += int(chunk_len)
-
-    _skyline_materialize_population_results(
-        n_genomes=n_genomes,
-        total_budget=total_budget_i,
-        gem_scale_fever=gem_scale_fever_i,
-        flags=flags,
-        song_slot=song_slot_i,
-        materialize_mode=materialize_mode,
-    )
-
-
-def _skyline_materialize_population_results(
-    *,
-    n_genomes: int,
-    total_budget: int,
-    gem_scale_fever: int,
-    flags,
-    song_slot: int,
-    materialize_mode: str,
-) -> None:
-    if materialize_mode == "none":
-        return
-
-    if materialize_mode == "scores_only":
-        kernels.skyline_write_scores_from_key_kernel(int(n_genomes))
-        return
-
-    common_args = (
-        int(n_genomes),
-        int(total_budget),
-        int(gem_scale_fever),
-        flags,
-        int(song_slot),
-    )
-
-    if materialize_mode == "results_only":
-        kernels.skyline_write_best_results_from_key_kernel(*common_args)
-        return
-
-    raise ValueError(f"Unknown skyline materialize_mode: {materialize_mode!r}")
-
-
-def skyline_download_scores(n_genomes: int) -> np.ndarray:
-    """
-    Download fitness scores from GPU (for CPU-side elitism).
-
-    Args:
-        n_genomes: Number of genomes to download
-
-    Returns:
-        np.ndarray: (n_genomes,) int32 array of scores
-    """
-    ensure_ready()
-    n_genomes = int(n_genomes)
-    out = fields.skyline_scores.to_numpy()
-    return np.asarray(out[:n_genomes], dtype=np.int32)
+        offset += chunk_len
+    kernels.skyline_write_best_results_from_key_kernel(n_genomes, GEM_BUDGET, STAT_GEM_GAIN_FEVER, flags, int(song_slot))
 
 
 def skyline_download_results(n_genomes: int) -> np.ndarray:

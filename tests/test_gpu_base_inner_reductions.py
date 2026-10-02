@@ -76,7 +76,6 @@ def _compare(
             0,
             53,
             53,
-            False,
             0,
         )
         for i in ti.static(range(5)):

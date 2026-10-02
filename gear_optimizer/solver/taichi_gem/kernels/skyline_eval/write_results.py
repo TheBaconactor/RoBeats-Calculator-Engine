@@ -2,7 +2,6 @@
 Taichi Kernels - Materialize best results from packed keys.
 
 Includes:
-- skyline_write_scores_from_key_kernel
 - skyline_write_best_results_from_key_kernel
 """
 
@@ -16,21 +15,6 @@ from ..write_results_common import solve_best_combo_uncached
 @ti.func
 def _best_combo_idx_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
     return kernels_helpers.chunk_best_idx[genome_idx]
-
-
-@ti.func
-def _best_score_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
-    out_score = ti.i32(-1)
-    if kernels_helpers.chunk_best_idx[genome_idx] >= 0:
-        out_score = kernels_helpers.chunk_best_score[genome_idx]
-    return out_score
-
-
-@ti.kernel
-def skyline_write_scores_from_key_kernel(n_genomes: ti.i32):
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for genome_idx in range(n_genomes):
-        kernels_helpers.skyline_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
 
 
 @ti.func

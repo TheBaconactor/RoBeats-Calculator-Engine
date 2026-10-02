@@ -33,7 +33,6 @@ MAX_TIMELINE_FRONTIER_SURFACES = 262144  # GPU frontier field-size cap (within [
 MAX_SONG_SLOTS = 8  # concurrent songs resident on the GPU (in-flight songs use all but one)
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
-MAX_TIMING_RESPONSE_COMBOS = 2_000_000  # GPU antichain field-size cap (>> MAX_FTFF_COMBOS, within 8_000_000 VRAM bound)
 GA_FTFF_REDUCE_BLOCK_DIM = 256  # Vulkan reduce block dim; MUST match kernels_helpers.py + kernels/ga_eval/warmstart.py
 GA_FG_CANDIDATES_PER_RUN = 64  # MUST match kernels/ga_eval/payload.py _GA_FG_CANDIDATES_PER_RUN
 GA_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
@@ -146,10 +145,6 @@ chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-ch
 ga_eval_incumbent_score: ti.Field = None  # (MAX_GENOMES,) i32 shared exact-score incumbent for UB combo culling
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
-timing_response_combo_ft: ti.Field = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32 FT gems per antichain entry
-timing_response_combo_ff: ti.Field = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32 FF gems per antichain entry
-timing_response_genome_offset: ti.Field = None  # (MAX_GENOMES,) i32 offset into timing_response_combo_*
-timing_response_genome_length: ti.Field = None  # (MAX_GENOMES,) i32 antichain length per genome row
 chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome
 chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 winning combo index
 chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
@@ -166,7 +161,6 @@ skyline_exact_eval_hash_used: ti.Field = None
 skyline_exact_eval_hash_keys: ti.Field = None
 skyline_exact_eval_hash_sort_keys: ti.Field = None
 skyline_exact_eval_hash_sort_indices: ti.Field = None
-skyline_exact_eval_rep_idx: ti.Field = None
 skyline_exact_eval_unique_count: ti.Field = None
 skyline_global_best_score: ti.Field = None
 skyline_global_best_genome: ti.Field = None
@@ -319,8 +313,6 @@ def allocate_fields():
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ga_eval_incumbent_score
     global ftff_combo_ft, ftff_combo_ff
-    global timing_response_combo_ft, timing_response_combo_ff
-    global timing_response_genome_offset, timing_response_genome_length
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
     global ga_global_best_packed
     global ga_runs_payload_packed
@@ -386,10 +378,6 @@ def allocate_fields():
     chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
-    timing_response_combo_ft = ti.field(dtype=ti.i32, shape=MAX_TIMING_RESPONSE_COMBOS)
-    timing_response_combo_ff = ti.field(dtype=ti.i32, shape=MAX_TIMING_RESPONSE_COMBOS)
-    timing_response_genome_offset = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    timing_response_genome_length = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     chunk_best_results = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 4))
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)

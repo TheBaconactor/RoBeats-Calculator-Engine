@@ -22,9 +22,6 @@ def skyline_find_best_combo_warmstart_kernel(
     gem_scale_fever: ti.i32,
     flags: GpuColorFlags,
     song_slot: ti.i32,
-    reuse_exact_eval_results: ti.template(),
-    use_timing_response_antichain: ti.template(),
-    score_cull_threshold: ti.i32,
 ):
     """
     GPU-parallel evaluation with exact per-(genome, FT/FF) solving.
@@ -48,10 +45,6 @@ def skyline_find_best_combo_warmstart_kernel(
     # single owner: no atomics. Ties keep the higher combo index.
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for genome_idx in range(n_genomes):
-        if ti.static(reuse_exact_eval_results):
-            if kernels_helpers.skyline_exact_eval_rep_idx[genome_idx] != genome_idx:
-                continue
-
         stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
         base_cm: ti.i32 = stats[1]
@@ -90,8 +83,7 @@ def skyline_find_best_combo_warmstart_kernel(
                 base_ff_stat,
                 max_ft_gems,
                 max_ff_gems,
-                use_timing_response_antichain,
-                score_cull_threshold,
+                -1,  # no incumbent cull: every genome's own best
             )
             score = res_vec[0]
             if score >= 0:

@@ -28,28 +28,14 @@ def solve_combo_warmstart_preloaded(
     base_ff_stat: ti.i32,
     max_ft_gems: ti.i32,
     max_ff_gems: ti.i32,
-    use_timing_response_antichain: ti.template(),
     score_cull_threshold: ti.i32,
 ) -> ti.types.vector(5, ti.i32):
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     out_res = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
 
-    ft: ti.i32 = 0
-    ff: ti.i32 = 0
-    combo_valid: ti.i32 = 1
-    if ti.static(use_timing_response_antichain):
-        length = kernels_helpers.timing_response_genome_length[genome_idx]
-        if combo_idx < length:
-            table_idx = kernels_helpers.timing_response_genome_offset[genome_idx] + combo_idx
-            ft = kernels_helpers.timing_response_combo_ft[table_idx]
-            ff = kernels_helpers.timing_response_combo_ff[table_idx]
-        else:
-            combo_valid = 0
-    else:
-        ft = kernels_helpers.ftff_combo_ft[combo_idx]
-        ff = kernels_helpers.ftff_combo_ff[combo_idx]
-
-    if combo_valid != 0 and ft <= max_ft_gems and ff <= max_ff_gems:
+    ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
+    ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
+    if ft <= max_ft_gems and ff <= max_ff_gems:
         ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
         ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))

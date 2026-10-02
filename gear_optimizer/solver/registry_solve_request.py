@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.timing_envelope import TimedSong
 
 
@@ -18,19 +17,7 @@ class RegistrySolveRequest:
     song: TimedSong
     curves: StatCurves
     flags: dict[str, int]
-    total_budget: int = GEM_BUDGET
-    gem_scale_fever: int = STAT_GEM_GAIN_FEVER
     song_slot: int = 0
-    max_ft_gems_global: int | None = None
-    max_ff_gems_global: int | None = None
-    timing_response_combo_ft: Any | None = None
-    timing_response_combo_ff: Any | None = None
-    timing_response_genome_offsets: Any | None = None
-    timing_response_genome_lengths: Any | None = None
-    timing_response_max_combos: int | None = None
-    timing_response_cache_key: Any | None = None
-    score_cull_threshold: int | None = None
-    score_only: bool = False
 
 
 def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
@@ -50,17 +37,5 @@ def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
             request.song,
             gpu_color_flags(request.flags),
             request.curves,
-            total_budget=int(request.total_budget),
-            gem_scale_fever=int(request.gem_scale_fever),
             song_slot=int(request.song_slot),
-            max_ft_gems_global=request.max_ft_gems_global,
-            max_ff_gems_global=request.max_ff_gems_global,
-            timing_response_combo_ft=request.timing_response_combo_ft,
-            timing_response_combo_ff=request.timing_response_combo_ff,
-            timing_response_genome_offsets=request.timing_response_genome_offsets,
-            timing_response_genome_lengths=request.timing_response_genome_lengths,
-            timing_response_max_combos=request.timing_response_max_combos,
-            timing_response_cache_key=request.timing_response_cache_key,
-            score_cull_threshold=request.score_cull_threshold,
-            score_only=bool(request.score_only),
         )

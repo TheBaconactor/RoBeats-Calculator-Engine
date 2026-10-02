@@ -122,7 +122,6 @@ skyline_exact_eval_hash_used = None
 skyline_exact_eval_hash_keys = None
 skyline_exact_eval_hash_sort_keys = None
 skyline_exact_eval_hash_sort_indices = None
-skyline_exact_eval_rep_idx = None
 skyline_exact_eval_unique_count = None
 slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
 slot_count = None  # (MAX_SLOTS,) per-slot item count
@@ -136,10 +135,6 @@ chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome
 chunk_best_idx = None  # (MAX_GENOMES,) i32 winning combo index
 ftff_combo_ft = None  # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None  # (MAX_FTFF_COMBOS,) i32
-timing_response_combo_ft = None
-timing_response_combo_ff = None
-timing_response_genome_offset = None
-timing_response_genome_length = None
 chunk_best_results = None  # (MAX_GENOMES, 4) i32 - cached [pp, cm, fm, ov] from winning combo
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)

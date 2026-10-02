@@ -58,10 +58,9 @@ def skyline_aggregate_and_init_best_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
     flags: GpuColorFlags,
-    reuse_exact_genome_base_stats: ti.i32,
 ):
     """
-    FUSED: Aggregate item stats AND initialize chunk_best_key in one kernel.
+    FUSED: Aggregate item stats AND initialize each genome's best (score, combo) slot in one kernel.
 
     Aggregates each genome's item stats and initializes its chunk_best_key in one launch.
 
@@ -80,9 +79,6 @@ def skyline_aggregate_and_init_best_kernel(
         kernels_helpers.chunk_best_results[g, 1] = 0
         kernels_helpers.chunk_best_results[g, 2] = 0
         kernels_helpers.chunk_best_results[g, 3] = 0
-
-        if reuse_exact_genome_base_stats != 0 and kernels_helpers.skyline_exact_eval_rep_idx[g] != g:
-            continue
 
         b = kernels_helpers.base_stats7(
             ti.Vector([kernels_helpers.population_indices[g, s] for s in ti.static(range(9))]), n_slots, flags
