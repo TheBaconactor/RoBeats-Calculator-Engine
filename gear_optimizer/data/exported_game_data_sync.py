@@ -10,7 +10,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from gear_optimizer.settings import paths
 from gear_optimizer.core.utils import safe_int as _safe_int
@@ -141,6 +141,14 @@ def _song_name_from_export_song(song: dict[str, Any], *, song_id: int) -> str:
     return f"{display_name} by {artist}".strip()
 
 
+def _export_items(source: dict[str, Any], key: str) -> Iterator[dict[str, Any]]:
+    """The item objects of one export section ({source id: {key: [item, ...]}}); anything else is skipped."""
+    for entry in source.values():
+        items = entry.get(key, []) if isinstance(entry, dict) else []
+        if isinstance(items, list):
+            yield from (item for item in items if isinstance(item, dict))
+
+
 def _song_names_by_id(payload: dict[str, Any]) -> dict[int, str]:
     source = payload.get("songs")
     if source is None:
@@ -150,26 +158,18 @@ def _song_names_by_id(payload: dict[str, Any]) -> dict[int, str]:
 
     song_names: dict[int, str] = {}
     seen_names: dict[str, int] = {}
-    for _source_id, entry in source.items():
-        if not isinstance(entry, dict):
-            continue
-        songs = entry.get("songs", [])
-        if not isinstance(songs, list):
-            continue
-        for song in songs:
-            if not isinstance(song, dict):
-                continue
-            song_id = _safe_int(song.get("songid"), -1)
-            if song_id <= 0:
-                raise ValueError(f"Encountered exported song with invalid songid: {song.get('songid')!r}")
-            if song_id in song_names:
-                raise ValueError(f"Duplicate exported songid detected: {song_id}")
-            song_name = _song_name_from_export_song(song, song_id=song_id)
-            previous_id = seen_names.get(song_name)
-            if previous_id is not None:
-                raise ValueError(f"Duplicate exported Song Name detected: {song_name!r} ({previous_id}, {song_id})")
-            seen_names[song_name] = song_id
-            song_names[song_id] = song_name
+    for song in _export_items(source, "songs"):
+        song_id = _safe_int(song.get("songid"), -1)
+        if song_id <= 0:
+            raise ValueError(f"Encountered exported song with invalid songid: {song.get('songid')!r}")
+        if song_id in song_names:
+            raise ValueError(f"Duplicate exported songid detected: {song_id}")
+        song_name = _song_name_from_export_song(song, song_id=song_id)
+        previous_id = seen_names.get(song_name)
+        if previous_id is not None:
+            raise ValueError(f"Duplicate exported Song Name detected: {song_name!r} ({previous_id}, {song_id})")
+        seen_names[song_name] = song_id
+        song_names[song_id] = song_name
     return song_names
 
 
@@ -289,33 +289,25 @@ def _export_gears(payload: dict[str, Any]) -> list[list[str]]:
 
     rows: list[list[str]] = []
     seen_names: set[str] = set()
-    for _source_id, entry in source.items():
-        if not isinstance(entry, dict):
-            continue
-        gears = entry.get("gears", [])
-        if not isinstance(gears, list):
-            continue
-        for gear in gears:
-            if not isinstance(gear, dict):
-                continue
-            name = str(gear.get("name", "") or "").strip()
-            if not name:
-                raise ValueError("Encountered gear with empty name")
-            if name in seen_names:
-                raise ValueError(f"Duplicate gear name detected: {name}")
-            seen_names.add(name)
+    for gear in _export_items(source, "gears"):
+        name = str(gear.get("name", "") or "").strip()
+        if not name:
+            raise ValueError("Encountered gear with empty name")
+        if name in seen_names:
+            raise ValueError(f"Duplicate gear name detected: {name}")
+        seen_names.add(name)
 
-            slot = str(gear.get("slot", "") or "").strip()
-            gear_type = _SLOT_TO_GEAR_TYPE.get(slot)
-            if not gear_type:
-                raise ValueError(f"Unknown gear slot '{slot}' for gear '{name}'")
+        slot = str(gear.get("slot", "") or "").strip()
+        gear_type = _SLOT_TO_GEAR_TYPE.get(slot)
+        if not gear_type:
+            raise ValueError(f"Unknown gear slot '{slot}' for gear '{name}'")
 
-            stats = gear.get("stats", {})
-            if not isinstance(stats, dict):
-                stats = {}
-            rows.append([gear_type, name, *(_blank_if_zero(_safe_int(stats.get(key))) for key in _GEAR_STAT_KEYS)])
+        stats = gear.get("stats", {})
+        if not isinstance(stats, dict):
+            stats = {}
+        rows.append([gear_type, name, *(_blank_if_zero(_safe_int(stats.get(key))) for key in _GEAR_STAT_KEYS)])
 
-    expected = sum(len((entry or {}).get("gears", []) or []) for entry in source.values() if isinstance(entry, dict))
+    expected = sum(len(entry.get("gears", []) or []) for entry in source.values() if isinstance(entry, dict))
     if len(rows) != expected:
         raise ValueError(f"Gear export mismatch: expected {expected} rows, wrote {len(rows)}")
     return rows
@@ -329,51 +321,43 @@ def _export_minis(payload: dict[str, Any]) -> list[list[str]]:
     song_names_by_id = _song_names_by_id(payload)
     rows: list[list[str]] = []
     seen_names: set[str] = set()
-    for _source_id, entry in source.items():
-        if not isinstance(entry, dict):
-            continue
-        minis = entry.get("minis", [])
-        if not isinstance(minis, list):
-            continue
-        for mini in minis:
-            if not isinstance(mini, dict):
-                continue
-            name = str(mini.get("name", "") or "").strip()
-            if not name:
-                raise ValueError("Encountered mini with empty name")
-            if name in seen_names:
-                raise ValueError(f"Duplicate mini name detected: {name}")
-            seen_names.add(name)
+    for mini in _export_items(source, "minis"):
+        name = str(mini.get("name", "") or "").strip()
+        if not name:
+            raise ValueError("Encountered mini with empty name")
+        if name in seen_names:
+            raise ValueError(f"Duplicate mini name detected: {name}")
+        seen_names.add(name)
 
-            star = _safe_int(mini.get("rarity"))
-            if star <= 0:
-                raise ValueError(f"Unexpected mini rarity/star '{mini.get('rarity')}' for mini '{name}'")
+        star = _safe_int(mini.get("rarity"))
+        if star <= 0:
+            raise ValueError(f"Unexpected mini rarity/star '{mini.get('rarity')}' for mini '{name}'")
 
-            stats = mini.get("stats", {})
-            if not isinstance(stats, dict):
-                stats = {}
+        stats = mini.get("stats", {})
+        if not isinstance(stats, dict):
+            stats = {}
 
-            # Level-1 stats; base (max level) elements are x5 and fever stats x4.
-            l1_elements = {element: _safe_int(stats.get(stat_key)) for element, stat_key in _ELEMENT_FROM_STATS.items()}
-            l1_fever = [_safe_int(stats.get(key)) for key in _MINI_FEVER_KEYS]
-            song_targets = _render_song_targets(mini, mini_name=name, song_names_by_id=song_names_by_id)
-            rows.append(
-                [
-                    _infer_mini_type(l1_elements),
-                    str(star),
-                    name,
-                    *(_blank_if_zero(value * 5) for value in l1_elements.values()),
-                    "",
-                    *(_blank_if_zero(value * 4) for value in l1_fever),
-                    "",
-                    *(_blank_if_zero(value) for value in l1_elements.values()),
-                    "",
-                    *(_blank_if_zero(value) for value in l1_fever),
-                    song_targets,
-                ]
-            )
+        # Level-1 stats; base (max level) elements are x5 and fever stats x4.
+        l1_elements = {element: _safe_int(stats.get(stat_key)) for element, stat_key in _ELEMENT_FROM_STATS.items()}
+        l1_fever = [_safe_int(stats.get(key)) for key in _MINI_FEVER_KEYS]
+        song_targets = _render_song_targets(mini, mini_name=name, song_names_by_id=song_names_by_id)
+        rows.append(
+            [
+                _infer_mini_type(l1_elements),
+                str(star),
+                name,
+                *(_blank_if_zero(value * 5) for value in l1_elements.values()),
+                "",
+                *(_blank_if_zero(value * 4) for value in l1_fever),
+                "",
+                *(_blank_if_zero(value) for value in l1_elements.values()),
+                "",
+                *(_blank_if_zero(value) for value in l1_fever),
+                song_targets,
+            ]
+        )
 
-    expected = sum(len((entry or {}).get("minis", []) or []) for entry in source.values() if isinstance(entry, dict))
+    expected = sum(len(entry.get("minis", []) or []) for entry in source.values() if isinstance(entry, dict))
     if len(rows) != expected:
         raise ValueError(f"Mini export mismatch: expected {expected} rows, wrote {len(rows)}")
     return rows
