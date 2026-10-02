@@ -263,9 +263,7 @@ def _prebuild_frontier_caches(
     if not song_paths:
         raise RuntimeError(f"frontier server Data revision has no song charts: {data_root}")
     run_startup_cpu_work(
-        # Queue entries are (chart path, ...) tuples. Bare path strings were silently ignored,
-        # which turned every incremental song publish into a full 2272-song re-verification.
-        song_queue=tuple((path,) for path in song_paths),
+        song_queue=tuple((path,) for path in song_paths),  # queue entries are (chart path, ...) tuples
         curves=curves,
         data_root=data_root,
         build_missing=True,
@@ -454,7 +452,7 @@ def _activate_last_complete_publication(
             return False
         data_root = (snapshots_root or source_snapshot_root()) / code_revision / "Data"
         _activate_published_data(data_root)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError, RuntimeError):
+    except (OSError, ValueError, TypeError, RuntimeError):  # JSONDecodeError is a ValueError
         logger.warning("last complete frontier publication could not be activated", exc_info=True)
         return False
     logger.info("activated last complete frontier publication %s at startup", code_revision)
@@ -1410,7 +1408,7 @@ def _http_server(host: str, port: int) -> ThreadingHTTPServer:
     server.socket.close()
     server.socket = socket.socket(fileno=int(inherited))
     server.server_address = server.socket.getsockname()
-    server.server_name, server.server_port = str(host), int(port)
+    server.server_name, server.server_port = host, port
     return server
 
 
@@ -1421,15 +1419,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=settings.port)
     args = parser.parse_args(argv)
     try:
-        loopback_bind = ipaddress.ip_address(str(args.host)).is_loopback
+        loopback_bind = ipaddress.ip_address(args.host).is_loopback
     except ValueError:
-        loopback_bind = str(args.host).strip().lower() == "localhost"
+        loopback_bind = args.host.strip().lower() == "localhost"
     if not loopback_bind and not settings.api_token:
         raise RuntimeError("ROBEATSMETA_OPTIMIZER_API_TOKEN is required for a non-loopback bind")
     # Reclaim workspaces orphaned by a crash/SIGKILL: _solve_isolated cleans up in its finally, but
     # nothing else ever sweeps here. Safe because launchd runs a single service instance.
     shutil.rmtree(_service_run_root(), ignore_errors=True)
-    server = _http_server(args.host, int(args.port))
+    server = _http_server(args.host, args.port)
     server.daemon_threads = True
     _activate_last_complete_publication(_FRONTIER_DISTRIBUTION)
     restart_revision: list[str] = []

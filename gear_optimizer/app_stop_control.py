@@ -20,12 +20,10 @@ class StopController:
     """
 
     def __init__(self, *, bin_dir: str):
-        self._bin_dir = str(bin_dir)
-        self._run_start_monotonic = time.monotonic()
         self.stop_requested_event = threading.Event()
         self.force_exit_requested_event = threading.Event()
         self._signal_handlers_installed = False
-        self._stop_file = os.path.join(self._bin_dir, "STOP")
+        self._stop_file = os.path.join(bin_dir, "STOP")
         self._stop_file_next_check_monotonic = 0.0
         self._stop_file_present_cache = False
 
@@ -54,7 +52,7 @@ class StopController:
         if self.stop_requested_event.is_set():
             return True
         now = time.monotonic()
-        if now >= float(self._stop_file_next_check_monotonic):
+        if now >= self._stop_file_next_check_monotonic:
             self._stop_file_present_cache = os.path.exists(self._stop_file)
             self._stop_file_next_check_monotonic = now + STOP_FILE_POLL_SEC
         if self._stop_file_present_cache:
