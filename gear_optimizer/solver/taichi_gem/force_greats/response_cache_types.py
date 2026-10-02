@@ -63,8 +63,6 @@ _FG_DP_SOURCES = (
     _HERE / "response_cache_patterns.py",
     _HERE / "response_cache_serde.py",
     _HERE / "response_inner_host.py",
-    _HERE / "response_inner_kernels.py",
-    _HERE / "response_pp_bounds.py",
 )
 _FG_RESPONSE_CACHE_VERSION = (
     f"{_FG_RESPONSE_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_FG_DP_SOURCES)}"

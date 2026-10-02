@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-import sys
 import time
 from typing import Any
 
@@ -21,7 +20,7 @@ from .response_cache import load_response_frontier_scoring_bundle
 from .response_cache_serde import frontier_result_from_scoring_bundle_for_stats
 from .response_cache_store import load_first_surface_scoring_patterns
 from .response_cache_types import FgResponseFrontierScoringBundle, all_response_stat_keys
-from .response_inner_host import _score_response_group_meta_cpu, _score_response_group_meta_gpu
+from .response_inner_host import _score_response_group_meta_cpu
 from .response_types import (
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
@@ -47,10 +46,8 @@ __all__ = [
     "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
     "build_prepared_force_greats_response_frontier_group_rows_on_owner",
     "pack_prepared_force_greats_response_frontier_scoring_surfaces",
-    "score_prepared_force_greats_response_frontier_batch_on_gpu_owner",
     "score_prepared_force_greats_response_frontier_batch_on_cpu_owner",
     "score_prepared_force_greats_response_frontier_batch_sync",
-    "score_prepared_force_greats_response_frontier_batch_cpu_sync",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
 ]
@@ -524,8 +521,8 @@ def prepare_force_greats_response_frontier_scoring_batch(
     scoring_bundle: FgResponseFrontierScoringBundle | None = None,
 ) -> FgResponseFrontierPackedScoringBatch:
     """Prepare the GA->FG candidate inputs (host, prep thread). The group rows + scoring
-    surfaces are built later on the GPU owner thread by
-    `score_prepared_force_greats_response_frontier_batch_on_gpu_owner`.
+    surfaces are built later on the GPU owner thread and scored by
+    `score_prepared_force_greats_response_frontier_batch_on_cpu_owner`.
 
     ``base_stats7_list`` (when given) carries each candidate's authoritative base
     components by origin: the GPU-native GA pack kernel's device-computed
@@ -771,53 +768,11 @@ def _score_packed_batch(batch: FgResponseFrontierPackedScoringBatch, scorer, own
     )
 
 
-def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
-    batch: FgResponseFrontierPackedScoringBatch,
-) -> FgResponseFrontierOwnerResult:
-    """Score a finalized batch on the GPU owner (Taichi kernels only).
-
-    Required hardware-safety boundary: on macOS, ``ti.vulkan`` lowers through MoltenVK, which
-    has no ``shaderFloat64``, so the FG inner gem-search kernel compiles at f32 there. f32
-    mis-floors the per-note products at score magnitudes (parity corpus: 129/4M floor mismatches),
-    which flips the razor-thin greats-vs-no-greats argmax (FG gains only ~0.4-0.5% over base)
-    and makes the search select a greats-free surface -- whose CPU-f64 rescore equals the base
-    score, so the FG winner-gate drops every candidate (FG=0). Route the search to the
-    bit-exact CPU-f64 owner (the same f64 algorithm the serving path already uses on this Mac).
-    """
-    if sys.platform == "darwin":
-        return score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
-    return _score_packed_batch(batch, _score_response_group_meta_gpu, "GPU")
-
-
 def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierOwnerResult:
-    """Score a finalized batch with native CPU f64 (no GPU). Same exact algorithm and
-    arithmetic as the GPU owner, for the gems-fixed (zero_ms / total_budget == 0) on-demand
-    serving shape: tiny per-request work where CPU doubles are lower-latency than emulating
-    f64 on a GPU and parallelize across cores instead of serializing on the single GPU."""
+    """Score a finalized batch with the exact native-f64 scorer (CPU cores, no GPU)."""
     return _score_packed_batch(batch, _score_response_group_meta_cpu, "CPU")
-
-
-def score_prepared_force_greats_response_frontier_batch_cpu_sync(
-    batch: FgResponseFrontierPackedScoringBatch,
-    *,
-    include_forced_counts: bool = False,
-) -> list[FgResponseFrontierSolveResult]:
-    """Native-f64 CPU twin of ``score_prepared_force_greats_response_frontier_batch_sync``.
-
-    Enumeration (group rows + packed surfaces) is identical to the GPU path; only the inner
-    surface scoring runs on CPU doubles. For the gems-fixed (residual_budget == 0) zero_ms
-    rebuild this returns bit-identical results to the GPU owner, with no GPU f64 dependency.
-    """
-    if batch.scoring_surface_pattern_ids is None:
-        batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
-    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
-    return materialize_prepared_force_greats_response_frontier_batch_results(
-        owner.batch,
-        owner.inner_rows,
-        include_forced_counts=bool(include_forced_counts),
-    )
 
 
 def materialize_prepared_force_greats_response_frontier_batch_results(
@@ -1015,7 +970,7 @@ def score_fused_owner_base_components_on_gpu_owner(
         scoring_bundle=scoring_bundle,
     )
     built = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
-    owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(built)
+    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(built)
     score_rows = resolve_fused_owner_score_rows_from_batch(owner.batch, owner.inner_rows)
     if len(score_rows) != len(unique_rows):
         raise ValueError(
@@ -1099,7 +1054,7 @@ def score_prepared_force_greats_response_frontier_batch_sync(
 ) -> list[FgResponseFrontierSolveResult]:
     if batch.scoring_surface_pattern_ids is None:
         batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
-    owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(batch)
+    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
     batch = owner.batch
     out = materialize_prepared_force_greats_response_frontier_batch_results(
         batch,

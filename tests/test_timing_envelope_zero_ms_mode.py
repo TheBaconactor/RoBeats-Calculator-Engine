@@ -224,7 +224,7 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
     monkeypatch.setattr(response_frontier, "prepare_force_greats_response_frontier_scoring_batch", _prepare)
     monkeypatch.setattr(
         response_frontier,
-        "score_prepared_force_greats_response_frontier_batch_cpu_sync",
+        "score_prepared_force_greats_response_frontier_batch_sync",
         lambda *_args, **_kwargs: [SimpleNamespace(surface="exact-surface")],
     )
 

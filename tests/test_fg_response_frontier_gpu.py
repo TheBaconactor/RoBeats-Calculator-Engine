@@ -167,219 +167,6 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
     )
 
 
-def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
-
-    surfaces = (
-        FgResponseSurface(0b111, 0, 0, 0, 0b001, 0, 0, 0, 2, 1),
-        FgResponseSurface(0b011, 0, 0, 0, 0b000, 0, 0, 0, 1, 0),
-    )
-    kwargs = {
-        "total_notes": 105,
-        "residual_budget": 3,
-        "stats_after_ftff": {
-            "Perfect Points": 10,
-            "Combo Multiplier": 20,
-            "Fever Multiplier": 30,
-            "Power": 40,
-            "Rush": 50,
-        },
-        "primary_color": "Power",
-        "secondary_color": "Rush",
-        "selected_color": "Power",
-        "curves": _curves(),
-    }
-
-    gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
-
-    assert (
-        gpu.best_score,
-        gpu.surface_index,
-        gpu.g_pp,
-        gpu.g_cm,
-        gpu.g_fm,
-        gpu.g_ov,
-        gpu.final_pp,
-        gpu.final_cm,
-        gpu.final_fm,
-        gpu.final_primary,
-        gpu.final_secondary,
-    ) == (17593, 0, 0, 0, 0, 3, 10, 20, 30, 58, 50)
-
-
-def test_response_frontier_gpu_inner_preserves_same_color_component_floors():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
-
-    surfaces = (FgResponseSurface(0, 0, 0, 0, 0b1111, 0, 0, 0, 0, 0),)
-    kwargs = {
-        "total_notes": 4,
-        "residual_budget": 0,
-        "stats_after_ftff": {
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Chill": 812,
-        },
-        "primary_color": "Chill",
-        "secondary_color": "Chill",
-        "selected_color": "Chill",
-        "curves": _curves(),
-    }
-
-    gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
-
-    assert gpu.best_score == 4 * 1773
-    assert (
-        gpu.surface_index,
-        gpu.g_pp,
-        gpu.g_cm,
-        gpu.g_fm,
-        gpu.g_ov,
-        gpu.final_pp,
-        gpu.final_cm,
-        gpu.final_fm,
-        gpu.final_primary,
-        gpu.final_secondary,
-    ) == (0, 0, 0, 0, 0, 0, 0, 0, 812, 812)
-
-
-def test_response_frontier_gpu_batch_pack_matches_reference_groups():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import _optimize_response_surfaces_gpu
-
-    surfaces_a = (
-        FgResponseSurface(0b1111, 0, 0, 0, 0b0010, 0, 0, 0, 4, 1),
-        FgResponseSurface(0b0111, 0, 0, 0, 0b0000, 0, 0, 0, 2, 0),
-        FgResponseSurface(0b1110, 0, 0, 0, 0b0100, 0, 0, 0, 5, 2),
-    )
-    surfaces_b = (
-        FgResponseSurface(0b101, 0, 0, 0, 0b001, 0, 0, 0, 1, 1),
-        FgResponseSurface(0b111, 0, 0, 0, 0b011, 0, 0, 0, 3, 2),
-    )
-    shared = {
-        "total_notes": 108,
-        "primary_color": "Power",
-        "secondary_color": "Rush",
-        "selected_color": "Power",
-        "curves": _curves(),
-    }
-    stats_a = {
-        "Perfect Points": 10,
-        "Combo Multiplier": 20,
-        "Fever Multiplier": 30,
-        "Power": 40,
-        "Rush": 50,
-    }
-    stats_b = {
-        "Perfect Points": 30,
-        "Combo Multiplier": 15,
-        "Fever Multiplier": 25,
-        "Power": 20,
-        "Rush": 80,
-    }
-
-    rows, surface_rows = _optimize_response_surfaces_gpu(
-        [(5, stats_a, surfaces_a), (4, stats_b, surfaces_b), (3, stats_b, surfaces_a)],
-        **shared,
-    )
-
-    assert surface_rows == len(surfaces_a) + len(surfaces_b) + len(surfaces_a)
-    assert rows == [
-        (20734, 2, 0, 0, 0, 5, 10, 20, 30, 70, 50),
-        (18271, 1, 0, 0, 0, 4, 30, 15, 25, 44, 80),
-        (16974, 2, 0, 0, 0, 3, 30, 15, 25, 38, 80),
-    ]
-
-
-def test_response_frontier_gpu_preserves_exact_best_on_high_surface_mixed_colors_regression():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
-
-    surfaces = (
-        FgResponseSurface(3891411679, 3574856976, 3773757219, 1, 403555616, 720110319, 521210076, 14, 51, 5),
-        FgResponseSurface(2721674337, 3070680269, 3611881923, 14, 0, 0, 327680, 0, 122, 2),
-        FgResponseSurface(575176664, 3487862049, 3702577455, 12, 3719790631, 807105246, 592389840, 3, 84, 36),
-        FgResponseSurface(3601089371, 3643850265, 2374545082, 10, 555465764, 642335206, 1920422149, 4, 109, 6),
-        FgResponseSurface(2790863878, 2438334081, 1839177138, 4, 0, 0, 1, 0, 111, 3),
-        FgResponseSurface(2245692434, 3544458849, 2717638093, 9, 405078720, 605573150, 1308631090, 0, 63, 27),
-        FgResponseSurface(3466214601, 779693237, 2435483384, 1, 828752694, 3515274058, 1859483911, 14, 49, 82),
-        FgResponseSurface(1358034363, 3210050518, 977655363, 13, 621019648, 524296, 77072408, 2, 67, 21),
-        FgResponseSurface(27450701, 2000810147, 1294574002, 1, 168362000, 132612, 538069060, 2, 116, 12),
-        FgResponseSurface(1302787120, 1853818885, 106666315, 9, 537461380, 2415952130, 279568, 6, 121, 3),
-        FgResponseSurface(912726739, 3089068564, 3279260528, 5, 3382240556, 1205898731, 1015706767, 10, 3, 119),
-    )
-    kwargs = {
-        "total_notes": 232,
-        "residual_budget": 23,
-        "stats_after_ftff": {
-            "Perfect Points": 138,
-            "Combo Multiplier": 14,
-            "Fever Multiplier": 195,
-            "Power": 269,
-            "Rush": 266,
-            "Flow": 13,
-            "Beat": 111,
-            "Vibe": 299,
-            "Chill": 294,
-        },
-        "primary_color": "Vibe",
-        "secondary_color": "Chill",
-        "selected_color": "Beat",
-        "curves": _curves(),
-    }
-
-    gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
-
-    assert gpu.best_score == 246965
-    assert (gpu.surface_index, gpu.g_pp, gpu.g_cm, gpu.g_fm, gpu.g_ov) == (1, 11, 12, 0, 0)
-    assert (gpu.final_pp, gpu.final_cm, gpu.final_fm, gpu.final_primary, gpu.final_secondary) == (
-        160,
-        38,
-        195,
-        299,
-        327,
-    )
-
-
-def test_response_frontier_gpu_inner_matches_exact_replay_on_combo_floor_boundary():
-    from pathlib import Path
-
-    from gear_optimizer.gamedata import load_stat_curves
-    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
-
-    refs = load_stat_curves(Path.cwd() / "Data" / "Gear" / "Stats.txt")
-    surface = FgResponseSurface(0, 0, 0, 0, 255, 0, 0, 0, 1255, 2, 2)
-    stats = {
-        "Perfect Points": 80,
-        "Combo Multiplier": 80,
-        "Fever Multiplier": 80,
-        "Fever Time": 51,
-        "Fever Fill Rate": 67,
-        "Beat": 80,
-        "Vibe": 80,
-    }
-    song = make_song(np.arange(1586), mode="zero_ms", primary="Beat", secondary="Vibe")
-
-    gpu = optimize_response_frontier_inner_exact_gpu(
-        (surface,),
-        total_notes=1586,
-        residual_budget=0,
-        stats_after_ftff=stats,
-        primary_color="Beat",
-        secondary_color="Vibe",
-        selected_color="Beat",
-        curves=refs,
-    )
-    exact = score_force_greats_response_surface_exact(stats, song, refs, surface)
-
-    assert gpu.best_score == exact == 12345033
-    assert (gpu.surface_index, gpu.g_pp, gpu.g_cm, gpu.g_fm, gpu.g_ov) == (0, 0, 0, 0, 0)
-
-
 def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path, monkeypatch):
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
@@ -431,7 +218,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         prepare_force_greats_response_frontier_scoring_batch,
-        score_prepared_force_greats_response_frontier_batch_cpu_sync,
+        score_prepared_force_greats_response_frontier_batch_sync,
     )
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "perfect_window")
@@ -462,7 +249,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
         scoring_bundle=scoring_bundle,
     )
 
-    result = score_prepared_force_greats_response_frontier_batch_cpu_sync(
+    result = score_prepared_force_greats_response_frontier_batch_sync(
         batch,
         include_forced_counts=True,
     )[0]
@@ -555,7 +342,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         prepare_force_greats_response_frontier_scoring_batch,
-        score_prepared_force_greats_response_frontier_batch_cpu_sync,
+        score_prepared_force_greats_response_frontier_batch_sync,
     )
     from gear_optimizer.solver.timing_envelope import time_song
 
@@ -586,7 +373,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
         total_budget=0,
         scoring_bundle=scoring_bundle,
     )
-    result = score_prepared_force_greats_response_frontier_batch_cpu_sync(
+    result = score_prepared_force_greats_response_frontier_batch_sync(
         batch,
         include_forced_counts=True,
     )[0]

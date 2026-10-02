@@ -45,7 +45,6 @@ def _solve_fixed_timing_response_results(
     from ..taichi_gem.force_greats.response_frontier import (
         prepare_force_greats_response_frontier_scoring_batch,
         required_response_stat_keys_for_scoring_batch,
-        score_prepared_force_greats_response_frontier_batch_cpu_sync,
         score_prepared_force_greats_response_frontier_batch_sync,
     )
     from ..taichi_gem.force_greats.response_cache import (
@@ -80,15 +79,7 @@ def _solve_fixed_timing_response_results(
         total_budget=total_budget,
         scoring_bundle=scoring_bundle,
     )
-    if total_budget > 0:
-        # Gem re-solve: the gem search lives on the GPU owner (the CPU scorer is gems-fixed only).
-        # The fp-gated kernel runs the search at f32 on MoltenVK / f64 on AMD; the winning surface
-        # is CPU-f64 exact-rescored downstream, so the served score is lossless.
-        results = score_prepared_force_greats_response_frontier_batch_sync(batch, include_forced_counts=False)
-    else:
-        # Gems FIXED (budget==0): score the collapsed frontier on native CPU f64 -- tiny,
-        # latency-sensitive, and exact without any GPU f64 dependency.
-        results = score_prepared_force_greats_response_frontier_batch_cpu_sync(batch, include_forced_counts=False)
+    results = score_prepared_force_greats_response_frontier_batch_sync(batch, include_forced_counts=False)
     if len(results) != len(rows):
         raise ValueError(
             "fixed-timing FG surface build produced a different row count than the stats batch "

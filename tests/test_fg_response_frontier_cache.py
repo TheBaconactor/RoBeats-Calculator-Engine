@@ -1764,11 +1764,6 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
 
     monkeypatch.setattr(
         response_frontier,
-        "_score_response_group_meta_gpu",
-        _score_must_receive_prepared_surfaces,
-    )
-    monkeypatch.setattr(
-        response_frontier,
         "_score_response_group_meta_cpu",
         _score_must_receive_prepared_surfaces,
     )

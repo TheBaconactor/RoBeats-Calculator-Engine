@@ -26,11 +26,11 @@ def ensure_ready_with_warmup() -> None:
     if not _response_frontier_warmed:
         from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
             FgResponseFrontierOwnerResult,
-            score_prepared_force_greats_response_frontier_batch_on_gpu_owner,
+            score_prepared_force_greats_response_frontier_batch_on_cpu_owner,
         )
 
         _ = (
             FgResponseFrontierOwnerResult,
-            score_prepared_force_greats_response_frontier_batch_on_gpu_owner,
+            score_prepared_force_greats_response_frontier_batch_on_cpu_owner,
         )
         _response_frontier_warmed = True

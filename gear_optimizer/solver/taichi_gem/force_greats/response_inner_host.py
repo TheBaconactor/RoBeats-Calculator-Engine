@@ -6,7 +6,6 @@ import weakref
 from typing import Any
 
 import numpy as np
-import taichi as ti
 
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import (
@@ -17,19 +16,8 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_NORMAL,
 )
 from gear_optimizer.core.jit_setup import jit
-from gear_optimizer.solver.taichi_gem import api as gem_api
 
-from .response_inner_kernels import (
-    SOLVER_NP_FP,
-    _fg_response_inner_group_kernel,
-)
-from .response_pp_bounds import build_pp_prefix_bounds
 
-_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
-_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK = 100_000
-_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS = 262_144
-_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS = 262_144
-_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK = 16_000_000_000
 _SURFACE_HEAD_COEFF_CACHE_MAX = 4
 # The CPU FG gem search scores each group independently (it writes only that group's output row),
 # so contiguous group chunks scored on separate threads and concatenated in order equal one call.
@@ -67,172 +55,6 @@ def _color_flags(primary_color: str, secondary_color: str, selected_color: str) 
         int(primary == selected and bool(selected)),
         int(secondary == selected and bool(selected)),
     )
-
-
-@jit(nopython=True, cache=True)
-def _response_inner_combo_count_jit(residual_budget, cur_pp, cur_cm, cur_fm, allow_pp):
-    residual = int(residual_budget)
-    if residual < 0:
-        residual = 0
-    max_pp_gems = 0
-    if bool(allow_pp) and cur_pp < MAX_STAT:
-        rem_pp = MAX_STAT - cur_pp
-        max_pp_gems = rem_pp // STAT_GEM_GAIN_NORMAL
-        if rem_pp % STAT_GEM_GAIN_NORMAL != 0:
-            max_pp_gems += 1
-
-    max_cm_gems = 0
-    if cur_cm < MAX_STAT:
-        rem_cm = MAX_STAT - cur_cm
-        max_cm_gems = rem_cm // STAT_GEM_GAIN_NORMAL
-        if rem_cm % STAT_GEM_GAIN_NORMAL != 0:
-            max_cm_gems += 1
-
-    max_fm_gems = 0
-    if cur_fm < MAX_STAT:
-        rem_fm = MAX_STAT - cur_fm
-        max_fm_gems = rem_fm // STAT_GEM_GAIN_FEVER
-        if rem_fm % STAT_GEM_GAIN_FEVER != 0:
-            max_fm_gems += 1
-
-    if max_pp_gems > residual:
-        max_pp_gems = residual
-    if max_cm_gems > residual:
-        max_cm_gems = residual
-    if max_fm_gems > residual:
-        max_fm_gems = residual
-
-    count = 0
-    cm_limit = max_cm_gems
-    pp_cap = max_pp_gems
-    fm_cap = max_fm_gems
-    for g_cm in range(cm_limit + 1):
-        leftover_after_cm = residual - g_cm
-        if leftover_after_cm < 0:
-            break
-        fm_limit = fm_cap
-        if fm_limit > leftover_after_cm:
-            fm_limit = leftover_after_cm
-        if fm_limit < 0:
-            continue
-        term_count = fm_limit + 1
-        if pp_cap >= leftover_after_cm:
-            count += term_count * (leftover_after_cm + 1) - (fm_limit * (fm_limit + 1) // 2)
-            continue
-
-        split = leftover_after_cm - pp_cap
-        if split < 0:
-            split = 0
-        if split > term_count:
-            split = term_count
-        count += split * (pp_cap + 1)
-        tail_terms = term_count - split
-        if tail_terms > 0:
-            count += tail_terms * (leftover_after_cm + 1) - ((split + fm_limit) * tail_terms // 2)
-    if count < 1:
-        count = 1
-    return int(count)
-
-
-@jit(nopython=True, cache=True)
-def _response_inner_combo_counts_jit(group_meta_arr, allow_pp):
-    row_count = int(group_meta_arr.shape[0])
-    out = np.empty((row_count,), dtype=np.int64)
-    for idx in range(row_count):
-        out[idx] = int(
-            _response_inner_combo_count_jit(
-                int(group_meta_arr[idx, 0]),
-                int(group_meta_arr[idx, 1]),
-                int(group_meta_arr[idx, 2]),
-                int(group_meta_arr[idx, 3]),
-                bool(allow_pp),
-            )
-        )
-    return out
-
-
-def _response_inner_combo_counts(group_meta: np.ndarray, *, allow_pp: bool) -> np.ndarray:
-    group_meta_arr = np.ascontiguousarray(np.asarray(group_meta, dtype=np.int32))
-    if int(group_meta_arr.ndim) != 2 or int(group_meta_arr.shape[1]) < 4:
-        raise ValueError("response frontier combo-count estimator requires group metadata columns 0..3")
-    row_count = int(group_meta_arr.shape[0])
-    if row_count <= 0:
-        return np.zeros((0,), dtype=np.int64)
-    return np.ascontiguousarray(
-        _response_inner_combo_counts_jit(group_meta_arr[:, :4], bool(allow_pp)),
-        dtype=np.int64,
-    )
-
-
-@jit(nopython=True, cache=True)
-def _response_group_logical_surface_plan_jit(group_lengths, combo_counts, logical_surface_rows):
-    owners = np.empty((int(logical_surface_rows),), dtype=np.int32)
-    local_surfaces = np.empty((int(logical_surface_rows),), dtype=np.int32)
-    work_cumsum = np.empty((int(logical_surface_rows) + 1,), dtype=np.int64)
-    work_cumsum[0] = 0
-    row = 0
-    work = 0
-    for owner in range(int(group_lengths.shape[0])):
-        count = int(combo_counts[owner])
-        for local_surface in range(int(group_lengths[owner])):
-            owners[row] = int(owner)
-            local_surfaces[row] = int(local_surface)
-            work += count
-            work_cumsum[row + 1] = int(work)
-            row += 1
-    return owners, local_surfaces, work_cumsum
-
-
-def _response_group_logical_surface_plan(
-    group_lengths: np.ndarray,
-    combo_counts: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    group_lengths_arr = np.ascontiguousarray(np.asarray(group_lengths, dtype=np.int32))
-    combo_counts_arr = np.ascontiguousarray(np.asarray(combo_counts, dtype=np.int64))
-    if int(group_lengths_arr.ndim) != 1 or int(combo_counts_arr.ndim) != 1:
-        raise ValueError("response frontier logical surface plan requires one-dimensional inputs")
-    if int(group_lengths_arr.shape[0]) != int(combo_counts_arr.shape[0]):
-        raise ValueError("response frontier logical surface plan inputs have inconsistent lengths")
-    if bool(np.any(group_lengths_arr < 0)):
-        raise ValueError("response frontier logical surface plan received a negative group length")
-    logical_surface_rows = int(np.sum(group_lengths_arr, dtype=np.int64))
-    if logical_surface_rows <= 0:
-        empty_i32 = np.zeros((0,), dtype=np.int32)
-        return empty_i32, empty_i32, np.zeros((1,), dtype=np.int64)
-    return _response_group_logical_surface_plan_jit(
-        group_lengths_arr,
-        combo_counts_arr,
-        int(logical_surface_rows),
-    )
-
-
-@jit(nopython=True, cache=True)
-def _reduce_response_inner_chunk_jit(
-    row_count,
-    chunk_rows,
-    chunk_owners,
-    chunk_local_surfaces,
-    best_scores,
-    out_rows,
-):
-    row = 0
-    while row < row_count:
-        owner = int(chunk_owners[row])
-        best_row = row
-        best_score = int(chunk_rows[row, 0])
-        row += 1
-        while row < row_count and int(chunk_owners[row]) == owner:
-            score = int(chunk_rows[row, 0])
-            if score > best_score:
-                best_score = score
-                best_row = row
-            row += 1
-        if best_score > int(best_scores[owner]):
-            best_scores[owner] = best_score
-            out_rows[owner, 0] = best_score
-            out_rows[owner, 1] = int(chunk_local_surfaces[best_row])
-            for col in range(2, 11):
-                out_rows[owner, col] = int(chunk_rows[best_row, col])
 
 
 def _precompute_surface_head_coeffs(
@@ -303,240 +125,6 @@ def _precompute_surface_head_coeffs(
 def _evict_surface_head_coeff_entry(key: tuple[int, int, tuple[int, ...], tuple[int, ...]]) -> None:
     with _SURFACE_HEAD_COEFF_CACHE_LOCK:
         _SURFACE_HEAD_COEFF_CACHE.pop(key, None)
-
-
-def _score_response_group_meta_gpu(
-    *,
-    group_meta: np.ndarray,
-    group_offsets: np.ndarray,
-    group_lengths: np.ndarray,
-    primary_color: str,
-    secondary_color: str,
-    selected_color: str,
-    curves: StatCurves,
-    surface_pattern_ids: np.ndarray,
-    surface_pattern_words: np.ndarray,
-    surface_counts: np.ndarray,
-    surface_pattern_head_coeffs: np.ndarray,
-) -> tuple[np.ndarray, int]:
-    group_count = int(group_meta.shape[0])
-    if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
-        raise ValueError("response frontier GPU group metadata arrays have inconsistent lengths")
-    logical_surface_rows = int(np.sum(group_lengths, dtype=np.int64))
-    if logical_surface_rows <= 0:
-        return np.zeros((0, 11), dtype=np.int32), 0
-
-    gem_api.ensure_ready()
-    flags = np.ascontiguousarray(np.asarray(_color_flags(primary_color, secondary_color, selected_color), dtype=np.int32))
-    ref_pp = np.ascontiguousarray(np.asarray(curves.f64["Perfect Points"], dtype=SOLVER_NP_FP))
-    ref_cm = np.ascontiguousarray(np.asarray(curves.f64["Combo Multiplier"], dtype=SOLVER_NP_FP))
-    ref_fm = np.ascontiguousarray(np.asarray(curves.f64["Fever Multiplier"], dtype=SOLVER_NP_FP))
-    pp_prefix_bounds, pp_bound_rows = build_pp_prefix_bounds(group_meta[:, 1], ref_pp, flags)
-    surface_pattern_ids_all = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
-    surface_pattern_words_all = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
-    surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
-    surface_pattern_head_coeffs_all = np.ascontiguousarray(surface_pattern_head_coeffs, dtype=np.int32)
-    group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
-    group_offsets_all = np.ascontiguousarray(group_offsets, dtype=np.int32)
-    group_lengths_all = np.ascontiguousarray(group_lengths, dtype=np.int32)
-
-    if int(surface_pattern_ids_all.shape[0]) != int(surface_counts_all.shape[0]):
-        raise ValueError("response frontier GPU surface arrays have inconsistent lengths")
-    if (
-        int(surface_pattern_ids_all.ndim) != 1
-        or int(surface_pattern_words_all.ndim) != 2
-        or int(surface_pattern_words_all.shape[1]) != 8
-        or int(surface_counts_all.ndim) != 2
-        or int(surface_counts_all.shape[1]) != 3
-        or int(surface_pattern_head_coeffs_all.ndim) != 2
-        or int(surface_pattern_head_coeffs_all.shape[0]) != int(surface_pattern_words_all.shape[0])
-        or int(surface_pattern_head_coeffs_all.shape[1]) != 4
-    ):
-        raise ValueError("response frontier GPU surface arrays have invalid shape")
-    if bool(np.any(surface_pattern_ids_all < 0)) or bool(
-        np.any(surface_pattern_ids_all >= int(surface_pattern_words_all.shape[0]))
-    ):
-        raise ValueError("response frontier GPU surface references an invalid head-pattern ID")
-    if bool(np.any(surface_counts_all < 0)):
-        raise ValueError("response frontier GPU surface counts must be nonnegative")
-    body_fever_all = surface_counts_all[:, 0]
-    body_great_all = surface_counts_all[:, 1]
-    body_fever_great_all = surface_counts_all[:, 2]
-    body_total_max = int(np.max(group_meta_all[:, 7])) if int(group_meta_all.shape[0]) else 0
-    if bool(np.any(body_fever_all > body_total_max)) or bool(np.any(body_great_all > body_total_max)):
-        raise ValueError("response frontier GPU surface body count exceeds song body note count")
-    if bool(np.any(body_fever_great_all > body_fever_all)) or bool(np.any(body_fever_great_all > body_great_all)):
-        raise ValueError("response frontier GPU surface body Fever-Great count exceeds parent counts")
-    if bool(np.any(body_fever_all + body_great_all - body_fever_great_all > body_total_max)):
-        raise ValueError("response frontier GPU surface body categories exceed song body note count")
-    if int(group_meta_all.shape[1]) < 8:
-        raise ValueError("response frontier GPU group metadata requires head/body columns")
-    head_lengths = np.unique(np.ascontiguousarray(group_meta_all[:, 6], dtype=np.int32))
-    if int(head_lengths.shape[0]) != 1:
-        raise ValueError("response frontier GPU group metadata has inconsistent head length")
-    flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
-    allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
-    combo_counts_all = _response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
-    work_by_group = np.asarray(group_lengths_all, dtype=np.int64) * combo_counts_all
-    total_work = int(np.sum(work_by_group, dtype=np.int64))
-    max_group_work = int(np.max(work_by_group)) if group_count > 0 else 0
-    max_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK))
-    max_thread_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK))
-    max_dispatch_groups = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS))
-    max_surface_dispatch_rows = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS))
-    max_surface_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK))
-    out_rows = np.zeros((group_count, 11), dtype=np.int32)
-    # The surface pool is invariant across every chunk dispatch below -- only the
-    # per-chunk index/output slices change. Passing the numpy pool to the kernel
-    # re-transfers it host->device on each launch (ti.types.ndarray semantics), so a
-    # 0.5-1.5 GB pool over 143-219 chunks is 90-330 GB of redundant PCIe copy and ~95%
-    # of the heavy-song "score loop" wall time (measured 25x and bit-exact; see
-    # FG_SCORE_LOOP_POOL_REUPLOAD_FIX.md). Upload it ONCE to device-resident
-    # ndarrays and reuse across all chunks; results are identical (same kernel, same
-    # data, fewer copies).
-    d_surface_pattern_ids = ti.ndarray(dtype=ti.i32, shape=surface_pattern_ids_all.shape)
-    d_surface_pattern_words = ti.ndarray(dtype=ti.u32, shape=surface_pattern_words_all.shape)
-    d_surface_counts = ti.ndarray(dtype=ti.i32, shape=surface_counts_all.shape)
-    d_surface_pattern_head_coeffs = ti.ndarray(dtype=ti.i32, shape=surface_pattern_head_coeffs_all.shape)
-    # No ti.sync() here: the from_numpy uploads and the kernel launches below run on the same
-    # Taichi stream, so the uploads are ordered before the first kernel reads them; the
-    # per-chunk ti.sync() after each dispatch already gates the host reduce on the outputs.
-    d_surface_pattern_ids.from_numpy(surface_pattern_ids_all)
-    d_surface_pattern_words.from_numpy(surface_pattern_words_all)
-    d_surface_counts.from_numpy(surface_counts_all)
-    d_surface_pattern_head_coeffs.from_numpy(surface_pattern_head_coeffs_all)
-    if (
-        group_count <= max_dispatch_groups
-        and total_work <= max_dispatch_work
-        and max_group_work <= max_thread_work
-    ):
-        _fg_response_inner_group_kernel(
-            int(group_count),
-            d_surface_pattern_ids,
-            d_surface_pattern_words,
-            d_surface_counts,
-            d_surface_pattern_head_coeffs,
-            group_offsets_all,
-            group_lengths_all,
-            group_meta_all,
-            flags,
-            ref_pp,
-            ref_cm,
-            ref_fm,
-            pp_prefix_bounds,
-            pp_bound_rows,
-            out_rows,
-            bool(allow_pp),
-        )
-        ti.sync()
-        return out_rows, int(logical_surface_rows)
-
-    if max_group_work <= max_thread_work:
-        chunk_start = 0
-        while chunk_start < int(group_count):
-            chunk_stop = int(chunk_start)
-            chunk_work = 0
-            while chunk_stop < int(group_count) and (int(chunk_stop) - int(chunk_start)) < int(max_dispatch_groups):
-                next_work = int(chunk_work) + int(work_by_group[int(chunk_stop)])
-                if chunk_stop > chunk_start and next_work > int(max_dispatch_work):
-                    break
-                chunk_work = int(next_work)
-                chunk_stop += 1
-            if chunk_stop <= chunk_start:
-                chunk_stop = int(chunk_start) + 1
-            _fg_response_inner_group_kernel(
-                int(chunk_stop) - int(chunk_start),
-                d_surface_pattern_ids,
-                d_surface_pattern_words,
-                d_surface_counts,
-                d_surface_pattern_head_coeffs,
-                group_offsets_all[int(chunk_start) : int(chunk_stop)],
-                group_lengths_all[int(chunk_start) : int(chunk_stop)],
-                group_meta_all[int(chunk_start) : int(chunk_stop)],
-                flags,
-                ref_pp,
-                ref_cm,
-                ref_fm,
-                pp_prefix_bounds,
-                pp_bound_rows[int(chunk_start) : int(chunk_stop)],
-                out_rows[int(chunk_start) : int(chunk_stop)],
-                bool(allow_pp),
-            )
-            ti.sync()
-            chunk_start = int(chunk_stop)
-        return out_rows, int(logical_surface_rows)
-
-    valid_group_indices = np.flatnonzero(np.asarray(group_lengths_all > 0, dtype=np.bool_)).astype(
-        np.int32,
-        copy=False,
-    )
-    if int(valid_group_indices.shape[0]) <= 0:
-        return out_rows, int(logical_surface_rows)
-
-    best_scores = np.full((group_count,), np.iinfo(np.int32).min, dtype=np.int32)
-    logical_owners_all, logical_surfaces_all, logical_work_cumsum_all = _response_group_logical_surface_plan(
-        group_lengths_all,
-        combo_counts_all,
-    )
-    if int(logical_owners_all.shape[0]) != int(logical_surface_rows) or int(logical_surfaces_all.shape[0]) != int(
-        logical_surface_rows
-    ):
-        raise ValueError("response frontier logical surface plan has inconsistent row counts")
-    if int(logical_work_cumsum_all.shape[0]) != int(logical_surface_rows) + 1:
-        raise ValueError("response frontier logical surface work plan has inconsistent row count")
-    if bool(np.any(logical_owners_all < 0)) or bool(np.any(logical_owners_all >= int(group_count))):
-        raise ValueError("response frontier logical surface plan references an invalid group")
-    surface_indices = group_offsets_all[logical_owners_all] + logical_surfaces_all
-    if bool(np.any(logical_surfaces_all < 0)) or bool(np.any(surface_indices < 0)) or bool(
-        np.any(surface_indices >= int(surface_pattern_ids_all.shape[0]))
-    ):
-        raise ValueError("response frontier logical surface plan references an invalid surface")
-
-    # NOTE (measured 2026-07-01, net-zero, reverted): device-residency for the
-    # chunk-invariant args here (group_offsets/group_meta/flags/refs) was bit-exact
-    # but did NOT move enqueue_ms (398.6 -> 402.5ms warm on a 12-chunk heavy song).
-    # The enqueue cost is per-launch fixed overhead, not these arrays' re-staging
-    # (~5MB/chunk); do not re-attempt residency for them without new evidence.
-    chunk_capacity = max(1, min(int(max_surface_dispatch_rows), int(logical_surface_rows)))
-    chunk_rows = np.empty((chunk_capacity, 11), dtype=np.int32)
-    one_surface = np.ones((chunk_capacity,), dtype=np.int32)
-    chunk_start = 0
-    while chunk_start < int(logical_surface_rows):
-        row_stop = min(int(logical_surface_rows), int(chunk_start) + int(max_surface_dispatch_rows))
-        work_limit = int(logical_work_cumsum_all[int(chunk_start)]) + int(max_surface_dispatch_work)
-        work_stop = int(np.searchsorted(logical_work_cumsum_all, work_limit, side="right") - 1)
-        if work_stop <= int(chunk_start):
-            work_stop = int(chunk_start) + 1
-        chunk_stop = min(int(row_stop), int(work_stop), int(logical_surface_rows))
-        row_count = int(chunk_stop) - int(chunk_start)
-        if row_count <= 0:
-            raise ValueError("response frontier logical surface chunk planner produced an empty chunk")
-        owners = logical_owners_all[int(chunk_start) : int(chunk_stop)]
-        local_surfaces = logical_surfaces_all[int(chunk_start) : int(chunk_stop)]
-        rows_view = chunk_rows[:row_count]
-        # Each row is a one-surface group: its owner's meta and PP bound row, offset at its own surface.
-        _fg_response_inner_group_kernel(
-            int(row_count),
-            d_surface_pattern_ids,
-            d_surface_pattern_words,
-            d_surface_counts,
-            d_surface_pattern_head_coeffs,
-            np.ascontiguousarray(group_offsets_all[owners] + local_surfaces, dtype=np.int32),
-            one_surface[:row_count],
-            np.ascontiguousarray(group_meta_all[owners], dtype=np.int32),
-            flags,
-            ref_pp,
-            ref_cm,
-            ref_fm,
-            pp_prefix_bounds,
-            np.ascontiguousarray(pp_bound_rows[owners], dtype=np.int32),
-            rows_view,
-            bool(allow_pp),
-        )
-        ti.sync()
-        _reduce_response_inner_chunk_jit(int(row_count), rows_view, owners, local_surfaces, best_scores, out_rows)
-        chunk_start = int(chunk_stop)
-    return out_rows, int(logical_surface_rows)
 
 
 @jit(nopython=True, cache=True)
@@ -664,7 +252,7 @@ def _score_fg_response_groups_native_f64(
     allow_pp,
     total_rows,
 ):
-    """Native-f64 CPU twin of ``_fg_response_inner_group_kernel`` INCLUDING the gem search.
+    """The FG inner response scoring in native f64, INCLUDING the gem search.
 
     Bit-for-bit f64 port of the GPU owner kernel: per group it enumerates the same gem
     allocations (the g_cm/g_fm/g_pp partition of ``residual_budget``) with the identical
@@ -967,13 +555,10 @@ def _score_response_group_meta_cpu(
     surface_counts: np.ndarray,
     surface_pattern_head_coeffs: np.ndarray,
 ) -> tuple[np.ndarray, int]:
-    """Native-f64 CPU twin of ``_score_response_group_meta_gpu`` for BOTH the gems-fixed
-    (zero_ms / total_budget == 0) on-demand serving path AND the gem-search (total_budget > 0)
-    optimizer path. Same exact algorithm and exact f64 arithmetic as the GPU kernel (including
-    the gem-allocation enumeration, upper-bound prune, and lexicographic tie-break); runs on
-    CPU doubles so it needs no GPU shaderFloat64 (MoltenVK/Metal has none -- there the f32 GPU
-    search mis-floors the razor-thin greats argmax and drops every FG candidate). Parallelizes
-    per request across cores instead of serializing on the single GPU."""
+    """Score the FG response groups in exact native f64, for the gems-fixed (zero_ms / total_budget == 0) serving
+    path and the gem-search (total_budget > 0) optimizer path: the gem-allocation enumeration, the upper-bound prune
+    and the lexicographic tie-break, parallelized over CPU cores. Returns the per-group result rows and the number
+    of logical surface rows scored."""
     group_count = int(group_meta.shape[0])
     if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
         raise ValueError("response frontier CPU group metadata arrays have inconsistent lengths")
