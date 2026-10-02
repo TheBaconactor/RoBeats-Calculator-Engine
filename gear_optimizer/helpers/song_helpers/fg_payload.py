@@ -39,14 +39,6 @@ def require_response_surface(container: Any) -> FgResponseSurface:
     return FgResponseSurface(*[int(value) for value in surface])
 
 
-def has_valid_fg_payload(container: Any) -> bool:
-    try:
-        require_response_surface(container)
-    except (TypeError, ValueError):
-        return False
-    return True
-
-
 def strip_retired_fg_fields(value: Any, *, parent_key: str = "") -> tuple[Any, int]:
     """Remove fields retired with the legacy Force Greats configuration model."""
     if isinstance(value, list):

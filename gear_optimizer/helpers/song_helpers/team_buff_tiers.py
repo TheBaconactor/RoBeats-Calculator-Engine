@@ -30,7 +30,7 @@ from ...gamedata import Gear, Mini, SongMini, StatCurves, load_gears, load_minis
 from ...settings import paths
 from ...solver.timing_envelope import TimedSong
 from ...stats import total
-from .fg_payload import has_valid_fg_payload
+from .fg_payload import require_response_surface
 from .song_config import baseline_fixed_stats
 
 _SOURCE_KEYS = ("source_score", "source_fg_base_score", "source_fg_score")
@@ -115,7 +115,7 @@ def _resolve_team_colors_for_tiering(
 
 def _entry_origin_priority(entry: dict) -> tuple[int, int, int]:
     force_obj = entry.get("force")
-    has_force = 1 if isinstance(force_obj, dict) and has_valid_fg_payload(force_obj) else 0
+    has_force = 1 if force_obj is not None else 0
     return (
         has_force,
         _safe_int(entry.get("fg_score"), 0),
@@ -343,7 +343,10 @@ def _replay_entries(entries: list, song: TimedSong) -> list[_ReplayEntry]:
         gear = _flat_item_names(entry.get("gear") or [])
         minis = _representative_mini_names_from_any(entry.get("minis") or [])
         force = entry.get("force")
-        has_fg = isinstance(force, dict) and has_valid_fg_payload(force)
+        # The store writes force None for meta-only rows; an FG row without its response surface is invalid state.
+        has_fg = force is not None
+        if has_fg:
+            require_response_surface(force)
         if song.mode == "zero_ms" and secondary:
             # The zero_ms re-solve selects the song's primary for the whole batch, as the native optimizer does for
             # meta loadouts; a loadout stored with another selected element would silently diverge from native.

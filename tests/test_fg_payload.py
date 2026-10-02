@@ -1,7 +1,6 @@
 import pytest
 
 from gear_optimizer.helpers.song_helpers.fg_payload import (
-    has_valid_fg_payload,
     require_response_surface,
     strip_retired_fg_fields,
 )
@@ -20,13 +19,11 @@ SURFACE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
     ],
 )
 def test_response_surface_is_the_fg_payload_authority(payload):
-    assert has_valid_fg_payload(payload) is True
     assert list(require_response_surface(payload)) == SURFACE
 
 
 def test_config_only_payload_is_invalid():
     payload = {"ForceGreats": {"config": {"NonFever1": 1}}}
-    assert has_valid_fg_payload(payload) is False
     with pytest.raises(ValueError, match="response_surface"):
         require_response_surface(payload)
 
