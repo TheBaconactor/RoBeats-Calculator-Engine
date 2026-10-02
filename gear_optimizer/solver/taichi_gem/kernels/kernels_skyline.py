@@ -9,7 +9,6 @@ This module contains the kernels that stage and aggregate Skyline candidate popu
 
 import taichi as ti
 
-from .. import fields as gpu_fields
 
 from . import kernels_helpers
 from .kernels_helpers import GpuColorFlags
@@ -73,14 +72,10 @@ def skyline_aggregate_and_init_best_kernel(
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
-    # Platform detection for atomic operations
 
     for g in range(n_genomes):
-        if ti.static(not gpu_fields.IS_METAL):
-            kernels_helpers.chunk_best_key[g] = ti.u64(0)
-        else:
-            kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
-            kernels_helpers.chunk_best_idx[g] = -1
+        kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
+        kernels_helpers.chunk_best_idx[g] = -1
         kernels_helpers.chunk_best_results[g, 0] = 0
         kernels_helpers.chunk_best_results[g, 1] = 0
         kernels_helpers.chunk_best_results[g, 2] = 0

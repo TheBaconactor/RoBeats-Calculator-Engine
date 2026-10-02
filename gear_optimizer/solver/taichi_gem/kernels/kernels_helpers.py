@@ -45,7 +45,6 @@ _KERNEL_BLOCK_DIM = get_block_dim()
 # FT/FF combo reduction scratch (Vulkan path).
 # Must match constants in `gear_optimizer/solver/taichi_gem/fields.py`.
 GA_FTFF_REDUCE_BLOCK_DIM = 256  # MUST match fields.py GA_FTFF_REDUCE_BLOCK_DIM
-SKYLINE_FTFF_REDUCE_BLOCK_DIM = GA_FTFF_REDUCE_BLOCK_DIM
 
 # ============================================================================
 # FIELD PLACEHOLDERS (bound by fields.bind_fields() after allocation)

@@ -720,11 +720,13 @@ def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
     return pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
 
 
-def _score_packed_batch(batch: FgResponseFrontierPackedScoringBatch, scorer, owner: str) -> FgResponseFrontierOwnerResult:
-    """Score a finalized batch with `scorer` (the GPU or the CPU f64 inner gem search)."""
+def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
+    batch: FgResponseFrontierPackedScoringBatch,
+) -> FgResponseFrontierOwnerResult:
+    """Score a finalized batch with the exact native-f64 scorer (CPU cores, no GPU)."""
     if fg_batch_stage(batch) is not FgBatchStage.SURFACES_PACKED:
         raise RuntimeError(
-            f"FG response frontier {owner} owner score requires a finalized batch "
+            "FG response frontier owner score requires a finalized batch "
             "(group rows built and scoring surfaces packed before submit)"
         )
     surface_pattern_ids = batch.scoring_surface_pattern_ids
@@ -747,7 +749,7 @@ def _score_packed_batch(batch: FgResponseFrontierPackedScoringBatch, scorer, own
         or int(surface_pattern_head_coeffs.shape[1]) != 4
     ):
         raise ValueError("response frontier prepared scoring arrays have invalid shape")
-    inner_rows, _logical_surface_rows = scorer(
+    inner_rows, _logical_surface_rows = _score_response_group_meta_cpu(
         group_meta=batch.group_meta,
         group_offsets=group_offsets,
         group_lengths=group_lengths,
@@ -761,18 +763,11 @@ def _score_packed_batch(batch: FgResponseFrontierPackedScoringBatch, scorer, own
         surface_pattern_head_coeffs=surface_pattern_head_coeffs,
     )
     if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError(f"response frontier exact {owner} batch returned the wrong number of group results")
+        raise ValueError("response frontier exact batch returned the wrong number of group results")
     return FgResponseFrontierOwnerResult(
         batch=batch,
         inner_rows=np.asarray(inner_rows, dtype=np.int32),
     )
-
-
-def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
-    batch: FgResponseFrontierPackedScoringBatch,
-) -> FgResponseFrontierOwnerResult:
-    """Score a finalized batch with the exact native-f64 scorer (CPU cores, no GPU)."""
-    return _score_packed_batch(batch, _score_response_group_meta_cpu, "CPU")
 
 
 def materialize_prepared_force_greats_response_frontier_batch_results(
