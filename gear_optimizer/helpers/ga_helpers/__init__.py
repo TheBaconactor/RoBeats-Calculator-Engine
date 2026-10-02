@@ -1,9 +1,5 @@
-"""
-GA helper utilities.
-
-Production runs are GPU-native; this package only keeps the small CPU helpers that remain
-useful for pool construction and reference-only tuning logic.
-"""
+"""The GA's CPU-side helpers: a song's item pools (pool_initialization) and the exact-duplicate collapse of the GA's
+selected rows (unique_eval)."""
 
 from .pool_initialization import initialize_pools
 

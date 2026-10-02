@@ -1,9 +1,4 @@
-"""
-Helper functions for genetic algorithm pool initialization.
-
-Production runs are GPU-native; this module keeps the small CPU helpers that remain
-useful for pool construction and reference-only tuning logic.
-"""
+"""A song's GA item pools: the gear per slot and the minis that can matter for the song, pruned exactly."""
 
 from __future__ import annotations
 
