@@ -31,12 +31,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from gear_optimizer.solver.timing_envelope import (
-    build_perfect_floor_envelope_sec,
-    build_great_floor_envelope_sec,
-    build_perfect_candidate_envelope_sec,
-    build_great_candidate_envelope_sec,
-)
+from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
     build_force_greats_response_first_frontiers_gpu_batch,
 )
@@ -48,10 +43,7 @@ HEAD_LIMIT = 100
 def _build_frontier(timestamps_sec, note_types, geometry):
     """Run the production (current exact early-Great) first-frontier build. Pure CPU/numba."""
     ts = np.ascontiguousarray(np.asarray(timestamps_sec, dtype=np.float32).reshape(-1))
-    perfect_floor = build_perfect_floor_envelope_sec(ts, note_types)
-    great_floor = build_great_floor_envelope_sec(ts, note_types)
-    perfect_cand = build_perfect_candidate_envelope_sec(ts, note_types)
-    great_cand = build_great_candidate_envelope_sec(ts, note_types)
+    perfect_cand, perfect_floor, great_floor, great_cand = perfect_window_envelopes(ts, note_types)
     t0 = time.perf_counter()
     results = build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=ts,

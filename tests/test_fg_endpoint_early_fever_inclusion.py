@@ -36,10 +36,8 @@ import numpy as np
 import pytest
 
 from tests.fg_response_frontier_oracles import edge_end_oracle
-from gear_optimizer.solver.timing_envelope import (
-    build_perfect_candidate_envelope_sec,
-    build_perfect_floor_envelope_sec,
-)
+from gear_optimizer.core.time_quantize import quantize_to_int_ms
+from gear_optimizer.solver.timing_envelope import judgment_windows_ms, perfect_window_envelopes
 
 # Perfect-hit window (ms): matches the optimizer envelope (timing_envelope.py defaults)
 # and the game's mid-stat Perfect window (GearStats get_perfect_upper_lower_time).
@@ -243,11 +241,9 @@ def test_fg_edge_end_models_endpoint_early_inclusion():
     the production earliest-Perfect floor envelope — equals the server-legal max over hit
     offsets. The same floor feeds the GPU precompute and the forced-counts replay in
     lockstep, so all three FG fever-extent paths model endpoint-early inclusion exactly."""
-    from gear_optimizer.solver.timing_envelope import build_perfect_floor_envelope_sec
-
     gt = _greedy_max_fever_extent(_CHART_MS, _ACTIVATION, _RFT_MS)
     chart_sec = np.asarray(_CHART_MS, dtype=np.float32) / np.float32(1000.0)
-    perfect_floor_sec = build_perfect_floor_envelope_sec(chart_sec, None)
+    perfect_floor_sec = perfect_window_envelopes(chart_sec, np.ones(len(_CHART_MS), np.int16)).perfect_floor
     fixed = _fg_edge_fever_extent(_CHART_MS, _ACTIVATION, _RFT_MS, perfect_floor_sec)
     assert fixed == gt
 
@@ -267,15 +263,7 @@ def test_fg_edge_end_models_endpoint_early_inclusion():
 
 def _per_note_windows_ms(note_types):
     """Per-note (lo, hi) Perfect windows in ms, held-tail-aware (matches the production builder)."""
-    from gear_optimizer.solver.timing_envelope import build_per_note_perfect_window_ms
-
-    low, high = build_per_note_perfect_window_ms(
-        np.asarray(note_types, np.int16),
-        perfect_lower_ms=PERFECT_LO_MS,
-        perfect_upper_ms=PERFECT_HI_MS,
-        held_tail_type=3,
-        held_tail_time_multiplier=2,
-    )
+    low, high, _great_low, _great_high = judgment_windows_ms(np.asarray(note_types, np.int16))
     return np.asarray(low, np.int64), np.asarray(high, np.int64)
 
 
@@ -316,19 +304,11 @@ def _grouped_floor_candidate_sec(chart_sec, note_types):
     """The OLD chord-collapsed envelopes: group by TIMESTAMP only, group_low = max(per-note
     lows), group_high = min(per-note highs) -- the genuine pre-fix chord intersection (built
     here directly, independent of the production grouper, which now splits chords by window)."""
-    from gear_optimizer.solver.timing_envelope import (
-        build_per_note_perfect_window_ms,
-        floor_to_int_ms,
-    )
-
     nt = np.asarray(note_types, np.int16)
-    low, high = build_per_note_perfect_window_ms(
-        nt, perfect_lower_ms=PERFECT_LO_MS, perfect_upper_ms=PERFECT_HI_MS,
-        held_tail_type=3, held_tail_time_multiplier=2,
-    )
+    low, high, _great_low, _great_high = judgment_windows_ms(nt)
     low = np.asarray(low, np.int64)
     high = np.asarray(high, np.int64)
-    ts_ms = np.asarray(floor_to_int_ms(np.asarray(chart_sec, np.float32)), np.int64)
+    ts_ms = np.asarray(quantize_to_int_ms(np.asarray(chart_sec, np.float32)), np.int64)
     n = int(np.asarray(chart_sec).shape[0])
     starts = np.concatenate([[0], np.nonzero(ts_ms[1:] != ts_ms[:-1])[0] + 1]).astype(np.int64)
     ends = np.concatenate([starts[1:], [n]]).astype(np.int64)
@@ -375,8 +355,7 @@ def test_production_envelope_models_chord_tied_held_tail_exactly():
         assert gt == expected
         chart_sec = np.asarray(chart, np.float32) / np.float32(1000.0)
         nt = np.asarray(types, np.int16)
-        cand = build_perfect_candidate_envelope_sec(chart_sec, nt)
-        floor = build_perfect_floor_envelope_sec(chart_sec, nt)
+        cand, floor, _great_floor, _great_cand = perfect_window_envelopes(chart_sec, nt)
         e, _s, _c = edge_end_oracle(
             n=len(chart), a=int(a), activation_great=False,
             real_fever_time=float(rft) / 1000.0, use_forced_great_timing=False,

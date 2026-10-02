@@ -97,7 +97,7 @@ from typing import Sequence
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import floor_to_int_ms
+from gear_optimizer.core.time_quantize import quantize_to_int_ms
 
 # Fill in PERFECT-UNITS: a Perfect contributes 1.0, a Great half (0.5).  The bar is full at
 # ``fever_fill_denom`` perfect-units (== normalized bar 1.0, since denom == feverFillDenom).  This is
@@ -180,7 +180,7 @@ def exact_label_hit_intervals(
     ):
         raise ValueError("exact label hit-interval arrays must have one row per note")
 
-    chart_ms = np.asarray(floor_to_int_ms(chart), dtype=np.int64)
+    chart_ms = np.asarray(quantize_to_int_ms(chart), dtype=np.int64)
     fixed_timing = bool(
         np.array_equal(perfect_floor, chart)
         and np.array_equal(perfect_high, chart)

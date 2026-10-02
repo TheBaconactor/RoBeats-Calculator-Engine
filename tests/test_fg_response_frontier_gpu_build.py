@@ -16,21 +16,12 @@ def _lanes_for(timestamps):
 
 
 def _engine_envelopes(timestamps, note_types=None):
-    from gear_optimizer.solver.timing_envelope import (
-        build_great_candidate_envelope_sec,
-        build_great_floor_envelope_sec,
-        build_perfect_candidate_envelope_sec,
-        build_perfect_floor_envelope_sec,
-    )
+    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
 
     ts = np.asarray(timestamps, dtype=np.float32)
     types = np.ones(int(ts.shape[0]), dtype=np.int16) if note_types is None else note_types
-    return (
-        build_perfect_candidate_envelope_sec(ts, types),
-        build_great_candidate_envelope_sec(ts, types),
-        build_perfect_floor_envelope_sec(ts, types),
-        build_great_floor_envelope_sec(ts, types),
-    )
+    env = perfect_window_envelopes(ts, types)
+    return env.perfect_candidates, env.great_candidates, env.perfect_floor, env.great_floor
 
 
 def _bruteforce_pg_contiguous_run_first_frontier(

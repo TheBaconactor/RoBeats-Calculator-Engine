@@ -356,24 +356,20 @@ def test_t_body_witness_reorders_cross_lane_great_after_wasted_boundary():
 
 
 def test_u_held_tail_great_gap_uses_raw_window_not_prefix_max_floor():
-    from gear_optimizer.solver.timing_envelope import (
-        build_great_candidate_envelope_sec,
-        build_great_floor_envelope_sec,
-        build_perfect_candidate_envelope_sec,
-        build_perfect_floor_envelope_sec,
-    )
+    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
 
     timestamps = np.array([1.000, 1.000], dtype=np.float32)
     note_types = np.array([1, 3], dtype=np.int16)
+    envelopes = perfect_window_envelopes(timestamps, note_types)
     primary_low, primary_high, secondary_low, secondary_high = exact_label_hit_intervals(
         is_great=np.array([False, True]),
         timestamps=timestamps,
         # The global search floor is raised by the preceding normal note. It is not the held tail's
         # raw Perfect boundary and therefore cannot define the early-Great upper edge.
-        perfect_floor_timestamps=build_perfect_floor_envelope_sec(timestamps, note_types),
-        perfect_candidate_timestamps=build_perfect_candidate_envelope_sec(timestamps, note_types),
-        great_floor_timestamps=build_great_floor_envelope_sec(timestamps, note_types),
-        great_candidate_timestamps=build_great_candidate_envelope_sec(timestamps, note_types),
+        perfect_floor_timestamps=envelopes.perfect_floor,
+        perfect_candidate_timestamps=envelopes.perfect_candidates,
+        great_floor_timestamps=envelopes.great_floor,
+        great_candidate_timestamps=envelopes.great_candidates,
     )
 
     assert primary_low[1] == np.float32(811) * np.float32(0.001)

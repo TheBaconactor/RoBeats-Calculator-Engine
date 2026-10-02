@@ -441,24 +441,20 @@ def production_surfaces(
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
-    from gear_optimizer.solver.timing_envelope import (
-        build_great_candidate_envelope_sec,
-        build_great_floor_envelope_sec,
-        build_perfect_candidate_envelope_sec,
-        build_perfect_floor_envelope_sec,
-    )
+    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
 
     ts = np.asarray([t / 1000.0 for t in timestamps_ms], dtype=np.float32)
     n = int(ts.shape[0])
     nt = np.ones(n, dtype=np.int16) if note_types is None else np.asarray(note_types, dtype=np.int16)
     # The exact production envelopes (per-note, held-tail-aware, despawn-capped) -- the same
-    # builders time_song uses for the real FG build.
+    # builder time_song uses for the real FG build.
+    env = perfect_window_envelopes(ts, nt)
     frontier = build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=ts,
-        perfect_candidate_timestamps=build_perfect_candidate_envelope_sec(ts, nt),
-        great_candidate_timestamps=build_great_candidate_envelope_sec(ts, nt, great_mode="late"),
-        perfect_floor_timestamps=build_perfect_floor_envelope_sec(ts, nt),
-        great_floor_timestamps=build_great_floor_envelope_sec(ts, nt),
+        perfect_candidate_timestamps=env.perfect_candidates,
+        great_candidate_timestamps=env.great_candidates,
+        perfect_floor_timestamps=env.perfect_floor,
+        great_floor_timestamps=env.great_floor,
         lanes=np.asarray(lanes, dtype=np.int32),
         geometries=((float(denom), int(n), float(rt)),),
         use_forced_great_timing=True,

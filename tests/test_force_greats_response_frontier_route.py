@@ -11,21 +11,11 @@ from gear_optimizer.solver.force_greats_common import response_frontier_base_com
 
 
 def _engine_envelopes(timestamps):
-    from gear_optimizer.solver.timing_envelope import (
-        build_great_candidate_envelope_sec,
-        build_great_floor_envelope_sec,
-        build_perfect_candidate_envelope_sec,
-        build_perfect_floor_envelope_sec,
-    )
+    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
 
     ts = np.asarray(timestamps, dtype=np.float32)
-    note_types = np.ones(int(ts.shape[0]), dtype=np.int16)
-    return (
-        build_perfect_candidate_envelope_sec(ts, note_types),
-        build_great_candidate_envelope_sec(ts, note_types),
-        build_perfect_floor_envelope_sec(ts, note_types),
-        build_great_floor_envelope_sec(ts, note_types),
-    )
+    env = perfect_window_envelopes(ts, np.ones(int(ts.shape[0]), dtype=np.int16))
+    return env.perfect_candidates, env.great_candidates, env.perfect_floor, env.great_floor
 
 
 def _trace_row(forced_count: int) -> dict[str, object]:

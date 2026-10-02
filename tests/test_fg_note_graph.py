@@ -96,21 +96,13 @@ def _exact_force_greats_note_graph(
 
 
 def _build_options(n, non_fever_base, real_fever_time):
-    from gear_optimizer.solver.timing_envelope import (
-        build_great_candidate_envelope_sec,
-        build_great_floor_envelope_sec,
-        build_perfect_candidate_envelope_sec,
-        build_perfect_floor_envelope_sec,
-    )
+    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
 
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
     note_types = np.ones(n, dtype=np.int16)
-    perfect_candidates = build_perfect_candidate_envelope_sec(timestamps, note_types)
-    great_candidates = build_great_candidate_envelope_sec(timestamps, note_types)
-    perfect_floor = build_perfect_floor_envelope_sec(timestamps, note_types)
-    great_floor = build_great_floor_envelope_sec(timestamps, note_types)
+    perfect_candidates, perfect_floor, great_floor, great_candidates = perfect_window_envelopes(timestamps, note_types)
     raw_fever_fill = 1.0
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=raw_fever_fill,
