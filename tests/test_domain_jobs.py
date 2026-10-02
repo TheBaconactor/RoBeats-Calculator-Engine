@@ -1,128 +1,15 @@
-import pytest
+from gear_optimizer.domain.jobs import SharedRunContext, SongTask
 
-from gear_optimizer.domain.jobs import (
-    TASK_FIXED_FIELD_COUNT,
-    TaskIndex,
-    extract_repeat_context,
-    seed_plan_from_song_job,
-    task_ga_seed,
-    task_queue_label,
-    task_song_name,
-    task_tuple_from_job_context,
-    task_tuple_to_shared_context,
-    task_tuple_to_song_job,
-    task_tuple_to_view,
-)
+_CONTEXT = SharedRunContext(multi_start=4, curves=None, gears={}, minis={}, ga_depth=125)
 
 
-def _legacy_task(*extras):
-    prefix = (
-        "Data/Hard/FakeSong.txt",
-        "Fake Song (Hard) by Tester",
-        "Hard",
-        4,
-        ("ref",),
-        {"gear": object()},
-        {"mini": object()},
-        125,
-        6,
-    )
-    assert len(prefix) == TASK_FIXED_FIELD_COUNT
-    return prefix + tuple(extras)
+def test_a_repeated_song_task_is_labelled_with_its_run():
+    task = SongTask("Data/Hard/FakeSong.txt", "Fake Song (Hard) by Tester", _CONTEXT, 987, 2, 3)
+
+    assert task.label == "Fake Song (Hard) by Tester (Run 2/3)"
 
 
-def test_legacy_task_indices_match_production_tuple_prefix():
-    task = _legacy_task()
-
-    assert task[TaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
-    assert task[TaskIndex.SONG_NAME] == "Fake Song (Hard) by Tester"
-    assert task[TaskIndex.DIFFICULTY] == "Hard"
-    assert task[TaskIndex.MULTI_START] == 4
-    assert task[TaskIndex.GA_DEPTH] == 125
-    assert task[TaskIndex.PARALLEL_WORKERS] == 6
-
-
-def test_task_field_helpers_name_the_production_tuple_prefix():
-    task = _legacy_task({"extra": True})
-
-    assert task_song_name(task) == "Fake Song (Hard) by Tester"
-    assert task[TaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
-    assert task[TaskIndex.CURVES] == ("ref",)
-    assert task[TASK_FIXED_FIELD_COUNT:] == ({"extra": True},)
-
-
-def test_task_tuple_to_song_job_preserves_queue_identity_and_repeat_metadata():
-    repeat_ctx = {"repeat_index": 2, "repeat_total": 3, "ga_seed": 987}
-    job = task_tuple_to_song_job(_legacy_task(repeat_ctx))
-
-    assert job.file_path == "Data/Hard/FakeSong.txt"
-    assert job.song_name == "Fake Song (Hard) by Tester"
-    assert job.difficulty == "Hard"
-    assert job.repeat_index == 2
-    assert job.repeat_total == 3
-    assert job.ga_seed == 987
-
-
-def test_seed_plan_from_song_job_preserves_repeat_label_and_seed():
-    repeat_ctx = {"repeat_index": 2, "repeat_total": 3, "ga_seed": 987}
-    job = task_tuple_to_song_job(_legacy_task(repeat_ctx))
-    seed_plan = seed_plan_from_song_job(job)
-
-    assert seed_plan.queue_label == "Fake Song (Hard) by Tester (Run 2/3)"
-    assert seed_plan.repeat_index == 2
-    assert seed_plan.repeat_total == 3
-    assert seed_plan.ga_seed == 987
-
-
-def test_seed_plan_from_song_job_defaults_non_repeat_to_base_label():
-    seed_plan = seed_plan_from_song_job(task_tuple_to_song_job(_legacy_task()))
-
-    assert seed_plan.queue_label == "Fake Song (Hard) by Tester"
-    assert seed_plan.repeat_index == 0
-    assert seed_plan.repeat_total == 0
-    assert seed_plan.ga_seed is None
-
-
-def test_task_tuple_to_shared_context_preserves_shared_runtime_fields():
-    ctx = task_tuple_to_shared_context(_legacy_task())
-
-    assert ctx.multi_start == 4
-    assert ctx.curves == ("ref",)
-    assert set(ctx.gears) == {"gear"}
-    assert set(ctx.minis) == {"mini"}
-    assert ctx.ga_depth == 125
-    assert ctx.parallel_workers == 6
-
-
-def test_task_tuple_to_view_keeps_extras_separate_from_shared_context():
-    repeat_ctx = {"repeat_index": 1, "repeat_total": 2, "ga_seed": 123}
-    extra = {"debug": True}
-    view = task_tuple_to_view(_legacy_task(extra, repeat_ctx))
-
-    assert view.job.song_name == "Fake Song (Hard) by Tester"
-    assert view.context.ga_depth == 125
-    assert view.extras == (extra, repeat_ctx)
-
-
-def test_task_tuple_from_job_context_is_single_tuple_writer():
-    repeat_ctx = {"repeat_index": 2, "repeat_total": 3, "ga_seed": 987}
-    original = _legacy_task(repeat_ctx)
-    view = task_tuple_to_view(original)
-
-    rebuilt = task_tuple_from_job_context(view.job, view.context, *view.extras)
-
-    assert rebuilt == original
-
-
-def test_repeat_helpers_are_the_single_legacy_tuple_contract():
-    repeat_ctx = {"repeat_index": 3, "repeat_total": 4, "ga_seed": "456"}
-    task = _legacy_task({"unrelated": True}, repeat_ctx)
-
-    assert extract_repeat_context(task) is repeat_ctx
-    assert task_queue_label(task) == "Fake Song (Hard) by Tester (Run 3/4)"
-    assert task_ga_seed(task) == 456
-
-
-def test_short_legacy_tuple_is_rejected_at_the_adapter_boundary():
-    with pytest.raises(ValueError, match="9-field production prefix"):
-        task_tuple_to_song_job(("too", "short"))
+def test_a_single_run_task_is_labelled_with_the_song_name():
+    assert SongTask("x.txt", "Fake Song", _CONTEXT, 1, 1, 1).label == "Fake Song"
+    assert SongTask("x.txt", "Fake Song", _CONTEXT).label == "Fake Song"
+    assert SongTask("x.txt", "", _CONTEXT, 1, 2, 3).label == "Unknown"

@@ -3,21 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_queue_label, task_song_name
-from gear_optimizer.domain.jobs import task_tuple_from_job_context
+from gear_optimizer.domain.jobs import SharedRunContext, SongTask
 from gear_optimizer.pipeline import solve as solve_module
 from gear_optimizer.pipeline import prepare as prepare_module
 
 
-def _task(name: str) -> tuple:
-    context = SharedRunContext(multi_start=3, curves={}, gears={}, minis={}, ga_depth=1, parallel_workers=1)
-    return task_tuple_from_job_context(SongJob(file_path=f"{name}.txt", song_name=name, difficulty="Hard"), context)
+def _task(name: str) -> SongTask:
+    return SongTask(f"{name}.txt", name, SharedRunContext(multi_start=3, curves={}, gears={}, minis={}, ga_depth=1))
 
 
-def _song(task: tuple) -> SimpleNamespace:
+def _song(task: SongTask) -> SimpleNamespace:
     return SimpleNamespace(
-        config=SimpleNamespace(song_name=task_song_name(task), task_key=task_queue_label(task), fp="",
-                               db_key=task_song_name(task)),
+        config=SimpleNamespace(song_name=task.song_name, task_key=task.label, fp="", db_key=task.song_name),
         runtime=SimpleNamespace(db=SimpleNamespace(record_info=None, db_best_score=100, db_best_fg_score=90,
                                                    db_baseline_valid=True)),
     )
@@ -50,7 +47,7 @@ def test_the_queue_is_solved_and_posted_in_order_and_each_task_completes(monkeyp
 
 def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(monkeypatch):
     def prepare(task):
-        if task_song_name(task) == "Prep Fails":
+        if task.song_name == "Prep Fails":
             raise RuntimeError("bad chart")
         return _song(task)
 
@@ -89,7 +86,7 @@ def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(mon
     a_finished, c_prepared = threading.Event(), threading.Event()
 
     def prepare(task):
-        if task_song_name(task) == "C":
+        if task.song_name == "C":
             c_prepared.set()
         return _song(task)
 

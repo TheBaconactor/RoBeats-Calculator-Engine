@@ -6,7 +6,7 @@ import types
 import pytest
 
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_tuple_from_job_context
+from gear_optimizer.domain.jobs import SharedRunContext, SongTask
 from gear_optimizer.solver.gpu_executor import GpuFatalError, GpuServiceTimeoutError
 
 
@@ -23,18 +23,8 @@ def _make_minimal_app() -> GearOptimizerApp:
 
 
 def _build_tasks(*, count: int = 2):
-    context = SharedRunContext(
-        multi_start=3,
-        curves={},
-        gears={},
-        minis={},
-        ga_depth=1,
-        parallel_workers=1,
-    )
-    return [
-        task_tuple_from_job_context(SongJob(file_path=f"song-{idx}.txt", song_name=f"Song {idx}", difficulty="Hard"), context)
-        for idx in range(count)
-    ]
+    context = SharedRunContext(multi_start=3, curves={}, gears={}, minis={}, ga_depth=1)
+    return [SongTask(f"song-{idx}.txt", f"Song {idx}", context) for idx in range(count)]
 
 
 def _patch_queue(monkeypatch, run_queue) -> dict:

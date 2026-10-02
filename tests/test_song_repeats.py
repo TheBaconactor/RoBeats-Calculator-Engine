@@ -1,10 +1,5 @@
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.settings import RunSettings
-from gear_optimizer.domain.jobs import (
-    TASK_FIXED_FIELD_COUNT,
-    extract_repeat_context,
-    task_queue_label,
-)
 
 
 def _build_run(song_repeats: int) -> RunSettings:
@@ -25,14 +20,13 @@ def test_prepare_tasks_song_repeats_expands_queue():
     )
 
     assert len(tasks) == 3
-    assert all(len(t) == TASK_FIXED_FIELD_COUNT + 1 for t in tasks)
-    assert [task_queue_label(t) for t in tasks] == [
+    assert [t.label for t in tasks] == [
         "Dummy Song (Run 1/3)",
         "Dummy Song (Run 2/3)",
         "Dummy Song (Run 3/3)",
     ]
 
-    seeds = [t[TASK_FIXED_FIELD_COUNT]["ga_seed"] for t in tasks]
+    seeds = [t.ga_seed for t in tasks]
     assert len(seeds) == 3
     assert len(set(seeds)) == 3
 
@@ -51,14 +45,10 @@ def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
     )
 
     assert len(tasks) == 1
-    assert len(tasks[0]) == TASK_FIXED_FIELD_COUNT + 1
-    repeat_ctx = extract_repeat_context(tasks[0])
-    assert repeat_ctx is not None
-    assert repeat_ctx["repeat_index"] == 1
-    assert repeat_ctx["repeat_total"] == 1
-    assert isinstance(repeat_ctx["ga_seed"], int)
-    assert repeat_ctx["ga_seed"] >= 0
-    assert task_queue_label(tasks[0]) == "Dummy Song"
+    assert (tasks[0].repeat_index, tasks[0].repeat_total) == (1, 1)
+    assert isinstance(tasks[0].ga_seed, int)
+    assert tasks[0].ga_seed >= 0
+    assert tasks[0].label == "Dummy Song"
 
 
 def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypatch):
@@ -86,8 +76,8 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
         minis={},
     )
 
-    assert extract_repeat_context(first[0])["ga_seed"] == 101
-    assert extract_repeat_context(second[0])["ga_seed"] == 202
+    assert first[0].ga_seed == 101
+    assert second[0].ga_seed == 202
 
 
 def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
@@ -106,7 +96,7 @@ def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
         minis={},
     )
 
-    assert extract_repeat_context(tasks[0])["ga_seed"] == 0
+    assert tasks[0].ga_seed == 0
 
 
 def test_prepare_tasks_does_not_collapse_song_repeats():
@@ -123,7 +113,7 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
     )
 
     assert len(tasks) == 25
-    assert [task_queue_label(t) for t in tasks] == [
+    assert [t.label for t in tasks] == [
         "Dummy Song (Run 1/25)",
         "Dummy Song (Run 2/25)",
         "Dummy Song (Run 3/25)",

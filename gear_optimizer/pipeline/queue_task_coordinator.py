@@ -1,8 +1,8 @@
 """Song-queue discovery and task preparation, extracted from GearOptimizerApp.
 
 Owns the queue/task half of a run iteration: chart discovery and filtering by the
-run settings, memory-guard resume merge, queue finalization, and per-song task
-tuples (including per-repeat GA seed assignment). App state reaches this class
+run settings, memory-guard resume merge, queue finalization, and the queue's
+tasks (one per song run, each with its GA seed). App state reaches this class
 only through the injected ``stop_requested_fn()`` (cooperative stop polling during
 discovery), so the logic is unit-testable without a GPU, a DB write path, or a
 constructed GearOptimizerApp.
@@ -23,11 +23,7 @@ from gear_optimizer.core.memory import (
 )
 from gear_optimizer.store import schema
 from gear_optimizer.store.db import present_songs
-from gear_optimizer.domain.jobs import (
-    SharedRunContext,
-    SongJob,
-    task_tuple_from_job_context,
-)
+from gear_optimizer.domain.jobs import SharedRunContext, SongTask
 from gear_optimizer import settings
 from gear_optimizer.chart import read_header
 from gear_optimizer.settings import RunSettings
@@ -177,93 +173,31 @@ class QueueTaskCoordinator:
         logger.info(f"Found {len(finalized.queue)} songs to process.")
         return finalized.queue
 
-    def prepare_tasks(
-        self,
-        song_queue,
-        run: RunSettings,
-        curves,
-        gears,
-        minis,
-    ):
-        tasks = []
-        run_context = SharedRunContext(
-            multi_start=int(run.multi_start),
-            curves=curves,
-            gears=gears,
-            minis=minis,
-            ga_depth=int(run.search_depth),
-            parallel_workers=1,
+    def prepare_tasks(self, song_queue, run: RunSettings, curves, gears, minis) -> list[SongTask]:
+        """A task per song and run (SongRepeats, at most 100), each with a GA seed of its own: with GA_SEED set the
+        seed is stable per song and run, else random; no two tasks of the queue share one."""
+        context = SharedRunContext(
+            multi_start=run.multi_start, curves=curves, gears=gears, minis=minis, ga_depth=run.search_depth
         )
-
-        def _append_song_task(
-            fp,
-            found_song_name: str,
-            task_diff: str,
-            *,
-            repeat_ctx: dict | None = None,
-        ) -> None:
-            repeat_index = 0
-            repeat_total = 0
-            ga_seed = None
-            extras: list[typing.Any] = []
-            if repeat_ctx is not None:
-                repeat_index = int(repeat_ctx.get("repeat_index") or 0)
-                repeat_total = int(repeat_ctx.get("repeat_total") or 0)
-                seed_raw = repeat_ctx.get("ga_seed")
-                ga_seed = int(seed_raw) if seed_raw is not None else None
-                extras.append(repeat_ctx)
-            job = SongJob(
-                file_path=fp,
-                song_name=str(found_song_name or ""),
-                difficulty=str(task_diff or ""),
-                repeat_index=max(0, int(repeat_index)),
-                repeat_total=max(0, int(repeat_total)),
-                ga_seed=ga_seed,
-            )
-            tasks.append(task_tuple_from_job_context(job, run_context, *extras))
-
-        ga_seed = settings.ga_seed()
-        ga_seed_base = None if ga_seed is None else ga_seed & 0xFFFFFFFF
-        song_repeats = max(1, min(int(run.song_repeats), 100))
-        used_ga_seeds: set[int] = set()
-
-        def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
-            base = int(ga_seed_base or 0) & 0xFFFFFFFF
-            name_crc = int(zlib.crc32(str(song_name).encode("utf-8", errors="replace")) & 0xFFFFFFFF)
-            idx = int(repeat_index) & 0xFFFFFFFF
-            seed = (base + name_crc + (idx * 0x9E3779B1)) & 0xFFFFFFFF
-            return int(seed)
-
-        def _build_repeat_ctx(song_name: str, *, repeat_index: int, repeat_total: int) -> dict:
-            if ga_seed_base is not None:
-                ga_seed = _stable_ga_seed_for_song_repeat(str(song_name), int(repeat_index))
-                while ga_seed in used_ga_seeds:
-                    ga_seed = int((ga_seed + 1) & 0xFFFFFFFF)
-            else:
-                ga_seed = int(secrets.randbits(32))
-                while ga_seed in used_ga_seeds:
-                    ga_seed = int(secrets.randbits(32))
-            used_ga_seeds.add(int(ga_seed))
-            return {
-                "repeat_index": int(repeat_index),
-                "repeat_total": int(repeat_total),
-                "ga_seed": int(ga_seed),
-            }
-
-        for fp, found_song_name, task_diff in song_queue:
-            if song_repeats <= 1:
-                logger.info(f"[QUEUE] {found_song_name}")
-                repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
-                _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
-                continue
+        seed_base = settings.ga_seed()
+        song_repeats = max(1, min(run.song_repeats, 100))
+        used_seeds: set[int] = set()
+        tasks = []
+        for fp, song_name, _difficulty in song_queue:
             for repeat_index in range(1, song_repeats + 1):
-                repeat_ctx = _build_repeat_ctx(
-                    str(found_song_name),
-                    repeat_index=int(repeat_index),
-                    repeat_total=int(song_repeats),
-                )
-                logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{song_repeats})")
-                _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
+                if seed_base is not None:
+                    name_crc = zlib.crc32(song_name.encode("utf-8", errors="replace"))
+                    seed = ((seed_base & 0xFFFFFFFF) + name_crc + repeat_index * 0x9E3779B1) & 0xFFFFFFFF
+                    while seed in used_seeds:
+                        seed = (seed + 1) & 0xFFFFFFFF
+                else:
+                    seed = secrets.randbits(32)
+                    while seed in used_seeds:
+                        seed = secrets.randbits(32)
+                used_seeds.add(seed)
+                task = SongTask(fp, song_name, context, seed, repeat_index, song_repeats)
+                logger.info(f"[QUEUE] {task.label}")
+                tasks.append(task)
         return tasks
 
 

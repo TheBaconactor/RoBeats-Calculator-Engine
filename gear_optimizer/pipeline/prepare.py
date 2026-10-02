@@ -13,7 +13,7 @@ import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.singleflight import SingleFlight
-from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
+from gear_optimizer.domain.jobs import SongTask
 from gear_optimizer.pipeline.fg import prepare_fg_static
 from gear_optimizer.pipeline.song import (
     NativeSong,
@@ -94,18 +94,15 @@ def _catalog_digest(gears, song_minis) -> str:
     return digest.hexdigest()
 
 
-def prepare_native_song(task: tuple) -> NativeSong:
+def prepare_native_song(task: SongTask) -> NativeSong:
     from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
 
-    task_view = task_tuple_to_view(task)
-    job = task_view.job
-    seed_plan = seed_plan_from_song_job(job)
-    task_key = seed_plan.queue_label
-    ga_seed = seed_plan.ga_seed
-    run_context = task_view.context
-    fp = job.file_path
-    found_song_name = job.song_name
+    task_key = task.label
+    ga_seed = task.ga_seed
+    run_context = task.context
+    fp = task.file_path
+    found_song_name = task.song_name
     multi_start = run_context.multi_start
     curves = run_context.curves
     gears = run_context.gears

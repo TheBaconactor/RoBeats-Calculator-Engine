@@ -1,7 +1,6 @@
 import os
 import zlib
 
-from gear_optimizer.domain.jobs import TASK_FIXED_FIELD_COUNT
 from gear_optimizer.settings import RunSettings
 
 
@@ -36,15 +35,9 @@ def test_prepare_tasks_uses_deterministic_ga_seed_when_env_set(monkeypatch):
         None,
     )
 
-    # With SongRepeats=2 and 2 songs, expect 4 tasks, all with repeat_ctx.
+    # With SongRepeats=2 and 2 songs, expect 4 tasks, each with its own seed.
     assert len(tasks) == 4
-    got = {}
-    for t in tasks:
-        repeat_ctx = t[TASK_FIXED_FIELD_COUNT]
-        song_name = t[1]
-        idx = int(repeat_ctx["repeat_index"])
-        ga_seed = int(repeat_ctx["ga_seed"])
-        got[(song_name, idx)] = ga_seed
+    got = {(t.song_name, t.repeat_index): t.ga_seed for t in tasks}
 
     assert got[("Fake Song A (Hard) by Tester", 1)] == _expected_seed(base=1337, song_name="Fake Song A (Hard) by Tester", repeat_index=1)
     assert got[("Fake Song A (Hard) by Tester", 2)] == _expected_seed(base=1337, song_name="Fake Song A (Hard) by Tester", repeat_index=2)
@@ -55,7 +48,7 @@ def test_prepare_tasks_uses_deterministic_ga_seed_when_env_set(monkeypatch):
     assert len(set(got.values())) == 4
 
 
-def test_prepare_tasks_injects_repeat_ctx_when_songrepeats_1_and_env_set(monkeypatch):
+def test_prepare_tasks_seeds_a_single_run_deterministically_when_env_set(monkeypatch):
     from gear_optimizer.app import GearOptimizerApp
 
     monkeypatch.setenv("GA_SEED", "1337")
@@ -77,12 +70,8 @@ def test_prepare_tasks_injects_repeat_ctx_when_songrepeats_1_and_env_set(monkeyp
 
     assert len(tasks) == 1
     t0 = tasks[0]
-    assert len(t0) >= TASK_FIXED_FIELD_COUNT + 1
-    repeat_ctx = t0[TASK_FIXED_FIELD_COUNT]
-    assert isinstance(repeat_ctx, dict)
-    assert int(repeat_ctx["repeat_total"]) == 1
-    assert int(repeat_ctx["repeat_index"]) == 1
-    assert int(repeat_ctx["ga_seed"]) == _expected_seed(base=1337, song_name="Fake Song A (Hard) by Tester", repeat_index=1)
+    assert (t0.repeat_total, t0.repeat_index) == (1, 1)
+    assert t0.ga_seed == _expected_seed(base=1337, song_name="Fake Song A (Hard) by Tester", repeat_index=1)
 
 
 def test_prepare_tasks_rejects_invalid_debug_ga_seed(monkeypatch):

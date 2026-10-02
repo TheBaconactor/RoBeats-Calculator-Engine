@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures
+import os
 import threading
 import traceback
 from collections.abc import Callable
 from typing import Any
 
+from gear_optimizer.domain.jobs import SongTask
 from gear_optimizer.pipeline.results import SongSolve, song_solve
 
 # Slot 0 is the registry solves' (the meta gem re-solve); GA runs use 1..N-1 (song_slot_pool).
@@ -76,8 +78,8 @@ def finish_song(song: Any, ga_result: Any, progress_tracker=None) -> SongSolve:
     return song_solve(song)
 
 
-def solve_song(task: tuple, executor: Any) -> SongSolve:
-    """The SongSolve of one queue task (an app task tuple)."""
+def solve_song(task: SongTask, executor: Any) -> SongSolve:
+    """The SongSolve of one queue task."""
     from gear_optimizer.pipeline.prepare import prepare_native_song
 
     song = prepare_native_song(task)
@@ -85,7 +87,7 @@ def solve_song(task: tuple, executor: Any) -> SongSolve:
 
 
 def run_queue(
-    tasks: list[tuple],
+    tasks: list[SongTask],
     executor: Any,
     *,
     post: Callable[[Any], None],
@@ -101,7 +103,6 @@ def run_queue(
     GA in progress (its song stays pending); songs past their GA still finish. A GpuFatalError (GPU init failed, a GA
     past its watchdog) ends the run: the process cannot use its GPU any more. Any other error fails that song only."""
     from gear_optimizer.core.memory import memory_release_requested
-    from gear_optimizer.domain.jobs import task_file_path, task_queue_label, task_song_name
     from gear_optimizer.pipeline.prepare import prepare_native_song
     from gear_optimizer.pipeline.progress import (
         ProgressTracker,
@@ -123,17 +124,16 @@ def run_queue(
                 return
 
     # The finisher thread posts and completes every task, so both happen in queue order.
-    def complete(task: tuple) -> None:
-        mark_song_completed(completed_songs=completed_songs, task_key=task_queue_label(task),
-                            song_name=task_song_name(task), song_path=task_file_path(task),
-                            memory_resume_tracker=memory_resume_tracker)
+    def complete(task: SongTask) -> None:
+        mark_song_completed(completed_songs=completed_songs, task_key=task.label, song_name=task.song_name,
+                            song_path=os.path.abspath(task.file_path), memory_resume_tracker=memory_resume_tracker)
 
-    def fail(task: tuple, item: dict) -> None:
+    def fail(task: SongTask, item: dict) -> None:
         post(item)
         progress.emit_error_item_progress(progress_cb, item)
         complete(task)
 
-    def finish(task: tuple, song: Any, ga_result: Any) -> None:
+    def finish(task: SongTask, song: Any, ga_result: Any) -> None:
         try:
             post(finish_song(song, ga_result, progress))
         except Exception as exc:
@@ -142,7 +142,7 @@ def run_queue(
         progress.emit_done_song_progress(progress_cb, song)
         complete(task)
 
-    queue = [task for task in tasks if task_queue_label(task) not in completed_songs]
+    queue = [task for task in tasks if task.label not in completed_songs]
     done = threading.Event()
     if stop_requested is not None:
         threading.Thread(target=abort_on_stop, args=(done,), name="StopWatch", daemon=True).start()
@@ -163,8 +163,7 @@ def run_queue(
                     song = prepared.result()
                 except Exception as exc:
                     finisher.submit(fail, task, task_error_payload(
-                        song_name=task_song_name(task), queue_key=task_queue_label(task), exc=exc,
-                        trace=traceback.format_exc()))
+                        song_name=task.song_name, queue_key=task.label, exc=exc, trace=traceback.format_exc()))
                     continue
                 # A song's records are judged against the run's bests: the stored ones and the earlier songs'.
                 progress.seed_valid_baseline(song.config.db_key, best_score=song.runtime.db.db_best_score,
