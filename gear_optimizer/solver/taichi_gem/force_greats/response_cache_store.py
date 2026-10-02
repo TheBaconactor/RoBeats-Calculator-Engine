@@ -79,6 +79,23 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Engine rewrite r9 (frame_robust fixes: the late-Great floor envelope, the game's fever fill, the cache-key revision)
+    # changes no perfect_window or zero_ms producer output: the complete bundles of the 40-chart sample (both modes)
+    # built by this code are byte-identical, one to one, to the 806c8cda331e producer's builds (gate r5/g12), as the
+    # deployed 8aaeee788edb's are. frame_robust bundles carry FRAME_ROBUST_REVISION in their keys, so no earlier
+    # frame_robust bundle is ever served. Ratify the deployed version and its ratified predecessors (non-transitive).
+    "fg-response-frontier-visible-first-v31+logic-e9c86ce774f6": (
+        "fg-response-frontier-visible-first-v31+logic-8aaeee788edb",
+        "fg-response-frontier-visible-first-v31+logic-3cb7f7d17e0f",
+        "fg-response-frontier-visible-first-v31+logic-b59710681424",
+        "fg-response-frontier-visible-first-v31+logic-806c8cda331e",
+        "fg-response-frontier-visible-first-v31+logic-8c948e5e17d3",
+        "fg-response-frontier-visible-first-v31+logic-fc7fff0f4398",
+        "fg-response-frontier-visible-first-v31+logic-529c17599261",
+        "fg-response-frontier-visible-first-v31+logic-260f7b254d34",
+        "fg-response-frontier-visible-first-v31+logic-d73bd8aab735",
+        "fg-response-frontier-visible-first-v31+logic-60e33a1d805f",
+    ),
     # Engine rewrite r8 (sweep B, R-stage cleanups, the producer refactors, one perfect_window envelope builder, one
     # fever-time function, the frame_robust mode whose bundles have their own keys) changes no perfect_window or zero_ms
     # producer output: the complete bundles of the 40-chart sample (both modes) built by this code are byte-identical,
