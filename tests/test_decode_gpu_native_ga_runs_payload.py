@@ -113,12 +113,7 @@ def test_decode_gpu_native_ga_runs_payload_caps_raw_rows_to_fg_candidate_limit()
     _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
         registry=registry,
-        cfg_data={
-            "selected_color": "Rush",
-            "primary_color": "Rush",
-            "secondary_color": "Flow",
-            "fg_candidate_limit": int(fg_limit),
-        },
+        selected_color='Rush',
         base_stats_fixed={},
         fg_candidate_limit=int(fg_limit),
     )
@@ -166,7 +161,7 @@ def test_decode_gpu_native_ga_runs_payload_includes_header_best_candidate():
     best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
         registry=registry,
-        cfg_data={"selected_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+        selected_color='Rush',
         base_stats_fixed={},
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
@@ -208,7 +203,7 @@ def test_decode_gpu_native_ga_runs_payload_prefers_header_best_shape_on_tie():
     _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
         registry=registry,
-        cfg_data={"selected_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+        selected_color='Rush',
         base_stats_fixed={},
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
@@ -227,7 +222,7 @@ def test_decode_gpu_native_ga_runs_payload_rejects_legacy_raw_runs_payload():
         decode_gpu_native_ga_runs_payload(
             runs_payload=legacy_payload,
             registry=registry,
-            cfg_data={"selected_color": "Rush"},
+            selected_color='Rush',
             base_stats_fixed={},
             fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
         )
@@ -323,12 +318,7 @@ def test_decode_raw_pool_then_fg_prep_select_matches_canonical_selector():
     # decode_gpu_native_ga_runs_payload clamps candidate limits to at least
     # LOADOUTS_PER_SONG_LIMIT for DB/leaderboard stability.
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT) + 25
-    cfg_data = {
-        "selected_color": "Rush",
-        "primary_color": "Rush",
-        "secondary_color": "Flow",
-        "fg_candidate_limit": fg_candidate_limit,
-    }
+    selected_color = 'Rush'
 
     # Reference path: construct full stub candidates and delegate selection to the
     # canonical bounded compaction helper.
@@ -402,7 +392,7 @@ def test_decode_raw_pool_then_fg_prep_select_matches_canonical_selector():
     _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
         registry=registry,
-        cfg_data=cfg_data,
+        selected_color=selected_color,
         base_stats_fixed={},
         fg_candidate_limit=fg_candidate_limit,
     )
@@ -429,12 +419,7 @@ def test_decode_gpu_native_ga_runs_payload_rejects_candidate_score_above_header_
     mini_pool = [_mini_item(f"M{i}") for i in range(6)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
-    cfg_data = {
-        "selected_color": "Rush",
-        "primary_color": "Rush",
-        "secondary_color": "Flow",
-        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
-    }
+    selected_color = 'Rush'
 
     # Build a GPU-selected payload: 1 candidate row with a higher score than the header best.
     n_slots = 9
@@ -468,7 +453,7 @@ def test_decode_gpu_native_ga_runs_payload_rejects_candidate_score_above_header_
         decode_gpu_native_ga_runs_payload(
             runs_payload=selected_payload,
             registry=registry,
-            cfg_data=cfg_data,
+            selected_color=selected_color,
             base_stats_fixed={},
             fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
         )
@@ -480,12 +465,7 @@ def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
     mini_pool = [_mini_item(f"M{i}") for i in range(4)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
-    cfg_data = {
-        "selected_color": "Rush",
-        "primary_color": "Rush",
-        "secondary_color": "Flow",
-        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
-    }
+    selected_color = 'Rush'
 
     n_slots = 9
     width = 1 + n_slots + 7 + 7
@@ -558,7 +538,7 @@ def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
     best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
         registry=registry,
-        cfg_data=cfg_data,
+        selected_color=selected_color,
         base_stats_fixed={},
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
@@ -608,13 +588,7 @@ def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(
     ]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
-    cfg_data = {
-        "selected_color": "Rush",
-        "primary_color": "Rush",
-        "secondary_color": "Flow",
-        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
-        "fg_require_stats": True,
-    }
+    selected_color = 'Rush'
 
     n_slots = 9
     width = 1 + n_slots + 7 + 7
@@ -656,7 +630,7 @@ def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(
     best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
         registry=registry,
-        cfg_data=cfg_data,
+        selected_color=selected_color,
         base_stats_fixed={},
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )

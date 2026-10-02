@@ -157,29 +157,6 @@ def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
     monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem.fields", fake_fields_module)
 
 
-def test_run_gpu_native_ga_requires_explicit_seed():
-    from gear_optimizer.solver import genetic_pipeline as genetic
-
-    with pytest.raises(ValueError, match="explicit per-run ga_seed"):
-        genetic.run_gpu_native_ga_runs_payload_prebuilt(
-            song=make_song([0.0], name="seed-required"),
-            curves=_curves(),
-            song_slot=0,
-            item_stats=np.zeros((1, 10), dtype=np.int32),
-            slot_start=np.zeros((9,), dtype=np.int32),
-            slot_count=np.zeros((9,), dtype=np.int32),
-            base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
-        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
-        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
-            n_generations=1,
-            num_runs=1,
-            n_genomes=8,
-            color_flags={},
-            cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
-            ga_seed=None,
-        )
-
-
 def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch):
     from gear_optimizer.solver import genetic_pipeline as genetic
 
@@ -202,11 +179,6 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
         num_runs=2,
         n_genomes=8,
         color_flags={},
-        cfg_data={
-            "TotalBudget": 90,
-            "GemScaleFever": 3,
-            "fg_candidate_limit": 51,
-        },
         ga_seed=123,
     )
 
@@ -243,7 +215,6 @@ def test_gpu_native_ga_uploads_slot_timeline_and_global_static_in_request(monkey
         num_runs=1,
         n_genomes=8,
         color_flags={},
-        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
         ga_seed=123,
     )
 
@@ -275,7 +246,6 @@ def test_gpu_native_ga_batched_runs_use_indexed_seed_series(monkeypatch):
         num_runs=3,
         n_genomes=8,
         color_flags={},
-        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
         ga_seed=123,
     )
 
@@ -312,7 +282,6 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
         num_runs=1,
         n_genomes=8,
         color_flags={},
-        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
         ga_seed=123,
     )
 
@@ -344,7 +313,6 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
             num_runs=1,
             n_genomes=8,
             color_flags={},
-            cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
             ga_seed=123,
             abort_requested=lambda: fake_gpu.evaluate_calls >= 1,
     )
@@ -375,11 +343,6 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
             num_runs=3,
             n_genomes=8,
             color_flags={},
-            cfg_data={
-                "TotalBudget": 90,
-                "GemScaleFever": 3,
-                "fg_candidate_limit": 51,
-            },
             ga_seed=123,
             abort_requested=lambda: fake_gpu.evaluate_calls >= 1,
         )
@@ -418,11 +381,6 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
         num_runs=3,
         n_genomes=8,
         color_flags={},
-        cfg_data={
-            "TotalBudget": 90,
-            "GemScaleFever": 3,
-            "fg_candidate_limit": 51,
-        },
         ga_seed=123,
     )
 

@@ -171,7 +171,7 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
     inputs = SimpleNamespace(timed_song="timed song", curves="curves", item_stats=1, slot_start=2, slot_count=3,
                              base_fixed_stats_arr=4, num_runs=3, n_genomes=128, init_heuristic_topk=None,
                              init_heuristic_k=0, init_heuristic_copies=25, gens_per_run=42,
-                             color_flags={"rush": True}, cfg_data={"selected_color": "rush"}, fg_gear_name_rank=5,
+                             color_flags={"rush": True}, meta_primary_color='rush', fg_gear_name_rank=5,
                              fg_mini_sig_id=6)
     song = SimpleNamespace(gpu_inputs=inputs, config=SimpleNamespace(ga_seed=7),
                            runtime=SimpleNamespace(song_slot=0,
@@ -190,7 +190,7 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
     assert ga_calls[0]["song"] == "timed song" and ga_calls[0]["n_generations"] == 42 and ga_calls[0]["ga_seed"] == 7
     assert ga_calls[0]["abort_requested"] == abort.is_set
     assert fg_calls == [{"runs_payload": "runs payload", "fg_scoring_bundle": bundle, "song": "timed song",
-                         "curves": "curves", "cfg_data": {"selected_color": "rush"}}]
+                         "curves": "curves", "selected_color": "rush"}]
 
 
 def test_only_an_executor_abort_counts_as_a_stop_abort():

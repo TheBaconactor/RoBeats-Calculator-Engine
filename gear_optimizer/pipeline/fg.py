@@ -30,7 +30,7 @@ def prepare_ga_candidate_surface_for_fg(song: NativeSong, *, fg_candidate_limit:
     """The song's GA candidates selected for FG, with their stats, stored over the raw GPU-deduped pool decode left on
     the song: the single canonical color-folded select (the FG funnel and the persistence authority), once per song."""
     runtime, gpu_inputs = song.runtime, song.gpu_inputs
-    selected_color = gpu_inputs.cfg_data.get("selected_color", "")
+    selected_color = gpu_inputs.meta_primary_color
     selected = select_top_base_ga_candidates(
         list(runtime.decode.ga_candidates or []),
         limit=fg_candidate_limit,

@@ -34,7 +34,6 @@ class NativeSongGPUInputs:
     meta_secondary_color: str = ""
     fixed_stats: JsonDict = field(default_factory=dict)
     registry: ItemRegistry | None = None
-    cfg_data: JsonDict = field(default_factory=dict)
     color_flags: dict[str, Any] = field(default_factory=dict)
     gens_per_run: int = 0
     num_runs: int = 0

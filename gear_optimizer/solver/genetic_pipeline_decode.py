@@ -16,7 +16,7 @@ def decode_gpu_native_ga_runs_payload(
     *,
     runs_payload: "np.ndarray",
     registry: object,
-    cfg_data: dict,
+    selected_color: str,
     base_stats_fixed: dict,
     fg_candidate_limit: int,
 ) -> tuple[dict, list, list, list[dict]]:
@@ -43,7 +43,6 @@ def decode_gpu_native_ga_runs_payload(
     _, g_ft, g_ff, g_pp, g_cm, g_fm, g_ov = (int(v) for v in runs_payload[0, 2 + n_slots : 2 + n_slots + 7])
     best_genome = registry.decode_genome(best_ids)
     best_gear, best_minis = list(best_genome[:6]), list(best_genome[6:9])
-    selected_color = str(cfg_data.get("selected_color", "") or "")
     # Stats exactly as the GPU kernels see them: the song's fixed stats, plus the items, plus gems.
     best_stats = apply_gems(
         total(base_stats_fixed, *(item.stats for item in best_genome if item is not None)),

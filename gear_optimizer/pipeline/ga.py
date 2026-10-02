@@ -28,7 +28,7 @@ def ga_payload(song: NativeSong) -> dict[str, Any]:
         "init_heuristic_copies": song.gpu_inputs.init_heuristic_copies,
         "n_generations": song.gpu_inputs.gens_per_run,
         "color_flags": dict(song.gpu_inputs.color_flags),
-        "cfg_data": dict(song.gpu_inputs.cfg_data),
+        "selected_color": song.gpu_inputs.meta_primary_color,
         "ga_seed": song.config.ga_seed,
         "fg_gear_name_rank": song.gpu_inputs.fg_gear_name_rank,
         "fg_mini_sig_id": song.gpu_inputs.fg_mini_sig_id,
@@ -44,7 +44,7 @@ def decode_ga_result(song: NativeSong, ga_result: dict) -> tuple[dict, list, lis
     return decode_gpu_native_ga_runs_payload(
         runs_payload=ga_result["runs_payload"],
         registry=gpu_inputs.registry,
-        cfg_data=dict(gpu_inputs.cfg_data),
+        selected_color=gpu_inputs.meta_primary_color,
         base_stats_fixed=gpu_inputs.fixed_stats,
         fg_candidate_limit=LOADOUTS_PER_SONG_LIMIT,
     )

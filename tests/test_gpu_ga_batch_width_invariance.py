@@ -163,14 +163,7 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
     slot_start = np.asarray(gpu_arrays["slot_start"], dtype=np.int32)
     slot_count = np.asarray(gpu_arrays["slot_count"], dtype=np.int32)
 
-    cfg_data = {
-        "selected_color": _SELECTED_COLOR,
-        "primary_color": _PRIMARY_COLOR,
-        "secondary_color": _SECONDARY_COLOR,
-        "TotalBudget": 90,
-        "GemScaleFever": 3,
-        "fg_candidate_limit": 51,
-    }
+    selected_color = _SELECTED_COLOR
     base_fixed_stats_arr = build_stats_array({})
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
 
@@ -202,7 +195,6 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
             num_runs=_NUM_RUNS,
             n_genomes=_N_GENOMES,
             color_flags=color_flags,
-            cfg_data=cfg_data,
             ga_seed=_GA_SEED,
             fg_gear_name_rank=gear_name_rank,
             fg_mini_sig_id=mini_sig_id,

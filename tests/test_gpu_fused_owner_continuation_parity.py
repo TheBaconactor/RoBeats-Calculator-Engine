@@ -138,14 +138,7 @@ def real_ga_run():
     slot_count = np.asarray(gpu_arrays["slot_count"], dtype=np.int32)
 
     base_stats_fixed: dict[str, int] = {}
-    cfg_data = {
-        "selected_color": _SELECTED_COLOR,
-        "primary_color": _PRIMARY_COLOR,
-        "secondary_color": _SECONDARY_COLOR,
-        "TotalBudget": 90,
-        "GemScaleFever": 3,
-        "fg_candidate_limit": 51,
-    }
+    selected_color = _SELECTED_COLOR
     base_fixed_stats_arr = build_stats_array(base_stats_fixed)
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
 
@@ -177,7 +170,6 @@ def real_ga_run():
             num_runs=2,
             n_genomes=64,
             color_flags=color_flags,
-            cfg_data=cfg_data,
             ga_seed=20260612,
             fg_gear_name_rank=gear_name_rank,
             fg_mini_sig_id=mini_sig_id,
@@ -191,7 +183,7 @@ def real_ga_run():
     _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
         registry=registry,
-        cfg_data=cfg_data,
+        selected_color=selected_color,
         base_stats_fixed=base_stats_fixed,
         fg_candidate_limit=51,
     )

@@ -250,7 +250,6 @@ def test_prepare_fg_plan_uses_db_only_entries_for_response_frontier_route(monkey
         minis_by_name={},
         registry=None,
         fixed_stats={},
-        cfg_data={},
         curves={},
         song_slot=1,
     )
@@ -289,7 +288,6 @@ def test_prepare_fg_plan_builds_plan_without_owner_build_prefetch(monkeypatch):
         minis_by_name={},
         registry=None,
         fixed_stats={},
-        cfg_data={},
         curves={},
         song_slot=1,
     )
@@ -339,7 +337,6 @@ def test_prepare_fg_plan_canonicalizes_gpu_payload_before_response_frontier(monk
         minis_by_name={},
         registry=None,
         fixed_stats={},
-        cfg_data={"selected_color": "Rush"},
         curves={},
         song_slot=1,
     )
@@ -395,7 +392,6 @@ def test_prepare_fg_plan_processes_configured_top_base_candidate_limit(monkeypat
         minis_by_name={},
         registry=None,
         fixed_stats={},
-        cfg_data={"selected_color": "Rush"},
         curves={},
         song_slot=1,
     )
@@ -429,7 +425,6 @@ def test_prepare_fg_plan_requires_materialized_response_frontier_plan(monkeypatc
         minis_by_name={},
         registry=None,
         fixed_stats={},
-        cfg_data={},
         curves={},
     )
 

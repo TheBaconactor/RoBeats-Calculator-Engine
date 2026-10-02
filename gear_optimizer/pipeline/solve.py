@@ -41,10 +41,11 @@ def _ga_turn(payload: dict, abort_requested: Callable[[], bool]) -> dict:
 
     ga_kwargs = dict(payload)
     fg_scoring_bundle = ga_kwargs.pop("fg_scoring_bundle")
+    selected_color = ga_kwargs.pop("selected_color")
     runs_payload = run_gpu_native_ga_runs_payload_prebuilt(**ga_kwargs, abort_requested=abort_requested)
     fg_owner_score = score_fused_fg_from_selected_payload(
         runs_payload=runs_payload, fg_scoring_bundle=fg_scoring_bundle, song=ga_kwargs["song"],
-        curves=ga_kwargs["curves"], cfg_data=ga_kwargs["cfg_data"])
+        curves=ga_kwargs["curves"], selected_color=selected_color)
     return {"runs_payload": runs_payload, "fg_owner_score": fg_owner_score}
 
 

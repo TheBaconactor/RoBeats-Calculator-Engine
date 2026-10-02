@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.timing_envelope import TimedSong
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from .gpu_tuning_policy import choose_ga_batch_runs
@@ -178,7 +179,7 @@ def score_fused_fg_from_selected_payload(
     fg_scoring_bundle: object,
     song: TimedSong,
     curves: StatCurves,
-    cfg_data: dict,
+    selected_color: str,
 ) -> dict:
     """Fused GA->FG owner step: score FG straight from the selected payload (Slice 3).
 
@@ -230,16 +231,13 @@ def score_fused_fg_from_selected_payload(
         )
     base_components = np.ascontiguousarray(cand_rows[:, base_stats7_col0 : base_stats7_col0 + 7], dtype=np.int32)
 
-    total_budget = int((cfg_data or {}).get("TotalBudget", 90) or 90)
-    selected_color = str((cfg_data or {}).get("selected_color", "") or "")
-
     return score_fused_owner_base_components_on_gpu_owner(
         base_components=base_components,
         song=song,
         curves=curves,
         selected_color=selected_color,
         scoring_bundle=fg_scoring_bundle,
-        total_budget=int(total_budget),
+        total_budget=GEM_BUDGET,
     )
 
 
@@ -406,11 +404,10 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     init_heuristic_topk: "np.ndarray | None" = None,
     init_heuristic_k: int = 0,
     init_heuristic_copies: int = 25,
-    color_flags: dict | None = None,
-    cfg_data: dict | None = None,
-    ga_seed: int | None = None,
-    fg_gear_name_rank: "np.ndarray | None" = None,
-    fg_mini_sig_id: "np.ndarray | None" = None,
+    color_flags: dict,
+    ga_seed: int,
+    fg_gear_name_rank: "np.ndarray",
+    fg_mini_sig_id: "np.ndarray",
     abort_requested=None,
     on_generation=None,
 ) -> "np.ndarray":
@@ -425,19 +422,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     Important: This must be called from the Taichi/Vulkan owner thread (GpuExecutor).
     """
-    cfg_data = cfg_data or {}
-    if ga_seed is None:
-        raise ValueError("GPU-native GA requires an explicit per-run ga_seed")
-    try:
-        seed_base = int(ga_seed) & 0xFFFFFFFF
-    except Exception as exc:
-        raise ValueError("GPU-native GA requires an integer per-run ga_seed") from exc
-    if fg_gear_name_rank is None or fg_mini_sig_id is None:
-        raise ValueError(
-            "GPU-native GA requires fg_gear_name_rank/fg_mini_sig_id effective-dedup "
-            "tables for the song's color context (built at prep via "
-            "fg_effective_dedup.effective_tables_for_context)"
-        )
+    seed_base = int(ga_seed) & 0xFFFFFFFF
     num_runs, n_genomes, n_slots = int(num_runs), int(n_genomes), 9
     if num_runs <= 0 or n_genomes <= 0:
         raise ValueError(f"GPU-native GA needs runs and genomes: n_runs={num_runs}, n_genomes={n_genomes}")
@@ -489,8 +474,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     from .taichi_gem.kernels.kernels_helpers import gpu_color_flags
 
-    total_budget = int(cfg_data.get("TotalBudget", 90))
-    gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
+    total_budget, gem_scale_fever = GEM_BUDGET, STAT_GEM_GAIN_FEVER
     max_ft_gems_global, max_ff_gems_global = _compute_global_ftff_combo_caps(
         item_stats=item_stats,
         slot_start=slot_start,
@@ -502,7 +486,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     )
     scoring = dict(
         total_budget=total_budget, gem_scale_fever=gem_scale_fever, song_slot=song_slot,
-        flags=gpu_color_flags(dict(color_flags or {})),
+        flags=gpu_color_flags(dict(color_flags)),
     )
     caps = dict(max_ft_gems_global=max_ft_gems_global, max_ff_gems_global=max_ff_gems_global)
     num_islands = max(1, min(GPU_GA_NUM_ISLANDS, n_genomes // 10))  # at least 10 genomes per island

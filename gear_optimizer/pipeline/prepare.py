@@ -173,12 +173,6 @@ def prepare_native_song(task: SongTask) -> NativeSong:
             meta_secondary_color=secondary,
             fixed_stats=core.fixed_stats,
             registry=registry,
-            cfg_data={
-                "selected_color": primary,
-                "primary_color": primary,
-                "secondary_color": secondary,
-                "fg_require_stats": True,
-            },
             color_flags=build_color_flags(primary, secondary, primary),
             gens_per_run=max(1, (max(1, context.ga_depth) + num_runs - 1) // num_runs),
             num_runs=num_runs,
