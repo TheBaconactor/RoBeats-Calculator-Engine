@@ -425,10 +425,8 @@ def _first_frontier_result_from_precomputed_end_indices(
             float(real_fever_time),
             int(real_time_idx),
             1 if bool(use_forced_great_timing) else 0,
-            # Issue #44 Route A: head cone-dominance size gate, read LIVE from the module constant so
-            # the losslessness verifiers (tools/verify/validate_cone_lossless.py, measure_cone_pareto.py)
-            # can disable the prune via monkeypatch (no njit recompile) to recover the full reduce-only
-            # frontier. Production always gets the default _HEAD_FILTER_MIN_SURFACES.
+            # Head cone-dominance size gate, read at call time so tools/verify/validate_cone_lossless.py can
+            # disable the prune (no njit recompile) and compare against the full reduce-only frontier.
             int(_rb_numba._HEAD_FILTER_MIN_SURFACES),
             region_table[0],
             region_table[1],
@@ -502,7 +500,7 @@ def _first_frontier_results_for_precomputed_range(
     perfect_run_ends: np.ndarray,
     late_run_starts: np.ndarray,
     late_run_ends: np.ndarray,
-    region_tables_by_key: dict,
+    region_table: tuple,
     workspace_plan: _FirstFrontierWorkspacePlan,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
     results: list[tuple[int, FgResponseFrontierResult]] = []
@@ -510,7 +508,6 @@ def _first_frontier_results_for_precomputed_range(
     for local_idx in range(int(start), int(stop)):
         item = chunk[int(local_idx)]
         source_idx = int(item[0])
-        region_table = region_tables_by_key[(float(item[2]), int(item[1]))]
         results.append(
             (
                 source_idx,

@@ -156,7 +156,6 @@ class _ConcurrentRegionTableStats:
 
 def _reduce_first_frontier_group(
     *,
-    table_key: tuple[float, int],
     group_items: list[tuple],
     region_table: tuple,
     context: _FirstFrontierGroupContext,
@@ -201,7 +200,7 @@ def _reduce_first_frontier_group(
         "perfect_run_ends": perfect_run_ends,
         "late_run_starts": late_run_starts,
         "late_run_ends": late_run_ends,
-        "region_tables_by_key": {table_key: region_table},
+        "region_table": region_table,
         "workspace_plan": context.workspace_plan,
     }
     geometry_count = len(group_items)
@@ -229,7 +228,6 @@ def _reduce_first_frontier_group(
 
 def _reduce_prebuilt_first_frontier_group(
     *,
-    table_key: tuple[float, int],
     group_items: list[tuple],
     region_table: tuple,
     table_bytes: int,
@@ -240,7 +238,6 @@ def _reduce_prebuilt_first_frontier_group(
     reduce_t0 = time.perf_counter()
     try:
         return _reduce_first_frontier_group(
-            table_key=table_key,
             group_items=group_items,
             region_table=region_table,
             context=context,
@@ -357,7 +354,6 @@ def _schedule_parallel_groups(
 
             future = group_executor.submit(
                 _reduce_prebuilt_first_frontier_group,
-                table_key=table_key,
                 group_items=group_items,
                 region_table=region_table,
                 table_bytes=int(table_bytes),
@@ -458,7 +454,6 @@ def _schedule_parallel_built_groups(
                 table_key, group_items = group_entries[int(group_idx)]
                 reduction = reduce_executor.submit(
                     _reduce_prebuilt_first_frontier_group,
-                    table_key=table_key,
                     group_items=group_items,
                     region_table=region_table,
                     table_bytes=int(table_bytes),
@@ -516,7 +511,6 @@ def _schedule_sequential_groups(
             try:
                 results.append(
                     _reduce_first_frontier_group(
-                        table_key=table_key,
                         group_items=group_items,
                         region_table=region_table,
                         context=context,
