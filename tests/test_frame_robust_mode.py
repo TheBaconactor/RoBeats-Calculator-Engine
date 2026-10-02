@@ -169,3 +169,37 @@ def test_tier_replay_drops_only_the_loadout_whose_plan_is_unplayable(monkeypatch
         fg_stats_list=[{}, {}, {}], base_stats_list=[{}, {}, {}], song=song, curves=None, selected_color="Rush"
     )
     assert [replay["force"] for replay in replays] == [{"Score": 7}, None, {"Score": 7}]
+
+
+def _synthetic_play(extra_preactivation_ms: float | None):
+    """130 single-lane-alternating notes 100 ms apart; a late-Great activation at note 110 tied with its Perfect
+    follower 111 (another lane); fever over 110..115, the rest a margin past the end."""
+    n = 130
+    notes = []
+    for j in range(n):
+        notes.append({"note_index": j, "hit_time_ms": 1000.0 + 100.0 * j, "delta_ms": 0.0, "note_result": "Perfect",
+                      "fever": 110 <= j <= 115, "input_order": j})
+    notes[110]["note_result"] = "Great"
+    notes[110]["delta_ms"] = 100.0  # tied with note 111's press
+    lanes = np.asarray([j % 4 for j in range(n)], dtype=np.int32)
+    lanes[110], lanes[111] = 1, 2
+    if extra_preactivation_ms is not None:
+        notes[109]["delta_ms"] = 200.0 - extra_preactivation_ms  # pressed just before the tie, on lane 1 != 2
+        lanes[109] = 3
+    trace = [{"activation_index": 110, "fever_duration_ms": 450.0}]
+    return notes, trace, np.ones(n, dtype=np.int16), lanes
+
+
+def test_late_great_activation_follower_may_share_its_frame() -> None:
+    from gear_optimizer.solver.fg_response_scoring.note_graph import _require_frame_robust_play
+
+    notes, trace, note_types, lanes = _synthetic_play(None)
+    _require_frame_robust_play(notes, frontier_trace=trace, note_types=note_types, lanes=lanes)
+
+
+def test_follower_with_an_earlier_input_in_its_frame_is_order_sensitive() -> None:
+    from gear_optimizer.solver.fg_response_scoring.note_graph import UnplayableTrace, _require_frame_robust_play
+
+    notes, trace, note_types, lanes = _synthetic_play(5.0)
+    with pytest.raises(UnplayableTrace, match="order changes the score"):
+        _require_frame_robust_play(notes, frontier_trace=trace, note_types=note_types, lanes=lanes)

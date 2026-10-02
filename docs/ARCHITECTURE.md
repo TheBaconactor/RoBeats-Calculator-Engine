@@ -99,7 +99,11 @@ than reaching into kernel internals.
 - `gear_optimizer/solver/fever_timeline.py` owns Fever timeline semantics.
 - `gear_optimizer/solver/timeline_exact_frontier.py` constructs exact,
   non-dominated timing surfaces.
-- `gear_optimizer/solver/timing_envelope.py` applies the selected timing model.
+- `gear_optimizer/solver/timing_envelope.py` applies the selected timing model:
+  `perfect_window` (hits anywhere inside their judgment windows, event-time fever), `zero_ms` (every hit at chart
+  time), or `frame_robust` (claims only what holds at every frame timing: the game judges inputs at frame time and
+  its server floors event times to whole ms, so judgment bands and fever windows end `FRAME_MARGIN_MS` early and the
+  note graph keeps order-sensitive inputs a frame apart; see `judgment_bounds` and `fever_window_times`).
 
 CPU exact scoring is a production canonicalization boundary as well as a parity
 oracle. It is not a silent recovery path for failed GPU execution.

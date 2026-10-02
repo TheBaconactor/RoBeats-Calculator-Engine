@@ -141,6 +141,23 @@ def _strictly_before_cutoff_ms(cutoff_ms: float) -> float:
     return float(upper)
 
 
+def _activation_follower_gap_ms(
+    notes: Sequence[Mapping[str, Any]], note_types: np.ndarray, lanes: np.ndarray | None, a: int, y: int
+) -> float:
+    """The gap input y must keep after activation a. A late-Great activation adds the smallest fill, so any of its
+    followers on another lane completes the bar too if the frame reads it first: that follower activates instead and a
+    joins the fever, the same fevered set. Past the combo ramp the score is the same, so it needs no gap (the play check
+    also requires every earlier input to stay a frame before it)."""
+    if (
+        lanes is not None
+        and int(lanes[a]) != int(lanes[y])
+        and min(a, y) >= HEAD_NOTES
+        and notes[a].get("note_result") == "Great"
+    ):
+        return 0.0
+    return _input_gap_ms(notes, note_types, lanes, a, y)
+
+
 def _bounds_at(note_types: np.ndarray, j: int) -> tuple[tuple[float, float], ...]:
     """Note j's (Perfect, early Great, late Great) reachable planned offsets in the build's mode."""
     if int(note_types.shape[0]) <= j:
@@ -328,7 +345,7 @@ def _activation_materialized_delta_ms(
                 # follower's gap, see _input_gap_ms).
                 latest_ms = float(label_high_ms[j])
                 if robust:
-                    latest_ms -= _input_gap_ms(notes, nt, lane_arr, a, j)
+                    latest_ms -= _activation_follower_gap_ms(notes, nt, lane_arr, a, j)
                 hit_ms = min(float(hit_ms), latest_ms)
                 if float(hit_ms) < float(hit_lo_ms):
                     hit_ms = None
@@ -862,9 +879,13 @@ def _mark_activation_preemptor_order_deltas(
             previous_order_index = int(previous_order_index_by_lane.get(lane_key, a))
             required_press = float(required_press_by_lane.get(lane_key, activation_press))
             if robust:
+                # The lane's previous input, or the activation itself when j is its lane's first follower.
+                lane_gap = (_activation_follower_gap_ms if previous_order_index == a else _input_gap_ms)(
+                    notes, nt, lane_arr, previous_order_index, j
+                )
                 required_press = max(
-                    required_press + _input_gap_ms(notes, nt, lane_arr, previous_order_index, j),
-                    float(activation_press) + _input_gap_ms(notes, nt, lane_arr, a, j),
+                    required_press + lane_gap,
+                    float(activation_press) + _activation_follower_gap_ms(notes, nt, lane_arr, a, j),
                 )
             # Chart times are monotone and every legal Perfect/Great press lies within 200ms of
             # chart, so once chart_j - 200 clears every lane-local requirement nothing later can
@@ -1466,7 +1487,9 @@ def _require_frame_robust_play(
       presses (or reads a press before the release that precedes it);
     - order: the game reads one frame's inputs in a fixed lane order, so two inputs on different lanes less than
       FRAME_MARGIN_MS apart may score in either order. That changes the score when their judgments differ and one of
-      them is in the combo ramp, an activation, or the first note after a window (whose fill is wasted)."""
+      them is in the combo ramp, an activation, or the first note after a window (whose fill is wasted). A follower of
+      a late-Great activation is the exception (_activation_follower_gap_ms) when every input before the activation
+      stays a frame before it: read first, it activates in the activation's place."""
     if note_types is None or lanes is None:
         raise ValueError("note_graph: a frame_robust play is checked against chart note_types and lanes")
     nt = np.asarray(note_types).reshape(-1)
@@ -1477,7 +1500,8 @@ def _require_frame_robust_play(
     ]
     order = [int(note["input_order"]) for note in notes]
     by_order = sorted(range(len(notes)), key=order.__getitem__)
-    order_sensitive: set[int] = set()
+    activations: set[int] = set()
+    wasted: set[int] = set()
     sections = sorted(frontier_trace, key=lambda sec: order[int(sec["activation_index"])])
     for k, sec in enumerate(sections):
         a = int(sec["activation_index"])
@@ -1486,7 +1510,7 @@ def _require_frame_robust_play(
             raise ValueError(f"note_graph: frame_robust window at note {a} has no fever duration")
         end_ms = events[a] + float(duration_ms)
         stop = order[int(sections[k + 1]["activation_index"])] if k + 1 < len(sections) else len(notes)
-        order_sensitive.add(a)
+        activations.add(a)
         first_out = None
         for j in by_order:
             if not order[a] < order[j] < stop:
@@ -1505,7 +1529,7 @@ def _require_frame_robust_play(
                 if first_out is None:
                     first_out = j
         if first_out is not None:
-            order_sensitive.add(first_out)
+            wasted.add(first_out)
     previous_on_lane: dict[int, int] = {}
     for j in by_order:
         previous = previous_on_lane.get(int(lane_arr[j]))
@@ -1515,18 +1539,34 @@ def _require_frame_robust_play(
                 f"{int(lane_arr[j])}'s previous input (note {previous}), inside one frame"
             )
         previous_on_lane[int(lane_arr[j])] = j
+    def follows_great_activation(position: int, y: int) -> bool:
+        """y follows the late-Great activation at by_order[position] and every earlier input is a frame before y."""
+        a = by_order[position]
+        if a not in activations or notes[a]["note_result"] != "Great":
+            return False
+        for z in reversed(by_order[:position]):
+            if events[y] - events[z] >= FRAME_MARGIN_MS:
+                return True
+            if lane_arr[z] != lane_arr[y]:
+                return False
+        return True
+
     for position, x in enumerate(by_order):
         for y in by_order[position + 1:]:
             if events[y] - events[x] >= FRAME_MARGIN_MS:
                 break
             if lane_arr[x] == lane_arr[y] or notes[x]["note_result"] == notes[y]["note_result"]:
                 continue
-            if min(order[x], order[y]) < HEAD_NOTES or x in order_sensitive or y in order_sensitive:
-                raise UnplayableTrace(
-                    f"note_graph: frame_robust notes {x} ({notes[x]['note_result']}) and {y} "
-                    f"({notes[y]['note_result']}) are {events[y] - events[x]:.3f} ms apart on different lanes, and "
-                    "their order changes the score"
-                )
+            past_ramp_not_wasted = min(order[x], order[y]) >= HEAD_NOTES and x not in wasted and y not in wasted
+            if past_ramp_not_wasted and y not in activations and (
+                x not in activations or follows_great_activation(position, y)
+            ):
+                continue
+            raise UnplayableTrace(
+                f"note_graph: frame_robust notes {x} ({notes[x]['note_result']}) and {y} "
+                f"({notes[y]['note_result']}) are {events[y] - events[x]:.3f} ms apart on different lanes, and "
+                "their order changes the score"
+            )
 
 
 def timeline_frontier_note_graph(
