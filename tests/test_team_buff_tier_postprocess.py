@@ -100,7 +100,15 @@ def _install_synthetic_tier_resolve(monkeypatch, *, song, curves) -> None:
     primary_color = song.chart.primary
 
     real_force_payload_stats = _force_payload_stats
-    real_ensure_base = tbt._ensure_stats_include_base_effect
+
+    def real_ensure_base(stats: dict, base_effect: dict[str, int]) -> dict:
+        # Persisted stats already carry the baseline TeamBuff; add it to rows stored without it.
+        if not stats or not base_effect:
+            return stats
+        base_pp = base_effect.get("Perfect Points", 0)
+        if base_pp > 0 and stats.get("Perfect Points", 0) < base_pp:
+            return tbt._apply_stat_delta(stats, base_effect)
+        return dict(stats)
 
     # Captured by the loadout-items hook so the synthetic re-solve can recover the per-loadout
     # base/FG stat rows (the real helper would demand 6 gear + 3 mini stat-dicts).
