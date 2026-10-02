@@ -511,10 +511,7 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
         action_k,
         raw_fill,
         timestamps,
-        perfect_floor,
-        perfect_candidates,
-        great_floor,
-        great_candidates,
+        rb.HitTimes(perfect_floor, perfect_candidates, great_floor, great_candidates),
         lanes,
         hit_token_to_id,
     )
