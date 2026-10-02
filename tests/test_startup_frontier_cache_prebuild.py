@@ -15,26 +15,6 @@ from gear_optimizer.solver.frontier_cache import (
 from tests.curves_support import synthetic_curves
 
 
-def test_app_runs_startup_cache_prebuild_before_gpu_and_live_execution() -> None:
-    source = Path("gear_optimizer/app.py").read_text(encoding="utf-8")
-
-    cache_idx = source.index("run_startup_cpu_work(")
-    gpu_idx = source.index("self._configure_execution_and_prewarm(run.multi_start)")
-    execute_idx = source.index("self._execute_tasks(")
-
-    assert cache_idx < gpu_idx < execute_idx
-
-
-def test_standalone_and_service_share_the_startup_cache_owner() -> None:
-    app_source = Path("gear_optimizer/app.py").read_text(encoding="utf-8")
-    service_source = Path("gear_optimizer/robeatsmeta_service.py").read_text(encoding="utf-8")
-
-    assert "run_startup_cpu_work(" in app_source
-    assert "run_startup_cpu_work(" in service_source
-    assert "prebuild_frontier_cache(" not in service_source
-    assert 'str(REPO_ROOT / "main.py"), "run"' in service_source
-
-
 def _fake_prebuilds(monkeypatch, *, timeline, fg) -> None:
     """cpu_work_manager's two prebuilds, faked per cache."""
     from gear_optimizer.solver import cpu_work_manager

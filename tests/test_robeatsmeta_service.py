@@ -393,6 +393,7 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
         def __init__(self, cmd, **kwargs):
             env = kwargs["env"]
             captured["env"] = env
+            captured["cmd"] = cmd
             # The chart file is keyed by the job slug, but its Song Name remains the official
             # song identity. Mini Ascension song targets match against this header.
             chart = (Path(env["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) / "Hard" / "job_abc.txt").read_text("utf-8")
@@ -416,6 +417,7 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     )
 
     assert result == [entry]  # full T5 leaderboard returned verbatim for host persistence/replay
+    assert captured["cmd"] == [sys.executable, str(service.REPO_ROOT / "main.py"), "run"]  # the standalone app
     env = captured["env"]
     assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
     run_root = Path(env["EVOLUTION_DB_PATH"]).parent
