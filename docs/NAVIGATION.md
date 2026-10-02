@@ -74,7 +74,6 @@ not directly from kernel internals.
 - List maintained tools: `python -m tools list`
 - Audit the tool inventory: `python -m tools audit`
 - Run a tool by identifier: `python -m tools run <id> -- <args>`
-- Benchmarks: `tests/benchmark_*.py` (run as modules, e.g. `python -m tests.benchmark_inner_reductions`)
 - Database inspection and repair: `tools/db/`
 - Development checks: `tools/dev/`
 - Verification: `tools/verify/`

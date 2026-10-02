@@ -94,16 +94,10 @@ CPU differences are within the observed timing variation.
 These measurements do not time a full GA run. The GPU-f32 measurements
 also do not represent the production Radeon GPU-f64 path.
 
-Reproduce against the original revision:
-
-```sh
-python3 -m tests.benchmark_inner_reductions --baseline-ref 7119c0c1
-python3 -m tests.benchmark_base_inner_reductions --baseline-ref 7119c0c1
-```
-
-Both tools isolate database and frontier-cache paths in temporary
-directories. They save raw timings under `/tmp/robeats-inner-reductions-benchmark.json`
-and `/tmp/robeats-base-inner-reductions-benchmark.json`.
+The two benchmark scripts that produced these numbers
+(`tests/benchmark_inner_reductions.py`, `tests/benchmark_base_inner_reductions.py`)
+swapped revision 7119c0c1's kernels into the current modules; they are in git
+history before the kernel signatures changed.
 
 ## Deployment note
 

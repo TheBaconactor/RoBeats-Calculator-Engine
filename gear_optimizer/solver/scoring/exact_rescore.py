@@ -83,7 +83,6 @@ def score_stats_exact_with_timeline_trace(
         frontier_meta = _timeline_trace_for_payload_surface(
             payload=payload,
             pool_idx=int(pool_idx),
-            total_notes=total_notes,
             ft_idx=ft_i,
             ff_idx=ff_i,
             song=song,
@@ -200,7 +199,6 @@ def _timeline_trace_for_payload_surface(
     *,
     payload: Any,
     pool_idx: int,
-    total_notes: int,
     ft_idx: int,
     ff_idx: int,
     song: TimedSong,

@@ -233,7 +233,6 @@ def edge_surface_option_details(
         _option_with_witness(
             option,
             reachability_context=reachability_context,
-            timestamps=timestamps,
             n=int(n),
             real_fever_time=float(real_fever_time),
             perfect_floor_timestamps=perfect_floor_timestamps,

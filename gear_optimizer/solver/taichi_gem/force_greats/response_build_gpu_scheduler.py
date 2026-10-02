@@ -26,7 +26,6 @@ _REGION_TABLE_ENTRY_BYTES = 7 * np.dtype(np.int32).itemsize
 class _FirstFrontierGroupContext:
     n: int
     timestamps: np.ndarray
-    candidate_high_delta_max: float
     perfect_candidate_timestamps: np.ndarray
     great_candidate_timestamps: np.ndarray
     perfect_floor_timestamps: np.ndarray
@@ -180,7 +179,6 @@ def _reduce_first_frontier_group(
         "n": int(context.n),
         "chunk": group_items,
         "timestamps": context.timestamps,
-        "candidate_high_delta_max": context.candidate_high_delta_max,
         "perfect_candidate_timestamps": context.perfect_candidate_timestamps,
         "great_candidate_timestamps": context.great_candidate_timestamps,
         "perfect_floor_timestamps": context.perfect_floor_timestamps,
@@ -193,10 +191,6 @@ def _reduce_first_frontier_group(
         "region_hit_token_to_id": context.region_hit_token_to_id,
         "region_perfect_end_by_real_time": context.region_perfect_end_by_real_time,
         "region_great_end_by_real_time": context.region_great_end_by_real_time,
-        "timestamp_end_idx": canonical.timestamp_end_idx,
-        "perfect_end_idx": canonical.perfect_end_idx,
-        "great_end_idx": canonical.great_end_idx,
-        "great_floor_end_idx": canonical.great_floor_end_idx,
         "capped_perfect_edge_e": canonical.capped_perfect_edge_e,
         "capped_late_edge_e": canonical.capped_late_edge_e,
         "capped_eg_perfect_e": canonical.capped_eg_perfect_e,

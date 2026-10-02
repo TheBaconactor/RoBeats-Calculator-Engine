@@ -497,7 +497,6 @@ def ga_evaluate_prepared_population(
                     chunk_len = merged
         kernels.ga_find_best_combo_warmstart_kernel(
             n_genomes,
-            n_combos,
             int(offset),
             int(chunk_len),
             total_budget_i,

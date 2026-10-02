@@ -1134,7 +1134,6 @@ def _mark_endpoint_early_great_hits(
     notes: list[dict[str, Any]],
     *,
     activation_index: int,
-    fever_end_index: int,
     total_notes: int,
     fever_window_end_ms: float | None,
     note_types: Sequence[int] | np.ndarray | None,
@@ -1674,7 +1673,6 @@ def force_greats_note_graph(
             _mark_endpoint_early_great_hits(
                 notes,
                 activation_index=a,
-                fever_end_index=e,
                 total_notes=n,
                 fever_window_end_ms=fever_end_ms,
                 note_types=note_types,

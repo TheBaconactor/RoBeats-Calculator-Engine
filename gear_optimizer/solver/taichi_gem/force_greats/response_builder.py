@@ -477,7 +477,6 @@ def _latest_activation_hit_for_labels(
     hit_hi: float,
     great_start: int,
     great_count: int,
-    activation_great: bool,
     n: int,
     timestamps: np.ndarray,
     perfect_ts: np.ndarray,
@@ -545,10 +544,6 @@ def _minimal_reachable_region_great_end(
     timestamps: np.ndarray,
     perfect_ts: np.ndarray,
     great_ts: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    lane_arr: np.ndarray,
-    raw_fever_fill: float,
 ) -> tuple[int, float] | None:
     hit_hi = float(great_ts[int(a)])
     hit_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
@@ -562,7 +557,6 @@ def _minimal_reachable_region_great_end(
             hit_hi=float(hit_hi),
             great_start=int(run_start),
             great_count=int(great_end) - int(run_start),
-            activation_great=True,
             n=int(n),
             timestamps=timestamps,
             perfect_ts=perfect_ts,
@@ -881,10 +875,6 @@ def _edge_surface_options(
                         timestamps=timestamps,
                         perfect_ts=perfect_ts,
                         great_ts=great_ts,
-                        perfect_floor_timestamps=perfect_floor_timestamps,
-                        great_floor_timestamps=great_floor_timestamps,
-                        lane_arr=lane_arr,
-                        raw_fever_fill=raw_fever_fill,
                     )
                     if actual_great_end is None:
                         continue
@@ -903,7 +893,6 @@ def _edge_surface_options(
                         hit_hi=max(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
                         great_start=int(run_start),
                         great_count=int(actual_great_end_i) - int(run_start),
-                        activation_great=False,
                         n=int(n),
                         timestamps=timestamps,
                         perfect_ts=perfect_ts,
@@ -989,7 +978,6 @@ def _edge_surface_options(
                         hit_hi=max(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
                         great_start=int(run_start),
                         great_count=int(actual_great_end) - int(run_start),
-                        activation_great=False,
                         n=int(n),
                         timestamps=timestamps,
                         perfect_ts=perfect_ts,
@@ -1066,7 +1054,6 @@ def _option_with_witness(
     option: dict[str, Any],
     *,
     reachability_context: _ActivationReachabilityContext,
-    timestamps: np.ndarray,
     n: int,
     real_fever_time: float,
     perfect_floor_timestamps: np.ndarray,
@@ -1366,7 +1353,6 @@ def reconstruct_force_greats_response_trace(
             _option_with_witness(
                 option,
                 reachability_context=_reachability_context(),
-                timestamps=ts,
                 n=int(n),
                 real_fever_time=float(real_fever_time),
                 perfect_floor_timestamps=floor_ts,

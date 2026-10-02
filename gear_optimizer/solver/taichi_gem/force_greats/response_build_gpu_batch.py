@@ -189,9 +189,6 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
-    candidate_high_delta_max = float(
-        np.float32(max(0.0, float(np.max(np.maximum(perfect_ts, great_ts) - ts))) + 1.0e-6)
-    )
     if bool(use_forced_great_timing):
         region_hit_values, region_hit_token_to_id = _region_hit_value_universe(
             ts,
@@ -336,7 +333,6 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         context=_FirstFrontierGroupContext(
             n=int(n),
             timestamps=ts,
-            candidate_high_delta_max=float(candidate_high_delta_max),
             perfect_candidate_timestamps=perfect_ts,
             great_candidate_timestamps=great_ts,
             perfect_floor_timestamps=floor_ts,

@@ -207,7 +207,6 @@ def skyline_evaluate_population(
                     chunk_len = merged
         kernels.skyline_find_best_combo_warmstart_kernel(
             n_genomes,
-            n_combos,
             int(offset),
             int(chunk_len),
             total_budget_i,

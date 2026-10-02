@@ -17,7 +17,6 @@ from ..warmstart_common import solve_combo_warmstart_preloaded
 @ti.kernel
 def skyline_find_best_combo_warmstart_kernel(
     n_genomes: ti.i32,
-    n_combos: ti.i32,
     combo_offset: ti.i32,
     combo_count: ti.i32,
     total_budget: ti.i32,
