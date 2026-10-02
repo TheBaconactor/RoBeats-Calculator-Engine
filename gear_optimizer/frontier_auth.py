@@ -53,6 +53,19 @@ def _require_private_file(path: Path) -> None:
         raise PermissionError(f"credential file must not be accessible by group/other users: {path}")
 
 
+def _read_registry(path: Path) -> dict:
+    """The server's client registry, {"schema": 1, "clients": {client id: secret}} (a private file)."""
+    _require_private_file(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or int(payload.get("schema", 0) or 0) != _SCHEMA
+        or not isinstance(payload.get("clients"), dict)
+    ):
+        raise ValueError(f"invalid MetaFinder client registry: {path}")
+    return payload
+
+
 def _parse_client(client_id: object, secret: object) -> FrontierClientCredentials:
     cleaned_id = str(client_id or "").strip()
     cleaned_secret = str(secret or "").strip()
@@ -121,16 +134,12 @@ class FrontierRequestAuthenticator:
             raise FileNotFoundError(f"MetaFinder client registry is required: {self.registry_path}")
         _require_private_file(self.registry_path)
         file_stat = self.registry_path.stat()
-        identity = (int(file_stat.st_mtime_ns), int(file_stat.st_size))
+        identity = (file_stat.st_mtime_ns, file_stat.st_size)
         if identity == self._registry_identity:
             return self._clients
-        payload = json.loads(self.registry_path.read_text(encoding="utf-8"))
-        raw_clients = payload.get("clients") if isinstance(payload, dict) else None
-        if int(payload.get("schema", 0) or 0) != _SCHEMA or not isinstance(raw_clients, dict):
-            raise ValueError(f"invalid MetaFinder client registry: {self.registry_path}")
         clients = {
             credentials.client_id: credentials.secret
-            for client_id, secret in raw_clients.items()
+            for client_id, secret in _read_registry(self.registry_path)["clients"].items()
             for credentials in (_parse_client(client_id, secret),)
         }
         self._clients = clients
@@ -204,14 +213,8 @@ def issue_client(client_id: str, output: str | Path, *, registry: str | Path | N
     output_path = Path(output)
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite client credential: {output_path}")
-    if registry_path.exists():
-        _require_private_file(registry_path)
-        payload = json.loads(registry_path.read_text(encoding="utf-8"))
-    else:
-        payload = {"schema": _SCHEMA, "clients": {}}
-    clients = payload.get("clients") if isinstance(payload, dict) else None
-    if int(payload.get("schema", 0) or 0) != _SCHEMA or not isinstance(clients, dict):
-        raise ValueError(f"invalid MetaFinder client registry: {registry_path}")
+    payload = _read_registry(registry_path) if registry_path.exists() else {"schema": _SCHEMA, "clients": {}}
+    clients = payload["clients"]
     if credentials.client_id in clients:
         raise ValueError(f"MetaFinder client already exists: {credentials.client_id}")
     clients[credentials.client_id] = credentials.secret
@@ -226,12 +229,8 @@ def issue_client(client_id: str, output: str | Path, *, registry: str | Path | N
 def revoke_client(client_id: str, *, registry: str | Path | None = None) -> None:
     cleaned = _parse_client(client_id, "x" * 43).client_id
     registry_path = Path(registry) if registry is not None else server_clients_path()
-    _require_private_file(registry_path)
-    payload = json.loads(registry_path.read_text(encoding="utf-8"))
-    clients = payload.get("clients") if isinstance(payload, dict) else None
-    if int(payload.get("schema", 0) or 0) != _SCHEMA or not isinstance(clients, dict):
-        raise ValueError(f"invalid MetaFinder client registry: {registry_path}")
-    if clients.pop(cleaned, None) is None:
+    payload = _read_registry(registry_path)
+    if payload["clients"].pop(cleaned, None) is None:
         raise KeyError(f"unknown MetaFinder client: {cleaned}")
     _atomic_json(registry_path, payload)
 
