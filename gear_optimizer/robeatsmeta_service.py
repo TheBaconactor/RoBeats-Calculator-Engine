@@ -167,6 +167,17 @@ def _release_solve_slot() -> None:
         _active_solves = max(0, _active_solves - 1)
         _admission.notify_all()
 
+
+@contextlib.contextmanager
+def _solve_slot():
+    """Hold one of the pool's solve slots, admitted by the memory-headroom gate (_acquire_solve_slot)."""
+    with _SOLVE_SEMAPHORE:
+        _acquire_solve_slot()
+        try:
+            yield
+        finally:
+            _release_solve_slot()
+
 # Canonical persistent frontier caches for official charts. Custom charts override both paths with
 # their disposable per-job workspace; official solves keep the same authority as direct MetaFinder
 # runs and deployment prebuilds.
@@ -1019,16 +1030,19 @@ def _solve_persistent(
             run_root = _service_run_root()
             run_root.mkdir(parents=True, exist_ok=True)
             gear_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=f"{job}-", dir=run_root))) / "Gear"
-            shutil.copytree(GEAR_DIR, gear_dir)
-            _remove_excluded_rows(gear_dir, custom_pool)
-            _append_custom_pool_rows(gear_dir, custom_pool)
+            _copy_gear(gear_dir, custom_pool)
             payload["gearDir"] = str(gear_dir)
-        with _SOLVE_SEMAPHORE:
-            _acquire_solve_slot()
-            try:
-                return _get_persistent_solve_worker().request(payload)
-            finally:
-                _release_solve_slot()
+        with _solve_slot():
+            return _get_persistent_solve_worker().request(payload)
+
+
+def _copy_gear(gear_dir: Path, custom_pool: dict[str, list[Any]] | None) -> None:
+    """The request's own copy of the catalog's Gear dir (real files; discovery does not follow symlinks), with its
+    custom pool's exclusions and rows: the catalog Data/Gear CSVs are never touched."""
+    shutil.copytree(GEAR_DIR, gear_dir)
+    if custom_pool and any(custom_pool.values()):
+        _remove_excluded_rows(gear_dir, custom_pool)
+        _append_custom_pool_rows(gear_dir, custom_pool)
 
 
 def _solve_isolated(
@@ -1049,11 +1063,7 @@ def _solve_isolated(
         work = Path(workspace)
         data_dir = work / "Data"
         (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
-        shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
-        if custom_pool and any(custom_pool.values()):
-            # Per-request copies only — the catalog Data/Gear CSVs are never touched.
-            _remove_excluded_rows(data_dir / "Gear", custom_pool)
-            _append_custom_pool_rows(data_dir / "Gear", custom_pool)
+        _copy_gear(data_dir / "Gear", custom_pool)
         (data_dir / "Hard" / f"{job}.txt").write_text(chart, encoding="utf-8")
         # Reasoning effort scales the GA search knobs; "default" writes none (the run settings' defaults apply).
         reasoning_lines = ""
@@ -1088,37 +1098,33 @@ def _solve_isolated(
             # itself mid-job (the launchd wrapper happens to export this, but nothing else does).
             "ROBEATSMETA_OPTIMIZER_SERVICE_MODE": "1",
         }
-        with _SOLVE_SEMAPHORE:
-            _acquire_solve_slot()  # memory-headroom gate: hold here until it's safe to add a solve
+        with _solve_slot():
+            # start_new_session -> the solve gets its own process group, so on timeout we can reap
+            # the whole tree (main.py + its GPU/worker children) instead of orphaning them.
+            proc = subprocess.Popen(
+                [sys.executable, str(REPO_ROOT / "main.py"), "run"],
+                cwd=str(REPO_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
             try:
-                # start_new_session -> the solve gets its own process group, so on timeout we can reap
-                # the whole tree (main.py + its GPU/worker children) instead of orphaning them.
-                proc = subprocess.Popen(
-                    [sys.executable, str(REPO_ROOT / "main.py"), "run"],
-                    cwd=str(REPO_ROOT),
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    start_new_session=True,
-                )
-                try:
-                    out, err = proc.communicate(timeout=_SOLVE_TIMEOUT_S)
-                except subprocess.TimeoutExpired:
-                    _kill_process_group(proc)
-                    proc.communicate()
-                    raise RuntimeError(f"optimizer timed out after {_SOLVE_TIMEOUT_S}s")
-                if proc.returncode != 0:
-                    tail = " | ".join((err or out or "").strip().splitlines()[-20:])
-                    raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
-                entries = legacy.read_best_loadouts(db_path, result_song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
-                if not entries:
-                    raise RuntimeError("optimizer produced no T5 loadout")
-                if promote_to:
-                    db.promote(db_path, promote_to, result_song_name, "T5")
-                return entries
-            finally:
-                _release_solve_slot()
+                out, err = proc.communicate(timeout=_SOLVE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(proc)
+                proc.communicate()
+                raise RuntimeError(f"optimizer timed out after {_SOLVE_TIMEOUT_S}s")
+            if proc.returncode != 0:
+                tail = " | ".join((err or out or "").strip().splitlines()[-20:])
+                raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
+            entries = legacy.read_best_loadouts(db_path, result_song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
+            if not entries:
+                raise RuntimeError("optimizer produced no T5 loadout")
+            if promote_to:
+                db.promote(db_path, promote_to, result_song_name, "T5")
+            return entries
 
 
 def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
