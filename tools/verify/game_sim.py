@@ -614,6 +614,7 @@ def simulate(
     config: dict,
     frame_dt_ms: float = 1000.0 / 60.0,
     manual_fever: bool = False,
+    frame_phase_ms: float = 0.0,
 ) -> SimResult:
     """Full-pipeline sim: FRAME-integrated fever + EXACT-time input matching (game.ts semantics).
 
@@ -633,6 +634,8 @@ def simulate(
         a frame, matching the client's per-frame HeldNote/Note update).
 
     ``presses`` is the resolved physical input edge list; each is matched earliest-hittable-first.
+    ``frame_phase_ms`` (in [0, frame_dt_ms)) shifts the frame grid earlier: the frames run at
+    first_spawn - frame_phase_ms + k * frame_dt_ms. A play a player can rely on gives the same result at every phase.
     """
     stats = _statsdict_from(statsdict)
     engine = GameScoreEngine(config, stats, colors)
@@ -651,7 +654,7 @@ def simulate(
     last_ts = max(chart.timestamps_ms) if chart.timestamps_ms else 0.0
     last_press = press_times[-1] if press_times else 0.0
     end_ms = max(last_ts, last_press) + _NOTE_REMOVE_MS + 3 * frame_dt_ms
-    start_ms = min((sp for sp, _ in notes._spawn_plan), default=0.0)
+    start_ms = min((sp for sp, _ in notes._spawn_plan), default=0.0) - float(frame_phase_ms)
 
     # Continuous fever clock, advanced by frame ticks AND sub-frame right up to each input.
     fever_clock_ms = start_ms
