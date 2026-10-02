@@ -516,7 +516,8 @@ def compute_team_buff_tier_leaderboards(
                     curves=curves,
                     selected_color=primary_color,
                 )
-                scores = [int(force.get("Score") or 0) for force in forces]
+                # A loadout without an FG result (its plan is unplayable at this timing) ranks nowhere on the FG board.
+                scores = [int((force or {}).get("Score") or 0) for force in forces]
             for i, force, score in zip(fg_rows, forces, scores, strict=True):
                 fg_scores[tier][i] = score
                 if rows[i].loadout_hash:

@@ -140,3 +140,32 @@ def test_base_plans_hold_at_every_frame_timing() -> None:
     for graph in _base_plans(chart, "frame_robust", 0, 0):
         claimed = tuple(i for i, node in enumerate(graph) if node["fever"])
         assert _fever_sets_per_frame_timing(chart, graph, 0, 0) == {claimed}
+
+
+def test_tier_replay_drops_only_the_loadout_whose_plan_is_unplayable(monkeypatch) -> None:
+    """A loadout whose plan no hit timing plays gets no FG result; the rest of the batch is served."""
+    from types import SimpleNamespace
+
+    from gear_optimizer.solver.fg_response_scoring import fixed_timing, reducer
+    from gear_optimizer.solver.fg_response_scoring.note_graph import UnplayableTrace
+    from gear_optimizer.solver.scoring import exact_rescore
+
+    results = [SimpleNamespace(surface=f"surface-{i}", stats={}) for i in range(3)]
+    monkeypatch.setattr(fixed_timing, "_solve_fixed_timing_response_results", lambda *a, **k: results)
+    monkeypatch.setattr(exact_rescore, "score_base_exact_batch", lambda rows, song, curves: [1] * len(rows))
+
+    def materialize(*, result, **_kwargs):
+        if result is results[1]:
+            raise UnplayableTrace("order decided by the frame timing")
+        return {"Score": 7}
+
+    monkeypatch.setattr(reducer, "materialize_force_payload_from_response_frontier", materialize)
+    song = SimpleNamespace(chart=SimpleNamespace(name="Test Song"))
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys.fg_response_frontier_bundle_cache_key",
+        lambda song, curves: ("bundle",),
+    )
+    replays = fixed_timing.build_fixed_timing_fg_replays(
+        fg_stats_list=[{}, {}, {}], base_stats_list=[{}, {}, {}], song=song, curves=None, selected_color="Rush"
+    )
+    assert [replay["force"] for replay in replays] == [{"Score": 7}, None, {"Score": 7}]

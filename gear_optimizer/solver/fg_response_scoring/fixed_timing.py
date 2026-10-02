@@ -14,10 +14,13 @@ builder directly; the scoring package may not import taichi_gem internals (repo 
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping
 
 from gear_optimizer.solver.timing_envelope import TimedSong
 from ...gamedata import StatCurves
+
+logger = logging.getLogger(__name__)
 
 
 def _solve_fixed_timing_response_results(
@@ -126,6 +129,7 @@ def build_fixed_timing_fg_replays(
     from ...solver.scoring.exact_rescore import score_base_exact_batch
     from ..taichi_gem.force_greats.response_cache_store import release_fg_response_song_memory
     from ..taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
+    from .note_graph import UnplayableTrace
     from .reducer import FgTraceMaterializationCache, materialize_force_payload_from_response_frontier
 
     # Same key inputs as the solve's bundle loads.
@@ -153,15 +157,22 @@ def build_fixed_timing_fg_replays(
         # the reducer).
         trace_cache = FgTraceMaterializationCache()
         for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
-            force = materialize_force_payload_from_response_frontier(
-                base_stats=dict(base_stats),
-                paired_base_score=int(paired_base),
-                selected_element=str(selected_color or ""),
-                result=result,
-                song=song,
-                curves=curves,
-                trace_cache=trace_cache,
-            )
+            try:
+                force = materialize_force_payload_from_response_frontier(
+                    base_stats=dict(base_stats),
+                    paired_base_score=int(paired_base),
+                    selected_element=str(selected_color or ""),
+                    result=result,
+                    song=song,
+                    curves=curves,
+                    trace_cache=trace_cache,
+                )
+            except UnplayableTrace as exc:
+                # As the solver's materializer: a loadout whose plan no hit timing plays (zero_ms: a held tail's Great
+                # between its chord's presses; frame_robust: inputs whose order the frame timing decides) has no FG
+                # result, rather than failing the song.
+                logger.warning("%s: no FG result for a loadout, its plan is unplayable: %s", song.chart.name, exc)
+                force = None
             replays.append({"surface": result.surface, "force": force})
         return replays
     finally:
