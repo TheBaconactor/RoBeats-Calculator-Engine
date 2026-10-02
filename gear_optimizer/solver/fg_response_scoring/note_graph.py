@@ -56,6 +56,15 @@ import numpy as np
 from gear_optimizer.core.time_quantize import snap_near_int_ms
 
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
+from gear_optimizer.solver.timing_envelope import (
+    GREAT_LOWER_EXTRA_MS,
+    GREAT_UPPER_EXTRA_MS,
+    HELD_TAIL_TYPE,
+    HELD_TAIL_WINDOW_SCALE,
+    NOTE_REMOVE_LATE_CAP_MS,
+    PERFECT_LOWER_MS,
+    PERFECT_UPPER_MS,
+)
 
 __all__ = [
     "base_note_graph",
@@ -65,23 +74,8 @@ __all__ = [
     "reconcile_force_greats_note_graph",
 ]
 
-# RAW judgment early edges (ms), matching the scoring envelope (timing_envelope.py). The engine
-# judge is strict-`>` at the early edge (SPUtil.timedelta_to_result / WebPort judgeWithEdges: a band
-# is `lower < delta <= upper`), so the edge value itself is NOT in that band -- `-20` is judged
-# Great, `-95` Okay. The earliest REACHABLE hit is therefore `edge*mult + 1` ms (the +1 is applied
-# AFTER the held-tail x2, so a tail is `-40 -> -39`, not `-38`). Consumers below add the +1; the
-# constants stay the raw edges so the x2 scaling is correct. (BUG-1: keep in lockstep with
-# timing_envelope.py, else the oracle harness replays illegal hit timings.)
-_PERFECT_LOWER_MS = -20
-_PERFECT_UPPER_MS = 40
-_GREAT_UPPER_MS = 190
-_HELD_TAIL_TYPE = 3
-_HELD_TAIL_TIME_MULT = 2
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
 _TIMING_MODES = frozenset({"perfect_window", "zero_ms"})
-_EARLY_GREAT_LOWER_EXTRA_MS = -75.0
-_EARLY_GREAT_FLOOR_MS = float(_PERFECT_LOWER_MS) + float(_EARLY_GREAT_LOWER_EXTRA_MS)  # -95
-_EARLY_GREAT_ONLY_UPPER_GAP_MS = 1.0
 
 
 class UnplayableTrace(ValueError):
@@ -106,46 +100,37 @@ def _strictly_before_cutoff_ms(cutoff_ms: float) -> float:
     return float(upper)
 
 
-def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
+def _window_scale(note_types: np.ndarray, j: int) -> int:
     if int(note_types.shape[0]) <= j:
         raise ValueError(
-            "note_graph: note_types (length == total_notes) is required to display "
-            "fever-end cluster timing at the note's legal judgment bounds -- it is never guessed"
+            "note_graph: note_types (length == total_notes) is required to place a hit at the note's "
+            "legal judgment bounds -- it is never guessed"
         )
-    mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
-    # +1 after the x2: earliest REACHABLE Perfect is the exclusive edge + 1ms (-19 / tail -39).
-    return float(_PERFECT_LOWER_MS * mult + 1), float(_PERFECT_UPPER_MS * mult)
+    return HELD_TAIL_WINDOW_SCALE if int(note_types[j]) == HELD_TAIL_TYPE else 1
+
+
+# Reachable hit offsets (ms) per judgment, as timing_envelope.judgment_windows_ms: the judge's bands are
+# `lower < delta <= upper`, so the earliest reachable hit is the exclusive edge + 1 ms (after the held-tail x2).
+def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
+    scale = _window_scale(note_types, j)
+    return float(PERFECT_LOWER_MS * scale + 1), float(PERFECT_UPPER_MS * scale)
 
 
 def _early_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
-    """Return early-Great-only guidance bounds for note j (issue #68).
-
-    Great-only endpoint claw-in is a different semantic than Perfect-window claw-in:
-    a note that is fevered only via an early Great hit should be shown inside the
-    early-Great band, not collapsed to the Perfect-low line.
-    """
-    if int(note_types.shape[0]) <= j:
-        raise ValueError(
-            "note_graph: note_types (length == total_notes) is required to display "
-            "early-Great fever-end timing at judgment bounds -- it is never guessed"
-        )
-    mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
-    # +1 after the x2: earliest REACHABLE early-Great is the exclusive edge + 1ms (-94 / tail -189).
-    great_low = float(_EARLY_GREAT_FLOOR_MS * mult + 1)
-    # Great-only region ends at the latest early-Great (inclusive `-20` edge; the Perfect band opens
-    # at the exclusive `-19`), i.e. perfect_low - gap. The +1 on perfect_low provides the visible gap.
-    great_high = float((_PERFECT_LOWER_MS * mult + 1) - _EARLY_GREAT_ONLY_UPPER_GAP_MS)
-    return great_low, great_high
+    """Early-Great-only bounds for note j (issue #68): from the cumulative early-Great edge + 1 ms (-94 / tail -189)
+    to the inclusive Perfect lower edge (-20 / tail -40), which is judged Great."""
+    scale = _window_scale(note_types, j)
+    return float((PERFECT_LOWER_MS + GREAT_LOWER_EXTRA_MS) * scale + 1), float(PERFECT_LOWER_MS * scale)
 
 
 def _late_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
-    if int(note_types.shape[0]) <= j:
-        raise ValueError(
-            "note_graph: note_types (length == total_notes) is required to display "
-            "same-time forced-Great selector timing at judgment bounds -- it is never guessed"
-        )
-    mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
-    return float(_PERFECT_UPPER_MS * mult + 1), float(_GREAT_UPPER_MS * mult)
+    """Late-Great bounds for note j: past the Perfect upper edge, up to the Great edge capped at the note removal (a
+    held tail's +380 classification edge is unreachable past +200)."""
+    scale = _window_scale(note_types, j)
+    return (
+        float(PERFECT_UPPER_MS * scale + 1),
+        float(min((PERFECT_UPPER_MS + GREAT_UPPER_EXTRA_MS) * scale, NOTE_REMOVE_LATE_CAP_MS)),
+    )
 
 
 def _selector_default_delta_ms(note_types: np.ndarray, j: int, result: str, delta: Any) -> float:
@@ -605,8 +590,8 @@ def _materialize_preactivation_schedule(
         # reverse the selected fill order even though both judgments remain legal.
         ordered_latest_press = float(latest_press)
         if (
-            int(note_types[index]) == _HELD_TAIL_TYPE
-            and int(note_types[successor_index]) != _HELD_TAIL_TYPE
+            int(note_types[index]) == HELD_TAIL_TYPE
+            and int(note_types[successor_index]) != HELD_TAIL_TYPE
         ):
             ordered_latest_press = float(
                 np.nextafter(np.float64(latest_press), np.float64(-np.inf))
@@ -628,8 +613,8 @@ def _materialize_preactivation_schedule(
         successor = int(exact_order[0]) if exact_order else int(activation_index)
         boundary_upper = latest_presses[0] if exact_order else float(activation_press)
         if (
-            int(note_types[int(boundary_index)]) == _HELD_TAIL_TYPE
-            and int(note_types[successor]) != _HELD_TAIL_TYPE
+            int(note_types[int(boundary_index)]) == HELD_TAIL_TYPE
+            and int(note_types[successor]) != HELD_TAIL_TYPE
         ):
             boundary_upper = float(
                 np.nextafter(np.float64(boundary_upper), np.float64(-np.inf))
@@ -1113,13 +1098,12 @@ def _mark_endpoint_early_hits(
             prev_hit = max(prev_hit, hit + float(delta))
             continue
         # Clawed-in note: shown with the largest-cushion legal in-fever hit.
-        if nt is None or int(nt.shape[0]) <= j:
+        if nt is None:
             raise ValueError(
                 "note_graph: note_types (length == total_notes) is required to display an "
                 "endpoint-early hit at the note's legal lower bound -- it is never guessed"
             )
-        # +1 after the x2: earliest REACHABLE Perfect hit (exclusive edge + 1ms), matching BUG-1.
-        legal_low = _PERFECT_LOWER_MS * (_HELD_TAIL_TIME_MULT if int(nt[j]) == _HELD_TAIL_TYPE else 1) + 1
+        legal_low, _legal_high = _perfect_bounds_ms_at(nt, j)
         legal_low_hit = hit + float(legal_low)
         lo_hit = max(legal_low_hit, prev_hit)
         if lo_hit >= upper_hit:
@@ -1270,7 +1254,7 @@ def _mark_fever_end_cluster_safe_delta(
         return
     strict_cutoff = _strictly_before_cutoff_ms(cutoff)
     fever_upper_witness = strict_cutoff - hit
-    if fever_upper_witness >= _PERFECT_UPPER_MS:
+    if fever_upper_witness >= PERFECT_UPPER_MS:
         return
     witness_result = str(witness.get("note_result", "Perfect"))
     if witness_result != "Perfect":
