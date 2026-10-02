@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import numpy as np
 
 from .fill_crossing import late_great_activation_prefix, perfect_crossing_is_region3
-from .response_builder import _action_table
+from .response_builder import _action_table, _song_arrays
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_region_groups,
@@ -118,7 +119,33 @@ def _compact_first_frontier_action_arrays(
     )
 
 
-def _build_force_greats_response_first_frontiers_gpu_batch(
+_DEGENERATE_STATS_KEYS = (
+    "end_table_precomputes", "executor_creations", "workspace_allocations", "workspace_bytes", "region_tables_built",
+    "region_table_peak_live", "region_table_peak_live_bytes", "region_table_parallel_peak_bound_bytes",
+    "region_table_legacy_single_peak_bound_bytes", "region_table_groups", "geometries_canonical", "pair_mod_bound",
+)
+
+
+def _prepared_geometries(geometry_rows: tuple, use_forced_great_timing: bool) -> list[tuple]:
+    """(source index, non-Fever base, raw fill, fever time, the seven compact action arrays) per geometry; the action
+    arrays are shared between geometries with the same (raw fill, non-Fever base)."""
+    prepared = []
+    action_table_cache: dict[tuple[float, int], tuple[np.ndarray, ...]] = {}
+    for idx, (raw_fever_fill, non_fever_base, real_fever_time) in enumerate(geometry_rows):
+        key = (float(raw_fever_fill), max(0, int(non_fever_base)))
+        action_arrays = action_table_cache.get(key)
+        if action_arrays is None:
+            action_arrays = action_table_cache[key] = _compact_first_frontier_action_arrays(
+                *_action_table(
+                    raw_fever_fill=key[0], non_fever_base=key[1], use_forced_great_timing=bool(use_forced_great_timing)
+                ),
+                key[0],
+            )
+        prepared.append((idx, key[1], key[0], float(real_fever_time), *action_arrays))
+    return prepared
+
+
+def build_force_greats_response_first_frontiers_gpu_batch(
     *,
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
@@ -130,137 +157,49 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     use_forced_great_timing: bool = True,
     stats_sink: dict[str, Any] | None = None,
 ) -> tuple[FgResponseFrontierResult, ...]:
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
-    n = int(ts.shape[0])
+    """Build the exact FG first frontier for every geometry of ONE song, in one call.
+
+    Song-invariant work (chart array coercion, prefix activation-hit tables, end-index tables for
+    every unique real_fever_time, global geometry canonicalization, the reducer executor and its
+    per-thread right-sized stamp workspaces) happens exactly once. Per-key region core tables build
+    serially and their independent reductions overlap only when the sum of their producer-owned
+    build-peak bounds fits the historical exhaustive one-table allocation. Returns frontiers
+    aligned to the input geometry order.
+    ``stats_sink``, when given, is filled with orchestration counters (telemetry only).
+    """
     geometry_rows = tuple(geometries or ())
+    n = int(np.asarray(timestamps).reshape(-1).shape[0])
     if stats_sink is not None:
         # Baseline for the degenerate early returns below; the main path overwrites every key.
+        stats_sink.update(dict.fromkeys(_DEGENERATE_STATS_KEYS, 0))
         stats_sink.update(
-            {
-                "end_table_precomputes": 0,
-                "executor_creations": 0,
-                "workspace_allocations": 0,
-                "workspace_bytes": 0,
-                "region_tables_built": 0,
-                "region_table_peak_live": 0,
-                "region_table_peak_live_bytes": 0,
-                "region_table_parallelism": 1,
-                "region_table_parallel_peak_bound_bytes": 0,
-                "region_table_legacy_single_peak_bound_bytes": 0,
-                "region_table_build_work_ms": 0.0,
-                "region_group_reduce_work_ms": 0.0,
-                "region_table_groups": 0,
-                "geometries_in": int(len(geometry_rows)),
-                "geometries_canonical": 0,
-                "pair_mod_bound": 0,
-            }
+            region_table_parallelism=1,
+            region_table_build_work_ms=0.0,
+            region_group_reduce_work_ms=0.0,
+            geometries_in=int(len(geometry_rows)),
         )
     if not geometry_rows:
         return ()
     if n <= 0:
         return tuple(FgResponseFrontierResult((_EMPTY_SURFACE,), {}, 0, 0, 0, 0, 1, 1, 0, 0.0) for _ in geometry_rows)
-    if bool(np.any(ts[1:] < ts[:-1])):
-        raise ValueError("timestamps must be sorted in nondecreasing order")
-    if perfect_candidate_timestamps is None:
-        perfect_ts = ts
-    else:
-        perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
-        if int(perfect_ts.shape[0]) != n:
-            raise ValueError("perfect_candidate_timestamps length must match timestamps")
-    if great_candidate_timestamps is None:
-        great_ts = ts
-    else:
-        great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
-        if int(great_ts.shape[0]) != n:
-            raise ValueError("great_candidate_timestamps length must match timestamps")
-    # perfect_floor (issue #42 fever-boundary basis) is REQUIRED: no chart fallback, since
-    # silently searching chart would under-count endpoint-early fever -- a wrong best_fg_score.
-    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(floor_ts.shape[0]) != n:
-        raise ValueError("perfect_floor_timestamps length must match timestamps")
-    # great_floor (issue #44 greats-side fever-boundary basis) is REQUIRED for the same fail-loud
-    # reason as perfect_floor: searching only the Perfect floor would miss the early-Great
-    # boundary surfaces -> an under-counted best_fg_score.
-    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(great_floor_ts.shape[0]) != n:
-        raise ValueError("great_floor_timestamps length must match timestamps")
-    if lanes is None:
-        raise ValueError("lanes are required for input-engine-aware FG response build")
-    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
-    if int(lane_arr.shape[0]) != n:
-        raise ValueError("lanes length must match timestamps")
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, lane_arr = _song_arrays(
+        timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
+        great_floor_timestamps, lanes,
+    )
     if bool(use_forced_great_timing):
-        region_hit_values, region_hit_token_to_id = _region_hit_value_universe(
-            ts,
-            perfect_ts,
-            great_ts,
-        )
+        region_hit_values, region_hit_token_to_id = _region_hit_value_universe(ts, perfect_ts, great_ts)
     else:
         region_hit_values = np.empty(0, dtype=np.float64)
         region_hit_token_to_id = np.empty(0, dtype=np.int32)
     prefix_perfect_hit, prefix_perfect_valid, prefix_late_hit, prefix_late_valid = (
-        _rb_numba._numba_build_prefix_activation_hit_tables(
-            int(n),
-            ts,
-            perfect_ts,
-            great_ts,
-        )
+        _rb_numba._numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts)
     )
-
-    prepared = []
-    action_table_cache: dict[
-        tuple[float, int, bool],
-        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    ] = {}
-    for idx, row in enumerate(geometry_rows):
-        raw_fever_fill, non_fever_base, real_fever_time = row
-        action_key = (float(raw_fever_fill), max(0, int(non_fever_base)), bool(use_forced_great_timing))
-        action_arrays = action_table_cache.get(action_key)
-        if action_arrays is None:
-            actions, later_fill, first_fill, later_forced, first_forced = _action_table(
-                raw_fever_fill=float(raw_fever_fill),
-                non_fever_base=max(0, int(non_fever_base)),
-                use_forced_great_timing=bool(use_forced_great_timing),
-            )
-            action_arrays = _compact_first_frontier_action_arrays(
-                actions,
-                later_fill,
-                first_fill,
-                later_forced,
-                first_forced,
-                float(raw_fever_fill),
-            )
-            action_table_cache[action_key] = action_arrays
-        (
-            action_k_arr,
-            later_fill_arr,
-            first_fill_arr,
-            later_forced_arr,
-            first_forced_arr,
-            later_activation_forced_arr,
-            first_activation_forced_arr,
-        ) = action_arrays
-        prepared.append(
-            (
-                idx,
-                max(0, int(non_fever_base)),
-                float(raw_fever_fill),
-                float(real_fever_time),
-                action_k_arr,
-                later_fill_arr,
-                first_fill_arr,
-                later_forced_arr,
-                first_forced_arr,
-                later_activation_forced_arr,
-                first_activation_forced_arr,
-            )
-        )
+    prepared = _prepared_geometries(geometry_rows, bool(use_forced_great_timing))
 
     out: list[FgResponseFrontierResult | None] = [None] * len(geometry_rows)
     # ONE end-index precompute per song build: the canonicalization covers every unique
     # real_fever_time of the whole request, so the streamed region-table groups below never
     # rebuild end tables (pre-song-context, each per-group call re-derived its rt subset).
-    end_table_precomputes = 1
     canonical = _canonicalize_first_only_prepared_items_with_end_indices(
         prepared=prepared,
         timestamps=ts,
@@ -274,25 +213,12 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     )
     prepared = canonical.prepared
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
-    region_perfect_end_by_real_time, region_great_end_by_real_time = (
-        _region_hit_end_index_tables(
-            region_hit_values,
-            canonical.unique_real_times,
-            floor_ts,
-            great_floor_ts,
-        )
+    region_perfect_end_by_real_time, region_great_end_by_real_time = _region_hit_end_index_tables(
+        region_hit_values, canonical.unique_real_times, floor_ts, great_floor_ts
     )
 
-    # Region-core-table grouping (song-context orchestration): the region-run core work depends
-    # on the geometry only through (raw_fever_fill, non_fever_base), never real_fever_time, so it
-    # is computed ONCE per key and shared read-only across every rt variant of that key. The
-    # producer-owned candidate bounds below admit as many independent reductions as fit within the
-    # historical exhaustive one-live-table allocation. The coordinator builds tables serially to
-    # avoid temporary-allocation contention, then pipelines their reductions through that strict
-    # width. This uses the RAM eliminated by exact capacity without exceeding the safe envelope.
-    # Entry order replicates the per-geometry enumeration exactly (bit-exact stream for the
-    # order-sensitive consumers). Without forced-great timing the region family is never
-    # enumerated, so every key shares one contentless table.
+    # The region-run core table depends on a geometry only through (raw fill, non-Fever base), so each key's table is
+    # built once and shared by its fever-time variants (scheduling and memory admission: the scheduler module).
     grouped_items = _first_only_region_groups(prepared)
 
     # Song-level per-thread workspace plan: every geometry's pair radix is bounded up front
@@ -315,18 +241,10 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     )
     _admit_first_frontier_workspace(workspace_plan, worker_count=workspace_workers)
 
-    empty_region_table: tuple | None = None
-    if not bool(use_forced_great_timing):
-        empty_region_table = (
-            np.zeros(int(n) + 2, dtype=np.int64),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-        )
+    # Without forced-Great timing every region key shares one contentless table.
+    empty_region_table = None if bool(use_forced_great_timing) else (
+        np.zeros(int(n) + 2, dtype=np.int64), *(np.empty(0, dtype=np.int32) for _ in range(7))
+    )
 
     group_results, schedule_stats = _schedule_first_frontier_region_groups(
         grouped_items=grouped_items,
@@ -358,70 +276,21 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
 
     if stats_sink is not None:
         stats_sink.update(
-            {
-                "end_table_precomputes": int(end_table_precomputes),
-                "region_hit_values": int(region_hit_values.shape[0]),
-                "region_hit_endpoint_bytes": int(
-                    region_perfect_end_by_real_time.nbytes
-                    + region_great_end_by_real_time.nbytes
-                ),
-                "executor_creations": int(schedule_stats.executor_creations),
-                "workspace_allocations": int(workspace_plan.allocations),
-                "workspace_bytes": int(workspace_plan.allocated_bytes),
-                "region_tables_built": int(schedule_stats.region_tables_built),
-                "region_table_peak_live": int(schedule_stats.region_table_peak_live),
-                "region_table_peak_live_bytes": int(schedule_stats.region_table_peak_live_bytes),
-                "region_table_parallelism": int(schedule_stats.region_table_parallelism),
-                "region_table_parallel_peak_bound_bytes": int(
-                    schedule_stats.region_table_parallel_peak_bound_bytes
-                ),
-                "region_table_legacy_single_peak_bound_bytes": int(
-                    schedule_stats.region_table_legacy_single_peak_bound_bytes
-                ),
-                "region_table_build_work_ms": float(schedule_stats.region_table_build_work_ms),
-                "region_group_reduce_work_ms": float(schedule_stats.region_group_reduce_work_ms),
-                "region_table_groups": int(len(grouped_items)),
-                "geometries_in": int(len(geometry_rows)),
-                "geometries_canonical": int(len(prepared)),
-                "pair_mod_bound": int(workspace_plan.pair_mod_bound),
-            }
+            dataclasses.asdict(schedule_stats),
+            end_table_precomputes=1,
+            region_hit_values=int(region_hit_values.shape[0]),
+            region_hit_endpoint_bytes=int(
+                region_perfect_end_by_real_time.nbytes + region_great_end_by_real_time.nbytes
+            ),
+            workspace_allocations=int(workspace_plan.allocations),
+            workspace_bytes=int(workspace_plan.allocated_bytes),
+            region_table_groups=int(len(grouped_items)),
+            geometries_in=int(len(geometry_rows)),
+            geometries_canonical=int(len(prepared)),
+            pair_mod_bound=int(workspace_plan.pair_mod_bound),
         )
 
     missing = [idx for idx, frontier in enumerate(out) if frontier is None]
     if missing:
         raise ValueError(f"FG response frontier GPU batch missed geometry indices: {missing[:8]}")
     return tuple(frontier for frontier in out if frontier is not None)
-
-def build_force_greats_response_first_frontiers_gpu_batch(
-    *,
-    timestamps: Any,
-    perfect_candidate_timestamps: Any | None = None,
-    great_candidate_timestamps: Any | None = None,
-    perfect_floor_timestamps: Any,
-    great_floor_timestamps: Any,
-    geometries: Any,
-    lanes: Any | None = None,
-    use_forced_great_timing: bool = True,
-    stats_sink: dict[str, Any] | None = None,
-) -> tuple[FgResponseFrontierResult, ...]:
-    """Build the exact FG first frontier for every geometry of ONE song, in one call.
-
-    Song-invariant work (chart array coercion, prefix activation-hit tables, end-index tables for
-    every unique real_fever_time, global geometry canonicalization, the reducer executor and its
-    per-thread right-sized stamp workspaces) happens exactly once. Per-key region core tables build
-    serially and their independent reductions overlap only when the sum of their producer-owned
-    build-peak bounds fits the historical exhaustive one-table allocation. Returns frontiers
-    aligned to the input geometry order.
-    ``stats_sink``, when given, is filled with orchestration counters (telemetry only).
-    """
-    return _build_force_greats_response_first_frontiers_gpu_batch(
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidate_timestamps,
-        great_candidate_timestamps=great_candidate_timestamps,
-        perfect_floor_timestamps=perfect_floor_timestamps,
-        great_floor_timestamps=great_floor_timestamps,
-        geometries=geometries,
-        lanes=lanes,
-        use_forced_great_timing=bool(use_forced_great_timing),
-        stats_sink=stats_sink,
-    )

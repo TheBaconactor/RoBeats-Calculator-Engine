@@ -37,7 +37,7 @@ def build_kernel_args(
     """Return the full argument bundle for the first-frontier kernel.
 
     Reuses the production action-table + compaction + end-index precompute so the
-    arrays are bit-identical to what ``_build_force_greats_response_first_frontiers_gpu_batch``
+    arrays are bit-identical to what ``build_force_greats_response_first_frontiers_gpu_batch``
     feeds the Numba kernel for one geometry.
     """
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))

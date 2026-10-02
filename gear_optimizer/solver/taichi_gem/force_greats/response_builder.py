@@ -132,6 +132,44 @@ def _build_activation_reachability_context(
     )
 
 
+def _song_arrays(
+    timestamps: Any,
+    perfect_candidate_timestamps: Any | None,
+    great_candidate_timestamps: Any | None,
+    perfect_floor_timestamps: Any,
+    great_floor_timestamps: Any,
+    lanes: Any | None,
+) -> tuple[np.ndarray, ...]:
+    """Coerce and check one song's per-note arrays (candidates default to the chart timestamps)."""
+    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
+    n = int(ts.shape[0])
+    if bool(np.any(ts[1:] < ts[:-1])):
+        raise ValueError("timestamps must be sorted in nondecreasing order")
+
+    def _f32(values: Any, name: str) -> np.ndarray:
+        arr = np.ascontiguousarray(np.asarray(values, dtype=np.float32).reshape(-1))
+        if int(arr.shape[0]) != n:
+            raise ValueError(f"{name} length must match timestamps")
+        return arr
+
+    perfect_ts, great_ts = (
+        ts if values is None else _f32(values, name)
+        for values, name in (
+            (perfect_candidate_timestamps, "perfect_candidate_timestamps"),
+            (great_candidate_timestamps, "great_candidate_timestamps"),
+        )
+    )
+    # Both floors are REQUIRED (issues #42/#44): searching chart instead would under-count endpoint-early fever.
+    floor_ts = _f32(perfect_floor_timestamps, "perfect_floor_timestamps")
+    great_floor_ts = _f32(great_floor_timestamps, "great_floor_timestamps")
+    if lanes is None:
+        raise ValueError("lanes are required for input-engine-aware FG response build")
+    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
+    if int(lane_arr.shape[0]) != n:
+        raise ValueError("lanes length must match timestamps")
+    return ts, perfect_ts, great_ts, floor_ts, great_floor_ts, lane_arr
+
+
 def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
     actions: list[int] = []
     later_fill: list[int] = []
@@ -592,6 +630,27 @@ def _great_floor_end(
     return int(ee)
 
 
+def _section_option(
+    *, k: int, judgment: str, forced: dict[str, int], surface: Any, witness: dict[str, Any], timestamps: np.ndarray,
+    n: int,
+) -> dict[str, Any]:
+    """One candidate fever section: activation `witness["activation_idx"]`, end `witness["target_end"]`."""
+    a = int(witness["activation_idx"])
+    e = int(witness["target_end"])
+    return {
+        "k": int(k),
+        "next_state": e,
+        "activation_index": a,
+        "activation_ms": float(witness["chart_time"]) * 1000.0,
+        "activation_judgment": judgment,
+        **forced,
+        "fever_end_index": e,
+        "fever_end_ms": None if e >= int(n) else float(timestamps[e]) * 1000.0,
+        "surface": surface,
+        "_witness": witness,
+    }
+
+
 def _edge_surface_options(
     *,
     reachability_context: _ActivationReachabilityContext,
@@ -741,28 +800,18 @@ def _edge_surface_options(
         carry_idx = -1
         if perfect_reachable and (fill != prev_fill or (start_time != prev_start_time and e != prev_e)):
             great_end = min(int(n), int(section_start) + int(forced_applied))
-            base = {
-                "k": int(k),
-                "next_state": int(e),
-                "activation_index": int(a),
-                "activation_ms": float(chart_time) * 1000.0,
-                "activation_judgment": "perfect",
-                **_forced_fields(
-                    section_start=int(section_start),
-                    great_start=int(section_start),
-                    great_count=int(forced_applied),
-                    n=int(n),
+            base = _section_option(
+                k=int(k),
+                judgment="perfect",
+                forced=_forced_fields(
+                    section_start=int(section_start), great_start=int(section_start),
+                    great_count=int(forced_applied), n=int(n),
                 ),
-                "fever_end_index": int(e),
-                "fever_end_ms": None if int(e) >= int(n) else float(timestamps[int(e)]) * 1000.0,
-                "surface": _edge_surface(
-                    n=int(n),
-                    fever_start=int(a),
-                    fever_end=int(e),
-                    great_start=int(section_start),
+                surface=_edge_surface(
+                    n=int(n), fever_start=int(a), fever_end=int(e), great_start=int(section_start),
                     great_end=int(great_end),
                 ),
-                "_witness": {
+                witness={
                     "activation_idx": int(a),
                     "chart_time": float(chart_time),
                     "lo": float(_act_hit_lo[action_idx]),
@@ -771,7 +820,9 @@ def _edge_surface_options(
                     "carry_idx": int(carry_idx),
                     "activation_great": False,
                 },
-            }
+                timestamps=timestamps,
+                n=int(n),
+            )
             if _emit(base):
                 return out
             # Issue #44: early-Great extension of the Perfect-activation section.
@@ -801,32 +852,18 @@ def _edge_surface_options(
             if int(activation_e) > int(e) or int(_act_late_eg_e[action_idx]) > int(
                 _act_eg_e[action_idx]
             ):
-                activation_surface = _edge_surface(
-                    n=int(n),
-                    fever_start=int(a),
-                    fever_end=int(activation_e),
-                    great_start=int(section_start),
-                    great_end=min(int(n), int(section_start) + int(prefix_forced)),
-                    activation_great_idx=int(a),
-                )
-                base = {
-                    "k": int(k),
-                    "next_state": int(activation_e),
-                    "activation_index": int(a),
-                    "activation_ms": float(chart_time) * 1000.0,
-                    "activation_judgment": "late_great",
-                    **_forced_fields(
-                        section_start=int(section_start),
-                        great_start=int(section_start),
-                        great_count=int(prefix_forced),
-                        n=int(n),
+                base = _section_option(
+                    k=int(k),
+                    judgment="late_great",
+                    forced=_forced_fields(
+                        section_start=int(section_start), great_start=int(section_start),
+                        great_count=int(prefix_forced), n=int(n),
                     ),
-                    "fever_end_index": int(activation_e),
-                    "fever_end_ms": None
-                    if int(activation_e) >= int(n)
-                    else float(timestamps[int(activation_e)]) * 1000.0,
-                    "surface": activation_surface,
-                    "_witness": {
+                    surface=_edge_surface(
+                        n=int(n), fever_start=int(a), fever_end=int(activation_e), great_start=int(section_start),
+                        great_end=min(int(n), int(section_start) + int(prefix_forced)), activation_great_idx=int(a),
+                    ),
+                    witness={
                         "activation_idx": int(a),
                         "chart_time": float(chart_time),
                         "lo": float(late_lo),
@@ -835,7 +872,9 @@ def _edge_surface_options(
                         "carry_idx": int(activation_carry_idx),
                         "activation_great": True,
                     },
-                }
+                    timestamps=timestamps,
+                    n=int(n),
+                )
                 if _emit(base):
                     return out
                 # Issue #44: early-Great extension of the late-Great-activation section.
@@ -924,32 +963,19 @@ def _edge_surface_options(
                         continue
                     chart_time = float(timestamps[int(a_region)])
                     late_lo = float(np.float32(np.float32(perfect_ts[int(a_region)]) + np.float32(0.001)))
-                    surface = _edge_surface(
-                        n=int(n),
-                        fever_start=int(a_region),
-                        fever_end=int(activation_e),
-                        great_start=int(run_start),
-                        great_end=int(actual_great_end_i),
-                        activation_great_idx=int(a_region),
-                    )
-                    base = {
-                        "k": int(actual_great_end_i) - int(run_start),
-                        "next_state": int(activation_e),
-                        "activation_index": int(a_region),
-                        "activation_ms": float(chart_time) * 1000.0,
-                        "activation_judgment": "late_great",
-                        **_forced_fields(
-                            section_start=int(section_start),
-                            great_start=int(run_start),
-                            great_count=int(actual_great_end_i) - int(run_start),
-                            n=int(n),
+                    base = _section_option(
+                        k=int(actual_great_end_i) - int(run_start),
+                        judgment="late_great",
+                        forced=_forced_fields(
+                            section_start=int(section_start), great_start=int(run_start),
+                            great_count=int(actual_great_end_i) - int(run_start), n=int(n),
                         ),
-                        "fever_end_index": int(activation_e),
-                        "fever_end_ms": None
-                        if int(activation_e) >= int(n)
-                        else float(timestamps[int(activation_e)]) * 1000.0,
-                        "surface": surface,
-                        "_witness": {
+                        surface=_edge_surface(
+                            n=int(n), fever_start=int(a_region), fever_end=int(activation_e),
+                            great_start=int(run_start), great_end=int(actual_great_end_i),
+                            activation_great_idx=int(a_region),
+                        ),
+                        witness={
                             "activation_idx": int(a_region),
                             "chart_time": float(chart_time),
                             "lo": float(late_lo),
@@ -958,7 +984,9 @@ def _edge_surface_options(
                             "carry_idx": int(activation_carry_idx),
                             "activation_great": True,
                         },
-                    }
+                        timestamps=timestamps,
+                        n=int(n),
+                    )
                     if _emit(base):
                         return out
                     if _early_great_options(
@@ -1003,30 +1031,18 @@ def _edge_surface_options(
                         perfect_floor_timestamps=perfect_floor_timestamps,
                     )
                     chart_time = float(timestamps[int(a_region)])
-                    base = {
-                        "k": int(actual_great_end) - int(run_start),
-                        "next_state": int(e_region),
-                        "activation_index": int(a_region),
-                        "activation_ms": float(chart_time) * 1000.0,
-                        "activation_judgment": "perfect",
-                        **_forced_fields(
-                            section_start=int(section_start),
-                            great_start=int(run_start),
-                            great_count=int(actual_great_end) - int(run_start),
-                            n=int(n),
+                    base = _section_option(
+                        k=int(actual_great_end) - int(run_start),
+                        judgment="perfect",
+                        forced=_forced_fields(
+                            section_start=int(section_start), great_start=int(run_start),
+                            great_count=int(actual_great_end) - int(run_start), n=int(n),
                         ),
-                        "fever_end_index": int(e_region),
-                        "fever_end_ms": None
-                        if int(e_region) >= int(n)
-                        else float(timestamps[int(e_region)]) * 1000.0,
-                        "surface": _edge_surface(
-                            n=int(n),
-                            fever_start=int(a_region),
-                            fever_end=int(e_region),
-                            great_start=int(run_start),
+                        surface=_edge_surface(
+                            n=int(n), fever_start=int(a_region), fever_end=int(e_region), great_start=int(run_start),
                             great_end=int(actual_great_end),
                         ),
-                        "_witness": {
+                        witness={
                             "activation_idx": int(a_region),
                             "chart_time": float(chart_time),
                             "lo": min(float(chart_time), float(perfect_activation_ts[int(a_region)])),
@@ -1035,7 +1051,9 @@ def _edge_surface_options(
                             "carry_idx": int(region_carry_idx),
                             "activation_great": False,
                         },
-                    }
+                        timestamps=timestamps,
+                        n=int(n),
+                    )
                     if _emit(base):
                         return out
                     if _early_great_options(
@@ -1215,35 +1233,13 @@ def reconstruct_force_greats_response_trace(
     use_forced_great_timing: bool = True,
     edge_options_cache: FgTraceEdgeOptionsCache | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
-    n = int(ts.shape[0])
+    n = int(np.asarray(timestamps).reshape(-1).shape[0])
     if n <= 0 or target_surface == _EMPTY_SURFACE:
         return ()
-    perfect_ts = ts if perfect_candidate_timestamps is None else np.ascontiguousarray(
-        np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1)
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, lane_arr = _song_arrays(
+        timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
+        great_floor_timestamps, lanes,
     )
-    if int(perfect_ts.shape[0]) != n:
-        raise ValueError("perfect_candidate_timestamps length must match timestamps")
-    great_ts = ts if great_candidate_timestamps is None else np.ascontiguousarray(
-        np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1)
-    )
-    if int(great_ts.shape[0]) != n:
-        raise ValueError("great_candidate_timestamps length must match timestamps")
-    # perfect_floor is the issue-#42 fever-boundary basis and is REQUIRED (no chart fallback):
-    # silently searching chart would under-count endpoint-early fever -- a wrong best_fg_score.
-    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(floor_ts.shape[0]) != n:
-        raise ValueError("perfect_floor_timestamps length must match timestamps")
-    # great_floor is the issue-#44 greats-side fever-boundary basis, REQUIRED for the same reason:
-    # the early-Great extended surfaces cannot be reconstructed without it.
-    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(great_floor_ts.shape[0]) != n:
-        raise ValueError("great_floor_timestamps length must match timestamps")
-    if lanes is None:
-        raise ValueError("lanes are required for input-engine-aware FG response reconstruction")
-    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
-    if int(lane_arr.shape[0]) != n:
-        raise ValueError("lanes length must match timestamps")
     reachability_context: _ActivationReachabilityContext | None = None
 
     def _reachability_context() -> _ActivationReachabilityContext:
@@ -1266,19 +1262,7 @@ def reconstruct_force_greats_response_trace(
         use_forced_great_timing=bool(use_forced_great_timing),
     )
 
-    target_words = (
-        int(target_surface.fever0),
-        int(target_surface.fever1),
-        int(target_surface.fever2),
-        int(target_surface.fever3),
-        int(target_surface.great0),
-        int(target_surface.great1),
-        int(target_surface.great2),
-        int(target_surface.great3),
-        int(target_surface.body_fever),
-        int(target_surface.body_great),
-        int(target_surface.body_fever_great),
-    )
+    target_words = tuple(int(value) for value in target_surface)
     # The ordered edge list is independent of the target surface. A materialization batch can
     # therefore reuse it across the up-to-51 exact surfaces for one song/stat geometry. Keep the
     # cache song-local and bounded: eviction only regenerates an identical ordered tuple.
@@ -1304,44 +1288,14 @@ def reconstruct_force_greats_response_trace(
     def _empty(words: tuple[int, ...]) -> bool:
         return not any(int(value) for value in words)
 
-    def _edge_words(edge: FgResponseSurface) -> tuple[int, ...]:
-        return (
-            int(edge.fever0),
-            int(edge.fever1),
-            int(edge.fever2),
-            int(edge.fever3),
-            int(edge.great0),
-            int(edge.great1),
-            int(edge.great2),
-            int(edge.great3),
-            int(edge.body_fever),
-            int(edge.body_great),
-            int(edge.body_fever_great),
-        )
-
     def _subtract_edge(words: tuple[int, ...], edge: FgResponseSurface) -> tuple[int, ...] | None:
-        edge_values = _edge_words(edge)
-        for idx in range(8):
-            if int(edge_values[idx]) & ~int(words[idx]):
-                return None
-        if (
-            int(edge_values[8]) > int(words[8])
-            or int(edge_values[9]) > int(words[9])
-            or int(edge_values[10]) > int(words[10])
+        edge_values = tuple(int(value) for value in edge)
+        if any(edge_values[idx] & ~words[idx] for idx in range(8)) or any(
+            edge_values[idx] > words[idx] for idx in range(8, 11)
         ):
             return None
-        return (
-            int(words[0]) & ~int(edge_values[0]),
-            int(words[1]) & ~int(edge_values[1]),
-            int(words[2]) & ~int(edge_values[2]),
-            int(words[3]) & ~int(edge_values[3]),
-            int(words[4]) & ~int(edge_values[4]),
-            int(words[5]) & ~int(edge_values[5]),
-            int(words[6]) & ~int(edge_values[6]),
-            int(words[7]) & ~int(edge_values[7]),
-            int(words[8]) - int(edge_values[8]),
-            int(words[9]) - int(edge_values[9]),
-            int(words[10]) - int(edge_values[10]),
+        return tuple(words[idx] & ~edge_values[idx] for idx in range(8)) + tuple(
+            words[idx] - edge_values[idx] for idx in range(8, 11)
         )
 
     memo: set[tuple[int, bool, tuple[int, ...]]] = set()
