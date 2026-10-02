@@ -2,6 +2,7 @@ from gear_optimizer.pipeline.progress import (
     ProgressTracker,
     evaluate_fg_progress_record_update,
     mark_song_completed,
+    task_error_payload,
 )
 from gear_optimizer.gamedata import STATS
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
@@ -40,7 +41,7 @@ def test_progress_tracker_emit_error_item_progress_forwards_failure():
 
     emitted = tracker.emit_error_item_progress(
         lambda **kwargs: events.append(kwargs),
-        {"_error": True, "_queue_label": "song-a"},
+        task_error_payload(song_name="", queue_key="song-a", exc=RuntimeError("boom"), trace=""),
     )
 
     assert emitted is True
@@ -60,9 +61,12 @@ def test_progress_tracker_emit_error_item_progress_dedupes_queue_key():
     def emit(**kwargs):
         events.append(kwargs)
 
-    assert tracker.emit_error_item_progress(emit, {"_error": True, "_queue_key": "song-a", "_queue_label": "Song A"}) is True
-    assert tracker.emit_error_item_progress(emit, {"_error": True, "_queue_key": "song-a", "_queue_label": "Song A"}) is False
-    assert tracker.emit_error_item_progress(emit, {"_error": True, "_queue_key": "song-b", "_queue_label": "Song B"}) is True
+    def failure(song: str, key: str) -> dict:
+        return task_error_payload(song_name=song, queue_key=key, exc=RuntimeError("boom"), trace="")
+
+    assert tracker.emit_error_item_progress(emit, failure("Song A", "song-a")) is True
+    assert tracker.emit_error_item_progress(emit, failure("Song A", "song-a")) is False
+    assert tracker.emit_error_item_progress(emit, failure("Song B", "song-b")) is True
 
     assert events == [
         {
@@ -78,12 +82,12 @@ def test_progress_tracker_emit_error_item_progress_dedupes_queue_key():
     ]
 
 
-def test_progress_tracker_emit_error_item_progress_ignores_non_errors():
+def test_progress_tracker_emit_error_item_progress_ignores_a_failure_without_a_message():
     tracker = ProgressTracker()
     events = []
+    silent = task_error_payload(song_name="Song A", queue_key="song-a", exc=RuntimeError(), trace="")
 
-    assert tracker.emit_error_item_progress(lambda **kwargs: events.append(kwargs), {"song": "song-a"}) is False
-    assert tracker.emit_error_item_progress(lambda **kwargs: events.append(kwargs), "not-a-payload") is False
+    assert tracker.emit_error_item_progress(lambda **kwargs: events.append(kwargs), silent) is False
     assert events == []
 
 

@@ -47,8 +47,8 @@ class NativeSongGPUInputs:
     init_heuristic_topk: Optional[np.ndarray] = None
     init_heuristic_k: int = 0
     init_heuristic_copies: int = 25
-    # GA->FG effective-dedup equivalence tables for this song's color context
-    # (Slice 1). Built at prep, uploaded by the GA run before candidate select.
+    # GA->FG effective-dedup equivalence tables for this song's color context: built at prep, uploaded by the GA run
+    # before the candidate select.
     fg_gear_name_rank: Optional[np.ndarray] = None
     fg_mini_sig_id: Optional[np.ndarray] = None
 
@@ -67,10 +67,8 @@ class NativeSongFGState:
     fg_results: Optional[tuple[tuple[SolvedLoadout, SolvedFg], ...]] = None  # best FG score first
     fg_response_scoring_bundle: Any | None = None
     fg_response_frontier_plan: Any | None = None
-    # Slice 3 fused GA->FG handoff: the owner-scored per-base_components FG result map
-    # ({base_components_7tuple -> FgFusedOwnerScoreRow}) returned by the GA run on the
-    # owner thread. The FG worker materializes from this instead of submitting
-    # BUILD+SCORE owner requests. Set by decode_ga_payload_sync from the GA response.
+    # The FG results the GA turn scored on the GPU owner thread ({base_components 7-tuple -> FgFusedOwnerScoreRow}),
+    # which the FG materialization reads (set by pipeline.ga.decode_ga_result).
     fg_owner_score_map: Any | None = None
 
 
@@ -99,13 +97,7 @@ class NativeSong:
     runtime: NativeSongRuntimeState
 
 
-def native_song_label(song: object, *, fallback_id: bool = False) -> str:
-    try:
-        config = getattr(song, "config", None)
-        label = str(getattr(config, "task_key", "") or getattr(config, "song_name", "") or "").strip()
-        if label:
-            return label
-    except Exception:
-        pass
-    return str(id(song)) if bool(fallback_id) else ""
+def native_song_label(song: NativeSong) -> str:
+    """The song's progress label: its queue label, else its name."""
+    return song.config.task_key or song.config.song_name
 

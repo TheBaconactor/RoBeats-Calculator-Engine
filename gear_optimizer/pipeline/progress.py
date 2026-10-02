@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from gear_optimizer.core.result_payloads import build_error_payload
-from gear_optimizer.core.utils import safe_int
 from gear_optimizer.pipeline.song import NativeSong, native_song_label
 
 # A run is a NEW record for the progress counter when its best score (base or FG) beats the song's stored best by
@@ -40,12 +39,9 @@ class ProgressTracker:
     failed_progress_keys: set[str] = field(default_factory=set)
 
     def snapshot(self, db_key: str) -> tuple[int, int, bool]:
-        key = str(db_key or "").strip()
-        if not key:
-            return (0, 0, False)
         with self.lock:
-            score0, fg0 = self.best.get(key, (0, 0))
-            return (int(score0), int(fg0), key in self.valid)
+            score, fg = self.best.get(db_key, (0, 0))
+            return score, fg, db_key in self.valid
 
     def update(
         self,
@@ -55,95 +51,47 @@ class ProgressTracker:
         best_fg: int | None = None,
         mark_valid: bool = False,
     ) -> None:
-        key = str(db_key or "").strip()
-        if not key:
+        if not db_key:
             return
-        try:
-            score_new = int(best_score) if best_score is not None else None
-        except (TypeError, ValueError):
-            score_new = None
-        try:
-            fg_new = int(best_fg) if best_fg is not None else None
-        except (TypeError, ValueError):
-            fg_new = None
         with self.lock:
-            score0, fg0 = self.best.get(key, (0, 0))
-            if score_new is not None and score_new > int(score0):
-                score0 = int(score_new)
-            if fg_new is not None and fg_new > int(fg0):
-                fg0 = int(fg_new)
-            self.best[key] = (int(score0), int(fg0))
+            score, fg = self.best.get(db_key, (0, 0))
+            if best_score is not None:
+                score = max(score, best_score)
+            if best_fg is not None:
+                fg = max(fg, best_fg)
+            self.best[db_key] = (score, fg)
             if mark_valid:
-                self.valid.add(key)
+                self.valid.add(db_key)
 
     def seed_valid_baseline(self, db_key: str, *, best_score: int, best_fg: int, baseline_valid: bool) -> None:
-        if not bool(baseline_valid):
-            return
-        self.update(
-            db_key,
-            best_score=int(best_score),
-            best_fg=int(best_fg),
-            mark_valid=True,
-        )
+        if baseline_valid:
+            self.update(db_key, best_score=best_score, best_fg=best_fg, mark_valid=True)
 
-    @staticmethod
-    def error_item_song_label(item: dict) -> Any:
-        return (
-            item.get("song")
-            or item.get("_song_name")
-            or item.get("song_name")
-            or item.get("_queue_label")
-            or item.get("_queue_key")
-        )
-
-    @staticmethod
-    def error_item_progress_key(item: dict) -> str:
-        return str(
-            item.get("_queue_key")
-            or item.get("queue_key")
-            or item.get("_queue_label")
-            or item.get("song")
-            or item.get("_song_name")
-            or ""
-        ).strip()
-
-    def emit_error_item_progress(self, progress_cb: Callable[..., Any] | None, item: Any) -> bool:
-        if not isinstance(item, dict) or not item.get("_error"):
+    def emit_error_item_progress(self, progress_cb: Callable[..., Any] | None, item: dict) -> bool:
+        """Count a failed task's error payload (song_error_payload / task_error_payload) once per queue key."""
+        if not item["_error"]:
             return False
-        song_label = self.error_item_song_label(item)
-        progress_key = self.error_item_progress_key(item)
-        if progress_key:
-            with self.lock:
-                if progress_key in self.failed_progress_keys:
-                    return False
-                self.failed_progress_keys.add(progress_key)
+        with self.lock:
+            if item["_queue_key"] in self.failed_progress_keys:
+                return False
+            self.failed_progress_keys.add(item["_queue_key"])
         self.emit_progress(
             progress_cb,
             completed_delta=1,
             failed_delta=1,
-            record_info={"song": song_label, "status": "FAILED"},
+            record_info={"song": item["song"] or item["_queue_label"], "status": "FAILED"},
         )
         return True
 
     @staticmethod
-    def done_record_info_for_song(song: Any) -> dict | None:
+    def done_record_info_for_song(song: NativeSong) -> dict:
         record_info = dict(song.runtime.db.record_info or {})
         record_info.setdefault("song", native_song_label(song))
         record_info.setdefault("status", "DONE")
         return record_info
 
-    def emit_done_song_progress(
-        self,
-        progress_cb: Callable[..., Any] | None,
-        song: Any,
-        *,
-        completed_delta: int = 1,
-    ) -> None:
-        self.emit_progress(
-            progress_cb,
-            completed_delta=int(completed_delta),
-            record_info=self.done_record_info_for_song(song),
-        )
+    def emit_done_song_progress(self, progress_cb: Callable[..., Any] | None, song: NativeSong) -> None:
+        self.emit_progress(progress_cb, completed_delta=1, record_info=self.done_record_info_for_song(song))
 
     def emit_progress(
         self,
@@ -153,25 +101,18 @@ class ProgressTracker:
         failed_delta: int = 0,
         record_info: dict | None = None,
     ) -> None:
-        if progress_cb is None:
-            return
-        progress_cb(
-            completed_delta=completed_delta,
-            failed_delta=failed_delta,
-            record_info=record_info,
-        )
+        if progress_cb is not None:
+            progress_cb(completed_delta=completed_delta, failed_delta=failed_delta, record_info=record_info)
 
 
-def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTracker | None) -> dict:
+def evaluate_fg_progress_record_update(song: NativeSong, progress_tracker: ProgressTracker | None) -> dict:
     """The record info of a song whose FG stage finished (its run's best base score and best winning FG score)."""
-    key = str(song.config.db_key or "").strip()
-    prev_best_score = safe_int(song.runtime.db.db_best_score, 0)
-    prev_best_fg = safe_int(song.runtime.db.db_best_fg_score, 0)
-    baseline_valid = bool(song.runtime.db.db_baseline_valid)
+    key = song.config.db_key
+    db = song.runtime.db
+    prev_best_score, prev_best_fg, baseline_valid = db.db_best_score, db.db_best_fg_score, db.db_baseline_valid
     if progress_tracker is not None and key:
         prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
-    best_data = song.runtime.decode.best_data or {}
-    run_score = safe_int(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
+    run_score = song.runtime.decode.best_data["BaseScore"]
     run_fg = max((fg.score for _loadout, fg in song.runtime.fg.fg_results or () if fg.score > fg.paired), default=0)
     record_info = run_record_info(run_score, run_fg, prev_best_score, prev_best_fg, baseline_valid=baseline_valid)
     record_info["song"] = native_song_label(song)
@@ -193,40 +134,15 @@ def mark_song_completed(
     song_path: str | None = None,
     memory_resume_tracker=None,
 ) -> None:
-    key = str(task_key)
-    completed_songs.add(key)
+    completed_songs.add(task_key)
     if memory_resume_tracker:
-        memory_resume_tracker.mark_completed(song_path=song_path, song_name=str(song_name))
+        memory_resume_tracker.mark_completed(song_path=song_path, song_name=song_name)
 
 
-def song_error_payload(
-    song: NativeSong,
-    *,
-    exc: Exception,
-    trace: str,
-) -> dict[str, Any]:
-    return build_error_payload(
-        song_name=str(song.config.song_name),
-        queue_key=str(song.config.task_key),
-        queue_label=str(song.config.task_key),
-        exc=exc,
-        trace=trace,
-    )
+def song_error_payload(song: NativeSong, *, exc: Exception, trace: str) -> dict[str, Any]:
+    key = song.config.task_key
+    return build_error_payload(song_name=song.config.song_name, queue_key=key, queue_label=key, exc=exc, trace=trace)
 
 
-def task_error_payload(
-    *,
-    song_name: str,
-    queue_key: str,
-    exc: Exception,
-    trace: str,
-    queue_label: str | None = None,
-) -> dict[str, Any]:
-    key = str(queue_key)
-    return build_error_payload(
-        song_name=str(song_name),
-        queue_key=key,
-        queue_label=str(queue_label if queue_label is not None else key),
-        exc=exc,
-        trace=trace,
-    )
+def task_error_payload(*, song_name: str, queue_key: str, exc: Exception, trace: str) -> dict[str, Any]:
+    return build_error_payload(song_name=song_name, queue_key=queue_key, queue_label=queue_key, exc=exc, trace=trace)
