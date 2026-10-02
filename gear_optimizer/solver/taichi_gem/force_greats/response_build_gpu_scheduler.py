@@ -289,10 +289,12 @@ def _build_region_table(
         action_k_arr,
         float(table_key[0]),
         context.timestamps,
-        context.perfect_floor_timestamps,
-        context.perfect_candidate_timestamps,
-        context.great_floor_timestamps,
-        context.great_candidate_timestamps,
+        _rb_numba.HitTimes(
+            context.perfect_floor_timestamps,
+            context.perfect_candidate_timestamps,
+            context.great_floor_timestamps,
+            context.great_candidate_timestamps,
+        ),
         context.lanes,
         context.region_hit_token_to_id,
     )
