@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from gear_optimizer.gamedata import empty_stats
+from gear_optimizer.solver.taichi_gem.force_greats import response_cache_types
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
     fg_response_frontier_bundle_cache_key,
     fg_response_frontier_geometry_cache_key,
@@ -738,7 +739,7 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
     reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
 
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-legacy-v1")
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-legacy-v1")
     legacy = response_cache.build_or_load_response_frontier_payload(_song(), _varying_ref_arrays(), stat_keys=keys)
     assert legacy.cache_source == "built"
 
@@ -751,7 +752,7 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
         return real_build(*args, **kwargs)
 
     monkeypatch.setattr(response_cache, "build_force_greats_response_first_frontiers_gpu_batch", _record_build)
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-sparse-bundle-v2-test")
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-sparse-bundle-v2-test")
     current = response_cache.build_or_load_response_frontier_payload(_song(), _varying_ref_arrays(), stat_keys=keys)
 
     assert current.cache_source == "built"
@@ -774,7 +775,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     # version. Issue #149 deliberately starts V31 with no compatible predecessor because V30
     # bundles do not contain the exact cross-lane activation schedule witness.
     current_version = "fg-response-frontier-visible-first-v30+logic-6126c01d035d"
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", current_version)
     compatible_versions = response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()
     assert compatible_versions[0] == current_version
     assert compatible_versions[1:] == (
@@ -784,7 +785,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     )
     predecessor = compatible_versions[int(predecessor_index)]
 
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", predecessor)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", predecessor)
     legacy = response_cache.build_or_load_response_frontier_payload(
         _song(),
         _varying_ref_arrays(),
@@ -795,7 +796,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert legacy_path.exists()
 
     reset_fg_response_frontier_payload_cache()
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", current_version)
 
     def _build_must_not_run(*_args, **_kwargs):
         raise AssertionError("ratified compatible cache hit must not rebuild")
@@ -826,7 +827,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
 def test_current_fg_payload_cleanup_reuses_issue161_frontier_bytes() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
-    current_version = response_cache._FG_RESPONSE_CACHE_VERSION
+    current_version = response_cache_types._FG_RESPONSE_CACHE_VERSION
     assert current_version == "fg-response-frontier-visible-first-v31+logic-6d2c269a5b07"
     assert response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions() == (
         current_version,
@@ -845,10 +846,10 @@ def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
     reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
     current_version = "fg-response-frontier-visible-first-v31+logic-31fb6828e146"
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", current_version)
     predecessor = response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()[1]
 
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", predecessor)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", predecessor)
     legacy = response_cache.build_or_load_response_frontier_payload(
         _song(),
         _varying_ref_arrays(),
@@ -857,7 +858,7 @@ def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
     legacy_path = Path(legacy.disk_path)
 
     reset_fg_response_frontier_payload_cache()
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", current_version)
 
     def _build_must_not_run(*_args, **_kwargs):
         raise AssertionError("ratified V31 reconstruction predecessor must not rebuild")

@@ -15,8 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 KNOWN_CYCLES = {
     # R5 (FG frontier builder + scoring): these modules are FG cache fingerprint sources.
     frozenset({
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache",
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys",
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache_serde",
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache_store",
     }),

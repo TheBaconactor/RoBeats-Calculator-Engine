@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
+from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store, response_cache_types
 from tests.test_fg_response_frontier_cache import _song, _varying_ref_arrays
 
 
@@ -56,14 +56,14 @@ def test_inner_reductions_reuse_exact_persisted_frontiers(tmp_path, monkeypatch,
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache_store.reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", persisted_version)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", persisted_version)
     previous = response_cache.build_or_load_response_frontier_payload(
         _song(), _varying_ref_arrays(), stat_keys=keys,
     )
     assert previous.cache_source == "built"
     previous_path = Path(previous.disk_path)
     response_cache_store.reset_fg_response_frontier_payload_cache()
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", current_version)
 
     scoring = response_cache.load_response_frontier_scoring_bundle(
         _song(), _varying_ref_arrays(), stat_keys=keys,
@@ -76,6 +76,6 @@ def test_inner_reductions_reuse_exact_persisted_frontiers(tmp_path, monkeypatch,
 
 def test_inner_reduction_cache_ratification_does_not_cover_future_changes(monkeypatch):
     changed_version = REDUCED_VERSION + "-changed-producer"
-    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", changed_version)
+    monkeypatch.setattr(response_cache_types, "_FG_RESPONSE_CACHE_VERSION", changed_version)
 
     assert response_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions() == (changed_version,)

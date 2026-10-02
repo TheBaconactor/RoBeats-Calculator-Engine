@@ -14,6 +14,7 @@ from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_T
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.settings import paths
 
+from . import response_cache_types
 from .response_cache_types import (
     _BUNDLE_KEY_MARKER,
     _normalize_stat_key,
@@ -23,9 +24,7 @@ from .response_types import FgResponseSurface
 
 
 def _fg_response_cache_version() -> str:
-    from . import response_cache
-
-    return str(response_cache._FG_RESPONSE_CACHE_VERSION)
+    return str(response_cache_types._FG_RESPONSE_CACHE_VERSION)
 
 
 def _surface_from_values_cached(

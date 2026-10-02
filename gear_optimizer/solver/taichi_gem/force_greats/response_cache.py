@@ -36,7 +36,6 @@ from .response_cache_store import (
     release_fg_response_song_memory,
 )
 from .response_cache_types import (
-    _FG_RESPONSE_CACHE_VERSION,  # noqa: F401 -- response_cache_keys reads the cache version from this module
     _SCORING_BUNDLE_ARRAY_NAMES,
     _SURFACE_BUNDLE_PATH_ARRAY_NAME,
     _SURFACE_GENERATION_ARRAY_NAME,
