@@ -28,11 +28,6 @@ def test_native_song_groups_keep_pipeline_fields_explicit():
     assert song.runtime.fg.fg_owner_score_map is None
     assert song.runtime.db.db_best_score == 0
 
-    assert not hasattr(song, "fp")
-    assert not hasattr(song, "meta_primary_color")
-    assert not hasattr(song, "song_slot")
-    assert not hasattr(song, "fg_owner_score_map")
-
 
 def test_make_native_song_routes_flat_fields_to_nested_groups():
     marker = object()

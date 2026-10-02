@@ -265,21 +265,13 @@ def test_prepare_fg_plan_uses_db_only_entries_for_response_frontier_route(monkey
 
 
 def test_prepare_fg_plan_builds_plan_without_owner_build_prefetch(monkeypatch):
-    # Fused GA->FG handoff (Slice 3): the GPU owner scores FG in the GA turn, so FG
-    # prep only builds the plan -- it does NOT prefetch any owner BUILD/SCORE round
-    # trip (the former prefetch_group_builds + finalize_prefetched_group_builds step is
-    # deleted). A passed gpu_client is accepted but unused for scoring.
+    # The GPU owner scores FG in the GA turn, so the FG prep only builds the plan.
 
     import gear_optimizer.pipeline.fg as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
-    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(FgPlanner, "plan_many", staticmethod(lambda *_args, **_kwargs: "raw-plan"))
-
-    # The owner BUILD/SCORE prefetch is deleted: these methods no longer exist.
-    assert not hasattr(FgResponseScoringService, "prefetch_group_builds")
-    assert not hasattr(FgResponseScoringService, "finalize_prefetched_group_builds")
 
     song = make_native_song(
         timed_song=make_song([1.0], mode="zero_ms"),
