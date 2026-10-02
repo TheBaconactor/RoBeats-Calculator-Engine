@@ -42,8 +42,8 @@ from .results import SolvedFg, SolvedLoadout, SongSolve
 if TYPE_CHECKING:
     from ..solver.scoring.fever_solver import GemSolve
 
-# The stats a score reads, besides the song's and the selected element.
 logger = logging.getLogger(__name__)
+# The stats a score reads, besides the song's and the selected element.
 _SCORE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
 
 

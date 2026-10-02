@@ -136,7 +136,6 @@ def reconstruct_timeline_physical_trace(
 def build_timeline_frontier_grid_payload(
     *,
     total_notes: int,
-    long_notes: int,
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,

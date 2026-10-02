@@ -642,7 +642,6 @@ def build_or_load_timeline_frontier_payload(
         else:
             payload = build_timeline_frontier_grid_payload(
                 total_notes=int(lookup["total_notes"]),
-                long_notes=int(lookup["long_notes"]),
                 timestamps=lookup["timestamps"],
                 perfect_candidate_timestamps=lookup["perfect_candidates"],
                 perfect_floor_timestamps=lookup["perfect_floor"],
@@ -755,7 +754,6 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload = build_timeline_frontier_grid_payload(
         total_notes=int(lookup["total_notes"]),
-        long_notes=int(lookup["long_notes"]),
         timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
         perfect_candidate_timestamps=np.asarray(lookup["perfect_candidates"], dtype=np.float32),
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),

@@ -33,7 +33,6 @@ def _build_small_payload():
     timestamps = np.array([0.0, 0.0, 0.1, 0.1, 0.22, 0.22], dtype=np.float32)
     payload = build_timeline_frontier_grid_payload(
         total_notes=6,
-        long_notes=0,
         timestamps=timestamps,
         perfect_candidate_timestamps=timestamps + np.float32(0.04),
         perfect_floor_timestamps=timestamps - np.float32(0.019),

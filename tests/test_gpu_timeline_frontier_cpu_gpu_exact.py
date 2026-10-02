@@ -13,7 +13,6 @@ def _cpu_frontier_payload(song, curves):
 
     return build_timeline_frontier_grid_payload(
         total_notes=song.chart.total_notes,
-        long_notes=song.chart.long_notes,
         timestamps=song.chart.timestamps,
         perfect_candidate_timestamps=song.perfect_candidates,
         perfect_floor_timestamps=song.perfect_floor,

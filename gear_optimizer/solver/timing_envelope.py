@@ -234,9 +234,13 @@ def fever_fill_raw(hit_objects: int, fill_factors: np.ndarray, mode: str) -> np.
     (T6): its double bar adds 1 / (hit objects x the curve value) per Perfect and activates at >= 1, so at a whole
     denominator the sum can end one ulp short and the game needs one more Perfect; there the fill is the game's count
     less half a Perfect (fever_fill_is_order_sensitive)."""
+    factors = np.asarray(fill_factors, dtype=np.float32).astype(np.float64)
     if mode != "frame_robust":
-        return float(hit_objects) * FEVER_FILL_PER_NOTE * np.asarray(fill_factors, dtype=np.float32).astype(np.float64)
-    return np.asarray(_frame_robust_fever_fills(int(hit_objects), len(fill_factors)), dtype=np.float64)
+        return float(hit_objects) * FEVER_FILL_PER_NOTE * factors
+    game = [_game_fever_fill_factor(ff) for ff in range(len(factors))]
+    if not np.allclose(FEVER_FILL_PER_NOTE * factors, game, rtol=1e-6, atol=0.0):
+        raise ValueError("timing_envelope: Stats.txt's Fever Fill Rate no longer matches the game curve frame_robust ports")
+    return np.asarray(_frame_robust_fever_fills(int(hit_objects), len(factors)), dtype=np.float64)
 
 
 def fever_fill_is_order_sensitive(fill: float) -> bool:

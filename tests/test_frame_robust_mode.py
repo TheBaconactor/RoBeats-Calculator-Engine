@@ -113,7 +113,6 @@ def test_late_great_activation_is_never_planned_in_the_frame_judged_gap() -> Non
 def _base_plans(chart, mode: str, ft: int, ff: int):
     """The producer's Base plans for one FT/FF cell, as validated note graphs."""
     from gear_optimizer.gamedata import load_stat_curves
-    from gear_optimizer.rules import FEVER_FILL_PER_NOTE
     from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
     from gear_optimizer.solver.fg_response_scoring.physical_replay import validate_base_physical_replay
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
@@ -125,7 +124,7 @@ def _base_plans(chart, mode: str, ft: int, ff: int):
     song = time_song(chart, mode)
     fi = song.fg_inputs
     n = int(chart.total_notes)
-    raw_fill = float(max(0, n - chart.long_notes)) * FEVER_FILL_PER_NOTE * float(curves.f32["Fever Fill Rate"][ff])
+    raw_fill = float(fever_fill_raw(max(0, n - chart.long_notes), curves.f32["Fever Fill Rate"], mode)[ff])
     fill = max(1, int(np.ceil(raw_fill)))
     window_time = float(fever_window_times(chart.last_note_time, curves.f32["Fever Time"], mode)[ft])
     (frontier,) = build_force_greats_response_first_frontiers_gpu_batch(
