@@ -1,14 +1,12 @@
+"""The GA's selected rows with exact duplicates collapsed: one row per loadout (the 6 gear ids and the 3 mini ids as a
+set), the candidate pool decode_gpu_native_ga_runs_payload hands the FG stage."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 import numpy as np
-
-from ..song_helpers.ga_entry_utils import canonicalize_genome_ids
-
-
-PayloadT = TypeVar("PayloadT")
 
 
 @dataclass(frozen=True)
@@ -21,88 +19,41 @@ class ExactUniqueEvalStats:
     invalid_keys: int
 
 
-@dataclass
-class _ExactUniqueEvalEntry(Generic[PayloadT]):
-    score: int
-    payload: PayloadT
-
-
-class GlobalUniqueEvalTable(Generic[PayloadT]):
-    """
-    Per-song exact-evaluation memo table.
-
-    Important contract:
-    - Keys are canonicalized gear IDs + sorted mini IDs.
-    - Only exact evaluations may be inserted. Approx / warm-start results must not be reused.
-    - First-seen order is preserved, but higher exact scores replace the stored payload for that slot.
-    """
-
-    def __init__(self) -> None:
-        self._order: list[tuple[object, ...]] = []
-        self._entries: dict[tuple[object, ...], _ExactUniqueEvalEntry[PayloadT]] = {}
-        self._seen = 0
-        self._duplicate_hits = 0
-        self._replacements = 0
-        self._skipped_non_exact = 0
-        self._invalid_keys = 0
-        self._invalid_seq = 0
-
-    def _normalize_key(self, genome_ids: Any) -> tuple[object, ...]:
-        canon = canonicalize_genome_ids(genome_ids)
-        if canon is not None:
-            return tuple(int(x) for x in canon)
-        self._invalid_keys += 1
-        key = ("__invalid__", self._invalid_seq)
-        self._invalid_seq += 1
-        return key
-
-    def upsert(self, *, genome_ids: Any, score: int, payload: PayloadT, exact: bool = True) -> bool:
-        self._seen += 1
-        if not exact:
-            self._skipped_non_exact += 1
-            return False
-
-        score_i = int(score)
-
-        key = self._normalize_key(genome_ids)
-        prev = self._entries.get(key)
-        if prev is None:
-            self._order.append(key)
-            self._entries[key] = _ExactUniqueEvalEntry(score=score_i, payload=payload)
-            return True
-
-        self._duplicate_hits += 1
-        if score_i > int(prev.score):
-            self._entries[key] = _ExactUniqueEvalEntry(score=score_i, payload=payload)
-            self._replacements += 1
-            return True
-        return False
-
-    def ordered_payloads(self) -> list[PayloadT]:
-        return [self._entries[key].payload for key in self._order]
-
-    @property
-    def stats(self) -> ExactUniqueEvalStats:
-        return ExactUniqueEvalStats(
-            seen=int(self._seen),
-            unique=int(len(self._order)),
-            duplicate_hits=int(self._duplicate_hits),
-            replacements=int(self._replacements),
-            skipped_non_exact=int(self._skipped_non_exact),
-            invalid_keys=int(self._invalid_keys),
-        )
-
-
 def select_exact_unique_row_indices(
     *,
     genome_ids_mat: Any,
     scores: Any,
     exact: bool = True,
 ) -> tuple[np.ndarray, ExactUniqueEvalStats]:
-    table: GlobalUniqueEvalTable[int] = GlobalUniqueEvalTable()
+    """The rows to keep: one per canonical genome in first-seen order, each its genome's best-scoring row (the earliest
+    among equal scores). Only exact scores may be reused, so `exact=False` keeps no row; a row with fewer than 9 ids
+    has no canonical genome and is kept on its own."""
     ids_mat = np.asarray(genome_ids_mat, dtype=np.int32)
     scores_arr = np.asarray(scores)
-    for idx in range(int(ids_mat.shape[0])):
-        score_val = int(scores_arr[idx]) if idx < int(scores_arr.shape[0]) else 0
-        table.upsert(genome_ids=ids_mat[idx], score=score_val, payload=int(idx), exact=exact)
-    return np.asarray(table.ordered_payloads(), dtype=np.int32), table.stats
+    rows = int(ids_mat.shape[0])
+    best: dict[tuple, tuple[int, int]] = {}
+    duplicate_hits = replacements = invalid_keys = 0
+    for idx in range(rows if exact else 0):
+        ids = [int(x) for x in list(ids_mat[idx])[:9]]
+        score = int(scores_arr[idx]) if idx < int(scores_arr.shape[0]) else 0
+        if len(ids) < 9:
+            key: tuple = ("__invalid__", invalid_keys)
+            invalid_keys += 1
+        else:
+            key = (*ids[:6], *sorted(ids[6:9]))
+        if key not in best:
+            best[key] = (score, idx)
+            continue
+        duplicate_hits += 1
+        if score > best[key][0]:
+            best[key] = (score, idx)  # the genome keeps its first-seen position
+            replacements += 1
+    stats = ExactUniqueEvalStats(
+        seen=rows,
+        unique=len(best),
+        duplicate_hits=duplicate_hits,
+        replacements=replacements,
+        skipped_non_exact=0 if exact else rows,
+        invalid_keys=invalid_keys,
+    )
+    return np.asarray([idx for _score, idx in best.values()], dtype=np.int32), stats
