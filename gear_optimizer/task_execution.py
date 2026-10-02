@@ -22,16 +22,8 @@ class TaskExecutionMixin:
             finally:
                 # Completion stats for end-of-iteration throughput reporting, and the resume state, also when songs
                 # failed (_run_sequential raises after the run).
-                try:
-                    completed = int(self._runtime_completed_count or 0)
-                    total = int(self._runtime_total_count or 0)
-                    if total <= 0:
-                        total = len(tasks)
-                    self._last_completed_tasks = max(0, int(completed))
-                    self._last_total_tasks = max(0, int(total))
-                except (TypeError, ValueError):
-                    self._last_completed_tasks = None
-                    self._last_total_tasks = None
+                self._last_completed_tasks = self._runtime_completed_count
+                self._last_total_tasks = self._runtime_total_count or len(tasks)
 
                 if memory_release_requested():
                     logger.warning("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
@@ -57,13 +49,11 @@ class TaskExecutionMixin:
             try:
                 post_queue, post_proc = self._start_post_processor(total_tasks)
 
-                self._progress_counts_driven = True
                 if self._progress is not None:
-                    self._progress.update_counts(completed=0, total=int(total_tasks))
-                self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
+                    self._progress.update_counts(completed=0, total=total_tasks)
+                self._set_runtime_progress_counts(completed=0, total=total_tasks)
                 self._run_direct(tasks, post_queue, completed_songs, memory_resume_tracker)
             finally:
-                self._progress_counts_driven = False
                 songs_failed = not self._stop_post_processor(post_queue, post_proc)
             if songs_failed:
                 raise RuntimeError("song(s) failed in this run (see the [POST] FAILED lines)")
@@ -95,7 +85,7 @@ class TaskExecutionMixin:
             post_queue = multiprocessing.Queue()
             post_proc = multiprocessing.Process(
                 target=run_post_processor,
-                args=(post_queue, int(total_tasks)),
+                args=(post_queue, total_tasks),
                 daemon=True,
                 name="SongPostProcessor",
             )

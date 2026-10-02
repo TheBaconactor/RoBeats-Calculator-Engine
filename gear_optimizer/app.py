@@ -45,24 +45,19 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
         self._output_enabled = settings.output_enabled()
-        ui_stream = getattr(sys, "__stdout__", None) or sys.stdout
-        self._stdout_is_tty = _stream_is_tty(ui_stream)
+        stdout_is_tty = _stream_is_tty(getattr(sys, "__stdout__", None) or sys.stdout)
         progress = settings.progress()
         self._progress_enabled = _progress_ui_enabled_default(
             configured_enabled=progress is not False,
-            output_enabled=bool(self._output_enabled),
+            output_enabled=self._output_enabled,
             progress_env_present=progress is not None,
-            stream_is_tty=bool(self._stdout_is_tty),
+            stream_is_tty=stdout_is_tty,
         )
-        self._banner_enabled = bool(self._stdout_is_tty)
-        self._progress_interval = 0.2
-        self._progress_bar_width = 24
+        self._banner_enabled = stdout_is_tty
         self._progress: _ProgressUI | None = None
         self._orig_stdout = None
         self._orig_stderr = None
-        self._progress_counts_driven = False
         self._hotkey_thread: threading.Thread | None = None
-        self._hotkeys_enabled = True
         self._run_current_song_label = ""
         self._runtime_status_name = "idle"
         self._stop_poll_interval_sec = 0.05
@@ -74,6 +69,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._runtime_completed_count = 0
         self._runtime_total_count = 0
         self._runtime_failed_count = 0
+        # The last run's completed and total tasks (_execute_tasks), for the throughput line.
+        self._last_completed_tasks = 0
+        self._last_total_tasks = 0
 
     def setup_logging(self) -> None:
         from gear_optimizer.core.logging_config import configure_default_logging
@@ -94,13 +92,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if self._stop_cached_result:
             return True
         now = time.monotonic()
-        if now < float(self._stop_next_check_monotonic):
+        if now < self._stop_next_check_monotonic:
             return False
-        stop_now = bool(self._stop_control.stop_requested_now())
-        if stop_now:
+        if self._stop_control.stop_requested_now():
             self._stop_cached_result = True
             return True
-        self._stop_next_check_monotonic = now + float(self._stop_poll_interval_sec)
+        self._stop_next_check_monotonic = now + self._stop_poll_interval_sec
         return False
 
     def _install_signal_handlers(self) -> None:
@@ -154,7 +151,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _configure_execution_and_prewarm(self, multi_start: int) -> None:
         from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-        gpu_fields.configure_ga_run_buffers(max_runs=max(1, int(multi_start)), max_genomes=int(GA_POPULATION_SIZE))
+        gpu_fields.configure_ga_run_buffers(max_runs=max(1, multi_start), max_genomes=GA_POPULATION_SIZE)
         # macOS-only required dispatch-safety boundary: on darwin `ti.vulkan` lowers through
         # MoltenVK and Taichi acquires a GLFW/Cocoa context during materialize_runtime, which
         # traps off the OS main thread. Pin that one-time materialization to the main thread
@@ -179,11 +176,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         failed: int | None = None,
     ) -> None:
         if completed is not None:
-            self._runtime_completed_count = max(0, int(completed))
+            self._runtime_completed_count = max(0, completed)
         if total is not None:
-            self._runtime_total_count = max(0, int(total))
+            self._runtime_total_count = max(0, total)
         if failed is not None:
-            self._runtime_failed_count = max(0, int(failed))
+            self._runtime_failed_count = max(0, failed)
 
     def run(self) -> int:
         """Run iterations until the queue is done (forever with LoopForever). Returns the process exit status:
@@ -218,7 +215,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         graceful_stop = False
         fatal = False
         queued_songs = 0
-        queued_tasks = 0
         try:
             if self._stop_requested_now():
                 graceful_stop = True
@@ -281,37 +277,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         finally:
             self._stop_progress()
             elapsed = time.time() - start_time
-            done_msg = f"Run completed in {elapsed:.2f}s"
-            logger.info(done_msg)
-            try:
-                elapsed_h = float(elapsed) / 3600.0 if elapsed and elapsed > 0 else 0.0
-            except (ValueError, TypeError):
-                elapsed_h = 0.0
-            if elapsed_h > 0:
-                completed_tasks = getattr(self, "_last_completed_tasks", None)
-                if completed_tasks is None:
-                    completed_tasks = int(queued_tasks)
-                completed_tasks = max(0, int(completed_tasks))
-                total_tasks = getattr(self, "_last_total_tasks", None)
-                if total_tasks is None:
-                    total_tasks = int(queued_tasks)
-                total_tasks = max(0, int(total_tasks))
-                repeats_est = 1
-                try:
-                    if int(queued_songs) > 0 and int(queued_tasks) > 0:
-                        repeats_est = max(1, int(round(float(queued_tasks) / float(queued_songs))))
-                except (ValueError, TypeError):
-                    repeats_est = 1
-                try:
-                    completed_songs_est = int(round(float(completed_tasks) / float(repeats_est)))
-                except (ValueError, TypeError):
-                    completed_songs_est = int(completed_tasks)
-                completed_songs_est = min(int(queued_songs), max(0, int(completed_songs_est)))
-                songs_per_h = float(completed_songs_est) / elapsed_h if completed_songs_est > 0 else 0.0
-                tasks_per_h = float(completed_tasks) / elapsed_h if completed_tasks > 0 else 0.0
+            logger.info(f"Run completed in {elapsed:.2f}s")
+            if elapsed > 0:
+                elapsed_h = elapsed / 3600.0
+                completed, total = self._last_completed_tasks, self._last_total_tasks
+                # Songs are estimated as tasks (capped by the queue): repeats are not told apart.
+                songs = min(queued_songs, completed)
                 logger.info(
-                    f"[Throughput] Completed {completed_tasks}/{total_tasks} task(s) "
-                    f"(queue={queued_songs} song(s)) -> {songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
+                    f"[Throughput] Completed {completed}/{total} task(s) (queue={queued_songs} song(s)) -> "
+                    f"{songs / elapsed_h:.1f} songs/hour, {completed / elapsed_h:.1f} tasks/hour"
                 )
             gc.collect()
         if graceful_stop or self._stop_requested.is_set():
@@ -341,13 +315,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return self._queue_task_coordinator().build_song_queue(run)
 
     def _normalize_song_label(self, label: str) -> str:
-        s = str(label or "").strip()
-        if not s:
-            return s
-        try:
-            return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", s).strip()
-        except (ValueError, TypeError, re.error):
-            return s
+        """The song of a queue label (without its run number)."""
+        return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", label.strip()).strip()
 
     def _prepare_tasks(
         self,
@@ -378,5 +347,5 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if os.path.exists(MEMORY_GUARD_RESUME_FILE):
                 os.remove(MEMORY_GUARD_RESUME_FILE)
                 logger.info("[LoopForever] Cleared resume file")
-        except (OSError, IOError) as e:
-            logging.warning(f"Failed to delete resume file: {e}")
+        except OSError as e:
+            logger.warning(f"Failed to delete resume file: {e}")

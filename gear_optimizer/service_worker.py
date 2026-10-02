@@ -57,7 +57,6 @@ class PersistentOptimizerSession:
         self._gears: Mapping[str, Gear] = {}
         self._minis: Mapping[str, Mini] = {}
         self._initialized = False
-        self._request_count = 0
         self._prepare_data_root()
 
     def _prepare_data_root(self) -> None:
@@ -80,15 +79,8 @@ class PersistentOptimizerSession:
         self._initialized = True
 
     def _remove_result_db(self) -> None:
-        for path in (
-            self._result_db,
-            Path(f"{self._result_db}-wal"),
-            Path(f"{self._result_db}-shm"),
-        ):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+        for path in (self._result_db, Path(f"{self._result_db}-wal"), Path(f"{self._result_db}-shm")):
+            path.unlink(missing_ok=True)
 
     def solve(
         self,
@@ -117,10 +109,7 @@ class PersistentOptimizerSession:
         self._app._force_exit_requested.clear()
         set_memory_watchdog_limit(compute_memory_guard_limit(run))
         schema.ensure(self._result_db)
-        task_queue = [(str(self._chart_path), str(song_name), "Hard")]
-        tasks = self._app._prepare_tasks(task_queue, run, self._curves, gears, minis)
-        if not tasks:
-            raise RuntimeError("persistent optimizer produced no task")
+        tasks = self._app._prepare_tasks([(str(self._chart_path), song_name, "Hard")], run, self._curves, gears, minis)
         try:
             self._solve_direct(tasks, gears, minis)
             entries = legacy.read_best_loadouts(self._result_db, song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
@@ -128,7 +117,6 @@ class PersistentOptimizerSession:
                 raise RuntimeError("optimizer produced no T5 loadout")
             if promote_to:
                 db.promote(self._result_db, promote_to, song_name, "T5")
-            self._request_count += 1
             return entries
         finally:
             self._remove_result_db()

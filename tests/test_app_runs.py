@@ -13,7 +13,6 @@ from gear_optimizer.solver.gpu_executor import GpuFatalError, GpuServiceTimeoutE
 def _make_minimal_app() -> GearOptimizerApp:
     app = object.__new__(GearOptimizerApp)
     app._progress = None
-    app._progress_counts_driven = False
     app._stop_requested_now = lambda: False
     app._start_post_processor = lambda _total: (queue.Queue(), object())
     app._stop_post_processor = lambda _queue, _proc: True  # every song stored
