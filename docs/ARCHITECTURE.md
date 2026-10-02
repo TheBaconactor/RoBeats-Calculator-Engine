@@ -44,7 +44,7 @@ flowchart TD
 4. load stats, gear, minis, and the selected chart queue;
 5. build or verify timeline and Force Great response-frontier caches;
 6. initialize Taichi/Vulkan on the main thread; and
-7. solve the queue of canonical task tuples with `pipeline.solve.run_queue`.
+7. solve the queue of `domain.jobs.SongTask`s (one per song run) with `pipeline.solve.run_queue`.
 
 Taichi initialization happens before worker scheduling because the device
 runtime is process-global and must have one unambiguous owner.
