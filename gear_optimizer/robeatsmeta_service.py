@@ -489,26 +489,25 @@ def _build_official_song_catalog() -> _OfficialSongCatalog:
         if not diff_dir.is_dir():
             continue
         for chart in sorted(diff_dir.glob("*.txt")):
-            h = _read_full_header(chart)
-            song_id = str(h.get("Song Name") or "").strip()
+            h = _read_full_header(chart)  # values come stripped
+            song_id = h.get("Song Name", "")
             if not song_id:
                 continue
-            title = str(h.get("Title") or "").strip()
+            title = h.get("Title", "")
             for d in ("Hard", "Normal", "Easy"):
                 suffix = f" ({d})"
                 if title.endswith(suffix):
                     title = title[: -len(suffix)]
                     break
-            audio_raw = str(h.get("Audio Asset ID") or "").strip()
             songs.append({
                 "songId": song_id,
                 "difficulty": difficulty,
-                "primaryElement": str(h.get("Primary Color") or "").strip(),
-                "secondaryElement": str(h.get("Secondary Color") or "").strip(),
+                "primaryElement": h.get("Primary Color", ""),
+                "secondaryElement": h.get("Secondary Color", ""),
                 "title": title,
-                "artist": str(h.get("Artist") or "").strip(),
-                "audioId": audio_raw.replace("rbxassetid://", "") if audio_raw else "",
-                "coverImageId": str(h.get("Cover Image ID") or "").strip(),
+                "artist": h.get("Artist", ""),
+                "audioId": h.get("Audio Asset ID", "").replace("rbxassetid://", ""),
+                "coverImageId": h.get("Cover Image ID", ""),
             })
             paths_by_song_id.setdefault(song_id, chart)
     return _OfficialSongCatalog(songs=tuple(songs), paths_by_song_id=paths_by_song_id)
@@ -681,7 +680,7 @@ def _custom_item(raw: Any, *, columns: dict[str, str], types: tuple[str, ...], s
             raise RequestError(f"custom item {name!r} stat {key!r} must be an integer")
         if value < 0 or value > _MAX_CUSTOM_STAT:
             raise RequestError(f"custom item {name!r} stat {key!r} out of range")
-        item[key] = int(value)
+        item[key] = value
     return item
 
 
@@ -756,7 +755,7 @@ def _remove_excluded_rows(gear_dir: Path, pool: dict[str, list[Any]]) -> None:
     ):
         if not names:
             continue
-        drop = {str(n).strip().casefold() for n in names}
+        drop = {n.casefold() for n in names}  # validated, stripped (_excluded_names)
         path = gear_dir / filename
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.reader(handle))
@@ -794,11 +793,11 @@ def _append_custom_pool_rows(gear_dir: Path, pool: dict[str, list[dict[str, Any]
         existing = {str(row[name_index]).strip().casefold() for row in rows[1:] if len(row) > name_index}
         new_rows: list[list[str]] = []
         for item in items:
-            if str(item["name"]).casefold() in existing:
+            if item["name"].casefold() in existing:
                 raise RequestError(f"custom item name {item['name']!r} already exists in {filename}")
             cell_by_column = {columns[key]: str(item[key]) for key in columns if item[key]}
-            cell_by_column[name_column] = str(item["name"])
-            cell_by_column["Type"] = str(item["type"])
+            cell_by_column[name_column] = item["name"]
+            cell_by_column["Type"] = item["type"]
             # Minis.csv repeats every stat column for the L1 ascension block; fill only the FIRST
             # occurrence of each header (which is what the parser reads for live stats) and leave
             # the repeats blank, so a custom mini has no L1 ascension stats.
