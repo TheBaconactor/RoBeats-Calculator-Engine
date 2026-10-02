@@ -62,6 +62,11 @@ HitTimes = namedtuple(
     "HitTimes",
     ["perfect_floor_timestamps", "perfect_candidate_timestamps", "great_floor_timestamps", "great_candidate_timestamps"],
 )
+# The stamp-radix scratch of the body-pair reduction (values, stamps and touched list per (normal Great, fever Great)
+# pair; the Fenwick prefix-max arrays of the per-state hull).
+PairWorkspace = namedtuple(
+    "PairWorkspace", ["best_fever_by_pair", "pair_stamp", "touched_pair", "bit_values", "bit_stamps"]
+)
 # One fever time's per-activation tables: each note's latest reachable Perfect / late-Great activation hit (valid where
 # `*_valid` != 0) and the window ends those hits reach on the Perfect floor (`perfect_e`, `late_e`) and on the
 # early-Great floor (`eg_perfect_e`, `eg_late_e`), clamped to (activation, n].
@@ -4805,6 +4810,238 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
 
 
 @njit(cache=True, nogil=True)
+def _numba_first_section_body_frontier(
+    first_frontier, n: int, action_count: int, first_fill, first_forced, first_activation_forced, ends,
+    use_forced_great_timing_i: int, head, pair_ws, pair_mod: int, pair_stamp_value: int, bit_stamp_value: int,
+    branch_a_values, branch_a_stamps, branch_a_stamp: int,
+):
+    """The first section when its activations all lie in the body (first_fill[0] >= 100): every action's
+    Perfect / late-Great edge (and early-Great extensions) meets the body tails at its end, reduced per
+    head-Great count (0..100) and appended to `first_frontier` through the branch-A stamped prefix maxima.
+    Returns the number of generated candidates and the advanced pair / bit epochs."""
+    body_values, body_starts, body_counts = head.body_values, head.body_starts, head.body_counts
+    best_fever_by_pair, pair_stamp, touched_pair, bit_values, bit_stamps = pair_ws
+    branch_a_width = int(n) + 2
+    first_generated_count = 0
+    # Reusable output buffer for the fused per-bucket reduce+hull (grow-doubling, rewritten
+    # from row 0 each head_great_count bucket; rows are consumed before the next bucket).
+    first_reduce_values = np.empty((1024, 3), dtype=np.uint64)
+    first_edge_e_by_action = np.empty(int(action_count), dtype=np.int32)
+    first_normal_head_by_action = np.empty(int(action_count), dtype=np.int32)
+    first_activation_e_by_action = np.empty(int(action_count), dtype=np.int32)
+    first_activation_prefix_by_action = np.empty(int(action_count), dtype=np.int32)
+    first_activation_head_by_action = np.empty(int(action_count), dtype=np.int32)
+    for action_idx in range(int(action_count)):
+        fill = int(first_fill[int(action_idx)])
+        forced_count = int(first_forced[int(action_idx)])
+        edge_valid = 0
+        if int(fill) < int(n):
+            edge_valid = int(ends.perfect_valid[int(fill)])
+        edge_e = -1
+        if int(edge_valid) != 0 and int(forced_count) >= 0:
+            edge_e = int(ends.perfect_e[int(fill)])
+        first_edge_e_by_action[int(action_idx)] = int(edge_e)
+        first_normal_head_by_action[int(action_idx)] = min(100, max(0, int(forced_count)))
+        prefix_forced = int(first_activation_forced[int(action_idx)])
+        activation_e = -1
+        if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0 and int(fill) < int(n):
+            activation_valid = int(ends.late_valid[int(fill)])
+            if int(activation_valid) != 0:
+                activation_e = int(ends.late_e[int(fill)])
+        first_activation_e_by_action[int(action_idx)] = int(activation_e)
+        first_activation_prefix_by_action[int(action_idx)] = int(prefix_forced)
+        first_activation_head_by_action[int(action_idx)] = min(100, max(0, int(prefix_forced)))
+    first_reduce_values = np.empty((1024, 3), dtype=np.uint64)
+    normal_bucket_offsets = np.zeros(102, dtype=np.int32)
+    activation_bucket_offsets = np.zeros(102, dtype=np.int32)
+    for action_idx in range(int(action_count)):
+        edge_e = int(first_edge_e_by_action[int(action_idx)])
+        if int(edge_e) >= 100:
+            hgc = int(first_normal_head_by_action[int(action_idx)])
+            normal_bucket_offsets[int(hgc) + 1] += 1
+        activation_e = int(first_activation_e_by_action[int(action_idx)])
+        # activation_e >= 100 guards the table lookups: it implies fill < n and that both
+        # staged hits were the prefix-table values (the `and` short-circuits otherwise).
+        if int(activation_e) >= 100 and _numba_late_edge_extends(
+            int(edge_e),
+            int(activation_e),
+            int(ends.eg_late_e[int(first_fill[int(action_idx)])]),
+            int(ends.eg_perfect_e[int(first_fill[int(action_idx)])]),
+        ):
+            hgc = int(first_activation_head_by_action[int(action_idx)])
+            activation_bucket_offsets[int(hgc) + 1] += 1
+    for head_great_count in range(101):
+        normal_bucket_offsets[int(head_great_count) + 1] += normal_bucket_offsets[int(head_great_count)]
+        activation_bucket_offsets[int(head_great_count) + 1] += activation_bucket_offsets[int(head_great_count)]
+    normal_actions_by_head = np.empty(int(normal_bucket_offsets[101]), dtype=np.int32)
+    activation_actions_by_head = np.empty(int(activation_bucket_offsets[101]), dtype=np.int32)
+    normal_bucket_write = np.zeros(101, dtype=np.int32)
+    activation_bucket_write = np.zeros(101, dtype=np.int32)
+    for action_idx in range(int(action_count)):
+        edge_e = int(first_edge_e_by_action[int(action_idx)])
+        if int(edge_e) >= 100:
+            hgc = int(first_normal_head_by_action[int(action_idx)])
+            pos = int(normal_bucket_offsets[int(hgc)]) + int(normal_bucket_write[int(hgc)])
+            normal_actions_by_head[int(pos)] = int(action_idx)
+            normal_bucket_write[int(hgc)] += 1
+        activation_e = int(first_activation_e_by_action[int(action_idx)])
+        if int(activation_e) >= 100 and _numba_late_edge_extends(
+            int(edge_e),
+            int(activation_e),
+            int(ends.eg_late_e[int(first_fill[int(action_idx)])]),
+            int(ends.eg_perfect_e[int(first_fill[int(action_idx)])]),
+        ):
+            hgc = int(first_activation_head_by_action[int(action_idx)])
+            pos = int(activation_bucket_offsets[int(hgc)]) + int(activation_bucket_write[int(hgc)])
+            activation_actions_by_head[int(pos)] = int(action_idx)
+            activation_bucket_write[int(hgc)] += 1
+    for head_great_count in range(101):
+        touched_count = 0
+        pair_stamp_value += 1
+        prev_fill = -1
+        prev_edge_e = -1
+        prev_activation_fill = -1
+        prev_activation_e = -1
+        prev_activation_prefix = -1
+        for bucket_idx in range(
+            int(normal_bucket_offsets[int(head_great_count)]),
+            int(normal_bucket_offsets[int(head_great_count) + 1]),
+        ):
+            action_idx = int(normal_actions_by_head[int(bucket_idx)])
+            edge_e = int(first_edge_e_by_action[int(action_idx)])
+            fill = int(first_fill[int(action_idx)])
+            forced_count = int(first_forced[int(action_idx)])
+            if (
+                int(fill) != int(prev_fill)
+                or int(edge_e) != int(prev_edge_e)
+            ):
+                prev_fill = int(fill)
+                prev_edge_e = int(edge_e)
+                edge = _numba_pack_edge(
+                    int(n),
+                    int(fill),
+                    int(edge_e),
+                    0,
+                    min(int(n), int(forced_count)),
+                    -1,
+                )
+                touched_count, added_count = _numba_touch_body_tail_array_candidates(
+                    edge,
+                    int(edge_e),
+                    body_values,
+                    body_starts,
+                    body_counts,
+                    int(pair_mod),
+                    int(pair_stamp_value),
+                    pair_stamp,
+                    best_fever_by_pair,
+                    touched_pair,
+                    int(touched_count),
+                )
+                first_generated_count += int(added_count)
+                # Issue #44: early-Great extension of the first Perfect-activation section.
+                # first_fill >= 100, so every extended end is in the body (head_great_count
+                # unchanged -> same bucket). Bucket membership (edge_e >= 100) proves the
+                # staged hit was prefix_perfect_hit[fill] -> the capped table is exact.
+                eg_e = int(ends.eg_perfect_e[int(fill)])
+                for end_e in range(int(edge_e) + 1, int(eg_e) + 1):
+                    edge_eg = _numba_pack_edge_eg(
+                        int(n), int(fill), int(end_e), 0,
+                        min(int(n), int(forced_count)), -1,
+                        int(edge_e), int(end_e),
+                    )
+                    touched_count, added_eg = _numba_touch_body_tail_array_candidates(
+                        edge_eg, int(end_e), body_values, body_starts, body_counts,
+                        int(pair_mod), int(pair_stamp_value), pair_stamp,
+                        best_fever_by_pair, touched_pair, int(touched_count),
+                    )
+                    first_generated_count += int(added_eg)
+        for bucket_idx in range(
+            int(activation_bucket_offsets[int(head_great_count)]),
+            int(activation_bucket_offsets[int(head_great_count) + 1]),
+        ):
+            action_idx = int(activation_actions_by_head[int(bucket_idx)])
+            edge_e = int(first_edge_e_by_action[int(action_idx)])
+            activation_e = int(first_activation_e_by_action[int(action_idx)])
+            fill = int(first_fill[int(action_idx)])
+            prefix_forced = int(first_activation_prefix_by_action[int(action_idx)])
+            if (
+                int(fill) == int(prev_activation_fill)
+                and int(activation_e) == int(prev_activation_e)
+                and int(prefix_forced) == int(prev_activation_prefix)
+            ):
+                continue
+            prev_activation_fill = int(fill)
+            prev_activation_e = int(activation_e)
+            prev_activation_prefix = int(prefix_forced)
+            activation_edge = _numba_pack_edge(
+                int(n),
+                int(fill),
+                int(activation_e),
+                0,
+                min(int(n), int(prefix_forced)),
+                int(fill),
+            )
+            touched_count, added_count = _numba_touch_body_tail_array_candidates(
+                activation_edge,
+                int(activation_e),
+                body_values,
+                body_starts,
+                body_counts,
+                int(pair_mod),
+                int(pair_stamp_value),
+                pair_stamp,
+                best_fever_by_pair,
+                touched_pair,
+                int(touched_count),
+            )
+            first_generated_count += int(added_count)
+            # Issue #44: early-Great extension of the first late-Great-activation section.
+            # Bucket membership (activation_e >= 100) proves the staged hit was
+            # prefix_late_hit[fill] -> the capped table is exact.
+            eg_e_late = int(ends.eg_late_e[int(fill)])
+            for end_e in range(int(activation_e) + 1, int(eg_e_late) + 1):
+                activation_edge_eg = _numba_pack_edge_eg(
+                    int(n), int(fill), int(end_e), 0,
+                    min(int(n), int(prefix_forced)), int(fill),
+                    int(activation_e), int(end_e),
+                )
+                touched_count, added_eg = _numba_touch_body_tail_array_candidates(
+                    activation_edge_eg, int(end_e), body_values, body_starts, body_counts,
+                    int(pair_mod), int(pair_stamp_value), pair_stamp,
+                    best_fever_by_pair, touched_pair, int(touched_count),
+                )
+                first_generated_count += int(added_eg)
+
+        if int(touched_count) <= 0:
+            continue
+        bit_stamp_value += 1
+        first_reduce_values, body_frontier_len = _numba_reduce_touched_body_pairs(
+            int(pair_mod),
+            touched_pair,
+            int(touched_count),
+            best_fever_by_pair,
+            bit_values,
+            bit_stamps,
+            int(bit_stamp_value),
+            first_reduce_values,
+        )
+        for body_idx in range(int(body_frontier_len)):
+            _numba_append_branch_a_body_prefix_surface(
+                first_frontier,
+                int(head_great_count),
+                first_reduce_values[int(body_idx), 0],
+                first_reduce_values[int(body_idx), 1],
+                first_reduce_values[int(body_idx), 2],
+                branch_a_values,
+                branch_a_stamps,
+                int(branch_a_stamp),
+                int(branch_a_width),
+            )
+    return int(first_generated_count), int(pair_stamp_value), int(bit_stamp_value)
+
+
+@njit(cache=True, nogil=True)
 def _first_frontier_from_precomputed_end_indices_numba(
     n: int,
     action_count: int,
@@ -5096,31 +5333,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
     # (and its stamp array untouched) when that branch is not taken.
     branch_a_epoch_out = int(branch_a_epoch_in)
     if int(action_count) > 0 and int(first_fill[0]) >= 100:
-        first_edge_e_by_action = np.empty(int(action_count), dtype=np.int32)
-        first_normal_head_by_action = np.empty(int(action_count), dtype=np.int32)
-        first_activation_e_by_action = np.empty(int(action_count), dtype=np.int32)
-        first_activation_prefix_by_action = np.empty(int(action_count), dtype=np.int32)
-        first_activation_head_by_action = np.empty(int(action_count), dtype=np.int32)
-        for action_idx in range(int(action_count)):
-            fill = int(first_fill[int(action_idx)])
-            forced_count = int(first_forced[int(action_idx)])
-            edge_valid = 0
-            if int(fill) < int(n):
-                edge_valid = int(ends.perfect_valid[int(fill)])
-            edge_e = -1
-            if int(edge_valid) != 0 and int(forced_count) >= 0:
-                edge_e = int(ends.perfect_e[int(fill)])
-            first_edge_e_by_action[int(action_idx)] = int(edge_e)
-            first_normal_head_by_action[int(action_idx)] = min(100, max(0, int(forced_count)))
-            prefix_forced = int(first_activation_forced[int(action_idx)])
-            activation_e = -1
-            if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0 and int(fill) < int(n):
-                activation_valid = int(ends.late_valid[int(fill)])
-                if int(activation_valid) != 0:
-                    activation_e = int(ends.late_e[int(fill)])
-            first_activation_e_by_action[int(action_idx)] = int(activation_e)
-            first_activation_prefix_by_action[int(action_idx)] = int(prefix_forced)
-            first_activation_head_by_action[int(action_idx)] = min(100, max(0, int(prefix_forced)))
         branch_a_width = int(n) + 2
         branch_a_size = (int(pair_mod) + 1) * int(branch_a_width)
         # Branch-A keeps ONE epoch for the whole call (the stamped Fenwick deliberately
@@ -5131,195 +5343,12 @@ def _first_frontier_from_precomputed_end_indices_numba(
         branch_a_stamps = ws_branch_a_stamps[: int(branch_a_size)]
         branch_a_epoch_out = int(branch_a_epoch_in) + 1
         branch_a_stamp = int(branch_a_epoch_out)
-        # Reusable output buffer for the fused per-bucket reduce+hull (grow-doubling, rewritten
-        # from row 0 each head_great_count bucket; rows are consumed before the next bucket).
-        first_reduce_values = np.empty((1024, 3), dtype=np.uint64)
-        normal_bucket_offsets = np.zeros(102, dtype=np.int32)
-        activation_bucket_offsets = np.zeros(102, dtype=np.int32)
-        for action_idx in range(int(action_count)):
-            edge_e = int(first_edge_e_by_action[int(action_idx)])
-            if int(edge_e) >= 100:
-                hgc = int(first_normal_head_by_action[int(action_idx)])
-                normal_bucket_offsets[int(hgc) + 1] += 1
-            activation_e = int(first_activation_e_by_action[int(action_idx)])
-            # activation_e >= 100 guards the table lookups: it implies fill < n and that both
-            # staged hits were the prefix-table values (the `and` short-circuits otherwise).
-            if int(activation_e) >= 100 and _numba_late_edge_extends(
-                int(edge_e),
-                int(activation_e),
-                int(ends.eg_late_e[int(first_fill[int(action_idx)])]),
-                int(ends.eg_perfect_e[int(first_fill[int(action_idx)])]),
-            ):
-                hgc = int(first_activation_head_by_action[int(action_idx)])
-                activation_bucket_offsets[int(hgc) + 1] += 1
-        for head_great_count in range(101):
-            normal_bucket_offsets[int(head_great_count) + 1] += normal_bucket_offsets[int(head_great_count)]
-            activation_bucket_offsets[int(head_great_count) + 1] += activation_bucket_offsets[int(head_great_count)]
-        normal_actions_by_head = np.empty(int(normal_bucket_offsets[101]), dtype=np.int32)
-        activation_actions_by_head = np.empty(int(activation_bucket_offsets[101]), dtype=np.int32)
-        normal_bucket_write = np.zeros(101, dtype=np.int32)
-        activation_bucket_write = np.zeros(101, dtype=np.int32)
-        for action_idx in range(int(action_count)):
-            edge_e = int(first_edge_e_by_action[int(action_idx)])
-            if int(edge_e) >= 100:
-                hgc = int(first_normal_head_by_action[int(action_idx)])
-                pos = int(normal_bucket_offsets[int(hgc)]) + int(normal_bucket_write[int(hgc)])
-                normal_actions_by_head[int(pos)] = int(action_idx)
-                normal_bucket_write[int(hgc)] += 1
-            activation_e = int(first_activation_e_by_action[int(action_idx)])
-            if int(activation_e) >= 100 and _numba_late_edge_extends(
-                int(edge_e),
-                int(activation_e),
-                int(ends.eg_late_e[int(first_fill[int(action_idx)])]),
-                int(ends.eg_perfect_e[int(first_fill[int(action_idx)])]),
-            ):
-                hgc = int(first_activation_head_by_action[int(action_idx)])
-                pos = int(activation_bucket_offsets[int(hgc)]) + int(activation_bucket_write[int(hgc)])
-                activation_actions_by_head[int(pos)] = int(action_idx)
-                activation_bucket_write[int(hgc)] += 1
-        for head_great_count in range(101):
-            touched_count = 0
-            pair_stamp_value += 1
-            prev_fill = -1
-            prev_edge_e = -1
-            prev_activation_fill = -1
-            prev_activation_e = -1
-            prev_activation_prefix = -1
-            for bucket_idx in range(
-                int(normal_bucket_offsets[int(head_great_count)]),
-                int(normal_bucket_offsets[int(head_great_count) + 1]),
-            ):
-                action_idx = int(normal_actions_by_head[int(bucket_idx)])
-                edge_e = int(first_edge_e_by_action[int(action_idx)])
-                fill = int(first_fill[int(action_idx)])
-                forced_count = int(first_forced[int(action_idx)])
-                if (
-                    int(fill) != int(prev_fill)
-                    or int(edge_e) != int(prev_edge_e)
-                ):
-                    prev_fill = int(fill)
-                    prev_edge_e = int(edge_e)
-                    edge = _numba_pack_edge(
-                        int(n),
-                        int(fill),
-                        int(edge_e),
-                        0,
-                        min(int(n), int(forced_count)),
-                        -1,
-                    )
-                    touched_count, added_count = _numba_touch_body_tail_array_candidates(
-                        edge,
-                        int(edge_e),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        int(pair_mod),
-                        int(pair_stamp_value),
-                        pair_stamp,
-                        best_fever_by_pair,
-                        touched_pair,
-                        int(touched_count),
-                    )
-                    first_generated_count += int(added_count)
-                    # Issue #44: early-Great extension of the first Perfect-activation section.
-                    # first_fill >= 100, so every extended end is in the body (head_great_count
-                    # unchanged -> same bucket). Bucket membership (edge_e >= 100) proves the
-                    # staged hit was prefix_perfect_hit[fill] -> the capped table is exact.
-                    eg_e = int(ends.eg_perfect_e[int(fill)])
-                    for end_e in range(int(edge_e) + 1, int(eg_e) + 1):
-                        edge_eg = _numba_pack_edge_eg(
-                            int(n), int(fill), int(end_e), 0,
-                            min(int(n), int(forced_count)), -1,
-                            int(edge_e), int(end_e),
-                        )
-                        touched_count, added_eg = _numba_touch_body_tail_array_candidates(
-                            edge_eg, int(end_e), body_values, body_starts, body_counts,
-                            int(pair_mod), int(pair_stamp_value), pair_stamp,
-                            best_fever_by_pair, touched_pair, int(touched_count),
-                        )
-                        first_generated_count += int(added_eg)
-            for bucket_idx in range(
-                int(activation_bucket_offsets[int(head_great_count)]),
-                int(activation_bucket_offsets[int(head_great_count) + 1]),
-            ):
-                action_idx = int(activation_actions_by_head[int(bucket_idx)])
-                edge_e = int(first_edge_e_by_action[int(action_idx)])
-                activation_e = int(first_activation_e_by_action[int(action_idx)])
-                fill = int(first_fill[int(action_idx)])
-                prefix_forced = int(first_activation_prefix_by_action[int(action_idx)])
-                if (
-                    int(fill) == int(prev_activation_fill)
-                    and int(activation_e) == int(prev_activation_e)
-                    and int(prefix_forced) == int(prev_activation_prefix)
-                ):
-                    continue
-                prev_activation_fill = int(fill)
-                prev_activation_e = int(activation_e)
-                prev_activation_prefix = int(prefix_forced)
-                activation_edge = _numba_pack_edge(
-                    int(n),
-                    int(fill),
-                    int(activation_e),
-                    0,
-                    min(int(n), int(prefix_forced)),
-                    int(fill),
-                )
-                touched_count, added_count = _numba_touch_body_tail_array_candidates(
-                    activation_edge,
-                    int(activation_e),
-                    body_values,
-                    body_starts,
-                    body_counts,
-                    int(pair_mod),
-                    int(pair_stamp_value),
-                    pair_stamp,
-                    best_fever_by_pair,
-                    touched_pair,
-                    int(touched_count),
-                )
-                first_generated_count += int(added_count)
-                # Issue #44: early-Great extension of the first late-Great-activation section.
-                # Bucket membership (activation_e >= 100) proves the staged hit was
-                # prefix_late_hit[fill] -> the capped table is exact.
-                eg_e_late = int(ends.eg_late_e[int(fill)])
-                for end_e in range(int(activation_e) + 1, int(eg_e_late) + 1):
-                    activation_edge_eg = _numba_pack_edge_eg(
-                        int(n), int(fill), int(end_e), 0,
-                        min(int(n), int(prefix_forced)), int(fill),
-                        int(activation_e), int(end_e),
-                    )
-                    touched_count, added_eg = _numba_touch_body_tail_array_candidates(
-                        activation_edge_eg, int(end_e), body_values, body_starts, body_counts,
-                        int(pair_mod), int(pair_stamp_value), pair_stamp,
-                        best_fever_by_pair, touched_pair, int(touched_count),
-                    )
-                    first_generated_count += int(added_eg)
-
-            if int(touched_count) <= 0:
-                continue
-            bit_stamp_value += 1
-            first_reduce_values, body_frontier_len = _numba_reduce_touched_body_pairs(
-                int(pair_mod),
-                touched_pair,
-                int(touched_count),
-                best_fever_by_pair,
-                bit_values,
-                bit_stamps,
-                int(bit_stamp_value),
-                first_reduce_values,
-            )
-            for body_idx in range(int(body_frontier_len)):
-                _numba_append_branch_a_body_prefix_surface(
-                    first_frontier,
-                    int(head_great_count),
-                    first_reduce_values[int(body_idx), 0],
-                    first_reduce_values[int(body_idx), 1],
-                    first_reduce_values[int(body_idx), 2],
-                    branch_a_values,
-                    branch_a_stamps,
-                    int(branch_a_stamp),
-                    int(branch_a_width),
-                )
+        first_generated_count, pair_stamp_value, bit_stamp_value = _numba_first_section_body_frontier(
+            first_frontier, int(n), int(action_count), first_fill, first_forced, first_activation_forced, ends,
+            int(use_forced_great_timing_i), head,
+            PairWorkspace(best_fever_by_pair, pair_stamp, touched_pair, bit_values, bit_stamps), int(pair_mod),
+            int(pair_stamp_value), int(bit_stamp_value), branch_a_values, branch_a_stamps, int(branch_a_stamp),
+        )
         first_region_generated, first_region_scores, added, first_region_bounded, region_node_surface, region_node_next = (
             _numba_emit_region2_head_edges(
                 first_region_generated,
