@@ -1761,21 +1761,9 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         lambda *_a, **_k: FgResponseFrontierResult((surface,), {}, 1, 1, 0, 1, 1, 1, 0, 0.0),
     )
 
-    result = response_frontier.score_prepared_force_greats_response_frontier_batch_sync(
-        batch,
-        include_forced_counts=False,
-    )
+    result = response_frontier.score_prepared_force_greats_response_frontier_batch_sync(batch)
 
     assert result[0].best_score == 123
-    assert result[0].forced_counts == ()
-
-    result_with_counts = response_frontier.score_prepared_force_greats_response_frontier_batch_sync(
-        batch,
-        include_forced_counts=True,
-    )
-
-    assert result_with_counts[0].best_score == 123
-    assert result_with_counts[0].forced_counts == ()
 
 
 def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch) -> None:

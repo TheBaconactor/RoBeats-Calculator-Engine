@@ -194,13 +194,6 @@ def materialize_force_payload_from_response_frontier(
     # handed out directly, so it can't be mutated downstream); with no cache, return as-is,
     # exactly like before.
     frontier_trace = base_trace if trace_cache is None else tuple(dict(row) for row in base_trace)
-    trace_counts = tuple(int(row["forced_count"]) for row in frontier_trace)
-    if result.forced_counts:
-        forced_counts = tuple(int(v) for v in result.forced_counts)
-        if forced_counts != trace_counts:
-            raise ValueError("ForceGreats response frontier forced_counts do not match the reconstructed trace")
-    else:
-        forced_counts = trace_counts
     paired_base = safe_int(paired_base_score, 0)
     if paired_base <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")

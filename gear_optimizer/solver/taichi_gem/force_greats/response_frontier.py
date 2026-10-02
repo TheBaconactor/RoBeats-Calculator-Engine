@@ -15,7 +15,7 @@ from gear_optimizer.solver.force_greats_common import response_frontier_base_com
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.stats import apply_gems, gems
 
-from .response_builder import reconstruct_force_greats_response_counts, reconstruct_force_greats_response_trace
+from .response_builder import reconstruct_force_greats_response_trace
 from .response_cache import load_response_frontier_scoring_bundle
 from .response_cache_serde import frontier_result_from_scoring_bundle_for_stats
 from .response_cache_store import load_first_surface_scoring_patterns
@@ -48,7 +48,6 @@ __all__ = [
     "pack_prepared_force_greats_response_frontier_scoring_surfaces",
     "score_prepared_force_greats_response_frontier_batch_on_cpu_owner",
     "score_prepared_force_greats_response_frontier_batch_sync",
-    "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
 ]
 
@@ -455,7 +454,6 @@ def _solve_result_from_row(
     pair: _ResponsePair,
     row: tuple[int, int, int, int, int, int, int, int, int, int, int],
     surface: FgResponseSurface | None = None,
-    include_forced_counts: bool = True,
 ) -> FgResponseFrontierSolveResult:
     ft, ff, frontier, raw_fill, real_fever_time = pair
     inner = FgResponseInnerResult(
@@ -472,22 +470,6 @@ def _solve_result_from_row(
         final_secondary=int(row[10]),
     )
     surface = surface if surface is not None else frontier.first_frontier[int(inner.surface_index)]
-    if include_forced_counts:
-        forced_counts = reconstruct_force_greats_response_counts(
-            frontier=frontier,
-            target_surface=surface,
-            timestamps=song_inputs.timestamps,
-            perfect_candidate_timestamps=song_inputs.perfect_candidates,
-            great_candidate_timestamps=song_inputs.great_candidates,
-            perfect_floor_timestamps=song_inputs.perfect_floor,
-            great_floor_timestamps=song_inputs.great_floor,
-            lanes=song_inputs.lanes,
-            raw_fever_fill=float(raw_fill),
-            real_fever_time=float(real_fever_time),
-            use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-        )
-    else:
-        forced_counts = ()
     final_stats = apply_gems(
         base_stats,
         gems(pp=inner.g_pp, cm=inner.g_cm, fm=inner.g_fm, ft=ft, ff=ff, element=inner.g_ov),
@@ -503,7 +485,6 @@ def _solve_result_from_row(
         frontier=frontier,
         inner=inner,
         seconds=float(time.perf_counter() - started),
-        forced_counts=tuple(int(v) for v in forced_counts),
         raw_fever_fill=float(raw_fill),
         real_fever_time=float(real_fever_time),
     )
@@ -773,8 +754,6 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
 def materialize_prepared_force_greats_response_frontier_batch_results(
     batch: FgResponseFrontierPackedScoringBatch,
     inner_rows: np.ndarray,
-    *,
-    include_forced_counts: bool = False,
 ) -> list[FgResponseFrontierSolveResult]:
     scoring_bundle = batch.scoring_bundle
     surface_pattern_ids = batch.scoring_surface_pattern_ids
@@ -830,7 +809,6 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
                 pair=pair,
                 row=result_row,
                 surface=result_surface,
-                include_forced_counts=bool(include_forced_counts),
             )
         )
     return out
@@ -984,7 +962,6 @@ def build_fused_owner_solve_result_from_score_row(
     curves: StatCurves,
     scoring_bundle: FgResponseFrontierScoringBundle,
     started: float | None = None,
-    include_forced_counts: bool = False,
     song_inputs: Any | None = None,
     frontier_by_stat_key: dict[tuple[int, int], FgResponseFrontierResult] | None = None,
 ) -> FgResponseFrontierSolveResult:
@@ -1038,14 +1015,11 @@ def build_fused_owner_solve_result_from_score_row(
         pair=pair,
         row=tuple(int(v) for v in score_row.inner_row),
         surface=surface,
-        include_forced_counts=bool(include_forced_counts),
     )
 
 
 def score_prepared_force_greats_response_frontier_batch_sync(
     batch: FgResponseFrontierPackedScoringBatch,
-    *,
-    include_forced_counts: bool = False,
 ) -> list[FgResponseFrontierSolveResult]:
     if batch.scoring_surface_pattern_ids is None:
         batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
@@ -1054,6 +1028,5 @@ def score_prepared_force_greats_response_frontier_batch_sync(
     out = materialize_prepared_force_greats_response_frontier_batch_results(
         batch,
         owner.inner_rows,
-        include_forced_counts=bool(include_forced_counts),
     )
     return out

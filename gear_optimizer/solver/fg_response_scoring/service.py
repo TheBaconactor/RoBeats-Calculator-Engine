@@ -67,7 +67,6 @@ class FgResponseScoringService:
                         curves=batch.curves,
                         scoring_bundle=batch.scoring_bundle,
                         started=batch.started,
-                        include_forced_counts=False,
                         song_inputs=song_inputs,
                         frontier_by_stat_key=frontier_by_stat_key,
                     )

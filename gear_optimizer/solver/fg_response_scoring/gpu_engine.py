@@ -18,6 +18,6 @@ class GpuScoreEngine:
     @staticmethod
     def score_plan(plan: FgResponseFrontierPreparedPlan) -> list[list[FgResponseFrontierSolveResult]]:
         return [
-            score_prepared_force_greats_response_frontier_batch_sync(prepared.batch, include_forced_counts=False)
+            score_prepared_force_greats_response_frontier_batch_sync(prepared.batch)
             for prepared in plan.prepared_batches
         ]

@@ -26,7 +26,6 @@ def _prepare_and_score_sync(
     curves,
     selected_color,
     total_budget: int,
-    include_forced_counts: bool = True,
 ):
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier as rf
 
@@ -39,7 +38,6 @@ def _prepare_and_score_sync(
     )
     return rf.score_prepared_force_greats_response_frontier_batch_sync(
         batch,
-        include_forced_counts=bool(include_forced_counts),
     )
 
 
@@ -50,7 +48,6 @@ def _solve_one_batch(
     curves,
     selected_color,
     total_budget: int,
-    include_forced_counts: bool = True,
 ):
     results = _prepare_and_score_sync(
         base_stats_list=[base_stats],
@@ -58,7 +55,6 @@ def _solve_one_batch(
         curves=curves,
         selected_color=selected_color,
         total_budget=int(total_budget),
-        include_forced_counts=bool(include_forced_counts),
     )
     if not results:
         raise ValueError("response frontier exact GPU batch produced no pair result")
@@ -251,12 +247,10 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
 
     result = score_prepared_force_greats_response_frontier_batch_sync(
         batch,
-        include_forced_counts=True,
     )[0]
 
     assert int(result.best_score) == 29_340_273
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 6, 6)
-    assert tuple(result.forced_counts) == (0, 3)
     replay = _replay_response_result_through_input_engine(
         song=song,
         final_stats=final_stats,
@@ -375,12 +369,10 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     )
     result = score_prepared_force_greats_response_frontier_batch_sync(
         batch,
-        include_forced_counts=True,
     )[0]
 
     assert int(result.best_score) == 47_502_604  # legal max; > the unreachable served 47,476,966
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 4095, 0, 0, 0, 1361, 5, 5)
-    assert tuple(result.forced_counts) == (13, 2)
 
     replay = _replay_response_result_through_input_engine(
         song=song,

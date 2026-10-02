@@ -64,7 +64,7 @@ def _patch_builder_primitives(monkeypatch):
         # the object the resolver would have recomputed.
         return frontier_by_key.setdefault((int(ft_stat), int(ff_stat)), object())
 
-    def _fake_solve_row(*, started, base_stats, selected_color, song_inputs, pair, row, surface, include_forced_counts):
+    def _fake_solve_row(*, started, base_stats, selected_color, song_inputs, pair, row, surface):
         captured.append({"song_inputs": song_inputs, "frontier": pair[2], "surface": surface})
         return ("solve", id(song_inputs), id(pair[2]))
 
@@ -96,7 +96,6 @@ def test_fused_builder_hoists_song_inputs_and_dedups_frontier(monkeypatch):
             curves={},
             scoring_bundle=bundle,
             started=0.0,
-            include_forced_counts=False,
             song_inputs=_SONG_INPUTS,
             frontier_by_stat_key=memo,
         )
@@ -129,7 +128,6 @@ def test_fused_builder_default_path_is_byte_identical(monkeypatch):
             curves={},
             scoring_bundle=bundle,
             started=0.0,
-            include_forced_counts=False,
         )
 
     # Standalone path re-extracts and re-resolves per candidate...
@@ -162,7 +160,6 @@ def test_materialize_from_owner_score_map_shares_hoists_per_batch(monkeypatch):
         curves,
         scoring_bundle,
         started,
-        include_forced_counts,
         song_inputs,
         frontier_by_stat_key,
     ):

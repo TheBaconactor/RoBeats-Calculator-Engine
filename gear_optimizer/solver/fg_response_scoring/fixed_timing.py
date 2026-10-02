@@ -79,7 +79,7 @@ def _solve_fixed_timing_response_results(
         total_budget=total_budget,
         scoring_bundle=scoring_bundle,
     )
-    results = score_prepared_force_greats_response_frontier_batch_sync(batch, include_forced_counts=False)
+    results = score_prepared_force_greats_response_frontier_batch_sync(batch)
     if len(results) != len(rows):
         raise ValueError(
             "fixed-timing FG surface build produced a different row count than the stats batch "
