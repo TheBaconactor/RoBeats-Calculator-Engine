@@ -22,6 +22,7 @@ def _stage_population(population: np.ndarray, *, n_slots: int = 9) -> None:
 
 
 def test_ga_aggregate_genome_stats_kernel_always_aggregates_every_genome():
+    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernel_loader import get_kernels
@@ -42,7 +43,7 @@ def test_ga_aggregate_genome_stats_kernel_always_aggregates_every_genome():
     rep_idx = np.zeros((fields.MAX_GENOMES,), dtype=np.int32)
     fields.ga_exact_eval_rep_idx.from_numpy(rep_idx)
 
-    kernels.ga_aggregate_genome_stats_kernel(2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    kernels.ga_aggregate_genome_stats_kernel(2, 1, gpu_color_flags(None))
 
     out = np.asarray(fields.genome_base_stats.to_numpy()[:2], dtype=np.int32)
     assert int(out[0][0]) == 10

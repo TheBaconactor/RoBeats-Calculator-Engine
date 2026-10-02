@@ -267,6 +267,7 @@ def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
 
 
 def test_gpu_ga_refresh_next_fused_runs_matches_separate_transition():
+    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import (
         ga_refresh_scores_and_update_runs_best,
@@ -317,6 +318,7 @@ def test_gpu_ga_refresh_next_fused_runs_matches_separate_transition():
         "n_slots": n_slots,
         "total_budget": 90,
         "gem_scale_fever": 3,
+        "flags": gpu_color_flags(None),
     }
     next_kwargs = {
         "mutation_rate": 0.0,
