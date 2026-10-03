@@ -83,12 +83,17 @@ def test_fill_curve_is_the_games() -> None:
 def test_fever_fill_counts_perfects_as_the_game_does() -> None:
     # T6: at Fever Fill 80 the game's denominator is hit objects x 0.1 exactly; 280 x (1 / 28) sums to one ulp under 1, so
     # the game needs 29 Perfects where the exported (truncated) factor gives 28.
-    factors = np.linspace(0.5, 2.0, MAX_STAT + 1, dtype=np.float32)
+    from gear_optimizer.gamedata import load_stat_curves
+
+    factors = load_stat_curves(REPO / "Data" / "Gear" / "Stats.txt").f32["Fever Fill Rate"]
     window = fever_fill_raw(280, factors, "perfect_window")
     assert np.array_equal(window, 280 * FEVER_FILL_PER_NOTE * factors.astype(np.float64))
     robust = fever_fill_raw(280, factors, "frame_robust")
     assert int(np.ceil(robust[80])) == 29 and fever_fill_is_order_sensitive(float(robust[80]))
     assert int(np.ceil(robust[79])) == 29 and not fever_fill_is_order_sensitive(float(robust[79]))
+    # A curve that no longer matches Stats.txt fails loudly instead of forking the two.
+    with pytest.raises(ValueError, match="no longer matches"):
+        fever_fill_raw(280, factors * np.float32(1.01), "frame_robust")
 
 
 def test_late_great_activation_is_never_planned_in_the_frame_judged_gap() -> None:
