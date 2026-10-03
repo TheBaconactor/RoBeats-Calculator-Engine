@@ -224,6 +224,22 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Early fever exits (perfect_window cache revision 2, frame_robust 3): the 40-chart sample's zero_ms timeline
+    # payloads are byte-identical, one to one, to the deployed f9a5dbc5860a producer's builds (gate r5/g16_zms);
+    # perfect_window and frame_robust payloads carry new cache revisions in their keys. Keep everything the deployed
+    # service accepts readable (non-transitive).
+    "exact-frontier-v12+logic-b342a66d6b1b": (
+        "exact-frontier-v12+logic-f9a5dbc5860a",
+        "exact-frontier-v12+logic-b38e47923b2b",
+        "exact-frontier-v12+logic-f06c1b1fe6ca",
+        "exact-frontier-v12+logic-56a41dacb9b6",
+        "exact-frontier-v12+logic-e0f26c1952cc",
+        "exact-frontier-v12+logic-dac3ca4b6278",
+        "exact-frontier-v12+logic-ede645c00a02",
+        "exact-frontier-v12+logic-e2108556084d",
+        "exact-frontier-v12+logic-920bc4af7ee6",
+        "exact-frontier-v12+logic-be26caca62b4",
+    ),
     # Engine rewrite r9 (frame_robust fixes: the game's fever fill through one fever_fill_raw, the cache-key revision):
     # the 40-chart sample's timeline payloads (both older modes) are byte-identical, one to one, to the e0f26c1952cc
     # producer's builds (gate r5/g12), as the deployed b38e47923b2b's are; frame_robust payloads carry
