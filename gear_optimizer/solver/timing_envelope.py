@@ -50,9 +50,10 @@ HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
 # time minus the margin and out of it only from the fever time plus the margin, and two presses whose order matters
 # are planned at least the margin apart.
 FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
-# Bumped with every change to frame_robust's frontier payloads or bundles. The byte gate only proves the prebuilt modes,
-# so a version that ratifies its predecessors would otherwise serve their frame_robust caches too.
-FRAME_ROBUST_REVISION = 2
+# The windowed modes' cache revisions, bumped with every change to a mode's frontier payloads or bundles. A version that
+# ratifies its predecessors serves their files to every mode whose key is unchanged, so only the byte-gated modes may
+# keep their keys (perfect_window 2: fevers may end early).
+CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 3}
 
 
 class Band(NamedTuple):
@@ -110,6 +111,7 @@ class Envelopes(NamedTuple):
     great_floor: np.ndarray
     great_candidates: np.ndarray
     late_great_floor: np.ndarray
+    exit_ceiling: np.ndarray
 
 
 def _envelope_sec(timestamps: np.ndarray, offset_ms: np.ndarray, *, prefix_max: bool = False) -> np.ndarray:
@@ -121,7 +123,7 @@ def _envelope_sec(timestamps: np.ndarray, offset_ms: np.ndarray, *, prefix_max: 
 
 
 def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mode: str = "perfect_window") -> Envelopes:
-    """The five hit envelopes of a chart in a windowed mode (timestamps in float32 seconds, chart order)."""
+    """The six hit envelopes of a chart in a windowed mode (timestamps in float32 seconds, chart order)."""
     ts = np.asarray(timestamps, dtype=np.float32)
     perfect_low, perfect_high, great_low, great_high, late_great_low = judgment_windows_ms(note_types, mode)
     # The judge compares the decoded hit with the float32 chart time in float64, so the integer-ms edge encoded as
@@ -140,12 +142,22 @@ def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mod
         late_great_floor = _envelope_sec(ts, late_great_low)
     else:
         late_great_floor = perfect_candidates + np.float32(0.001)
+    # The latest fever cutoff that note j and every later note can still be hit at or past (a fever ending early):
+    # their latest Perfect hits, under frame_robust a full exit gap earlier (a note is out at every frame timing only
+    # from the fever's end + the margin), rounded down to float32.
+    exit_ceiling = perfect_candidates.astype(np.float64)
+    if mode == "frame_robust":
+        exit_ceiling = exit_ceiling - 2.0 * FRAME_MARGIN_MS / 1000.0
+    exit_ceiling32 = exit_ceiling.astype(np.float32)
+    overshot = exit_ceiling32.astype(np.float64) > exit_ceiling
+    exit_ceiling32[overshot] = np.nextafter(exit_ceiling32[overshot], np.float32(-np.inf))
     return Envelopes(
         perfect_candidates=perfect_candidates,
         perfect_floor=_envelope_sec(ts, perfect_low, prefix_max=True),
         great_floor=_envelope_sec(ts, great_low, prefix_max=True),
         great_candidates=_envelope_sec(ts, great_high),
         late_great_floor=late_great_floor,
+        exit_ceiling=np.ascontiguousarray(np.minimum.accumulate(exit_ceiling32[::-1])[::-1]),
     )
 
 
@@ -298,6 +310,7 @@ class TimedSong:
     great_floor: np.ndarray | None = None
     great_candidates: np.ndarray | None = None
     late_great_floor: np.ndarray | None = None
+    exit_ceiling: np.ndarray | None = None
 
     @cached_property
     def fg_inputs(self):
@@ -337,8 +350,9 @@ class TimedSong:
 
     @property
     def cache_mode(self) -> str:
-        """The timing mode as the frontier cache keys name it: frame_robust carries FRAME_ROBUST_REVISION."""
-        return f"frame_robust@{FRAME_ROBUST_REVISION}" if self.mode == "frame_robust" else self.mode
+        """The timing mode as the frontier cache keys name it, with its revision (CACHE_REVISIONS)."""
+        revision = CACHE_REVISIONS.get(self.mode)
+        return self.mode if revision is None else f"{self.mode}@{revision}"
 
 
 _TIMED_SONG_CACHE: LRUCache = LRUCache(maxsize=128)

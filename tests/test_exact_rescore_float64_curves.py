@@ -97,11 +97,12 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
     # legal Perfect-window timing frontier. stats -> base_value 251.0 (Rush 100*2 + Flow 50 +
     # PP factor 1.0), combo 2.0, fever 4.0, FT/FF idx 0 -- exactly the fixed-chart inputs.
     fixed_chart = score_stats_fixed_timing_exact(stats, song, curves)
-    assert int(fixed_chart) == 79312
-    # The legal Perfect-window timing frontier scores strictly higher than the fixed chart replay.
-    assert int(fixed_chart) < int(score_stats_exact(stats, song, curves)) == 80080
+    assert int(fixed_chart) == 79568
+    # The legal Perfect-window timing frontier scores strictly higher than the fixed chart replay: its optimum ends
+    # the first fever early (activation at its earliest Perfect hit), so the second one starts sooner.
+    assert int(fixed_chart) < int(score_stats_exact(stats, song, curves)) == 80336
     replay = score_stats_exact_with_timeline_trace(stats, song, curves)
-    assert int(replay["score"]) == 80080
+    assert int(replay["score"]) == 80336
     trace = replay["TimelineFrontier"]["frontier_trace"]
     assert trace
     assert all(row["activation_judgment"] == "perfect" for row in trace)

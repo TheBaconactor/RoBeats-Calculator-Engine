@@ -1453,6 +1453,8 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
         _capped_late_edge_e,
         _capped_eg_perfect_e,
         _capped_eg_late_e,
+        _capped_perfect_exit_e,
+        _capped_late_exit_e,
     ) = _precompute_end_indices(
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
@@ -1461,6 +1463,8 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
         great_floor_timestamps=song_inputs.great_floor,
         prefix_perfect_hit=prefix_perfect_hit,
         prefix_late_hit=prefix_late_hit,
+        exit_ceiling_timestamps=song_inputs.exit_ceiling,
+        late_great_floor_timestamps=song_inputs.late_great_floor,
         lanes=song_inputs.lanes,
         real_times=np.asarray([real_fever_time], dtype=np.float64),
     )
@@ -1723,10 +1727,11 @@ def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() ->
     ]
 
     assert capped
-    assert min(float(option["activation_hit_offset_upper_ms"]) for option in capped) == pytest.approx(
-        169.999,
-        abs=0.01,
-    )
+    # The full window's activation is capped at the breakpoint; a fever that ends early caps it lower still, since its
+    # cutoff must stay under the first out note's exit ceiling.
+    longest = max(int(option["fever_end_index"]) for option in capped)
+    full = [option for option in capped if int(option["fever_end_index"]) == longest]
+    assert min(float(option["activation_hit_offset_upper_ms"]) for option in full) == pytest.approx(169.999, abs=0.01)
     assert all(float(option["activation_hit_offset_upper_ms"]) < 190.0 for option in capped)
 
 
@@ -1927,6 +1932,8 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         capped_late_edge_e,
         capped_eg_perfect_e,
         capped_eg_late_e,
+        capped_perfect_exit_e,
+        capped_late_exit_e,
     ) = _precompute_end_indices(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
@@ -1935,6 +1942,8 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         great_floor_timestamps=great_floor,
         prefix_perfect_hit=prefix_perfect_hit,
         prefix_late_hit=prefix_late_hit,
+        exit_ceiling_timestamps=np.minimum.accumulate(perfect_candidates[::-1])[::-1],
+        late_great_floor_timestamps=perfect_candidates + np.float32(0.001),
         lanes=lanes,
         real_times=real_times,
     )
@@ -1965,6 +1974,8 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
             "capped_late_edge_e": capped_late_edge_e,
             "capped_eg_perfect_e": capped_eg_perfect_e,
             "capped_eg_late_e": capped_eg_late_e,
+            "capped_perfect_exit_e": capped_perfect_exit_e,
+            "capped_late_exit_e": capped_late_exit_e,
             "real_fever_time": float(real_times[int(case_idx % len(real_times))]),
             "real_time_idx": int(real_time_idx),
             "use_forced_great_timing_i": int(use_forced),
@@ -2003,7 +2014,8 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
                 common["prefix_late_hit"],
                 common["prefix_late_valid"],
                 *(table[int(real_time_idx)] for table in (
-                    capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e
+                    capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e,
+                    capped_perfect_exit_e, capped_late_exit_e,
                 )),
             ),
             float(common["real_fever_time"]),
@@ -3117,6 +3129,8 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
             columns[6],
             perfect_end_by_hit,
             great_end_by_hit),
+            np.full((n,), n, dtype=np.int32),  # no early fever exits
+            np.full((n,), n, dtype=np.int32),
             1,
             HeadTables(body_values,
             body_starts,
@@ -3284,6 +3298,8 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
             table_columns[6],
             perfect_end_by_hit,
             great_end_by_hit),
+            np.full((n,), n, dtype=np.int32),  # no early fever exits
+            np.full((n,), n, dtype=np.int32),
             1,
             HeadTables(body_values,
             body_starts,

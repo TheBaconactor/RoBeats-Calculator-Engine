@@ -131,6 +131,8 @@ class FirstOnlyCanonicalization:
     capped_late_edge_e: np.ndarray
     capped_eg_perfect_e: np.ndarray
     capped_eg_late_e: np.ndarray
+    capped_perfect_exit_e: np.ndarray
+    capped_late_exit_e: np.ndarray
 
 
 def _canonicalize_first_only_prepared_items_with_end_indices(
@@ -143,6 +145,9 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     great_floor_timestamps: np.ndarray,
     prefix_perfect_hit: np.ndarray,
     prefix_late_hit: np.ndarray,
+    exit_ceiling_timestamps: np.ndarray,
+    late_great_floor_timestamps: np.ndarray,
+    use_forced_great_timing: bool,
     lanes: np.ndarray | None = None,
 ) -> FirstOnlyCanonicalization:
     if not prepared:
@@ -161,6 +166,8 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             empty,
             empty,
             empty,
+            empty,
+            empty,
         )
     real_times = np.asarray([item[3] for item in prepared], dtype=np.float64)
     unique_real_times = np.unique(real_times)
@@ -174,6 +181,8 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         capped_late_edge_e,
         capped_eg_perfect_e,
         capped_eg_late_e,
+        capped_perfect_exit_e,
+        capped_late_exit_e,
     ) = _precompute_end_indices(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
@@ -182,6 +191,8 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         great_floor_timestamps=great_floor_timestamps,
         prefix_perfect_hit=prefix_perfect_hit,
         prefix_late_hit=prefix_late_hit,
+        exit_ceiling_timestamps=exit_ceiling_timestamps,
+        late_great_floor_timestamps=late_great_floor_timestamps,
         lanes=lanes,
         real_times=real_times,
     )
@@ -200,9 +211,11 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             capped_late_edge_e,
             capped_eg_perfect_e,
             capped_eg_late_e,
+            capped_perfect_exit_e,
+            capped_late_exit_e,
         )
     end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
-    end_class_by_signature: dict[tuple[bytes, bytes, bytes, bytes], int] = {}
+    end_class_by_signature: dict[tuple[bytes, ...], int] = {}
     for idx in range(int(timestamp_end_idx.shape[0])):
         signature = (
             np.ascontiguousarray(timestamp_end_idx[idx], dtype=np.int32).tobytes(),
@@ -211,6 +224,14 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             # Issue #44: the early-Great extended fever-end is part of an item's end-class, so
             # geometries that differ ONLY in their great_floor boundary are not wrongly deduped.
             np.ascontiguousarray(great_floor_end_idx[idx], dtype=np.int32).tobytes(),
+            # So are the earliest fever ends a Perfect activation can exit at, and a late-Great one where Greats are
+            # timed (elsewhere no late-Great activation exists and its table is never read).
+            np.ascontiguousarray(capped_perfect_exit_e[idx], dtype=np.int32).tobytes(),
+            *(
+                (np.ascontiguousarray(capped_late_exit_e[idx], dtype=np.int32).tobytes(),)
+                if use_forced_great_timing
+                else ()
+            ),
         )
         class_idx = end_class_by_signature.get(signature)
         if class_idx is None:
@@ -264,6 +285,8 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         capped_late_edge_e,
         capped_eg_perfect_e,
         capped_eg_late_e,
+        capped_perfect_exit_e,
+        capped_late_exit_e,
     )
 
 
@@ -278,6 +301,8 @@ def _precompute_end_indices(
     real_times: np.ndarray,
     prefix_perfect_hit: np.ndarray,
     prefix_late_hit: np.ndarray,
+    exit_ceiling_timestamps: np.ndarray,
+    late_great_floor_timestamps: np.ndarray,
     lanes: np.ndarray | None = None,
 ) -> tuple[np.ndarray, ...]:
     unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float64), return_inverse=True)
@@ -335,6 +360,20 @@ def _precompute_end_indices(
     capped_late_edge_e = np.empty_like(timestamp_end_idx)
     capped_eg_perfect_e = np.empty_like(timestamp_end_idx)
     capped_eg_late_e = np.empty_like(timestamp_end_idx)
+    # The EARLIEST fever end of a Perfect activation. Hit at its earliest (the Perfect floor: after every earlier note
+    # at its earliest), its cutoff is floor + rt, and the end can be any note from which every later note can still be
+    # hit at or past that cutoff (exit_ceiling: the suffix minimum of the latest out-of-fever hits). Every note's exit
+    # ceiling lies past the floor of the note before it, so the reachable ends are exactly
+    # [min(capped_perfect_exit_e, edge_e), edge_e]. A late-Great activation's run starts from its earliest late-Great
+    # hit (late_great_floor) the same way.
+    exit_ceiling = np.ascontiguousarray(np.asarray(exit_ceiling_timestamps, dtype=np.float32).reshape(-1))
+    late_floor = np.ascontiguousarray(np.asarray(late_great_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(exit_ceiling.shape[0]) != int(ts.shape[0]) or int(late_floor.shape[0]) != int(ts.shape[0]):
+        raise ValueError("exit_ceiling_timestamps and late_great_floor_timestamps lengths must match timestamps")
+    floor64 = np.asarray(floor_ts, dtype=np.float64)
+    late_floor64 = np.asarray(late_floor, dtype=np.float64)
+    capped_perfect_exit_e = np.empty_like(timestamp_end_idx)
+    capped_late_exit_e = np.empty_like(timestamp_end_idx)
     # [..., 0] = extended end for a Perfect activation (cutoff = perfect_candidate + rt);
     # [..., 1] = extended end for a late-Great activation (cutoff = great_candidate + rt).
     great_floor_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0]), 2), dtype=np.int32)
@@ -371,6 +410,17 @@ def _precompute_end_indices(
         capped_eg_late_e[idx] = np.clip(
             np.searchsorted(great_floor_ts, capped_late_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
         ).astype(np.int32, copy=False)
+        earliest_cutoff = np.asarray(floor64 + rt, dtype=np.float32)
+        # Each use clamps it to the end of the edge it extends (min(perfect_exit_e, edge_e)), as the trace rebuilder
+        # does.
+        capped_perfect_exit_e[idx] = np.clip(
+            np.searchsorted(exit_ceiling, earliest_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
+        ).astype(np.int32, copy=False)
+        capped_late_exit_e[idx] = np.clip(
+            np.searchsorted(exit_ceiling, np.asarray(late_floor64 + rt, dtype=np.float32), side="left"),
+            capped_clamp_lo,
+            int(ts.shape[0]),
+        ).astype(np.int32, copy=False)
     # Hit-time reachability (chord + notes-ahead): a late-Great activation is UNREACHABLE when an
     # earlier-hit note (a same-timestamp sibling, or an on-time note within the ~late-Great window
     # after it) completes the fever bar first -- delaying the activation to its late hit lets those
@@ -393,4 +443,6 @@ def _precompute_end_indices(
         np.ascontiguousarray(capped_late_edge_e),
         np.ascontiguousarray(capped_eg_perfect_e),
         np.ascontiguousarray(capped_eg_late_e),
+        np.ascontiguousarray(capped_perfect_exit_e),
+        np.ascontiguousarray(capped_late_exit_e),
     )

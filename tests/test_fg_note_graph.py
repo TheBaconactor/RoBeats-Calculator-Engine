@@ -102,7 +102,8 @@ def _build_options(n, non_fever_base, real_fever_time):
 
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
     note_types = np.ones(n, dtype=np.int16)
-    perfect_candidates, perfect_floor, great_floor, great_candidates, _ = perfect_window_envelopes(timestamps, note_types)
+    envelopes = perfect_window_envelopes(timestamps, note_types)
+    perfect_candidates, perfect_floor, great_floor, great_candidates = envelopes[:4]
     raw_fever_fill = 1.0
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=raw_fever_fill,
@@ -251,6 +252,7 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "perfect_floor_timestamps",
         "great_floor_timestamps",
         "late_great_floor_timestamps",
+        "exit_ceiling_timestamps",
         "lanes",
         "raw_fever_fill",
         "real_fever_time",

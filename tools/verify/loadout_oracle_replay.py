@@ -245,6 +245,7 @@ def main(argv=None) -> int:
                 perfect_floor_timestamps=song.fg_inputs.perfect_floor,
                 great_floor_timestamps=song.fg_inputs.great_floor,
                 late_great_floor_timestamps=song.fg_inputs.late_great_floor,
+                exit_ceiling_timestamps=song.fg_inputs.exit_ceiling,
                 raw_fever_fill=float(force["raw_fever_fill"]),
                 real_fever_time=float(force["real_fever_time"]),
                 lanes=lanes,

@@ -1697,6 +1697,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
             perfect_floor=np.asarray([0.0], dtype=np.float32),
             great_floor=np.asarray([0.0], dtype=np.float32),
             late_great_floor=None,
+            exit_ceiling=None,
             lanes=np.asarray([0], dtype=np.int32),
             use_forced_great_timing=True,
         ),

@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from .fill_crossing import late_great_activation_prefix, perfect_crossing_is_region3
-from .response_builder import _action_table, _song_arrays
+from .response_builder import _action_table, _early_exit_min_fill, _song_arrays
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_region_groups,
@@ -157,6 +157,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
     use_forced_great_timing: bool = True,
     stats_sink: dict[str, Any] | None = None,
     late_great_floor_timestamps: Any | None = None,
+    exit_ceiling_timestamps: Any | None = None,
 ) -> tuple[FgResponseFrontierResult, ...]:
     """Build the exact FG first frontier for every geometry of ONE song, in one call.
 
@@ -183,9 +184,9 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         return ()
     if n <= 0:
         return tuple(FgResponseFrontierResult((_EMPTY_SURFACE,), {}, 0, 0, 0, 0, 1, 1, 0, 0.0) for _ in geometry_rows)
-    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, lane_arr = _song_arrays(
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = _song_arrays(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
-        great_floor_timestamps, late_great_floor_timestamps, lanes,
+        great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
     )
     if bool(use_forced_great_timing):
         region_hit_values, region_hit_token_to_id = _region_hit_value_universe(ts, perfect_ts, great_ts)
@@ -210,6 +211,9 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         great_floor_timestamps=great_floor_ts,
         prefix_perfect_hit=prefix_perfect_hit,
         prefix_late_hit=prefix_late_hit,
+        exit_ceiling_timestamps=exit_ceiling_ts,
+        late_great_floor_timestamps=late_great_floor_ts,
+        use_forced_great_timing=bool(use_forced_great_timing),
         lanes=lane_arr,
     )
     prepared = canonical.prepared
@@ -269,6 +273,8 @@ def build_force_greats_response_first_frontiers_gpu_batch(
             use_forced_great_timing=bool(use_forced_great_timing),
             empty_region_table=empty_region_table,
             workspace_plan=workspace_plan,
+            early_exit_min_fill=_early_exit_min_fill(floor_ts, perfect_ts),
+            no_early_exit_e=np.full_like(canonical.capped_perfect_exit_e, int(n)),
         ),
     )
     for result_rows in group_results:

@@ -72,6 +72,24 @@ def test_late_great_floor_starts_at_the_band() -> None:
     assert np.rint((robust.late_great_floor.astype(np.float64) - ts) * 1000.0).tolist() == [41.0, 81.0, 41.0]
 
 
+def test_exit_ceiling_keeps_out_notes_past_the_fever_at_every_frame() -> None:
+    # A fever may end before notes charted inside it if those notes are hit at or past its end. perfect_window's
+    # ceiling is the latest Perfect of a note and every later one; frame_robust's is a full exit gap (2 margins)
+    # earlier, since a note is out at every frame timing only from the end + the margin and the end itself moves by a
+    # margin.
+    ts = np.asarray([1.0, 2.0, 2.0, 3.0], dtype=np.float32)
+    types = np.asarray([1, 3, 1, 2], dtype=np.int16)
+    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust")
+    assert np.array_equal(window.exit_ceiling, np.minimum.accumulate(window.perfect_candidates[::-1])[::-1])
+    target = np.minimum.accumulate(
+        (robust.perfect_candidates.astype(np.float64) - 2.0 * FRAME_MARGIN_MS / 1000.0)[::-1]
+    )[::-1]
+    assert np.all(robust.exit_ceiling.astype(np.float64) <= target)  # rounded down to float32
+    assert np.all(np.nextafter(robust.exit_ceiling, np.float32(np.inf)).astype(np.float64) > target)
+    # Every note can still be in a fever that ends at its ceiling: the reachable ends of an activation form one run.
+    assert np.all(robust.exit_ceiling[1:] > robust.perfect_floor[:-1])
+
+
 def test_fill_curve_is_the_games() -> None:
     from gear_optimizer.solver.timing_envelope import _game_fever_fill_factor
     from tools.verify import game_sim
@@ -115,8 +133,9 @@ def test_late_great_activation_is_never_planned_in_the_frame_judged_gap() -> Non
             assert late_hit[0] >= env.late_great_floor[0]
 
 
-def _base_plans(chart, mode: str, ft: int, ff: int):
-    """The producer's Base plans for one FT/FF cell, as validated note graphs."""
+def _base_plans(chart, mode: str, ft: int, ff: int, *, early_exits: bool = True):
+    """The producer's Base plans for one FT/FF cell, as validated note graphs (without early fever exits: no note's
+    exit ceiling reaches any fever end)."""
     from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
     from gear_optimizer.solver.fg_response_scoring.physical_replay import validate_base_physical_replay
@@ -128,6 +147,7 @@ def _base_plans(chart, mode: str, ft: int, ff: int):
     curves = load_stat_curves(REPO / "Data" / "Gear" / "Stats.txt")
     song = time_song(chart, mode)
     fi = song.fg_inputs
+    exit_ceiling = fi.exit_ceiling if early_exits else np.full_like(fi.exit_ceiling, -np.inf)
     n = int(chart.total_notes)
     raw_fill = float(fever_fill_raw(max(0, n - chart.long_notes), curves.f32["Fever Fill Rate"], mode)[ff])
     fill = max(1, int(np.ceil(raw_fill)))
@@ -136,7 +156,7 @@ def _base_plans(chart, mode: str, ft: int, ff: int):
         timestamps=fi.timestamps, perfect_candidate_timestamps=fi.perfect_candidates,
         great_candidate_timestamps=fi.perfect_candidates, perfect_floor_timestamps=fi.perfect_floor,
         great_floor_timestamps=fi.perfect_floor, lanes=fi.lanes, geometries=((float(fill), 0, window_time),),
-        use_forced_great_timing=False,
+        use_forced_great_timing=False, exit_ceiling_timestamps=exit_ceiling,
     )
     graphs = []
     for row in frontier.first_frontier:
@@ -145,7 +165,7 @@ def _base_plans(chart, mode: str, ft: int, ff: int):
             head_bits=words, body_fever=int(row.body_fever), timestamps=fi.timestamps,
             perfect_candidate_timestamps=fi.perfect_candidates, great_candidate_timestamps=fi.great_candidates,
             perfect_floor_timestamps=fi.perfect_floor, great_floor_timestamps=fi.great_floor, lanes=fi.lanes,
-            raw_fever_fill=raw_fill, real_fever_time=window_time,
+            raw_fever_fill=raw_fill, real_fever_time=window_time, exit_ceiling_timestamps=exit_ceiling,
         )
         validate_base_physical_replay(
             frontier_trace=trace, response_surface=[*words, int(row.body_fever), max(0, n - 100) - int(row.body_fever)],
@@ -196,6 +216,23 @@ def test_base_plans_hold_at_every_frame_timing() -> None:
     for graph in _base_plans(chart, "frame_robust", 0, 0):
         claimed = tuple(i for i, node in enumerate(graph) if node["fever"])
         assert _fever_sets_per_frame_timing(chart, graph, 0, 0) == {claimed}
+
+
+@pytest.mark.slow
+def test_early_fever_exits_hold_at_every_frame_timing() -> None:
+    """A fever that ends early lets the next one start sooner: [@_@]'s FT/FF 40 Frame-Safe plans gain fever sets that
+    only an early exit reaches (a note hit past the fever's end that could have been inside it), and every plan keeps
+    its claimed fever set at every phase and rate."""
+    chart = load_chart(REPO / "Data" / "Easy" / "[@_@] (Easy) by Chroma.txt")
+
+    def fever_sets(graphs):
+        return {tuple(i for i, node in enumerate(graph) if node["fever"]) for graph in graphs}
+
+    graphs = _base_plans(chart, "frame_robust", 40, 40)
+    assert fever_sets(graphs) - fever_sets(_base_plans(chart, "frame_robust", 40, 40, early_exits=False))
+    for graph in graphs:
+        claimed = tuple(i for i, node in enumerate(graph) if node["fever"])
+        assert _fever_sets_per_frame_timing(chart, graph, 40, 40) == {claimed}
 
 
 def test_tier_replay_drops_only_the_loadout_whose_plan_is_unplayable(monkeypatch) -> None:

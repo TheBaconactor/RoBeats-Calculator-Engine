@@ -109,6 +109,8 @@ def retired_nested_action_reachability_prepass(
     capped_late_edge_e,
     capped_eg_perfect_e,
     capped_eg_late_e,
+    capped_perfect_exit_e,
+    capped_late_exit_e,
     real_fever_time: float,
     real_time_idx: int,
     use_forced_great_timing_i: int,
@@ -136,7 +138,8 @@ def retired_nested_action_reachability_prepass(
         edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
         if int(edge_e) < 0:
             return 0
-        reachable[int(edge_e)] = True
+        for end_e in range(min(int(capped_perfect_exit_e[int(real_time_idx), int(activation)]), edge_e), edge_e + 1):
+            reachable[int(end_e)] = True
         return int(
             _numba_mark_early_great_reachable_from_hit(
                 reachable,
@@ -164,7 +167,9 @@ def retired_nested_action_reachability_prepass(
             int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
         ):
             return 0
-        reachable[int(activation_e)] = True
+        late_exit_e = int(capped_late_exit_e[int(real_time_idx), int(activation)])
+        for end_e in range(min(late_exit_e, activation_e), activation_e + 1):
+            reachable[int(end_e)] = True
         return int(
             _numba_mark_early_great_reachable_from_hit(
                 reachable,
@@ -244,6 +249,9 @@ def retired_nested_action_reachability_prepass(
                     )
                 )
             reachable[int(edge_e)] = True
+            exit_table = capped_perfect_exit_e if int(region_is_greats[int(idx)]) == 0 else capped_late_exit_e
+            for end_e in range(min(int(exit_table[int(real_time_idx), int(activation)]), int(edge_e)), int(edge_e)):
+                reachable[int(end_e)] = True
             width = int(
                 _numba_mark_early_great_reachable_from_hit(
                     reachable,

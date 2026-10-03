@@ -75,11 +75,24 @@ PairWorkspace = namedtuple(
     "PairWorkspace", ["best_fever_by_pair", "pair_stamp", "touched_pair", "bit_values", "bit_stamps"]
 )
 # One fever time's per-activation tables: each note's latest reachable Perfect / late-Great activation hit (valid where
-# `*_valid` != 0) and the window ends those hits reach on the Perfect floor (`perfect_e`, `late_e`) and on the
-# early-Great floor (`eg_perfect_e`, `eg_late_e`), clamped to (activation, n].
+# `*_valid` != 0), the window ends those hits reach on the Perfect floor (`perfect_e`, `late_e`) and on the
+# early-Great floor (`eg_perfect_e`, `eg_late_e`), clamped to (activation, n], and the earliest ends a Perfect /
+# late-Great activation can exit at (`perfect_exit_e`, `late_exit_e`; its ends are every e from there to `perfect_e` /
+# `late_e`).
 ActivationEnds = namedtuple(
     "ActivationEnds",
-    ["perfect_hit", "perfect_valid", "late_hit", "late_valid", "perfect_e", "late_e", "eg_perfect_e", "eg_late_e"],
+    [
+        "perfect_hit",
+        "perfect_valid",
+        "late_hit",
+        "late_valid",
+        "perfect_e",
+        "late_e",
+        "eg_perfect_e",
+        "eg_late_e",
+        "perfect_exit_e",
+        "late_exit_e",
+    ],
 )
 _HEAD_BASIS_FEVER_LO = 0
 _HEAD_BASIS_FEVER_HI = 1
@@ -1342,13 +1355,15 @@ def _numba_mark_region_entries_for_section(
     n: int,
     section_start: int,
     region,
+    perfect_exit_e,
+    late_exit_e,
 ) -> int:
     """rt-finish + reachability marking for every valid region core of one section row. Returns
     the max early-Great extension width, exactly like the per-candidate marking it replaces."""
     region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
     max_width = 0
     for idx in range(int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])):
-        _activation, edge_e, _run_start, _great_end, _activation_great_idx, eg_e, valid = (
+        activation, edge_e, _run_start, _great_end, activation_great_idx, eg_e, valid = (
             _numba_region_run_edge_from_core(
                 int(n),
                 int(section_start),
@@ -1366,7 +1381,9 @@ def _numba_mark_region_entries_for_section(
         )
         if int(valid) == 0:
             continue
-        for end_e in range(int(edge_e), int(eg_e) + 1):
+        # The activation can also end its fever early.
+        exit_e = perfect_exit_e if int(activation_great_idx) < 0 else late_exit_e
+        for end_e in range(min(int(exit_e[int(activation)]), int(edge_e)), int(eg_e) + 1):
             reachable[int(end_e)] = True
         width = max(0, int(eg_e) - int(edge_e))
         if int(width) > int(max_width):
@@ -1416,7 +1433,10 @@ def _numba_mark_perfect_activation_closure(
     edge_e = int(ends.perfect_e[int(activation)])
     if int(edge_e) < 0:
         return 0
-    reachable[int(edge_e)] = True
+    # The activation can also end its fever early (an earlier hit, the boundary notes late): every end in
+    # [perfect_exit_e, edge_e] is a state.
+    for end_e in range(min(int(ends.perfect_exit_e[int(activation)]), int(edge_e)), int(edge_e) + 1):
+        reachable[int(end_e)] = True
     return _numba_mark_early_great_reachable_from_hit(
         reachable,
         int(n),
@@ -1446,7 +1466,9 @@ def _numba_mark_late_activation_closure(
         int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
     ):
         return 0
-    reachable[int(activation_e)] = True
+    # The activation can also end its fever early: every end in [late_exit_e, activation_e] is a state.
+    for end_e in range(min(int(ends.late_exit_e[int(activation)]), int(activation_e)), int(activation_e) + 1):
+        reachable[int(end_e)] = True
     return _numba_mark_early_great_reachable_from_hit(
         reachable,
         int(n),
@@ -1594,6 +1616,8 @@ def _numba_first_frontier_reachability_prepass(
                 int(n),
                 0,
                 region,
+                ends.perfect_exit_e,
+                ends.late_exit_e,
             ),
         )
 
@@ -1673,6 +1697,8 @@ def _numba_first_frontier_reachability_prepass(
                     int(n),
                     int(state_i) + 1,
                     region,
+                    ends.perfect_exit_e,
+                    ends.late_exit_e,
                 ),
             )
     return reachable, int(max_eg_width)
@@ -2561,6 +2587,18 @@ def _numba_emit_section_edges(
                 float(real_fever_time), head, int(state), int(head_limit), int(head_filter_min), int(bounded_mode),
             )
             added_total += int(added)
+            # The same activation ending its fever early, at every end in [perfect_exit_e, edge_e).
+            for end_e in range(min(int(ends.perfect_exit_e[int(activation)]), int(edge_e)), int(edge_e)):
+                edge = _numba_pack_edge(
+                    int(n), int(activation), int(end_e), int(section_start),
+                    min(int(n), int(section_start) + int(forced_count)), -1,
+                )
+                generated, generated_scores, added, bounded_mode = _numba_append_head_generated_candidate(
+                    generated, generated_scores, generated_seen, generated_score_matrix_holder,
+                    generated_score_matrix_count, edge, int(end_e), head, int(state), int(head_limit),
+                    int(head_filter_min), int(bounded_mode),
+                )
+                added_total += int(added)
         prefix_forced = int(activation_forced[int(action_idx)])
         activation_hit = 0.0
         activation_e = -1
@@ -2588,6 +2626,18 @@ def _numba_emit_section_edges(
             float(real_fever_time), head, int(state), int(head_limit), int(head_filter_min), int(bounded_mode),
         )
         added_total += int(added)
+        # The same activation ending its fever early, at every end in [late_exit_e, activation_e).
+        for end_e in range(min(int(ends.late_exit_e[int(activation)]), int(activation_e)), int(activation_e)):
+            edge = _numba_pack_edge(
+                int(n), int(activation), int(end_e), int(section_start),
+                min(int(n), int(section_start) + int(prefix_forced)), int(activation),
+            )
+            generated, generated_scores, added, bounded_mode = _numba_append_head_generated_candidate(
+                generated, generated_scores, generated_seen, generated_score_matrix_holder,
+                generated_score_matrix_count, edge, int(end_e), head, int(state), int(head_limit),
+                int(head_filter_min), int(bounded_mode),
+            )
+            added_total += int(added)
     return generated, generated_scores, int(added_total), int(bounded_mode)
 
 
@@ -2606,6 +2656,8 @@ def _numba_emit_region2_head_edges(
     n: int,
     section_start: int,
     region,
+    perfect_exit_e,
+    late_exit_e,
     use_forced_great_timing_i: int,
     head,
     lo_pos: int,
@@ -2686,6 +2738,25 @@ def _numba_emit_region2_head_edges(
                 int(activation_great_idx),
             )
         )
+        # The activation ending its fever early, at every end in [perfect_exit_e / late_exit_e, edge_e).
+        exit_e = perfect_exit_e if int(activation_great_idx) < 0 else late_exit_e
+        for end_e in range(min(int(exit_e[int(activation)]), int(edge_e)), int(edge_e)):
+            edge_exit = _numba_pack_edge(
+                int(n), int(activation), int(end_e), int(run_start), int(great_end), int(activation_great_idx)
+            )
+            node_surface, node_next, node_cursor, pending_count, _kept_exit = (
+                _numba_append_head_edge_to_end_chains(
+                    node_surface,
+                    node_next,
+                    int(node_cursor),
+                    bucket_head,
+                    bucket_tail,
+                    pending_ends,
+                    int(pending_count),
+                    edge_exit,
+                    int(end_e),
+                )
+            )
     if int(pending_count) == 0:
         return generated, generated_scores, 0, int(bounded_mode), node_surface, node_next
     # Same-mask pre-reduction is exact only while the canonical path is still accumulating
@@ -4205,20 +4276,23 @@ def _numba_packet_queue_push_activation(
     # length. eg_e == edge_e on the overwhelming majority of activations -> the loop runs once
     # and this is bit-for-bit the pre-#44 behaviour at zero added cost.
     eg_e = int(edge_eg_e)
+    # The activation can also end its fever early, at every end in [perfect_exit_e / late_exit_e, edge_e).
+    exit_e = ends.perfect_exit_e if int(mode) == 0 else ends.late_exit_e
+    lo_e = min(int(exit_e[int(activation)]), int(edge_e))
     total_points = 0
-    for end_e in range(int(edge_e), int(eg_e) + 1):
+    for end_e in range(int(lo_e), int(eg_e) + 1):
         total_points += int(body_counts[int(end_e)])
     if int(total_points) <= 0:
         return
     pk_cursor = int(back_pk_off[int(seg_base) + int(back_len[int(family_idx)])])
     pk_buf = _numba_packet_arena_ensure(back_pk_arenas, int(family_idx), int(pk_cursor), int(total_points))
     write = int(pk_cursor)
-    for end_e in range(int(edge_e), int(eg_e) + 1):
+    for end_e in range(int(lo_e), int(eg_e) + 1):
         tail_count = int(body_counts[int(end_e)])
         if int(tail_count) <= 0:
             continue
         fever_len = int(end_e) - int(activation)
-        extra_fever_great = int(end_e) - int(edge_e)
+        extra_fever_great = max(0, int(end_e) - int(edge_e))
         tail_start = int(body_starts[int(end_e)])
         for tail_idx in range(int(tail_count)):
             value_idx = int(tail_start) + int(tail_idx)
@@ -4262,6 +4336,7 @@ def _numba_region2_packet_queue_push_activation(
     lanes,
     hit_token_to_id,
     region,
+    late_exit_e,
     family_idx: int,
     seg_base: int,
     seg_limit: int,
@@ -4356,23 +4431,25 @@ def _numba_region2_packet_queue_push_activation(
     if int(valid) == 0 or int(activation_great_idx) < 0 or int(activation_i) != int(activation):
         return
 
+    # The activation can also end its fever early, at every end in [late_exit_e, edge_e).
+    lo_e = min(int(late_exit_e[int(activation)]), int(edge_e))
     total_points = 0
-    for end_e in range(int(edge_e), int(eg_e) + 1):
+    for end_e in range(int(lo_e), int(eg_e) + 1):
         total_points += int(body_counts[int(end_e)])
     if int(total_points) <= 0:
         return
     pk_cursor = int(back_pk_off[int(seg_base) + int(back_len[int(family_idx)])])
     pk_buf = _numba_packet_arena_ensure(back_pk_arenas, int(family_idx), int(pk_cursor), int(total_points))
     write = int(pk_cursor)
-    for end_e in range(int(edge_e), int(eg_e) + 1):
+    for end_e in range(int(lo_e), int(eg_e) + 1):
         tail_count = int(body_counts[int(end_e)])
         if int(tail_count) <= 0:
             continue
-        if int(end_e) == int(edge_e):
+        if int(end_e) <= int(edge_e):
             edge = _numba_pack_edge(
                 int(n),
                 int(activation),
-                int(edge_e),
+                int(end_e),
                 int(run_start),
                 int(great_end),
                 int(activation),
@@ -4740,6 +4817,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         lanes,
                         region_hit_token_to_id,
                         region,
+                        ends.late_exit_e,
                         int(family_idx),
                         int(region_seg_off[int(family_idx)]),
                         int(region_seg_off[int(family_idx) + 1]),
@@ -4989,6 +5067,15 @@ def _numba_first_section_body_frontier(
                     int(touched_count),
                 )
                 first_generated_count += int(added_count)
+                # The same activation ending its fever early, at every end in [perfect_exit_e, edge_e).
+                for end_e in range(min(int(ends.perfect_exit_e[int(fill)]), int(edge_e)), int(edge_e)):
+                    edge_exit = _numba_pack_edge(int(n), int(fill), int(end_e), 0, min(int(n), int(forced_count)), -1)
+                    touched_count, added_exit = _numba_touch_body_tail_array_candidates(
+                        edge_exit, int(end_e), body_values, body_starts, body_counts,
+                        int(pair_mod), int(pair_stamp_value), pair_stamp,
+                        best_fever_by_pair, touched_pair, int(touched_count),
+                    )
+                    first_generated_count += int(added_exit)
                 # Issue #44: early-Great extension of the first Perfect-activation section.
                 # first_fill >= 100, so every extended end is in the body (head_great_count
                 # unchanged -> same bucket). Bucket membership (edge_e >= 100) proves the
@@ -5046,6 +5133,17 @@ def _numba_first_section_body_frontier(
                 int(touched_count),
             )
             first_generated_count += int(added_count)
+            # The same activation ending its fever early, at every end in [late_exit_e, activation_e).
+            for end_e in range(min(int(ends.late_exit_e[int(fill)]), int(activation_e)), int(activation_e)):
+                activation_edge_exit = _numba_pack_edge(
+                    int(n), int(fill), int(end_e), 0, min(int(n), int(prefix_forced)), int(fill)
+                )
+                touched_count, added_exit = _numba_touch_body_tail_array_candidates(
+                    activation_edge_exit, int(end_e), body_values, body_starts, body_counts,
+                    int(pair_mod), int(pair_stamp_value), pair_stamp,
+                    best_fever_by_pair, touched_pair, int(touched_count),
+                )
+                first_generated_count += int(added_exit)
             # Issue #44: early-Great extension of the first late-Great-activation section.
             # Bucket membership (activation_e >= 100) proves the staged hit was
             # prefix_late_hit[fill] -> the capped table is exact.
@@ -5123,6 +5221,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
     capped_late_edge_e,
     capped_eg_perfect_e,
     capped_eg_late_e,
+    capped_perfect_exit_e,
+    capped_late_exit_e,
     real_fever_time: float,
     real_time_idx: int,
     use_forced_great_timing_i: int,
@@ -5176,6 +5276,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
         capped_late_edge_e[rt],
         capped_eg_perfect_e[rt],
         capped_eg_late_e[rt],
+        capped_perfect_exit_e[rt],
+        capped_late_exit_e[rt],
     )
     reachable, max_eg_width = _numba_first_frontier_reachability_prepass(
         int(n),
@@ -5337,6 +5439,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 int(n),
                 int(state_i) + 1,
                 region,
+                ends.perfect_exit_e,
+                ends.late_exit_e,
                 int(use_forced_great_timing_i),
                 head,
                 int(state_i),
@@ -5416,6 +5520,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 int(n),
                 0,
                 region,
+                ends.perfect_exit_e,
+                ends.late_exit_e,
                 int(use_forced_great_timing_i),
                 head,
                 0,
@@ -5453,6 +5559,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 int(n),
                 0,
                 region,
+                ends.perfect_exit_e,
+                ends.late_exit_e,
                 int(use_forced_great_timing_i),
                 head,
                 0,

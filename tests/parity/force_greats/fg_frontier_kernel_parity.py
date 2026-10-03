@@ -102,6 +102,8 @@ def build_kernel_args(
         capped_late_edge_e,
         capped_eg_perfect_e,
         capped_eg_late_e,
+        capped_perfect_exit_e,
+        capped_late_exit_e,
     ) = _precompute_end_indices(
         timestamps=ts,
         perfect_candidate_timestamps=perfect_ts,
@@ -110,6 +112,8 @@ def build_kernel_args(
         great_floor_timestamps=great_floor_ts,
         prefix_perfect_hit=prefix_perfect_hit,
         prefix_late_hit=prefix_late_hit,
+        exit_ceiling_timestamps=np.minimum.accumulate(perfect_ts[::-1])[::-1],
+        late_great_floor_timestamps=perfect_ts + np.float32(0.001),
         lanes=lane_arr,
         real_times=real_times,
     )
@@ -139,6 +143,8 @@ def build_kernel_args(
         "capped_late_edge_e": capped_late_edge_e,
         "capped_eg_perfect_e": capped_eg_perfect_e,
         "capped_eg_late_e": capped_eg_late_e,
+        "capped_perfect_exit_e": capped_perfect_exit_e,
+        "capped_late_exit_e": capped_late_exit_e,
         "real_time_idx": int(real_time_index[0]),
         "use_forced_great_timing_i": 1 if bool(use_forced_great_timing) else 0,
     }

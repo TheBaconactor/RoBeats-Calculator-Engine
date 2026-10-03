@@ -236,6 +236,7 @@ def _timeline_trace_for_payload_surface(
         lanes=song_inputs.lanes,
         raw_fever_fill=float(raw_fever_fill),
         real_fever_time=float(real_fever_time),
+        exit_ceiling_timestamps=song_inputs.exit_ceiling,
     )
     response_surface = [
         int(words[0]),

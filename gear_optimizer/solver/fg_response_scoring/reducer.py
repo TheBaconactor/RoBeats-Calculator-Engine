@@ -173,6 +173,7 @@ def materialize_force_payload_from_response_frontier(
             perfect_floor_timestamps=song_inputs.perfect_floor,
             great_floor_timestamps=song_inputs.great_floor,
             late_great_floor_timestamps=song_inputs.late_great_floor,
+            exit_ceiling_timestamps=song_inputs.exit_ceiling,
             lanes=song_lanes,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),

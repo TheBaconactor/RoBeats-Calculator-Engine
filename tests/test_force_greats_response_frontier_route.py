@@ -47,6 +47,7 @@ def _stub_song(note_count: int):
             perfect_floor=ts,
             great_floor=ts,
             late_great_floor=None,
+            exit_ceiling=None,
             lanes=list(range(int(note_count))),
             use_forced_great_timing=True,
         ),

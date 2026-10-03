@@ -82,7 +82,7 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # Engine rewrite r9 (frame_robust fixes: the late-Great floor envelope, the game's fever fill, the cache-key revision)
     # changes no perfect_window or zero_ms producer output: the complete bundles of the 40-chart sample (both modes)
     # built by this code are byte-identical, one to one, to the 806c8cda331e producer's builds (gate r5/g12), as the
-    # deployed 8aaeee788edb's are. frame_robust bundles carry FRAME_ROBUST_REVISION in their keys, so no earlier
+    # deployed 8aaeee788edb's are. frame_robust bundles carry their cache revision in their keys, so no earlier
     # frame_robust bundle is ever served. Ratify the deployed version and its ratified predecessors (non-transitive).
     "fg-response-frontier-visible-first-v31+logic-e9c86ce774f6": (
         "fg-response-frontier-visible-first-v31+logic-8aaeee788edb",

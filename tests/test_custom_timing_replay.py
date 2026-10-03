@@ -181,7 +181,8 @@ def test_baseline_offset_rejected_for_perfect_window():
 def test_cache_context_is_inert_at_zero_t_lossless():
     """LOSSLESS GUARD: the per-note ``T`` hash lives in the timing-context reserved slots, so at
     ``T == 0`` the timing cache keys are byte-identical to their pre-feature values. These frozen
-    tuples lock that existing zero_ms / perfect_window cache keys (and therefore cached scores) are
-    unchanged -- if a future edit leaks a non-empty hash at ``T == 0``, this fails."""
+    tuples lock that existing zero_ms cache keys (and therefore cached scores) are unchanged and that
+    perfect_window carries only its cache revision -- if a future edit leaks a non-empty hash at
+    ``T == 0``, this fails."""
     assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "zero_ms", "", 0)
-    assert _song(mode="perfect_window").timeline_key[-4:] == ("TIMING_ENVELOPE", "perfect_window", "", 0)
+    assert _song(mode="perfect_window").timeline_key[-4:] == ("TIMING_ENVELOPE", "perfect_window@2", "", 0)

@@ -58,6 +58,7 @@ def _warmup_song() -> TimedSong:
         hit_timestamps=timestamps,
         perfect_candidates=timestamps,
         perfect_floor=timestamps,
+        exit_ceiling=timestamps,
     )
 
 

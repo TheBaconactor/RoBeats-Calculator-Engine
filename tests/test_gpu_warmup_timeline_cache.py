@@ -33,6 +33,7 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
             "timestamps": np.array([0.0], dtype=np.float32),
             "perfect_candidates": np.array([0.0], dtype=np.float32),
             "perfect_floor": np.array([0.0], dtype=np.float32),
+            "exit_ceiling": np.array([0.0], dtype=np.float32),
             "lanes": np.array([0], dtype=np.int32),
             "ref_ft": np.array([1.0], dtype=np.float32),
             "ref_ff": np.array([1.0], dtype=np.float32),

@@ -227,7 +227,7 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # Engine rewrite r9 (frame_robust fixes: the game's fever fill through one fever_fill_raw, the cache-key revision):
     # the 40-chart sample's timeline payloads (both older modes) are byte-identical, one to one, to the e0f26c1952cc
     # producer's builds (gate r5/g12), as the deployed b38e47923b2b's are; frame_robust payloads carry
-    # FRAME_ROBUST_REVISION in their keys. Keep everything the deployed service accepts readable (non-transitive).
+    # their cache revision in their keys. Keep everything the deployed service accepts readable (non-transitive).
     "exact-frontier-v12+logic-f9a5dbc5860a": (
         "exact-frontier-v12+logic-b38e47923b2b",
         "exact-frontier-v12+logic-f06c1b1fe6ca",
@@ -495,9 +495,11 @@ def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dic
         # physical Perfect-window inputs are absent and never consumed.
         perfect_candidates = np.empty(0, dtype=np.float32)
         perfect_floor = np.empty(0, dtype=np.float32)
+        exit_ceiling = np.empty(0, dtype=np.float32)
         lanes = np.empty(0, dtype=np.int32)
     else:
         perfect_candidates, perfect_floor, lanes = song.perfect_candidates, song.perfect_floor, chart.lanes
+        exit_ceiling = song.exit_ceiling
     return {
         "song_key": song.timeline_key,
         "timestamps": chart.timestamps,
@@ -508,6 +510,7 @@ def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dic
         "ref_ff": curves.f32["Fever Fill Rate"],
         "perfect_candidates": perfect_candidates,
         "perfect_floor": perfect_floor,
+        "exit_ceiling": exit_ceiling,
         "lanes": lanes,
     }
 
@@ -660,6 +663,7 @@ def build_or_load_timeline_frontier_payload(
                 timestamps=lookup["timestamps"],
                 perfect_candidate_timestamps=lookup["perfect_candidates"],
                 perfect_floor_timestamps=lookup["perfect_floor"],
+                exit_ceiling_timestamps=lookup["exit_ceiling"],
                 lanes=lookup["lanes"],
                 fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
                 fever_fills=fever_fill_raw(
@@ -772,6 +776,7 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
         timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
         perfect_candidate_timestamps=np.asarray(lookup["perfect_candidates"], dtype=np.float32),
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
+        exit_ceiling_timestamps=np.asarray(lookup["exit_ceiling"], dtype=np.float32),
         lanes=np.asarray(lookup["lanes"], dtype=np.int32),
         fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
         fever_fills=fever_fill_raw(

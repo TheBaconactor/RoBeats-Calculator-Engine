@@ -649,6 +649,11 @@ def _materialize_preactivation_schedule(
     latest_presses = [0.0] * len(exact_order)
     latest_press = float(activation_press)
     successor_index = int(activation_index)
+    # Inputs keep their gap to their own lane's neighbours too, not only to their neighbours in the order (an early
+    # activation can otherwise come within a frame of an earlier input on its lane): each lane's nearest later input.
+    lane_next: dict[int, tuple[float, int]] = {}
+    if gap_lanes is not None:
+        lane_next[int(gap_lanes[int(activation_index)])] = (float(activation_press), int(activation_index))
     for position in range(len(exact_order) - 1, -1, -1):
         index = int(exact_order[position])
         note = notes[index]
@@ -664,6 +669,12 @@ def _materialize_preactivation_schedule(
             ordered_latest_press = float(
                 np.nextafter(np.float64(ordered_latest_press), np.float64(-np.inf))
             )
+        if gap_lanes is not None and int(gap_lanes[index]) in lane_next:
+            lane_press, lane_index = lane_next[int(gap_lanes[index])]
+            ordered_latest_press = min(
+                float(ordered_latest_press),
+                float(lane_press) - _input_gap_ms(notes, note_types, gap_lanes, index, int(lane_index)),
+            )
         latest_delta = _delta_at_or_before_ms(
             note_types,
             index,
@@ -673,6 +684,8 @@ def _materialize_preactivation_schedule(
         latest_press = float(note["hit_time_ms"]) + float(latest_delta)
         latest_presses[position] = float(latest_press)
         successor_index = int(index)
+        if gap_lanes is not None:
+            lane_next[int(gap_lanes[index])] = (float(latest_press), int(index))
 
     required_press = -np.inf
     if boundary_index is not None:
@@ -688,6 +701,12 @@ def _materialize_preactivation_schedule(
         ):
             boundary_upper = float(
                 np.nextafter(np.float64(boundary_upper), np.float64(-np.inf))
+            )
+        if gap_lanes is not None and int(gap_lanes[int(boundary_index)]) in lane_next:
+            lane_press, lane_index = lane_next[int(gap_lanes[int(boundary_index)])]
+            boundary_upper = min(
+                float(boundary_upper),
+                float(lane_press) - _input_gap_ms(notes, note_types, gap_lanes, int(boundary_index), int(lane_index)),
             )
         boundary_delta = _bounded_judgment_delta_ms(
             note_types,
@@ -706,12 +725,22 @@ def _materialize_preactivation_schedule(
         required_press = float(boundary["hit_time_ms"]) + float(boundary_delta)
 
     previous_index = boundary_index
+    # Each lane's latest scheduled input, for the same reason as lane_next.
+    lane_prev: dict[int, tuple[float, int]] = {}
+    if gap_lanes is not None and boundary_index is not None:
+        lane_prev[int(gap_lanes[int(boundary_index)])] = (float(required_press), int(boundary_index))
     for note_index, latest_note_press in zip(exact_order, latest_presses, strict=True):
         index = int(note_index)
         note = notes[index]
         result = str(note.get("note_result", "Perfect"))
         if previous_index is not None:
             required_press = float(required_press) + _input_gap_ms(notes, note_types, gap_lanes, int(previous_index), index)
+        if gap_lanes is not None and int(gap_lanes[index]) in lane_prev:
+            lane_press, lane_index = lane_prev[int(gap_lanes[index])]
+            required_press = max(
+                float(required_press),
+                float(lane_press) + _input_gap_ms(notes, note_types, gap_lanes, int(lane_index), index),
+            )
         previous_index = index
         chosen_delta = _bounded_judgment_delta_ms(
             note_types,
@@ -728,6 +757,8 @@ def _materialize_preactivation_schedule(
         )
         note["delta_ms"] = float(chosen_delta)
         required_press = float(note["hit_time_ms"]) + float(chosen_delta)
+        if gap_lanes is not None:
+            lane_prev[int(gap_lanes[index])] = (float(required_press), int(index))
 
 
 def _mark_activation_preemptor_order_deltas(

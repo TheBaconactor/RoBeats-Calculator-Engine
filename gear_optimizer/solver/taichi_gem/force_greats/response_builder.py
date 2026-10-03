@@ -14,6 +14,7 @@ from .fill_crossing import (
 )
 from . import response_build_gpu_numba as _rb_numba
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
+from ...timing_envelope import FRAME_MARGIN_MS
 
 
 _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS = 8192
@@ -90,6 +91,7 @@ class _ActivationReachabilityContext:
     great_floor_timestamps: np.ndarray
     great_candidate_timestamps: np.ndarray
     late_great_floor_timestamps: np.ndarray
+    exit_ceiling_timestamps: np.ndarray
     lanes: np.ndarray
     fever_fill_denom: float
 
@@ -104,6 +106,7 @@ def _build_activation_reachability_context(
     lanes: Any,
     fever_fill_denom: float,
     late_great_floor_timestamps: Any | None = None,
+    exit_ceiling_timestamps: Any | None = None,
 ) -> _ActivationReachabilityContext:
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_floor = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
@@ -119,13 +122,20 @@ def _build_activation_reachability_context(
         if late_great_floor_timestamps is None
         else np.ascontiguousarray(np.asarray(late_great_floor_timestamps, dtype=np.float32).reshape(-1))
     )
+    exit_ceiling = (
+        np.ascontiguousarray(np.minimum.accumulate(perfect_candidates[::-1])[::-1])
+        if exit_ceiling_timestamps is None
+        else np.ascontiguousarray(np.asarray(exit_ceiling_timestamps, dtype=np.float32).reshape(-1))
+    )
     lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
     n = int(ts.shape[0])
     if n <= 0:
         raise ValueError("FG activation reachability requires at least one note")
     if any(
         int(values.shape[0]) != n
-        for values in (perfect_floor, perfect_candidates, great_floor, great_candidates, late_great_floor, lane_arr)
+        for values in (
+            perfect_floor, perfect_candidates, great_floor, great_candidates, late_great_floor, exit_ceiling, lane_arr
+        )
     ):
         raise ValueError("FG activation reachability arrays must match timestamps")
     return _ActivationReachabilityContext(
@@ -135,9 +145,31 @@ def _build_activation_reachability_context(
         great_floor_timestamps=great_floor,
         great_candidate_timestamps=great_candidates,
         late_great_floor_timestamps=late_great_floor,
+        exit_ceiling_timestamps=exit_ceiling,
         lanes=lane_arr,
         fever_fill_denom=float(fever_fill_denom),
     )
+
+
+def _early_exit_min_fill(perfect_floor_timestamps: np.ndarray, perfect_candidate_timestamps: np.ndarray) -> int:
+    """The smallest fill count at which no early fever exit can delay the next activation.
+
+    The search state is a fever's end, not its cutoff, and every note after an early exit is hit at or past the cutoff,
+    so an early exit is planned only where the activation `fill` notes past any note has its earliest Perfect two frame
+    margins past that note's (and every later note's) latest Perfect: past any cutoff a fever can end there at, its
+    Frame-Safe out margin and a press spacing."""
+    floor = np.asarray(perfect_floor_timestamps, dtype=np.float64)
+    latest = np.asarray(perfect_candidate_timestamps, dtype=np.float64)
+    reach = np.minimum.accumulate(latest[::-1])[::-1] + 2.0 * FRAME_MARGIN_MS / 1000.0
+    n = int(floor.shape[0])
+    lo, hi = 1, max(1, n)
+    while lo < hi:  # the condition only gets easier as the fill grows
+        mid = (lo + hi) // 2
+        if bool(np.all(floor[mid:] >= reach[: n - mid])):
+            hi = mid
+        else:
+            lo = mid + 1
+    return int(lo)
 
 
 def _song_arrays(
@@ -147,10 +179,12 @@ def _song_arrays(
     perfect_floor_timestamps: Any,
     great_floor_timestamps: Any,
     late_great_floor_timestamps: Any | None,
+    exit_ceiling_timestamps: Any | None,
     lanes: Any | None,
 ) -> tuple[np.ndarray, ...]:
     """Coerce and check one song's per-note arrays (candidates default to the chart timestamps, the late-Great floor to
-    1 ms past the latest Perfect: perfect_window's)."""
+    1 ms past the latest Perfect and the exit ceiling to the suffix minimum of the latest Perfects: perfect_window's).
+    """
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     n = int(ts.shape[0])
     if bool(np.any(ts[1:] < ts[:-1])):
@@ -177,12 +211,17 @@ def _song_arrays(
         if late_great_floor_timestamps is None
         else _f32(late_great_floor_timestamps, "late_great_floor_timestamps")
     )
+    exit_ceiling_ts = (
+        np.ascontiguousarray(np.minimum.accumulate(perfect_ts[::-1])[::-1])
+        if exit_ceiling_timestamps is None
+        else _f32(exit_ceiling_timestamps, "exit_ceiling_timestamps")
+    )
     if lanes is None:
         raise ValueError("lanes are required for input-engine-aware FG response build")
     lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
-    return ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, lane_arr
+    return ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr
 
 
 def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
@@ -356,7 +395,12 @@ def _centered_hit_window_for_exit(
     n: int, activation_idx: int,
     legal_lo: float, legal_hi: float, real_fever_time: float, target_end_idx: int,
     perfect_floor_timestamps: np.ndarray,
+    exit_ceiling_timestamps: np.ndarray | None = None,
 ) -> tuple[float, float, float]:
+    """The activation hit, centered in [legal_lo, legal_hi], whose fever ends at `target_end_idx`: by default the end
+    the notes reach at their earliest hits (the floor). With `exit_ceiling_timestamps` (an early exit) the notes before
+    the target still reach inside the cutoff at their earliest hits, and the cutoff stays at or before the exit ceiling
+    of the target, so the target and every later note can be hit past it."""
     target = max(0, min(int(target_end_idx), int(n)))
     lo = float(legal_lo)
     hi = float(legal_hi)
@@ -413,13 +457,25 @@ def _centered_hit_window_for_exit(
                 lo_order = int(mid) + 1
         return found
 
+    def _ends_at_target(hit: float) -> bool:
+        if exit_ceiling_timestamps is None:
+            return _exit_idx(hit) == int(target)
+        cutoff = float(np.float32(float(hit) + float(real_fever_time)))
+        return _exit_idx(hit) >= int(target) and cutoff <= float(exit_ceiling_timestamps[int(target)])
+
     def _last_order_with_exit_at_most(first_order: int, last_order: int, expected: int) -> int | None:
         lo_order = int(first_order)
         hi_order = int(last_order)
         found: int | None = None
         while lo_order <= hi_order:
             mid = (lo_order + hi_order) // 2
-            if _exit_idx(_hit_from_order(mid)) <= int(expected):
+            hit = _hit_from_order(mid)
+            if exit_ceiling_timestamps is None:
+                fits = _exit_idx(hit) <= int(expected)
+            else:
+                cutoff = float(np.float32(float(hit) + float(real_fever_time)))
+                fits = cutoff <= float(exit_ceiling_timestamps[int(expected)])
+            if fits:
                 found = int(mid)
                 lo_order = int(mid) + 1
             else:
@@ -441,12 +497,12 @@ def _centered_hit_window_for_exit(
     midpoint = float(np.float32((float(first_hit) + float(last_hit)) * 0.5))
     midpoint_order = min(max(_float32_order(midpoint), int(first_order)), int(last_order))
     midpoint_hit = _hit_from_order(int(midpoint_order))
-    if _exit_idx(midpoint_hit) == int(target):
+    if _ends_at_target(midpoint_hit):
         return float(midpoint_hit), float(first_hit), float(last_hit)
 
     candidate_order = (int(first_order) + int(last_order)) // 2
     candidate = _hit_from_order(int(candidate_order))
-    if _exit_idx(candidate) == int(target):
+    if _ends_at_target(candidate):
         return float(candidate), float(first_hit), float(last_hit)
     raise ValueError("centered FG trace witness changed the response surface")
 
@@ -733,6 +789,32 @@ def _edge_surface_options(
         out.append(option)
         return False
 
+    def _early_exit_options(
+        base: dict[str, Any], *, a: int, edge_e: int, great_start: int, great_end: int, activation_great_idx: int = -1
+    ) -> bool:
+        # The activation ending its fever early: hit from its earliest legal hit (a Perfect's floor, a late Great's
+        # late-Great floor), at every end from which the later notes can still be hit past its cutoff (the search's
+        # min(perfect_exit_e / late_exit_e, edge_e)).
+        lo = float(
+            reachability_context.perfect_floor_timestamps[int(a)]
+            if int(activation_great_idx) < 0
+            else reachability_context.late_great_floor_timestamps[int(a)]
+        )
+        exit_lo = _lower_bound_from(reachability_context.exit_ceiling_timestamps, lo + float(real_fever_time))
+        for ee in range(min(max(int(exit_lo), int(a) + 1), int(edge_e)), int(edge_e)):
+            opt = dict(base)
+            opt["next_state"] = int(ee)
+            opt["fever_end_index"] = int(ee)
+            opt["fever_end_ms"] = float(timestamps[int(ee)]) * 1000.0
+            opt["surface"] = _edge_surface(
+                n=int(n), fever_start=int(a), fever_end=int(ee), great_start=int(great_start), great_end=int(great_end),
+                activation_great_idx=int(activation_great_idx),
+            )
+            opt["_witness"] = {**base["_witness"], "lo": lo, "target_end": int(ee), "early_exit": True}
+            if _emit(opt):
+                return True
+        return False
+
     def _early_great_options(base: dict[str, Any], base_e: int, eg_e: int, *, a: int,
                              great_start: int, great_end: int, activation_great_idx: int) -> bool:
         # One Pareto surface per end ee in (base_e, eg_e]; the tail [base_e, ee) is fever-great.
@@ -849,6 +931,10 @@ def _edge_surface_options(
                 activation_great_idx=-1,
             ):
                 return out
+            if _early_exit_options(
+                base, a=int(a), edge_e=int(e), great_start=int(section_start), great_end=int(great_end)
+            ):
+                return out
         # Late-Great activation, single-sourced with the search's `_compact_first_frontier_action_arrays`
         # via `late_great_activation_prefix` (evaluated in the batched pass above, alongside the
         # input-engine reachability gate on the same weighted Perfect/Great units): lg_prefix < 0
@@ -900,6 +986,11 @@ def _edge_surface_options(
                     a=int(a), great_start=int(section_start),
                     great_end=min(int(n), int(section_start) + int(prefix_forced)),
                     activation_great_idx=int(a),
+                ):
+                    return out
+                if _early_exit_options(
+                    base, a=int(a), edge_e=int(activation_e), great_start=int(section_start),
+                    great_end=min(int(n), int(section_start) + int(prefix_forced)), activation_great_idx=int(a),
                 ):
                     return out
         if bool(use_forced_great_timing) and int(k) > 0:
@@ -1013,6 +1104,11 @@ def _edge_surface_options(
                         activation_great_idx=int(a_region),
                     ):
                         return out
+                    if _early_exit_options(
+                        base, a=int(a_region), edge_e=int(activation_e), great_start=int(run_start),
+                        great_end=int(actual_great_end_i), activation_great_idx=int(a_region),
+                    ):
+                        return out
                 else:
                     actual_great_end = min(int(n), int(run_start) + int(k))
                     if actual_great_end <= int(run_start):
@@ -1079,6 +1175,11 @@ def _edge_surface_options(
                         activation_great_idx=-1,
                     ):
                         return out
+                    if _early_exit_options(
+                        base, a=int(a_region), edge_e=int(e_region), great_start=int(run_start),
+                        great_end=int(actual_great_end),
+                    ):
+                        return out
         prev_fill = fill
         prev_start_time = start_time
         prev_e = e
@@ -1105,6 +1206,7 @@ def _option_with_witness(
         float(w["lo"]), float(w["hi"]),
         float(real_fever_time), int(w["target_end"]),
         perfect_floor_timestamps,
+        reachability_context.exit_ceiling_timestamps if w.get("early_exit") else None,
     )
     activation_idx = int(option["activation_index"])
     section_start = int(option["forced_start_index"])
@@ -1252,14 +1354,17 @@ def reconstruct_force_greats_response_trace(
     use_forced_great_timing: bool = True,
     edge_options_cache: FgTraceEdgeOptionsCache | None = None,
     late_great_floor_timestamps: Any | None = None,
+    exit_ceiling_timestamps: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     n = int(np.asarray(timestamps).reshape(-1).shape[0])
     if n <= 0 or target_surface == _EMPTY_SURFACE:
         return ()
-    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, lane_arr = _song_arrays(
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = _song_arrays(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
-        great_floor_timestamps, late_great_floor_timestamps, lanes,
+        great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
     )
+    if max(1, ceil(float(raw_fever_fill))) < _early_exit_min_fill(floor_ts, perfect_ts):
+        exit_ceiling_ts = np.full_like(exit_ceiling_ts, -np.inf)  # as the search: no early exits at this fill
     reachability_context: _ActivationReachabilityContext | None = None
 
     def _reachability_context() -> _ActivationReachabilityContext:
@@ -1272,6 +1377,7 @@ def reconstruct_force_greats_response_trace(
                 great_floor_timestamps=great_floor_ts,
                 great_candidate_timestamps=great_ts,
                 late_great_floor_timestamps=late_great_floor_ts,
+                exit_ceiling_timestamps=exit_ceiling_ts,
                 lanes=lane_arr,
                 fever_fill_denom=float(raw_fever_fill),
             )
@@ -1296,6 +1402,7 @@ def reconstruct_force_greats_response_trace(
             perfect_floor_timestamps,
             great_floor_timestamps,
             late_great_floor_timestamps,
+            exit_ceiling_timestamps,
             lanes,
         ),
         note_count=n,

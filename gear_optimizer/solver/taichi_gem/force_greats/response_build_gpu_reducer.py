@@ -358,6 +358,7 @@ def _first_frontier_result_from_precomputed_end_indices(
         np.ascontiguousarray(values, dtype=np.int32) for values in item[4:11]
     )
     canonical = context.canonical
+    early_exits = max(1, int(np.ceil(float(item[2])))) >= int(context.early_exit_min_fill)
     (
         first_rows,
         states_evaluated,
@@ -396,6 +397,8 @@ def _first_frontier_result_from_precomputed_end_indices(
             canonical.capped_late_edge_e,
             canonical.capped_eg_perfect_e,
             canonical.capped_eg_late_e,
+            canonical.capped_perfect_exit_e if early_exits else context.no_early_exit_e,
+            canonical.capped_late_exit_e if early_exits else context.no_early_exit_e,
             float(item[3]),
             int(real_time_idx),
             1 if bool(context.use_forced_great_timing) else 0,
