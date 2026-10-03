@@ -3175,14 +3175,16 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
 
 
 def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> None:
-    """Same-mask thinning may feed the first exact reduce, never the bounded suffix.
+    """Same-mask thinning feeds the first exact reduce and filters the bounded suffix.
 
-    The bounded cone inserter is deliberately order-sensitive: a structurally dominated row
-    can still evict a harmless extra before its own later dominator arrives.  A whole-stream
-    pre-reduce therefore changes retained witnesses.  This production-shaped stream crosses
-    the 4,096-row promotion threshold in its first edge batch and pins the retired per-edge
-    schedule exactly; the second batch must still enter the bounded inserter row by row.
+    This production-shaped stream crosses the 4,096-row promotion threshold in its first edge
+    batch: the promotion happens exactly where the retired per-edge schedule promotes. After it,
+    a row weakly dominated by an earlier row with the same masks never reaches the order-sensitive
+    cone inserter. That can change which redundant witnesses it retains, never an optimum: the
+    frontier scores the same best as the unfiltered schedule in every scoring direction.
     """
+    import random
+    from math import floor
     from numba import types
     from numba.typed import Dict, List
 
@@ -3317,10 +3319,25 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
 
     assert added == first_count + second_count
     assert actual_bounded == bounded == 1
-    assert list(actual) == list(expected)
-    assert len(actual_scores) == len(expected_scores) == len(actual)
-    for actual_row, expected_row in zip(actual_scores, expected_scores, strict=True):
-        np.testing.assert_array_equal(actual_row, expected_row)
+    assert len(actual_scores) == len(actual)
+
+    # Every row carries the same head masks, so a score differs only in its body counts, linearly (score.fg_surface_score:
+    # a fever note gains fever_value - combo_value, a normal / fever Great loses its own amount).
+    assert {tuple(int(v) for v in row[:4]) for row in (*actual, *expected)} == {tuple(int(v) for v in expected[0][:4])}
+    rng = random.Random(7)
+    for _ in range(500):
+        base, combo, fever = rng.uniform(50.0, 3000.0), rng.uniform(1.0, 3.5), rng.uniform(1.0, 3.5)
+        great = float(int(rng.uniform(10.0, base)))
+        gain = floor(base * combo * fever) - floor(base * combo)
+        normal_loss = max(0, floor(base * combo) - floor(great * combo))
+        fever_loss = max(0, floor(base * combo * fever) - floor(great * combo * fever))
+
+        def best(rows):
+            return max(
+                gain * int(r[4]) - normal_loss * (int(r[5]) - int(r[6])) - fever_loss * int(r[6]) for r in rows
+            )
+
+        assert best(actual) == best(expected)
     assert np.all(bucket_head == -1)
     assert np.all(bucket_tail == -1)
 
