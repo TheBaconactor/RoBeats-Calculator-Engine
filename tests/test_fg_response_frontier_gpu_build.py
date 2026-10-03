@@ -2396,7 +2396,6 @@ def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> N
         HitTimes,
         _NUMBA_SURFACE_TYPE,
         _numba_reduce,
-        _numba_reduce_pattern_runs,
     )
 
     def dominates(left, right):
@@ -2428,7 +2427,6 @@ def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> N
             surfaces.append(tuple(np.uint64(value) for value in row))
         expected = sequential(rows)
         assert list(_numba_reduce(surfaces)) == expected
-        assert list(_numba_reduce_pattern_runs(surfaces)) == expected
 
     pattern_a = (0b0011, 0, 0b0101, 0)
     pattern_b = (0b1011, 0, 0b0001, 0)

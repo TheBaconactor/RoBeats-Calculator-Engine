@@ -1760,88 +1760,13 @@ def _numba_reduce(surfaces):
             np.uint64(0),
         ))
         return kept
-    # Head-overlap-bucketed Pareto maxima. Head fever/great overlap must match inside a dominance
-    # scan; body Greats are compared in scorer-visible coordinates:
-    #   normal_great = body_great - body_fever_great, fever_great = body_fever_great.
-    # This keeps the reduction candidate-independent and lossless while allowing a surface with no
-    # more normal Greats and no more fever Greats to dominate one with the same head-overlap class.
-    kept_flag = np.zeros(n, dtype=np.bool_)
-    prev_same = np.full(n, -1, dtype=np.int64)
-    bucket_head = Dict.empty(_NUMBA_HEAD_OVERLAP_KEY_TYPE, types.int64)
-    for idx in range(n):
-        cf_lo, cf_hi, cg_lo, cg_hi, cbf, cbg, cbfg = surfaces[idx]
-        cng = cbg - cbfg
-        key = (cf_lo & cg_lo, cf_hi & cg_hi)
-        head = bucket_head[key] if key in bucket_head else -1
-        # Phase 1: dominated by a currently-kept surface in the same class?
-        dominated = False
-        pos = head
-        while pos != -1:
-            if kept_flag[pos]:
-                kf_lo, kf_hi, kg_lo, kg_hi, kbf, kbg, kbfg = surfaces[pos]
-                kng = kbg - kbfg
-                if (
-                    kbf >= cbf
-                    and kng <= cng
-                    and kbfg <= cbfg
-                    and (cf_lo & ~kf_lo) == 0
-                    and (cf_hi & ~kf_hi) == 0
-                    and (kg_lo & ~cg_lo) == 0
-                    and (kg_hi & ~cg_hi) == 0
-                ):
-                    dominated = True
-                    break
-            pos = prev_same[pos]
-        if dominated:
-            continue
-        # Phase 2: retire currently-kept surfaces in the same class that this one dominates.
-        pos = head
-        while pos != -1:
-            if kept_flag[pos]:
-                kf_lo, kf_hi, kg_lo, kg_hi, kbf, kbg, kbfg = surfaces[pos]
-                kng = kbg - kbfg
-                if (
-                    cbf >= kbf
-                    and cng <= kng
-                    and cbfg <= kbfg
-                    and (kf_lo & ~cf_lo) == 0
-                    and (kf_hi & ~cf_hi) == 0
-                    and (cg_lo & ~kg_lo) == 0
-                    and (cg_hi & ~kg_hi) == 0
-                ):
-                    kept_flag[pos] = False
-            pos = prev_same[pos]
-        prev_same[idx] = head
-        bucket_head[key] = idx
-        kept_flag[idx] = True
-    for idx in range(n):
-        if kept_flag[idx]:
-            kept.append(surfaces[idx])
-    return kept
-
-
-@njit(cache=True, nogil=True)
-def _numba_reduce_pattern_runs(surfaces):
-    kept = List.empty_list(_NUMBA_SURFACE_TYPE)
-    n = len(surfaces)
-    if n == 0:
-        kept.append((
-            np.uint64(0),
-            np.uint64(0),
-            np.uint64(0),
-            np.uint64(0),
-            np.uint64(0),
-            np.uint64(0),
-            np.uint64(0),
-        ))
-        return kept
     if n > 2_147_483_647:
         raise OverflowError("pattern-run reducer row count exceeds int32 index capacity")
     # Exact head-pattern-run index for the structural Pareto maximum. Dominance requires equal
     # fever/Great overlap, a fever-mask superset, and a Great-mask subset. Grouping live rows by
     # their complete four-word head pattern lets each run test those cheap mask conditions once,
-    # then every row in the run scans body triples only in the cached compatible-run lists. The old
-    # reducer repeated the same four mask tests for every historical row and candidate.
+    # then every row in the run scans body triples only in the cached compatible-run lists instead
+    # of repeating the same four mask tests for every historical row and candidate.
     #
     # Rows are still processed in producer order. Each per-run list contains only currently
     # live rows; retirement unlinks in place, while kept_flag restores the identical final producer
@@ -5744,7 +5669,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
         for idx in range(len(first_frontier)):
             first_region_generated.append(first_frontier[idx])
         first_frontier = _numba_head_envelope_filter(
-            _numba_reduce_pattern_runs(first_region_generated),
+            _numba_reduce(first_region_generated),
             0,
             int(head_limit),
             int(head_filter_min),
