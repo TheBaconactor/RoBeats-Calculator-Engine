@@ -101,15 +101,24 @@ def _region_hit_end_index_tables(
 def _first_only_region_groups(items: list[tuple]) -> dict[tuple[float, int], list[tuple]]:
     """Partition canonical prepared items by their region-core-table key.
 
-    The region-run core work depends on the geometry only through
-    ``(raw_fever_fill, non_fever_base)`` — item slots 2 and 1 — never ``real_fever_time``, so all
-    fever-time variants of one key share one table. Keys keep first-appearance order and items
-    keep their canonical order within a key, so the batch scheduler can build tables serially,
-    reduce admitted groups concurrently, and restore canonical result order deterministically.
+    The region-run core work depends on the geometry only through its non-Fever base and region action counts (item
+    slots 1 and 4) and its fill, never ``real_fever_time``; and on the fill only through its half-unit count
+    ceil(2 * raw_fever_fill): every fill crossing, region offset, k-scan stop, shifted-head test and fill-window check
+    compares whole half-units (each subtracts half-integers from the fill, which is exact). Items sharing those share
+    one table, keyed by the first such item's (raw_fever_fill, non_fever_base). Keys keep first-appearance order and
+    items keep their canonical order within a key, so the batch scheduler can build tables serially, reduce admitted
+    groups concurrently, and restore canonical result order deterministically.
     """
     groups: dict[tuple[float, int], list[tuple]] = {}
+    key_by_class: dict[tuple[int, int, bytes], tuple[float, int]] = {}
     for item in items:
-        groups.setdefault((float(item[2]), int(item[1])), []).append(item)
+        table_class = (
+            int(np.ceil(2.0 * float(item[2]))),
+            int(item[1]),
+            np.ascontiguousarray(item[4], dtype=np.int32).tobytes(),
+        )
+        key = key_by_class.setdefault(table_class, (float(item[2]), int(item[1])))
+        groups.setdefault(key, []).append(item)
     return groups
 
 

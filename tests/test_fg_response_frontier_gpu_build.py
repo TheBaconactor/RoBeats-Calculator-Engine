@@ -337,6 +337,10 @@ def test_fg_response_first_frontier_region_groups_partition_in_canonical_order()
     assert groups[(2.5, 3)] == [items[0], items[1], items[3]]
     assert groups[(2.5, 4)] == [items[2]]
     assert groups[(7.0, 4)] == [items[4]]
+    # Fills with the same half-unit count share a table, keyed by the first one's fill.
+    shared = response_build_gpu_precompute._first_only_region_groups([_item(5, 3, 2.2), _item(6, 3, 2.4), _item(7, 3, 2.6)])
+    assert list(shared.keys()) == [(2.2, 3), (2.6, 3)]
+    assert [item[0] for item in shared[(2.2, 3)]] == [5, 6]
     # The pre-song-context chunk machinery is gone: one canonical grouped route only.
     assert not hasattr(response_build_gpu_precompute, "_first_only_chunks")
     assert not hasattr(response_build_gpu_precompute, "_batch_chunk_size")
