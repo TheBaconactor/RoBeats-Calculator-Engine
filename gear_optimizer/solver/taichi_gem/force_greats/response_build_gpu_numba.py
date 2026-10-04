@@ -273,6 +273,14 @@ def _numba_frame_latest_activation_hit_for_run(a, lo, hit_hi, perfect_candidates
     great_lo = max(0, min(int(great_start), int(n)))
     great_hi = min(int(n), int(great_lo) + max(0, int(great_count)))
     stop = max(int(a) + 1, int(great_hi))
+    if stop == int(a) + 1:
+        cap = float(hit_hi)
+        if a + 1 < n:
+            cap = min(cap, float(lane_bounds[a + 1, 2]))
+        successor = int(lane_bounds[a, 0])
+        if successor < n:
+            cap = min(cap, float(lane_bounds[successor, 2]) - float(lane_bounds[successor, 1]))
+        return (cap, 1) if lo <= cap else (0.0, 0)
     latest = np.empty(stop - int(a), dtype=np.float64)
     for j in range(stop - 1, int(a) - 1, -1):
         high = float(great_candidates[j] if great_lo <= j < great_hi else perfect_candidates[j])
@@ -972,13 +980,6 @@ def _numba_region_run_core_for_offset(
 
     Returns ``(activation, great_end, is_great, perfect_valid, activation_hit,
     perfect_hit, valid)``."""
-    (
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        late_great_floor_timestamps,
-    ) = hit_times
     run_start = int(section_start) + int(offset)
     activation, is_great = _numba_fill_crossing_run(
         int(section_start), int(run_start), int(k), float(raw_fever_fill), int(n)
@@ -1004,8 +1005,8 @@ def _numba_region_run_core_for_offset(
             _numba_perfect_activation_hit_for_run(
                 int(activation),
                 timestamps,
-                perfect_candidate_timestamps,
-                great_candidate_timestamps,
+                hit_times.perfect_candidate_timestamps,
+                hit_times.great_candidate_timestamps,
                 int(run_start),
                 int(great_end) - int(run_start),
                 int(n),
@@ -1028,8 +1029,8 @@ def _numba_region_run_core_for_offset(
     perfect_hit, perfect_valid = _numba_perfect_activation_hit_for_run(
         int(activation),
         timestamps,
-        perfect_candidate_timestamps,
-        great_candidate_timestamps,
+        hit_times.perfect_candidate_timestamps,
+        hit_times.great_candidate_timestamps,
         int(run_start),
         int(great_end) - int(run_start),
         int(n),
@@ -1163,13 +1164,6 @@ def _numba_build_region_core_table(
 
     Returns ``(starts, offsets, activations, great_ends, is_greats, act_hits,
     perfect_hits, perfect_valids)`` with ``starts`` of length ``n + 2``."""
-    (
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        late_great_floor_timestamps,
-    ) = hit_times
     if int(lanes.shape[0]) != int(n):
         raise ValueError("FG region-core lane rows must match n")
     denom = float(raw_fever_fill)
