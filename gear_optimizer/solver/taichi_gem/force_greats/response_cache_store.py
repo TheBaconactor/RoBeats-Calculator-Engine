@@ -615,6 +615,7 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-beade5939886"] = ("fg-response-frontier-visible-first-v31+logic-aa1f5e045c00", *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-aa1f5e045c00"])
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-ce04feaf7cb3"] = ("fg-response-frontier-visible-first-v31+logic-beade5939886", *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-beade5939886"])
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-0808017cb32a"] = ("fg-response-frontier-visible-first-v31+logic-ce04feaf7cb3", *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-ce04feaf7cb3"])
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):

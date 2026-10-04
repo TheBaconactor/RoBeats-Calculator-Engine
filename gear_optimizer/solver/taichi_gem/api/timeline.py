@@ -371,6 +371,7 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-bd882056eb01"] = ("exact-frontier-v12+logic-92a162c8fc85", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-92a162c8fc85"])
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3e855b8e8a4b"] = ("exact-frontier-v12+logic-bd882056eb01", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-bd882056eb01"])
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-0a82279bb0fc"] = ("exact-frontier-v12+logic-3e855b8e8a4b", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3e855b8e8a4b"])
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:

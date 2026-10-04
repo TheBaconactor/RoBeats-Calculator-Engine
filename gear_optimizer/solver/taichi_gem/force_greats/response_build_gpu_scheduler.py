@@ -273,7 +273,7 @@ def _build_region_table(
             context.late_great_floor_timestamps,
         ),
         context.lanes,
-        context.lane_bounds,
+        *((context.lane_bounds,) if len(context.lane_bounds) else ()),
     )
     if len(context.lane_bounds):
         hits, hit_ids = np.unique(np.concatenate(region_table[5:7]), return_inverse=True)
@@ -285,9 +285,10 @@ def _build_region_table(
             np.searchsorted(context.great_floor_timestamps, cutoffs).astype(np.int32),
         )
     else:
+        # Valid hits are exact keys, so interpolation returns their integer indices.
         region_table = (
             *region_table[:5],
-            *(np.searchsorted(context.canonical.hit_values, values).astype(np.int32) for values in region_table[5:7]),
+            *(np.interp(values, context.canonical.hit_values, np.arange(len(context.canonical.hit_values))).astype(np.int32) for values in region_table[5:7]),
             region_table[7],
         )
     return region_table, _region_table_bytes(region_table), float(time.perf_counter() - build_t0)
