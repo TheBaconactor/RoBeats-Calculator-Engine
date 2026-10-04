@@ -36,7 +36,7 @@ HeadTables = namedtuple(
     "HeadTables",
     ["body_values", "body_starts", "body_counts", "head_pool", "head_state_start", "head_state_count", "head_limit"],
 )
-# The first-frontier build's action-region tables (per region, and per interned region hit), passed together.
+# The first-frontier build's action-region tables and timing bounds, passed together.
 RegionTables = namedtuple(
     "RegionTables",
     [
@@ -45,11 +45,14 @@ RegionTables = namedtuple(
         "region_activations",
         "region_great_ends",
         "region_is_greats",
-        "region_act_hit_ids",
-        "region_perfect_hit_ids",
+        "region_act_hits",
+        "region_perfect_hits",
         "region_perfect_valids",
-        "region_perfect_end_by_hit",
-        "region_great_end_by_hit",
+        "perfect_end_by_hit",
+        "great_end_by_hit",
+        "real_fever_time",
+        "lane_bounds",
+        "lane_chain_ends",
     ],
 )
 # One packet queue's back-segment arrays (alpha, packet offsets, Great-activation bounds, lengths, arenas).
@@ -59,6 +62,8 @@ PacketQueue = namedtuple(
 )
 # The Perfect / Great floor and candidate hit times of every note and its earliest planned late-Great hit (the
 # reachability and region-core checks).
+_NO_LANE_BOUNDS = np.empty((0, 5), dtype=np.float64)
+
 HitTimes = namedtuple(
     "HitTimes",
     [
@@ -108,15 +113,7 @@ _HEAD_BASIS_B_HI = 10
 _HEAD_BASIS_C_HI = 11
 _HEAD_BASIS_D_HI = 12
 
-# Exact producer tokens for every value that activation-hit selection can return. Each token is
-# ``kind * n + note_index``; the host interns equal float64 values once per song before region-table
-# construction, so table rows store compact deterministic IDs rather than repeated timestamps.
-_REGION_HIT_CHART = 0
-_REGION_HIT_PERFECT = 1
 _EXACT_LANE_SIGNATURE_MAX_WORD_CELLS = 16_777_216
-_REGION_HIT_GREAT = 2
-_REGION_HIT_PERFECT_CAPPED = 3
-_REGION_HIT_GREAT_CAPPED = 4
 
 @njit(cache=True, nogil=True)
 def _numba_mask_segment(start: int, end: int, offset: int) -> np.uint64:
@@ -253,6 +250,46 @@ def _numba_lower_bound_from(timestamps, value: float) -> int:
 
 
 @njit(cache=True, nogil=True)
+def _numba_lane_chain_end_table(n: int, lane_bounds, real_times):
+    ends = np.full((len(real_times), int(n)), int(n), dtype=np.int32)
+    if not lane_bounds.shape[0]:
+        return ends
+    distance = np.empty(int(n), dtype=np.float64)
+    for a in range(int(n)):
+        distance[a] = 0.0
+        for j in range(a + 1, int(n)):
+            value = distance[j - 1]
+            previous = int(lane_bounds[j, 3])
+            if previous >= a:
+                value = max(value, distance[previous] + float(lane_bounds[j, 1]))
+            distance[j] = value
+        for rt in range(len(real_times)):
+            ends[rt, a] = max(a + 1, a + np.searchsorted(distance[a:], real_times[rt], side="left"))
+    return ends
+
+
+@njit(cache=True, nogil=True)
+def _numba_frame_latest_activation_hit_for_run(a, lo, hit_hi, perfect_candidates, great_candidates, great_start, great_count, n, lane_bounds):
+    great_lo = max(0, min(int(great_start), int(n)))
+    great_hi = min(int(n), int(great_lo) + max(0, int(great_count)))
+    stop = max(int(a) + 1, int(great_hi))
+    latest = np.empty(stop - int(a), dtype=np.float64)
+    for j in range(stop - 1, int(a) - 1, -1):
+        high = float(great_candidates[j] if great_lo <= j < great_hi else perfect_candidates[j])
+        if j == int(a):
+            high = float(hit_hi)
+        if j + 1 < int(n):
+            high = min(high, latest[j + 1 - int(a)] if j + 1 < stop else float(lane_bounds[j + 1, 2]))
+        successor = int(lane_bounds[j, 0])
+        if successor < int(n):
+            next_high = latest[successor - int(a)] if successor < stop else float(lane_bounds[successor, 2])
+            high = min(high, next_high - float(lane_bounds[successor, 1]))
+        latest[j - int(a)] = high
+    cap = float(latest[0])
+    return (cap, 1) if lo <= cap else (0.0, 0)
+
+
+@njit(cache=True, nogil=True)
 def _numba_latest_activation_hit_for_contiguous_great_run(
     activation_idx: int,
     hit_lo: float,
@@ -263,17 +300,15 @@ def _numba_latest_activation_hit_for_contiguous_great_run(
     great_start: int,
     great_count: int,
     section_end: int,
-    hit_hi_token: int,
 ):
     a = int(activation_idx)
     n = min(int(section_end), int(timestamps.shape[0]))
     if int(a) < 0 or int(a) >= int(n):
-        return 0.0, 0, -1
+        return (0.0, 0)
     lo = float(hit_lo)
     cap = float(hit_hi)
-    cap_token = int(hit_hi_token)
     if lo > cap:
-        return 0.0, 0, -1
+        return (0.0, 0)
 
     great_lo = max(0, min(int(great_start), int(n)))
     great_hi = min(int(n), int(great_lo) + max(0, int(great_count)))
@@ -284,14 +319,9 @@ def _numba_latest_activation_hit_for_contiguous_great_run(
         capped = float(label_hi) - 1.0e-6
         if capped < cap:
             cap = capped
-            cap_token = (
-                int(_REGION_HIT_GREAT_CAPPED) * int(timestamps.shape[0]) + int(j)
-                if int(great_lo) <= int(j) < int(great_hi)
-                else int(_REGION_HIT_PERFECT_CAPPED) * int(timestamps.shape[0]) + int(j)
-            )
         if cap < lo:
-            return 0.0, 0, -1
-    return float(cap), 1, int(cap_token)
+            return (0.0, 0)
+    return (float(cap), 1)
 
 
 @njit(cache=True, nogil=True)
@@ -338,31 +368,22 @@ def _numba_perfect_activation_hit_for_run(
     great_start: int,
     great_count: int,
     section_end: int,
+    lane_bounds=_NO_LANE_BOUNDS,
 ):
     a = int(activation_idx)
     n = min(int(section_end), int(timestamps.shape[0]))
     if int(a) < 0 or int(a) >= int(n):
-        return 0.0, 0, -1
+        return 0.0, 0
     chart = float(timestamps[int(a)])
     perfect = float(perfect_candidate_timestamps[int(a)])
-    lo = chart if chart < perfect else perfect
+    lo = float(lane_bounds[a, 4]) if lane_bounds.shape[0] else (chart if chart < perfect else perfect)
     hi = perfect if perfect > chart else chart
-    hi_token = (
-        int(_REGION_HIT_PERFECT) * int(timestamps.shape[0]) + int(a)
-        if perfect > chart
-        else int(_REGION_HIT_CHART) * int(timestamps.shape[0]) + int(a)
-    )
+    if lane_bounds.shape[0]:
+        return _numba_frame_latest_activation_hit_for_run(
+            a, lo, hi, perfect_candidate_timestamps, great_candidate_timestamps, great_start, great_count, n, lane_bounds
+        )
     return _numba_latest_activation_hit_for_contiguous_great_run(
-        int(a),
-        float(lo),
-        float(hi),
-        timestamps,
-        perfect_candidate_timestamps,
-        great_candidate_timestamps,
-        int(great_start),
-        int(great_count),
-        int(section_end),
-        int(hi_token),
+        a, lo, hi, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, great_start, great_count, n
     )
 
 
@@ -376,24 +397,20 @@ def _numba_late_great_activation_hit_for_run(
     great_start: int,
     great_count: int,
     section_end: int,
+    lane_bounds=_NO_LANE_BOUNDS,
 ):
     a = int(activation_idx)
     n = min(int(section_end), int(timestamps.shape[0]))
     if int(a) < 0 or int(a) >= int(n):
-        return 0.0, 0, -1
+        return 0.0, 0
     hit_lo = float(late_great_floor_timestamps[int(a)])
     hit_hi = float(great_candidate_timestamps[int(a)])
+    if lane_bounds.shape[0]:
+        return _numba_frame_latest_activation_hit_for_run(
+            a, hit_lo, hit_hi, perfect_candidate_timestamps, great_candidate_timestamps, great_start, great_count, n, lane_bounds
+        )
     return _numba_latest_activation_hit_for_contiguous_great_run(
-        int(a),
-        float(hit_lo),
-        float(hit_hi),
-        timestamps,
-        perfect_candidate_timestamps,
-        great_candidate_timestamps,
-        int(great_start),
-        int(great_count),
-        int(section_end),
-        int(_REGION_HIT_GREAT) * int(timestamps.shape[0]) + int(a),
+        a, hit_lo, hit_hi, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, great_start, great_count, n
     )
 
 
@@ -404,13 +421,14 @@ def _numba_build_prefix_activation_hit_tables(
     perfect_candidate_timestamps,
     great_candidate_timestamps,
     late_great_floor_timestamps,
+    lane_bounds=_NO_LANE_BOUNDS,
 ):
     perfect_hit = np.zeros(int(n), dtype=np.float64)
     perfect_valid = np.zeros(int(n), dtype=np.int8)
     late_hit = np.zeros(int(n), dtype=np.float64)
     late_valid = np.zeros(int(n), dtype=np.int8)
     for activation in range(int(n)):
-        hit, valid, _token = _numba_perfect_activation_hit_for_run(
+        hit, valid = _numba_perfect_activation_hit_for_run(
             int(activation),
             timestamps,
             perfect_candidate_timestamps,
@@ -418,10 +436,11 @@ def _numba_build_prefix_activation_hit_tables(
             int(activation),
             0,
             int(n),
+            lane_bounds,
         )
         perfect_hit[int(activation)] = float(hit)
         perfect_valid[int(activation)] = np.int8(valid)
-        hit, valid, _token = _numba_late_great_activation_hit_for_run(
+        hit, valid = _numba_late_great_activation_hit_for_run(
             int(activation),
             timestamps,
             perfect_candidate_timestamps,
@@ -430,6 +449,7 @@ def _numba_build_prefix_activation_hit_tables(
             int(activation),
             1,
             int(n),
+            lane_bounds,
         )
         late_hit[int(activation)] = float(hit)
         late_valid[int(activation)] = np.int8(valid)
@@ -838,6 +858,7 @@ def _numba_minimal_reachable_region_great_end(
     hit_times,
     lanes,
     n: int,
+    lane_bounds=_NO_LANE_BOUNDS,
 ):
     (
         perfect_floor_timestamps,
@@ -852,7 +873,7 @@ def _numba_minimal_reachable_region_great_end(
     while int(max_great_end) < int(n) and perfect_candidate_timestamps[int(max_great_end)] < hit_hi:
         max_great_end += 1
     for great_end in range(int(a) + 1, int(max_great_end) + 1):
-        hit, valid, hit_token = _numba_late_great_activation_hit_for_run(
+        hit, valid = _numba_late_great_activation_hit_for_run(
             int(a),
             timestamps,
             perfect_candidate_timestamps,
@@ -861,6 +882,7 @@ def _numba_minimal_reachable_region_great_end(
             int(run_start),
             int(great_end) - int(run_start),
             int(n),
+            lane_bounds,
         )
         if int(valid) == 0:
             continue
@@ -877,7 +899,7 @@ def _numba_minimal_reachable_region_great_end(
             int(great_end) - int(run_start),
             1,
         ):
-            return int(great_end), int(hit_token)
+            return int(great_end), float(hit)
     return -1, -1
 
 
@@ -941,15 +963,15 @@ def _numba_region_run_core_for_offset(
     timestamps,
     hit_times,
     lanes,
+    lane_bounds=_NO_LANE_BOUNDS,
 ):
     """The rt-independent core of a region-run candidate: fill crossing, minimal reachable region
     Great end, capped activation/perfect hits, and the weighted lane-aware reachability check.
     Depends on the geometry only through the fever-fill denom (never real_fever_time), so results
     are shareable across every geometry of one (raw_fever_fill, non_fever_base) group.
 
-    Returns ``(activation, great_end, is_great, perfect_valid, activation_hit_token,
-    perfect_hit_token, valid)``. Tokens are selected alongside the exact producer hit and resolve
-    to that value through the song-owned intern table."""
+    Returns ``(activation, great_end, is_great, perfect_valid, activation_hit,
+    perfect_hit, valid)``."""
     (
         perfect_floor_timestamps,
         perfect_candidate_timestamps,
@@ -965,7 +987,7 @@ def _numba_region_run_core_for_offset(
         return -1, -1, 0, 0, -1, -1, 0
 
     if int(is_great) != 0:
-        great_end, activation_hit_token = _numba_minimal_reachable_region_great_end(
+        great_end, activation_hit = _numba_minimal_reachable_region_great_end(
             int(activation),
             int(section_start),
             int(run_start),
@@ -974,10 +996,11 @@ def _numba_region_run_core_for_offset(
             hit_times,
             lanes,
             int(n),
+            lane_bounds,
         )
         if int(great_end) < 0:
             return -1, -1, 0, 0, -1, -1, 0
-        perfect_hit, perfect_valid, perfect_hit_token = (
+        perfect_hit, perfect_valid = (
             _numba_perfect_activation_hit_for_run(
                 int(activation),
                 timestamps,
@@ -986,6 +1009,7 @@ def _numba_region_run_core_for_offset(
                 int(run_start),
                 int(great_end) - int(run_start),
                 int(n),
+                lane_bounds,
             )
         )
         return (
@@ -993,15 +1017,15 @@ def _numba_region_run_core_for_offset(
             int(great_end),
             1,
             int(perfect_valid),
-            int(activation_hit_token),
-            int(perfect_hit_token),
+            float(activation_hit),
+            float(perfect_hit),
             1,
         )
 
     great_end = min(int(n), int(run_start) + int(k))
     if int(great_end) <= int(run_start):
         return -1, -1, 0, 0, -1, -1, 0
-    perfect_hit, perfect_valid, perfect_hit_token = _numba_perfect_activation_hit_for_run(
+    perfect_hit, perfect_valid = _numba_perfect_activation_hit_for_run(
         int(activation),
         timestamps,
         perfect_candidate_timestamps,
@@ -1009,6 +1033,7 @@ def _numba_region_run_core_for_offset(
         int(run_start),
         int(great_end) - int(run_start),
         int(n),
+        lane_bounds,
     )
     if int(perfect_valid) == 0:
         return -1, -1, 0, 0, -1, -1, 0
@@ -1032,158 +1057,64 @@ def _numba_region_run_core_for_offset(
         0,
         1,
         -1,
-        int(perfect_hit_token),
+        float(perfect_hit),
         1,
     )
 
 
 @njit(cache=True, nogil=True, inline="always")
 def _numba_region_run_edge_from_core(
-    n: int,
-    section_start: int,
-    offset: int,
-    core_activation: int,
-    core_great_end: int,
-    core_is_great: int,
-    core_activation_hit_id: int,
-    core_perfect_hit_id: int,
-    core_perfect_valid: int,
-    core_valid: int,
-    perfect_end_by_hit,
-    great_end_by_hit,
+    n: int, section_start: int, offset: int, core_activation: int, core_great_end: int,
+    core_is_great: int, core_activation_hit: int, core_perfect_hit: int,
+    core_perfect_valid: int, core_valid: int,
+    perfect_end_by_hit, great_end_by_hit,
+    lane_chain_ends,
 ):
-    """The rt-dependent finish over precomputed endpoints for interned producer hit values."""
     if int(core_valid) == 0:
         return -1, -1, -1, -1, -1, -1, 0
-    if int(core_is_great) == 0 or int(core_perfect_valid) != 0:
-        if (
-            int(core_perfect_hit_id) < 0
-            or int(core_perfect_hit_id) >= int(perfect_end_by_hit.shape[0])
-            or int(core_perfect_hit_id) >= int(great_end_by_hit.shape[0])
-        ):
-            raise ValueError("FG region Perfect-hit ID escaped its endpoint table")
+    n = min(n, int(lane_chain_ends[core_activation]))
     run_start = int(section_start) + int(offset)
-    if int(core_is_great) != 0:
-        perfect_e = -1
-        perfect_eg_e = -1
-        if int(core_perfect_valid) != 0:
-            perfect_e = _numba_clamped_end_idx(
-                int(n), int(core_activation), int(perfect_end_by_hit[int(core_perfect_hit_id)])
-            )
-            perfect_eg_e = _numba_clamped_end_idx(
-                int(n), int(core_activation), int(great_end_by_hit[int(core_perfect_hit_id)])
-            )
-        if (
-            int(core_activation_hit_id) < 0
-            or int(core_activation_hit_id) >= int(perfect_end_by_hit.shape[0])
-            or int(core_activation_hit_id) >= int(great_end_by_hit.shape[0])
-        ):
-            raise ValueError("FG region activation-hit ID escaped its endpoint table")
-        activation_e = _numba_clamped_end_idx(
-            int(n), int(core_activation), int(perfect_end_by_hit[int(core_activation_hit_id)])
+    perfect_e, perfect_eg_e = -1, -1
+    if int(core_perfect_valid) != 0:
+        perfect_e = _numba_clamped_end_idx(
+            int(n), int(core_activation),
+            int(perfect_end_by_hit[int(core_perfect_hit)]),
         )
-        activation_eg_e = _numba_clamped_end_idx(
-            int(n), int(core_activation), int(great_end_by_hit[int(core_activation_hit_id)])
+        perfect_eg_e = _numba_clamped_end_idx(
+            int(n), int(core_activation),
+            int(great_end_by_hit[int(core_perfect_hit)]),
         )
-        if int(perfect_e) >= 0 and not _numba_late_edge_extends(
-            int(perfect_e),
-            int(activation_e),
-            int(activation_eg_e),
-            int(perfect_eg_e),
-        ):
-            return -1, -1, -1, -1, -1, -1, 0
-        return (
-            int(core_activation),
-            int(activation_e),
-            int(run_start),
-            int(core_great_end),
-            int(core_activation),
-            int(activation_eg_e),
-            1,
-        )
-    edge_e = _numba_clamped_end_idx(
-        int(n), int(core_activation), int(perfect_end_by_hit[int(core_perfect_hit_id)])
+    if int(core_is_great) == 0:
+        return int(core_activation), int(perfect_e), int(run_start), int(core_great_end), -1, int(perfect_eg_e), 1
+    activation_e = _numba_clamped_end_idx(
+        int(n), int(core_activation),
+        int(perfect_end_by_hit[int(core_activation_hit)]),
     )
-    edge_eg_e = _numba_clamped_end_idx(
-        int(n), int(core_activation), int(great_end_by_hit[int(core_perfect_hit_id)])
+    activation_eg_e = _numba_clamped_end_idx(
+        int(n), int(core_activation),
+        int(great_end_by_hit[int(core_activation_hit)]),
     )
-    return (
-        int(core_activation),
-        int(edge_e),
-        int(run_start),
-        int(core_great_end),
-        -1,
-        int(edge_eg_e),
-        1,
-    )
+    if int(perfect_e) >= 0 and not _numba_late_edge_extends(
+        int(perfect_e), int(activation_e), int(activation_eg_e), int(perfect_eg_e)
+    ):
+        return -1, -1, -1, -1, -1, -1, 0
+    return (int(core_activation), int(activation_e), int(run_start), int(core_great_end),
+            int(core_activation), int(activation_eg_e), 1)
 
 
 @njit(cache=True, nogil=True)
 def _numba_region_run_edge_for_offset(
-    n: int,
-    section_start: int,
-    offset: int,
-    k: int,
-    raw_fever_fill: float,
-    timestamps,
-    hit_times,
-    lanes,
-    hit_token_to_id,
-    perfect_end_by_hit,
-    great_end_by_hit,
+    n: int, section_start: int, offset: int, k: int, raw_fever_fill: float,
+    timestamps, hit_times, lanes, lane_bounds, real_fever_time: float, lane_chain_ends,
 ):
-    (
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        late_great_floor_timestamps,
-    ) = hit_times
-    (
-        activation,
-        great_end,
-        is_great,
-        perfect_valid,
-        activation_hit_token,
-        perfect_hit_token,
-        valid,
-    ) = (
-        _numba_region_run_core_for_offset(
-            int(n),
-            int(section_start),
-            int(offset),
-            int(k),
-            float(raw_fever_fill),
-            timestamps,
-            hit_times,
-            lanes,
-        )
+    core = _numba_region_run_core_for_offset(
+        n, section_start, offset, k, raw_fever_fill, timestamps, hit_times, lanes, lane_bounds
     )
-    if int(activation_hit_token) >= int(hit_token_to_id.shape[0]):
-        raise ValueError("FG region activation-hit token escaped its song universe")
-    if int(perfect_hit_token) >= int(hit_token_to_id.shape[0]):
-        raise ValueError("FG region Perfect-hit token escaped its song universe")
-    activation_hit_id = (
-        int(hit_token_to_id[int(activation_hit_token)])
-        if int(activation_hit_token) >= 0
-        else -1
-    )
-    perfect_hit_id = (
-        int(hit_token_to_id[int(perfect_hit_token)]) if int(perfect_hit_token) >= 0 else -1
-    )
+    cutoffs = (np.asarray((core[4], core[5]), dtype=np.float64) + real_fever_time).astype(np.float32)
     return _numba_region_run_edge_from_core(
-        int(n),
-        int(section_start),
-        int(offset),
-        int(activation),
-        int(great_end),
-        int(is_great),
-        int(activation_hit_id),
-        int(perfect_hit_id),
-        int(perfect_valid),
-        int(valid),
-        perfect_end_by_hit,
-        great_end_by_hit,
+        n, section_start, offset, core[0], core[1], core[2], 0, 1, core[3], core[6],
+        np.searchsorted(hit_times.perfect_floor_timestamps, cutoffs),
+        np.searchsorted(hit_times.great_floor_timestamps, cutoffs), lane_chain_ends,
     )
 
 
@@ -1216,7 +1147,7 @@ def _numba_build_region_core_table(
     timestamps,
     hit_times,
     lanes,
-    hit_token_to_id,
+    lane_bounds=_NO_LANE_BOUNDS,
 ):
     """Per-denom CSR table of VALID region-run cores.
 
@@ -1230,10 +1161,8 @@ def _numba_build_region_core_table(
     region-2 / shifted-head gating — so the rt consumers (reachability prepass marking and the
     order-sensitive same-end head-edge bucket prune) see an identical candidate stream.
 
-    Returns ``(starts, offsets, activations, great_ends, is_greats, act_hit_ids,
-    perfect_hit_ids, perfect_valids)`` with ``starts`` of length ``n + 2``. Hit IDs resolve
-    through the song-owned exact value universe and remove repeated float64 timestamps from every
-    table row."""
+    Returns ``(starts, offsets, activations, great_ends, is_greats, act_hits,
+    perfect_hits, perfect_valids)`` with ``starts`` of length ``n + 2``."""
     (
         perfect_floor_timestamps,
         perfect_candidate_timestamps,
@@ -1253,8 +1182,8 @@ def _numba_build_region_core_table(
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.float64),
             np.empty(0, dtype=np.int32),
         )
     cap = _numba_region_core_candidate_capacity(
@@ -1265,8 +1194,8 @@ def _numba_build_region_core_table(
     e_activation = np.empty(int(cap), dtype=np.int32)
     e_great_end = np.empty(int(cap), dtype=np.int32)
     e_is_great = np.empty(int(cap), dtype=np.int32)
-    e_act_hit_id = np.empty(int(cap), dtype=np.int32)
-    e_perfect_hit_id = np.empty(int(cap), dtype=np.int32)
+    e_act_hit = np.empty(int(cap), dtype=np.float64)
+    e_perfect_hit = np.empty(int(cap), dtype=np.float64)
     e_perfect_valid = np.empty(int(cap), dtype=np.int32)
     region_k_stop = _numba_region2_k_scan_stop(int(region_action_count), float(raw_fever_fill))
     cursor = 0
@@ -1296,8 +1225,8 @@ def _numba_build_region_core_table(
                     great_end,
                     is_great,
                     perfect_valid,
-                    act_hit_token,
-                    perfect_hit_token,
+                    act_hit,
+                    perfect_hit_value,
                     valid,
                 ) = (
                     _numba_region_run_core_for_offset(
@@ -1309,30 +1238,22 @@ def _numba_build_region_core_table(
                         timestamps,
                         hit_times,
                         lanes,
+                        lane_bounds,
                     )
                 )
                 if int(valid) == 0:
                     continue
                 if int(cursor) >= int(cap):
                     raise ValueError("FG region-core rows exceed the producer-owned candidate capacity")
-                if int(is_great) != 0 and (
-                    int(act_hit_token) < 0 or int(act_hit_token) >= int(hit_token_to_id.shape[0])
-                ):
-                    raise ValueError("FG region activation-hit token escaped the song universe")
-                if int(perfect_valid) != 0 and (
-                    int(perfect_hit_token) < 0
-                    or int(perfect_hit_token) >= int(hit_token_to_id.shape[0])
-                ):
-                    raise ValueError("FG region Perfect-hit token escaped the song universe")
                 e_offset[int(cursor)] = int(offset)
                 e_activation[int(cursor)] = int(activation)
                 e_great_end[int(cursor)] = int(great_end)
                 e_is_great[int(cursor)] = int(is_great)
-                e_act_hit_id[int(cursor)] = (
-                    int(hit_token_to_id[int(act_hit_token)]) if int(is_great) != 0 else -1
+                e_act_hit[int(cursor)] = (
+                    float(act_hit) if int(is_great) != 0 else -1.0
                 )
-                e_perfect_hit_id[int(cursor)] = (
-                    int(hit_token_to_id[int(perfect_hit_token)]) if int(perfect_valid) != 0 else -1
+                e_perfect_hit[int(cursor)] = (
+                    float(perfect_hit_value) if int(perfect_valid) != 0 else -1.0
                 )
                 e_perfect_valid[int(cursor)] = int(perfect_valid)
                 cursor += 1
@@ -1343,8 +1264,8 @@ def _numba_build_region_core_table(
         e_activation[: int(cursor)].copy(),
         e_great_end[: int(cursor)].copy(),
         e_is_great[: int(cursor)].copy(),
-        e_act_hit_id[: int(cursor)].copy(),
-        e_perfect_hit_id[: int(cursor)].copy(),
+        e_act_hit[: int(cursor)].copy(),
+        e_perfect_hit[: int(cursor)].copy(),
         e_perfect_valid[: int(cursor)].copy(),
     )
 
@@ -1360,7 +1281,7 @@ def _numba_mark_region_entries_for_section(
 ) -> int:
     """rt-finish + reachability marking for every valid region core of one section row. Returns
     the max early-Great extension width, exactly like the per-candidate marking it replaces."""
-    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hits, region_perfect_hits, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit, region_real_fever_time, lane_bounds, lane_chain_ends = region
     max_width = 0
     for idx in range(int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])):
         activation, edge_e, _run_start, _great_end, activation_great_idx, eg_e, valid = (
@@ -1371,12 +1292,13 @@ def _numba_mark_region_entries_for_section(
                 int(region_activations[int(idx)]),
                 int(region_great_ends[int(idx)]),
                 int(region_is_greats[int(idx)]),
-                int(region_act_hit_ids[int(idx)]),
-                int(region_perfect_hit_ids[int(idx)]),
+                int(region_act_hits[int(idx)]),
+                int(region_perfect_hits[int(idx)]),
                 int(region_perfect_valids[int(idx)]),
                 1,
                 region_perfect_end_by_hit,
                 region_great_end_by_hit,
+                lane_chain_ends,
             )
         )
         if int(valid) == 0:
@@ -2620,7 +2542,7 @@ def _numba_emit_region2_head_edges(
     # _numba_append_same_end_head_edge_to_chain); node rows are call-local (cursor restarts at
     # 0), and the drain below resets every touched end's head/tail to -1, so the tables come
     # back clean for the next call without an O(n) sweep.
-    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hits, region_perfect_hits, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit, region_real_fever_time, lane_bounds, lane_chain_ends = region
     if int(use_forced_great_timing_i) == 0:
         return generated, generated_scores, 0, int(bounded_mode), node_surface, node_next
     added_total = 0
@@ -2635,12 +2557,13 @@ def _numba_emit_region2_head_edges(
                 int(region_activations[int(entry_idx)]),
                 int(region_great_ends[int(entry_idx)]),
                 int(region_is_greats[int(entry_idx)]),
-                int(region_act_hit_ids[int(entry_idx)]),
-                int(region_perfect_hit_ids[int(entry_idx)]),
+                int(region_act_hits[int(entry_idx)]),
+                int(region_perfect_hits[int(entry_idx)]),
                 int(region_perfect_valids[int(entry_idx)]),
                 1,
                 region_perfect_end_by_hit,
                 region_great_end_by_hit,
+                lane_chain_ends,
             )
         )
         if int(valid) == 0:
@@ -4422,7 +4345,6 @@ def _numba_region2_packet_queue_push_activation(
     great_floor_timestamps,
     late_great_floor_timestamps,
     lanes,
-    hit_token_to_id,
     region,
     late_exit_e,
     family_idx: int,
@@ -4431,7 +4353,7 @@ def _numba_region2_packet_queue_push_activation(
     packet_queue,
 ):
     back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
-    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit, region_real_fever_time, lane_bounds, lane_chain_ends = region
     if int(activation) < 100 or int(activation) >= int(n):
         return
     k = (2 * int(activation_offset)) + int(defect) + 1
@@ -4487,6 +4409,7 @@ def _numba_region2_packet_queue_push_activation(
                     1,
                     region_perfect_end_by_hit,
                     region_great_end_by_hit,
+                    lane_chain_ends,
                 )
             )
             looked_up = 1
@@ -4511,9 +4434,9 @@ def _numba_region2_packet_queue_push_activation(
                 HitTimes(perfect_floor_timestamps, perfect_candidate_timestamps,
                          great_floor_timestamps, great_candidate_timestamps, late_great_floor_timestamps),
                 lanes,
-                hit_token_to_id,
-                region_perfect_end_by_hit,
-                region_great_end_by_hit,
+                lane_bounds,
+                region_real_fever_time,
+                lane_chain_ends,
             )
         )
     if int(valid) == 0 or int(activation_great_idx) < 0 or int(activation_i) != int(activation):
@@ -4716,7 +4639,6 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     late_great_floor_timestamps,
     lanes,
     region,
-    region_hit_token_to_id,
     ends,
     pair_mod: int,
     best_fever_by_pair,
@@ -4905,7 +4827,6 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         great_floor_timestamps,
                         late_great_floor_timestamps,
                         lanes,
-                        region_hit_token_to_id,
                         region,
                         ends.late_exit_e,
                         int(family_idx),
@@ -5322,12 +5243,13 @@ def _first_frontier_from_precomputed_end_indices_numba(
     region_activations,
     region_great_ends,
     region_is_greats,
-    region_act_hit_ids,
-    region_perfect_hit_ids,
+    region_act_hits,
+    region_perfect_hits,
     region_perfect_valids,
-    region_hit_token_to_id,
     region_perfect_end_by_hit,
     region_great_end_by_hit,
+    lane_bounds,
+    lane_chain_ends,
     ws_pair_values,
     ws_pair_stamps,
     ws_pair_touched,
@@ -5344,18 +5266,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
     bit_epoch_in: int,
     branch_a_epoch_in: int,
 ):
-    region = RegionTables(
-        region_starts,
-        region_offsets,
-        region_activations,
-        region_great_ends,
-        region_is_greats,
-        region_act_hit_ids,
-        region_perfect_hit_ids,
-        region_perfect_valids,
-        region_perfect_end_by_hit,
-        region_great_end_by_hit,
-    )
     rt = int(real_time_idx)
     ends = ActivationEnds(
         prefix_perfect_hit,
@@ -5368,6 +5278,21 @@ def _first_frontier_from_precomputed_end_indices_numba(
         capped_eg_late_e[rt],
         capped_perfect_exit_e[rt],
         capped_late_exit_e[rt],
+    )
+    region = RegionTables(
+        region_starts,
+        region_offsets,
+        region_activations,
+        region_great_ends,
+        region_is_greats,
+        region_act_hits,
+        region_perfect_hits,
+        region_perfect_valids,
+        region_perfect_end_by_hit,
+        region_great_end_by_hit,
+        float(real_fever_time),
+        lane_bounds,
+        lane_chain_ends,
     )
     reachable, max_eg_width = _numba_first_frontier_reachability_prepass(
         int(n),
@@ -5467,7 +5392,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
         late_great_floor_timestamps,
         lanes,
         region,
-        region_hit_token_to_id,
         ends,
         int(pair_mod),
         best_fever_by_pair,
@@ -5713,6 +5637,8 @@ def _numba_trace_edge_action_arrays(
     lanes,
     raw_fever_fill: float,
     real_fever_time: float,
+    lane_bounds,
+    lane_chain_ends,
 ):
     """Per-action precompute for the trace reconstruct's prefix + late-Great families.
 
@@ -5768,14 +5694,15 @@ def _numba_trace_edge_action_arrays(
         chart_out[idx] = chart_time
 
         p_at = float(perfect_ts[a])
-        hit_lo = min(chart_time, p_at)
+        hit_lo = float(lane_bounds[a, 4]) if lane_bounds.shape[0] else min(chart_time, p_at)
         hit_hi = max(chart_time, p_at)
         hit_lo_out[idx] = hit_lo
         gs = max(0, min(int(section_start), int(n)))
         gc = max(0, forced_applied)
-        cap, ok, _tok = _numba_latest_activation_hit_for_contiguous_great_run(
-            a, hit_lo, hit_hi, timestamps, perfect_ts, great_ts, gs, gc, int(n), 0
-        )
+        if lane_bounds.shape[0]:
+            cap, ok = _numba_frame_latest_activation_hit_for_run(a, hit_lo, hit_hi, perfect_ts, great_ts, gs, gc, int(n), lane_bounds)
+        else:
+            cap, ok = _numba_latest_activation_hit_for_contiguous_great_run(a, hit_lo, hit_hi, timestamps, perfect_ts, great_ts, gs, gc, int(n))
         perfect_hit_out[idx] = cap
         perfect_hit_ok[idx] = 1 if int(ok) != 0 else 0
 
@@ -5794,7 +5721,7 @@ def _numba_trace_edge_action_arrays(
                 cap,
                 timestamps,
                 HitTimes(
-                    perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts, late_great_floor_timestamps
+                    perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts, late_great_floor_timestamps,
                 ),
                 lanes,
                 denom,
@@ -5816,6 +5743,7 @@ def _numba_trace_edge_action_arrays(
         else:
             e = -1
             st = chart_time
+        e = min(e, int(lane_chain_ends[a]))
         e_out[idx] = e
         start_time_out[idx] = st
         eg_e = _numba_lower_bound_from(great_floor_timestamps, st + rft)
@@ -5823,6 +5751,7 @@ def _numba_trace_edge_action_arrays(
             eg_e = a + 1
         if eg_e > int(n):
             eg_e = int(n)
+        eg_e = min(eg_e, int(lane_chain_ends[a]))
         eg_e_out[idx] = eg_e
 
         late_lo = float(late_great_floor_timestamps[a])
@@ -5842,9 +5771,10 @@ def _numba_trace_edge_action_arrays(
         if lp >= 0:
             gs2 = max(0, min(int(section_start), int(n)))
             gc2 = max(0, lp)
-            cap2, ok2, _tok2 = _numba_latest_activation_hit_for_contiguous_great_run(
-                a, late_lo, great_hi, timestamps, perfect_ts, great_ts, gs2, gc2, int(n), 0
-            )
+            if lane_bounds.shape[0]:
+                cap2, ok2 = _numba_frame_latest_activation_hit_for_run(a, late_lo, great_hi, perfect_ts, great_ts, gs2, gc2, int(n), lane_bounds)
+            else:
+                cap2, ok2 = _numba_latest_activation_hit_for_contiguous_great_run(a, late_lo, great_hi, timestamps, perfect_ts, great_ts, gs2, gc2, int(n))
             if int(ok2) == 0:
                 lp = -1
             elif section_start < 0 or section_start > a:
@@ -5855,7 +5785,7 @@ def _numba_trace_edge_action_arrays(
                 cap2,
                 timestamps,
                 HitTimes(
-                    perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts, late_great_floor_timestamps
+                    perfect_floor_timestamps, perfect_ts, great_floor_timestamps, great_ts, late_great_floor_timestamps,
                 ),
                 lanes,
                 denom,
@@ -5874,13 +5804,14 @@ def _numba_trace_edge_action_arrays(
                     ae = a + 1
                 if ae > int(n):
                     ae = int(n)
+                ae = min(ae, int(lane_chain_ends[a]))
                 late_e_out[idx] = ae
                 aee = _numba_lower_bound_from(great_floor_timestamps, cap2 + rft)
                 if aee <= a:
                     aee = a + 1
                 if aee > int(n):
                     aee = int(n)
-                late_eg_e_out[idx] = aee
+                late_eg_e_out[idx] = min(aee, int(lane_chain_ends[a]))
         lg_prefix_out[idx] = lp
 
     return (

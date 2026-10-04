@@ -158,6 +158,7 @@ def exact_label_hit_intervals(
     perfect_candidate_timestamps: Sequence[float] | np.ndarray,
     great_floor_timestamps: Sequence[float] | np.ndarray,
     great_candidate_timestamps: Sequence[float] | np.ndarray,
+    lanes: Sequence[int] | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return exact primary/secondary intervals for a concrete Perfect/Great label stream.
 
@@ -230,6 +231,18 @@ def exact_label_hit_intervals(
     raw_great_low = great_early_low_ms.astype(np.float32) * np.float32(0.001)
     expected_perfect_floor = np.maximum.accumulate(raw_perfect_low.copy())
     expected_great_floor = np.maximum.accumulate(raw_great_low.copy())
+    if mode == "frame_robust":
+        from ...timing_envelope import _lane_order_bounds
+
+        if lanes is None:
+            raise ValueError("frame_robust label intervals require chart lanes")
+        note_types = np.where(is_tail, 3, 1)
+        expected_perfect_floor, _ = _lane_order_bounds(
+            expected_perfect_floor, perfect_high, note_types, np.asarray(lanes)
+        )
+        expected_great_floor, _ = _lane_order_bounds(
+            expected_great_floor, great_high, note_types, np.asarray(lanes)
+        )
     if not bool(np.array_equal(perfect_floor, expected_perfect_floor)):
         raise ValueError("Perfect floor must be the exact prefix-max raw Perfect-lower envelope")
     if not bool(np.array_equal(great_floor, expected_great_floor)):

@@ -17,6 +17,7 @@ class FGSongInputs:
     great_floor: Any
     late_great_floor: Any
     exit_ceiling: Any
+    lane_bounds: Any
     lanes: Any
     use_forced_great_timing: bool
     total_notes: int
@@ -44,6 +45,7 @@ def fg_song_inputs(song) -> FGSongInputs:
         late_great_floor=song.late_great_floor if enveloped else None,
         exit_ceiling=song.exit_ceiling if enveloped else None,
         lanes=chart.lanes,
+        lane_bounds=song.lane_bounds,
         use_forced_great_timing=enveloped,
         total_notes=chart.total_notes,
         long_notes=chart.long_notes,

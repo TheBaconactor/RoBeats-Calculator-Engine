@@ -10,8 +10,6 @@ from .response_builder import _action_table, _early_exit_min_fill, _song_arrays
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_region_groups,
-    _region_hit_end_index_tables,
-    _region_hit_value_universe,
 )
 from . import response_build_gpu_numba as _rb_numba
 from .response_build_gpu_reducer import (
@@ -156,6 +154,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
     lanes: Any | None = None,
     use_forced_great_timing: bool = True,
     stats_sink: dict[str, Any] | None = None,
+    lane_bounds: Any | None = None,
     late_great_floor_timestamps: Any | None = None,
     exit_ceiling_timestamps: Any | None = None,
 ) -> tuple[FgResponseFrontierResult, ...]:
@@ -188,13 +187,9 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
         great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
     )
-    if bool(use_forced_great_timing):
-        region_hit_values, region_hit_token_to_id = _region_hit_value_universe(ts, perfect_ts, great_ts)
-    else:
-        region_hit_values = np.empty(0, dtype=np.float64)
-        region_hit_token_to_id = np.empty(0, dtype=np.int32)
+    lane_bounds = _rb_numba._NO_LANE_BOUNDS if lane_bounds is None else np.ascontiguousarray(lane_bounds, dtype=np.float64)
     prefix_perfect_hit, prefix_perfect_valid, prefix_late_hit, prefix_late_valid = (
-        _rb_numba._numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts, late_great_floor_ts)
+        _rb_numba._numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts, late_great_floor_ts, lane_bounds)
     )
     prepared = _prepared_geometries(geometry_rows, bool(use_forced_great_timing))
 
@@ -215,13 +210,10 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         late_great_floor_timestamps=late_great_floor_ts,
         use_forced_great_timing=bool(use_forced_great_timing),
         lanes=lane_arr,
+        lane_bounds=lane_bounds,
     )
     prepared = canonical.prepared
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
-    region_perfect_end_by_real_time, region_great_end_by_real_time = _region_hit_end_index_tables(
-        region_hit_values, canonical.unique_real_times, floor_ts, great_floor_ts
-    )
-
     # The region-run core table depends on a geometry only through (raw fill, non-Fever base), so each key's table is
     # built once and shared by its fever-time variants (scheduling and memory admission: the scheduler module).
     grouped_items = _first_only_region_groups(prepared)
@@ -248,7 +240,8 @@ def build_force_greats_response_first_frontiers_gpu_batch(
 
     # Without forced-Great timing every region key shares one contentless table.
     empty_region_table = None if bool(use_forced_great_timing) else (
-        np.zeros(int(n) + 2, dtype=np.int64), *(np.empty(0, dtype=np.int32) for _ in range(7))
+        np.zeros(int(n) + 2, dtype=np.int64), *(np.empty(0, dtype=np.int32) for _ in range(7)),
+        *(np.empty((len(canonical.unique_real_times), 0), dtype=np.int32) for _ in range(2))
     )
 
     group_results, schedule_stats = _schedule_first_frontier_region_groups(
@@ -262,13 +255,11 @@ def build_force_greats_response_first_frontiers_gpu_batch(
             great_floor_timestamps=great_floor_ts,
             late_great_floor_timestamps=late_great_floor_ts,
             lanes=lane_arr,
+            lane_bounds=lane_bounds,
             prefix_perfect_hit=prefix_perfect_hit,
             prefix_perfect_valid=prefix_perfect_valid,
             prefix_late_hit=prefix_late_hit,
             prefix_late_valid=prefix_late_valid,
-            region_hit_token_to_id=region_hit_token_to_id,
-            region_perfect_end_by_real_time=region_perfect_end_by_real_time,
-            region_great_end_by_real_time=region_great_end_by_real_time,
             canonical=canonical,
             use_forced_great_timing=bool(use_forced_great_timing),
             empty_region_table=empty_region_table,
@@ -286,10 +277,6 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         stats_sink.update(
             dataclasses.asdict(schedule_stats),
             end_table_precomputes=1,
-            region_hit_values=int(region_hit_values.shape[0]),
-            region_hit_endpoint_bytes=int(
-                region_perfect_end_by_real_time.nbytes + region_great_end_by_real_time.nbytes
-            ),
             workspace_allocations=int(workspace_plan.allocations),
             workspace_bytes=int(workspace_plan.allocated_bytes),
             region_table_groups=int(len(grouped_items)),

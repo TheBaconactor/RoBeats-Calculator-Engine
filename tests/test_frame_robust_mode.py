@@ -57,7 +57,7 @@ def test_song_has_its_own_envelopes_and_cache_identity() -> None:
     tail = chart.note_types == 3
     latest_perfect_ms = np.rint((robust.perfect_candidates.astype(np.float64) - chart.timestamps) * 1000.0)
     assert set(latest_perfect_ms[~tail].tolist()) <= {22.0} and set(latest_perfect_ms[tail].tolist()) <= {62.0}
-    assert np.array_equal(robust.perfect_floor, window.perfect_floor)  # early edges do not move
+    assert np.all(robust.perfect_floor >= window.perfect_floor)  # same-lane spacing may delay an early hit
     assert robust.timeline_key != window.timeline_key
     assert fg_response_frontier_song_cache_key(robust) != fg_response_frontier_song_cache_key(window)
 
@@ -67,7 +67,7 @@ def test_late_great_floor_starts_at_the_band() -> None:
     # early and a hit in between is Perfect or Great by the frame, so its late Greats start at the band itself.
     ts = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
     types = np.asarray([1, 3, 2], dtype=np.int16)
-    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust")
+    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust", lanes=np.arange(len(ts)))
     assert np.array_equal(window.late_great_floor, window.perfect_candidates + np.float32(0.001))
     assert np.rint((robust.late_great_floor.astype(np.float64) - ts) * 1000.0).tolist() == [41.0, 81.0, 41.0]
 
@@ -79,7 +79,7 @@ def test_exit_ceiling_keeps_out_notes_past_the_fever_at_every_frame() -> None:
     # margin.
     ts = np.asarray([1.0, 2.0, 2.0, 3.0], dtype=np.float32)
     types = np.asarray([1, 3, 1, 2], dtype=np.int16)
-    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust")
+    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust", lanes=np.arange(len(ts)))
     assert np.array_equal(window.exit_ceiling, np.minimum.accumulate(window.perfect_candidates[::-1])[::-1])
     target = np.minimum.accumulate(
         (robust.perfect_candidates.astype(np.float64) - 2.0 * FRAME_MARGIN_MS / 1000.0)[::-1]
@@ -124,9 +124,9 @@ def test_late_great_activation_is_never_planned_in_the_frame_judged_gap() -> Non
     ts = np.asarray([1.0, 1.010], dtype=np.float32)
     types = np.asarray([1, 1], dtype=np.int16)
     for mode, late_valid in (("perfect_window", 1), ("frame_robust", 0)):
-        env = perfect_window_envelopes(ts, types, mode)
+        env = perfect_window_envelopes(ts, types, mode, lanes=np.arange(len(ts)))
         _hit, _valid, late_hit, valid = _numba_build_prefix_activation_hit_tables(
-            2, ts, env.perfect_candidates, env.great_candidates, env.late_great_floor
+            2, ts, env.perfect_candidates, env.great_candidates, env.late_great_floor, env.lane_bounds
         )
         assert int(valid[0]) == late_valid, mode
         if late_valid:
@@ -156,7 +156,7 @@ def _base_plans(chart, mode: str, ft: int, ff: int, *, early_exits: bool = True)
         timestamps=fi.timestamps, perfect_candidate_timestamps=fi.perfect_candidates,
         great_candidate_timestamps=fi.perfect_candidates, perfect_floor_timestamps=fi.perfect_floor,
         great_floor_timestamps=fi.perfect_floor, lanes=fi.lanes, geometries=((float(fill), 0, window_time),),
-        use_forced_great_timing=False, exit_ceiling_timestamps=exit_ceiling,
+        use_forced_great_timing=False, exit_ceiling_timestamps=exit_ceiling, lane_bounds=fi.lane_bounds,
     )
     graphs = []
     for row in frontier.first_frontier:
@@ -165,7 +165,7 @@ def _base_plans(chart, mode: str, ft: int, ff: int, *, early_exits: bool = True)
             head_bits=words, body_fever=int(row.body_fever), timestamps=fi.timestamps,
             perfect_candidate_timestamps=fi.perfect_candidates, great_candidate_timestamps=fi.great_candidates,
             perfect_floor_timestamps=fi.perfect_floor, great_floor_timestamps=fi.great_floor, lanes=fi.lanes,
-            raw_fever_fill=raw_fill, real_fever_time=window_time, exit_ceiling_timestamps=exit_ceiling,
+            raw_fever_fill=raw_fill, real_fever_time=window_time, exit_ceiling_timestamps=exit_ceiling, lane_bounds=fi.lane_bounds,
         )
         validate_base_physical_replay(
             frontier_trace=trace, response_surface=[*words, int(row.body_fever), max(0, n - 100) - int(row.body_fever)],

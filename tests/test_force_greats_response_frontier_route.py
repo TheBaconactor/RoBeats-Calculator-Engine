@@ -49,6 +49,7 @@ def _stub_song(note_count: int):
             late_great_floor=None,
             exit_ceiling=None,
             lanes=list(range(int(note_count))),
+            lane_bounds=None,
             use_forced_great_timing=True,
         ),
         chart=SimpleNamespace(note_types=[1] * int(note_count)),

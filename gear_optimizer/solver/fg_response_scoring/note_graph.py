@@ -1199,6 +1199,9 @@ def _mark_endpoint_early_hits(
     cutoff = float(fever_window_end_ms)
     upper_hit = _strictly_before_cutoff_ms(cutoff)
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
+    if _BUILD.get().robust and skip_range is not None:
+        upper_hit = min(upper_hit, *(float(notes[j]["hit_time_ms"]) + _early_great_bounds_ms_at(nt, j)[1]
+                                    for j in range(*skip_range)))
     prev_hit = -np.inf  # running largest shown hit across the section (monotonic order)
     for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
         if skip_range is not None and int(skip_range[0]) <= j < int(skip_range[1]):
@@ -1502,6 +1505,52 @@ def _mark_fever_exit_push_delta(
         j += 1
 
 
+def _materialize_frame_robust_schedule(notes, *, frontier_trace, note_types, lanes) -> None:
+    order = sorted(range(len(notes)), key=lambda j: int(notes[j]["input_order"]))
+    nt, lane_arr = np.asarray(note_types), np.asarray(lanes)
+    activations = {int(sec["activation_index"]): sec for sec in frontier_trace}
+    low, high, preferred = {}, {}, {}
+    end = None
+    for j in order:
+        note = notes[j]
+        hit = float(note["hit_time_ms"])
+        delta = float(note["delta_ms"])
+        preferred[j] = hit + delta
+        band = 0 if note["note_result"] == "Perfect" else 1 if delta < 0 else 2
+        lo, hi = _bounds_at(nt, j)[band]
+        low[j], high[j] = hit + lo, hit + hi
+        if j in activations:
+            low[j] = high[j] = preferred[j]
+            end = preferred[j] + _trace_fever_duration_ms(activations[j], activation_chart_ms=hit)
+        elif end is not None:
+            if note["fever"]:
+                high[j] = min(high[j], _strictly_before_cutoff_ms(end))
+            else:
+                low[j] = max(low[j], end + _FRAME_ROBUST_EXIT_GAP_MS)
+    following = {}
+    cap = np.inf
+    for j in reversed(order):
+        cap = min(cap, high[j])
+        lane = int(lane_arr[j])
+        if lane in following:
+            successor = following[lane]
+            cap = min(cap, high[successor] - (0.0 if nt[successor] == HELD_TAIL_TYPE else _FRAME_ROBUST_SCHEDULE_GAP_MS))
+        high[j] = cap
+        following[lane] = j
+    previous = {}
+    floor = -np.inf
+    for j in order:
+        floor = max(floor, low[j])
+        lane = int(lane_arr[j])
+        if lane in previous and nt[j] != HELD_TAIL_TYPE:
+            floor = max(floor, previous[lane] + _FRAME_ROBUST_SCHEDULE_GAP_MS)
+        if floor > high[j]:
+            raise UnplayableTrace(f"note_graph: frame_robust note {j} has no ordered hit inside its judgment/fever bounds")
+        chosen = min(max(preferred[j], floor), high[j])
+        notes[j]["delta_ms"] = chosen - float(notes[j]["hit_time_ms"])
+        floor = previous[lane] = chosen
+
+
 def _require_frame_robust_play(
     notes: list[dict[str, Any]],
     *,
@@ -1695,6 +1744,7 @@ def timeline_frontier_note_graph(
             ))
             _assign_exact_input_order(notes, input_order_constraints)
         if mode == "frame_robust":
+            _materialize_frame_robust_schedule(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
             _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
 
         return notes
@@ -1919,6 +1969,7 @@ def force_greats_note_graph(
             _assign_exact_input_order(notes, input_order_constraints)
             _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)
         if mode == "frame_robust":
+            _materialize_frame_robust_schedule(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
             _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
 
         return notes

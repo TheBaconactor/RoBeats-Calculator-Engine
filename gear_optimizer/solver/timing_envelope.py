@@ -53,7 +53,7 @@ FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
 # The windowed modes' cache revisions, bumped with every change to a mode's frontier payloads or bundles. A version that
 # ratifies its predecessors serves their files to every mode whose key is unchanged, so only the byte-gated modes may
 # keep their keys (perfect_window 2: fevers may end early).
-CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 3}
+CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 4}
 
 
 class Band(NamedTuple):
@@ -112,6 +112,7 @@ class Envelopes(NamedTuple):
     great_candidates: np.ndarray
     late_great_floor: np.ndarray
     exit_ceiling: np.ndarray
+    lane_bounds: np.ndarray
 
 
 def _envelope_sec(timestamps: np.ndarray, offset_ms: np.ndarray, *, prefix_max: bool = False) -> np.ndarray:
@@ -122,7 +123,47 @@ def _envelope_sec(timestamps: np.ndarray, offset_ms: np.ndarray, *, prefix_max: 
     return event_ms.astype(np.float32) * np.float32(0.001)
 
 
-def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mode: str = "perfect_window") -> Envelopes:
+def _lane_order_bounds(
+    earliest: np.ndarray, latest: np.ndarray, note_types: np.ndarray, lanes: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Tight bounds for chart order and lane-local input spacing (a hold release needs no press gap)."""
+    low, high = earliest.astype(np.float64), latest.astype(np.float64)
+    nt, lane_arr = np.asarray(note_types).reshape(-1), np.asarray(lanes).reshape(-1)
+    n = len(low)
+    if any(len(values) != n for values in (high, nt, lane_arr)):
+        raise ValueError("frame_robust timing arrays and lanes must align")
+    gap = (FRAME_MARGIN_MS + 0.001) / 1000.0
+    previous: dict[int, int] = {}
+    for j in range(n):
+        if j:
+            low[j] = max(low[j], low[j - 1])
+        lane = int(lane_arr[j])
+        if lane in previous:
+            low[j] = max(low[j], low[previous[lane]] + (0.0 if nt[j] == HELD_TAIL_TYPE else gap))
+        previous[lane] = j
+    following: dict[int, int] = {}
+    for j in range(n - 1, -1, -1):
+        if j + 1 < n:
+            high[j] = min(high[j], high[j + 1])
+        lane = int(lane_arr[j])
+        if lane in following:
+            successor = following[lane]
+            high[j] = min(high[j], high[successor] - (0.0 if nt[successor] == HELD_TAIL_TYPE else gap))
+        following[lane] = j
+    # Round toward the feasible interval, preserving the producer's float32 contract.
+    low32, high32 = low.astype(np.float32), high.astype(np.float32)
+    below = low32.astype(np.float64) < low
+    above = high32.astype(np.float64) > high
+    low32[below] = np.nextafter(low32[below], np.float32(np.inf))
+    high32[above] = np.nextafter(high32[above], np.float32(-np.inf))
+    if np.any(low32 > high32):
+        raise ValueError("frame_robust lane spacing cannot realize full combo inside the judgment bounds")
+    return low32, high32
+
+
+def perfect_window_envelopes(
+    timestamps: np.ndarray, note_types: np.ndarray, mode: str = "perfect_window", *, lanes: np.ndarray | None = None
+) -> Envelopes:
     """The six hit envelopes of a chart in a windowed mode (timestamps in float32 seconds, chart order)."""
     ts = np.asarray(timestamps, dtype=np.float32)
     perfect_low, perfect_high, great_low, great_high, late_great_low = judgment_windows_ms(note_types, mode)
@@ -134,6 +175,29 @@ def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mod
     overshot = safe_high.astype(np.float64) > hard_high
     safe_high[overshot] = np.nextafter(safe_high[overshot], np.float32(-np.inf))
     perfect_candidates = np.minimum(_envelope_sec(ts, perfect_high), safe_high)
+    perfect_floor = _envelope_sec(ts, perfect_low, prefix_max=True)
+    great_floor = _envelope_sec(ts, great_low, prefix_max=True)
+    great_candidates = _envelope_sec(ts, great_high)
+    latest_perfect_schedule = perfect_candidates
+    lane_bounds = np.empty((0, 5), dtype=np.float64)
+    if mode == "frame_robust":
+        if lanes is None:
+            raise ValueError("frame_robust envelopes require chart lanes")
+        perfect_floor, latest_perfect_schedule = _lane_order_bounds(perfect_floor, perfect_candidates, note_types, lanes)
+        great_floor, _ = _lane_order_bounds(great_floor, great_candidates, note_types, lanes)
+        # Successor, incoming press gap, latest Perfect, predecessor, earliest Perfect.
+        lane_bounds = np.column_stack((
+            np.full(len(ts), len(ts)), np.where(note_types == HELD_TAIL_TYPE, 0.0, (FRAME_MARGIN_MS + 0.001) / 1000.0),
+            latest_perfect_schedule, np.full(len(ts), -1), perfect_floor,
+        ))
+        previous: dict[int, int] = {}
+        for j, lane in enumerate(lanes):
+            lane = int(lane)
+            predecessor = previous.get(lane, -1)
+            lane_bounds[j, 3] = predecessor
+            if predecessor >= 0:
+                lane_bounds[predecessor, 0] = j
+            previous[lane] = j
     # The earliest planned late-Great hit. perfect_window plans it 1 ms past the latest Perfect (in float32, one step
     # under the band's own encoding on most notes; kept as built). frame_robust's latest Perfect ends a margin early and
     # the hits between are judged by the frame, so its late Greats start at the band itself, encoded as the
@@ -145,7 +209,7 @@ def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mod
     # The latest fever cutoff that note j and every later note can still be hit at or past (a fever ending early):
     # their latest Perfect hits, under frame_robust a full exit gap earlier (a note is out at every frame timing only
     # from the fever's end + the margin), rounded down to float32.
-    exit_ceiling = perfect_candidates.astype(np.float64)
+    exit_ceiling = latest_perfect_schedule.astype(np.float64)
     if mode == "frame_robust":
         exit_ceiling = exit_ceiling - 2.0 * FRAME_MARGIN_MS / 1000.0
     exit_ceiling32 = exit_ceiling.astype(np.float32)
@@ -153,11 +217,12 @@ def perfect_window_envelopes(timestamps: np.ndarray, note_types: np.ndarray, mod
     exit_ceiling32[overshot] = np.nextafter(exit_ceiling32[overshot], np.float32(-np.inf))
     return Envelopes(
         perfect_candidates=perfect_candidates,
-        perfect_floor=_envelope_sec(ts, perfect_low, prefix_max=True),
-        great_floor=_envelope_sec(ts, great_low, prefix_max=True),
-        great_candidates=_envelope_sec(ts, great_high),
+        perfect_floor=perfect_floor,
+        great_floor=great_floor,
+        great_candidates=great_candidates,
         late_great_floor=late_great_floor,
         exit_ceiling=np.ascontiguousarray(np.minimum.accumulate(exit_ceiling32[::-1])[::-1]),
+        lane_bounds=lane_bounds,
     )
 
 
@@ -311,6 +376,7 @@ class TimedSong:
     great_candidates: np.ndarray | None = None
     late_great_floor: np.ndarray | None = None
     exit_ceiling: np.ndarray | None = None
+    lane_bounds: np.ndarray | None = None
 
     @cached_property
     def fg_inputs(self):
@@ -392,7 +458,7 @@ def time_song(chart: Chart, mode: str | None = None, baseline_offset: np.ndarray
             mode=timing_mode,
             baseline_hash="",
             hit_timestamps=chart_ts,
-            **perfect_window_envelopes(chart_ts, chart.note_types, timing_mode)._asdict(),
+            **perfect_window_envelopes(chart_ts, chart.note_types, timing_mode, lanes=chart.lanes)._asdict(),
         )
     with _TIMED_SONG_CACHE_LOCK:
         _TIMED_SONG_CACHE[cache_key] = song

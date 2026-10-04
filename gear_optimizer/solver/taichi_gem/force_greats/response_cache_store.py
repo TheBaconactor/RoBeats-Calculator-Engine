@@ -79,10 +79,7 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Region core tables shared between fills with the same half-unit count, one structural reducer: the complete
-    # bundles of the 40-chart sample (all three modes) built by this code are byte-identical, one to one, to the
-    # 10e19c37d4fa producer's builds (gates r5/b2_zms, r5/b2_pwfr). Ratify it and its ratified predecessors
-    # (non-transitive).
+    # Precise and zero_ms passed the 40-chart byte gates; Frame-Safe revision 4 separates its changed output.
     "fg-response-frontier-visible-first-v31+logic-aa1f5e045c00": (
         "fg-response-frontier-visible-first-v31+logic-10e19c37d4fa",
         "fg-response-frontier-visible-first-v31+logic-e9c86ce774f6",
@@ -614,6 +611,9 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "fg-response-frontier-visible-first-v30+logic-a6d09c0280bd",
     ),
 }
+
+
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-beade5939886"] = ("fg-response-frontier-visible-first-v31+logic-aa1f5e045c00", *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-aa1f5e045c00"])
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):

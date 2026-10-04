@@ -81,6 +81,7 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
             perfect_candidate_timestamps=pc,
             great_floor_timestamps=gf,
             great_candidate_timestamps=gc,
+            lanes=lanes,
         )
         units = np.where(is_great, np.float32(0.5), np.float32(1.0)).astype(np.float32)
         h_a = float(row.get("activation_hit_window_upper_ms", float(hi[a]) * 1000.0)) / 1000.0
@@ -175,6 +176,7 @@ def materialize_force_payload_from_response_frontier(
             late_great_floor_timestamps=song_inputs.late_great_floor,
             exit_ceiling_timestamps=song_inputs.exit_ceiling,
             lanes=song_lanes,
+            lane_bounds=song_inputs.lane_bounds,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),

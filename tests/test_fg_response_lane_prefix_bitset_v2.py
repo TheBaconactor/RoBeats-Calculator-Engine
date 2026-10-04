@@ -280,6 +280,7 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=denom,
+        real_fever_time=0.0,
     )
     rng = np.random.default_rng(20260713)
     for case_idx in range(240):
@@ -387,9 +388,9 @@ def _retired_boolean_region_core_for_offset(
         ):
             max_great_end += 1
         great_end = -1
-        activation_hit_token = -1
+        activation_hit = -1
         for candidate_end in range(int(activation) + 1, int(max_great_end) + 1):
-            hit, valid, hit_token = rb._numba_late_great_activation_hit_for_run(
+            hit, valid = rb._numba_late_great_activation_hit_for_run(
                 int(activation),
                 timestamps,
                 perfect_candidates,
@@ -417,11 +418,11 @@ def _retired_boolean_region_core_for_offset(
                 1,
             ):
                 great_end = int(candidate_end)
-                activation_hit_token = int(hit_token)
+                activation_hit = float(hit)
                 break
         if int(great_end) < 0:
             return -1, -1, 0, 0, -1, -1, 0
-        _perfect_hit, perfect_valid, perfect_hit_token = (
+        _perfect_hit, perfect_valid = (
             rb._numba_perfect_activation_hit_for_run(
                 int(activation),
                 timestamps,
@@ -437,15 +438,15 @@ def _retired_boolean_region_core_for_offset(
             int(great_end),
             1,
             int(perfect_valid),
-            int(activation_hit_token),
-            int(perfect_hit_token),
+            float(activation_hit),
+            float(_perfect_hit),
             1,
         )
 
     great_end = min(int(n), int(run_start) + int(k))
     if int(great_end) <= int(run_start):
         return -1, -1, 0, 0, -1, -1, 0
-    perfect_hit, perfect_valid, perfect_hit_token = rb._numba_perfect_activation_hit_for_run(
+    _perfect_hit, perfect_valid = rb._numba_perfect_activation_hit_for_run(
         int(activation),
         timestamps,
         perfect_candidates,
@@ -456,7 +457,7 @@ def _retired_boolean_region_core_for_offset(
     )
     if int(perfect_valid) == 0 or not _retired_boolean_prefix_reachable(
         int(activation),
-        float(perfect_hit),
+        float(_perfect_hit),
         float(candidate_high_delta_max),
         timestamps,
         perfect_floor,
@@ -478,7 +479,7 @@ def _retired_boolean_region_core_for_offset(
         0,
         1,
         -1,
-        int(perfect_hit_token),
+        float(_perfect_hit),
         1,
     )
 
@@ -503,11 +504,6 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
     candidate_high_delta_max = float(
         np.float32(np.max(np.maximum(perfect_candidates, great_candidates) - timestamps) + 1.0e-6)
     )
-    _hit_values, hit_token_to_id = response_build_gpu_precompute._region_hit_value_universe(
-        timestamps,
-        perfect_candidates,
-        great_candidates,
-    )
     table_args = (
         n,
         int(action_k.shape[0]),
@@ -516,7 +512,6 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
         timestamps,
         rb.HitTimes(perfect_floor, perfect_candidates, great_floor, great_candidates, perfect_candidates + np.float32(0.001)),
         lanes,
-        hit_token_to_id,
     )
     actual = rb._numba_build_region_core_table(*table_args)
     repeated = rb._numba_build_region_core_table(*table_args)
@@ -547,8 +542,8 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
                     great_end,
                     is_great,
                     perfect_valid,
-                    activation_hit_token,
-                    perfect_hit_token,
+                    activation_hit,
+                    perfect_hit,
                     valid,
                 ) = _retired_boolean_region_core_for_offset(
                     rb,
@@ -572,16 +567,16 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
                 expected_columns[2].append(int(great_end))
                 expected_columns[3].append(int(is_great))
                 expected_columns[4].append(
-                    int(hit_token_to_id[int(activation_hit_token)]) if int(is_great) else -1
+                    float(activation_hit) if int(is_great) else -1.0
                 )
                 expected_columns[5].append(
-                    int(hit_token_to_id[int(perfect_hit_token)]) if int(perfect_valid) else -1
+                    float(perfect_hit) if int(perfect_valid) else -1.0
                 )
                 expected_columns[6].append(int(perfect_valid))
     expected_starts.append(len(expected_columns[0]))
     assert np.array_equal(actual[0], np.asarray(expected_starts, dtype=np.int64))
     for actual_column, expected_column in zip(actual[1:], expected_columns, strict=True):
-        assert np.array_equal(actual_column, np.asarray(expected_column, dtype=np.int32))
+        assert np.array_equal(actual_column, np.asarray(expected_column, dtype=actual_column.dtype))
 
 
 def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversion() -> None:
@@ -592,7 +587,6 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
     timestamps = np.arange(n, dtype=np.float32)
     action_k = np.arange(8, dtype=np.int32)
     lanes = np.arange(n, dtype=np.int32)
-    token_ids = np.arange(5 * n, dtype=np.int32)
     table = rb._numba_build_region_core_table(
         n,
         int(action_k.shape[0]),
@@ -605,7 +599,6 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
         timestamps + np.float32(0.19),
         timestamps + np.float32(0.081)),
         lanes,
-        token_ids,
     )
     assert np.array_equal(table[0], np.zeros(n + 2, dtype=np.int64))
     assert all(column.shape == (0,) for column in table[1:])
