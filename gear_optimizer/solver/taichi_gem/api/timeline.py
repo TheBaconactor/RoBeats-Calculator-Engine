@@ -224,7 +224,7 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Precise and zero_ms passed the 40-chart byte gates; Frame-Safe revision 4 separates its changed output.
+    # Precise and Frame-Safe passed the 40-chart byte gates; zero_ms revision 1 separates its changed witness.
     "exact-frontier-v12+logic-92a162c8fc85": (
         "exact-frontier-v12+logic-b342a66d6b1b",
         "exact-frontier-v12+logic-f9a5dbc5860a",
@@ -370,6 +370,7 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 
 
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-bd882056eb01"] = ("exact-frontier-v12+logic-92a162c8fc85", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-92a162c8fc85"])
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3e855b8e8a4b"] = ("exact-frontier-v12+logic-bd882056eb01", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-bd882056eb01"])
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:

@@ -1804,6 +1804,26 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
     assert g[1]["hit_time_ms"] + g[1]["delta_ms"] <= g[2]["hit_time_ms"] + g[2]["delta_ms"]
 
 
+@pytest.mark.parametrize("start,great,kind,tied,count,delta", [
+    (0, 0, 1, True, 1, -20.0), (101, 101, 3, True, 1, -40.0),
+    (0, 1, 1, True, 1, 41.0), (0, 0, 1, False, 1, 41.0), (0, 0, 1, True, 2, 41.0),
+])
+def test_zero_ms_early_great_only_precedes_first_perfect_in_tie(start, great, kind, tied, count, delta):
+    n = max(start, great) + 3
+    ts = np.arange(n, dtype=np.float64)
+    if tied:
+        ts[start + 1] = ts[start]
+    nt = np.ones(n, dtype=np.int16)
+    nt[great] = kind
+    trace = [{"section": 1, "activation_index": n - 1, "fever_end_index": n,
+              "forced_start_index": 0, "forced_run_start_index": great, "forced_run_count": count,
+              "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0}]
+    graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts,
+                                         note_types=nt, timing_mode="zero_ms")
+    assert graph[great]["delta_ms"] == delta
+    assert all(note["delta_ms"] == 0.0 for note in graph if note["note_result"] == "Perfect")
+
+
 def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
     """zero_ms mode must not inherit Perfect-window guidance deltas (issue #66)."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import (

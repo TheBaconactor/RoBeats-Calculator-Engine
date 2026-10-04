@@ -50,10 +50,10 @@ HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
 # time minus the margin and out of it only from the fever time plus the margin, and two presses whose order matters
 # are planned at least the margin apart.
 FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
-# The windowed modes' cache revisions, bumped with every change to a mode's frontier payloads or bundles. A version that
+# The timing modes' cache revisions, bumped with every change to a mode's frontier payloads or bundles. A version that
 # ratifies its predecessors serves their files to every mode whose key is unchanged, so only the byte-gated modes may
 # keep their keys (perfect_window 2: fevers may end early).
-CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 4}
+CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 4, "zero_ms": 1}
 
 
 class Band(NamedTuple):

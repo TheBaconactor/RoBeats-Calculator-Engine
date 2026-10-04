@@ -66,8 +66,7 @@ def fg_response_frontier_song_cache_key(song: TimedSong) -> tuple:
         bytes(array_sig16(perfect_floor)),
         bytes(array_sig16(great_floor)),
         bytes(array_sig16(lanes)),
-        # The windowed modes carry their cache revisions; zero_ms's key stays as built.
-        *((song.cache_mode,) if song.mode != "zero_ms" else ()),
+        song.cache_mode,
     )
 
 

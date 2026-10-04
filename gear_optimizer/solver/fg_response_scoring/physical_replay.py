@@ -389,9 +389,7 @@ def validate_force_greats_physical_replay(
     real_fever_time: float,
     timing_mode: str = "perfect_window",
 ) -> FgPhysicalReplay:
-    """Fail loudly unless one persisted witness replays to its exact score-bearing surface. The graph is built with
-    the windowed guidance (`timing_mode` perfect_window, also for zero_ms traces, which carry no offsets, or
-    frame_robust)."""
+    """Fail loudly unless the mode's persisted witness replays to its exact score-bearing surface."""
     ts = np.asarray(timestamps, dtype=np.float64).reshape(-1)
     nt = np.asarray(note_types, dtype=np.int32).reshape(-1)
     lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)

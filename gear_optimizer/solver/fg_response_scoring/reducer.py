@@ -195,7 +195,7 @@ def materialize_force_payload_from_response_frontier(
             lanes=song_lanes,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),
-            timing_mode="frame_robust" if song.mode == "frame_robust" else "perfect_window",
+            timing_mode=song.mode,
         )
         if trace_cache is not None:
             trace_cache.traces[trace_key] = base_trace
