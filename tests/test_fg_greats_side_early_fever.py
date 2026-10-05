@@ -262,10 +262,6 @@ def test_perfect_extension_notes_are_not_reachable():
 # enumerate them all (cannot just take the maximal extension). Uses the exact-rescore
 # per-note value model.
 # ---------------------------------------------------------------------------
-def _great_head_base(primary, secondary):
-    return floor(primary * (4.0 / 3.0)) + floor(secondary * (2.0 / 3.0)) + 150
-
-
 def _note_value(i, base_value, combo_mul, fever_mul, *, is_fever, is_great, great_base):
     """Per-note score, matching score_force_greats_response_surface_exact (head index i)."""
     scaling = ((combo_mul - 1.0) / 100.0) * float(i + 1) + 1.0
@@ -596,8 +592,7 @@ def test_early_great_is_a_genuine_pareto_tradeoff():
     with fever_mul: high fever_mul -> great-fever wins (extend), low -> loses (don't). So the
     early-Great surface is NOT dominated and NOT always dominating; intermediate e matter."""
     base_value, combo_mul = 900.0, 2.0
-    primary, secondary = 300, 300
-    great_base = _great_head_base(primary, secondary)
+    great_base = 2 * 300 + 150
     i = 40  # a head index
     # High fever multiplier: pulling the boundary note in as a Great BEATS leaving it a
     # non-fever Perfect.

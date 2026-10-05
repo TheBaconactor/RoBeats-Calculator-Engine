@@ -1398,7 +1398,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=2.0,
-    real_fever_time=0.0,
+        real_fever_time=1.0,
     )
 
     options = _edge_surface_options(
@@ -1502,7 +1502,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=raw_fever_fill,
-    real_fever_time=0.0,
+        real_fever_time=1.0,
     )
 
     options = _edge_surface_options(
@@ -3517,7 +3517,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=raw_fever_fill,
-    real_fever_time=0.0,
+        real_fever_time=real_fever_time,
     )
     assert [row["forced_count"] for row in trace] == list(counts)
     assert all(

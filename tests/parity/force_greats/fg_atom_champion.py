@@ -114,8 +114,7 @@ def _score_surface_atom(
     fever_val = _score_floor(base_value * combo_f * fever_f)
     score = int(body_fever) * int(fever_val) + int(body_normal) * int(combo_val)
 
-    great_head_base = (2 * primary_val if single_color else floor(primary_val * (4.0 / 3.0)) + floor(secondary_val * (2.0 / 3.0))) + 150
-    great_base = float(great_head_base)
+    great_base = float((2 * primary_val if single_color else floor(primary_val * (4.0 / 3.0)) + floor(secondary_val * (2.0 / 3.0))) + 150)
 
     if int(body_great) > 0:
         body_normal_great = max(0, int(body_great) - int(body_fever_great))
@@ -134,7 +133,7 @@ def _score_surface_atom(
         perfect_value = base_value * scaling
         perfect_val = _score_floor(perfect_value * fever_f) if is_fever else _score_floor(perfect_value)
         if is_great:
-            great_value = float(great_head_base) * scaling
+            great_value = great_base * scaling
             great_score = _score_floor(great_value * fever_f) if is_fever else _score_floor(great_value)
             perfect_val -= max(0, int(perfect_val) - int(great_score))
         score += int(perfect_val)

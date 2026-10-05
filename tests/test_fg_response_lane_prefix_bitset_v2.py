@@ -446,7 +446,7 @@ def _retired_boolean_region_core_for_offset(
     great_end = min(int(n), int(run_start) + int(k))
     if int(great_end) <= int(run_start):
         return -1, -1, 0, 0, -1, -1, 0
-    _perfect_hit, perfect_valid = rb._numba_perfect_activation_hit_for_run(
+    perfect_hit, perfect_valid = rb._numba_perfect_activation_hit_for_run(
         int(activation),
         timestamps,
         perfect_candidates,
@@ -457,7 +457,7 @@ def _retired_boolean_region_core_for_offset(
     )
     if int(perfect_valid) == 0 or not _retired_boolean_prefix_reachable(
         int(activation),
-        float(_perfect_hit),
+        float(perfect_hit),
         float(candidate_high_delta_max),
         timestamps,
         perfect_floor,
@@ -479,7 +479,7 @@ def _retired_boolean_region_core_for_offset(
         0,
         1,
         -1,
-        float(_perfect_hit),
+        float(perfect_hit),
         1,
     )
 

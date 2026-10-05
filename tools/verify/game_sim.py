@@ -904,7 +904,7 @@ def _build_aurora_intended():
                    "Rush": "ColorRed", "Beat": "ColorOrange"}
     statsdict = {wp: int(final.get(opt, 0) or 0) for opt, wp in stat_to_wp.items()}
     colors: list[str] = []
-    for col in (primary, secondary):
+    for col in dict.fromkeys((primary, secondary)):
         if not col:
             continue
         wp = color_to_wp[col]
