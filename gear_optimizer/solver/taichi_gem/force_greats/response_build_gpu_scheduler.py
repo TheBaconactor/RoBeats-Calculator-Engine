@@ -19,7 +19,7 @@ from .response_build_gpu_reducer import (
 from .response_types import FgResponseFrontierResult
 
 
-_REGION_TABLE_ENTRY_BYTES = 7 * np.dtype(np.int32).itemsize
+_REGION_TABLE_ENTRY_BYTES = 5 * np.dtype(np.int32).itemsize + 2 * np.dtype(np.float64).itemsize
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,14 +31,12 @@ class _FirstFrontierGroupContext:
     perfect_floor_timestamps: np.ndarray
     great_floor_timestamps: np.ndarray
     late_great_floor_timestamps: np.ndarray
+    lane_bounds: np.ndarray
     lanes: np.ndarray
     prefix_perfect_hit: np.ndarray
     prefix_perfect_valid: np.ndarray
     prefix_late_hit: np.ndarray
     prefix_late_valid: np.ndarray
-    region_hit_token_to_id: np.ndarray
-    region_perfect_end_by_real_time: np.ndarray
-    region_great_end_by_real_time: np.ndarray
     canonical: FirstOnlyCanonicalization
     use_forced_great_timing: bool
     empty_region_table: tuple | None
@@ -67,6 +65,7 @@ def _region_table_build_peak_bound_bytes(
     n: int,
     action_k: np.ndarray,
     raw_fever_fill: float,
+    real_time_count: int,
 ) -> int:
     """Exact upper bound while candidate arrays materialize the trimmed table copies."""
     actions = np.ascontiguousarray(np.asarray(action_k, dtype=np.int32).reshape(-1))
@@ -76,7 +75,7 @@ def _region_table_build_peak_bound_bytes(
         )
     )
     starts_bytes = (int(n) + 2) * np.dtype(np.int64).itemsize
-    return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
+    return int(starts_bytes + int(capacity) * (2 * _REGION_TABLE_ENTRY_BYTES + 6 * 8 + 12 * int(real_time_count) * 4))
 
 
 def _region_table_retained_bound_bytes(
@@ -84,6 +83,7 @@ def _region_table_retained_bound_bytes(
     n: int,
     action_k: np.ndarray,
     raw_fever_fill: float,
+    real_time_count: int,
 ) -> int:
     """Exact upper bound after candidate arrays have been replaced by retained copies."""
     actions = np.ascontiguousarray(np.asarray(action_k, dtype=np.int32).reshape(-1))
@@ -93,14 +93,14 @@ def _region_table_retained_bound_bytes(
         )
     )
     starts_bytes = (int(n) + 2) * np.dtype(np.int64).itemsize
-    return int(starts_bytes + int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
+    return int(starts_bytes + int(capacity) * (7 * 4 + 4 * int(real_time_count) * 4))
 
 
-def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count: int) -> int:
-    """Historical exhaustive one-live-table bound that current-main already reserves safely."""
+def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count: int, real_time_count: int) -> int:
+    """Exhaustive one-live-table bound, including hit interning and endpoint tables."""
     capacity = (int(n) + 1) * max(1, int(region_action_count)) * 2
     starts_bytes = (int(n) + 2) * np.dtype(np.int64).itemsize
-    return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
+    return int(starts_bytes + int(capacity) * (2 * _REGION_TABLE_ENTRY_BYTES + 6 * 8 + 12 * int(real_time_count) * 4))
 
 
 def _validate_region_group_memory_bounds(
@@ -273,8 +273,24 @@ def _build_region_table(
             context.late_great_floor_timestamps,
         ),
         context.lanes,
-        context.region_hit_token_to_id,
+        *((context.lane_bounds,) if len(context.lane_bounds) else ()),
     )
+    if len(context.lane_bounds):
+        hits, hit_ids = np.unique(np.concatenate(region_table[5:7]), return_inverse=True)
+        count = len(region_table[5])
+        cutoffs = (hits[None, :] + context.canonical.unique_real_times[:, None]).astype(np.float32)
+        region_table = (
+            *region_table[:5], hit_ids[:count].astype(np.int32), hit_ids[count:].astype(np.int32), region_table[7],
+            np.searchsorted(context.perfect_floor_timestamps, cutoffs).astype(np.int32),
+            np.searchsorted(context.great_floor_timestamps, cutoffs).astype(np.int32),
+        )
+    else:
+        # Every read hit is an exact key of the song's hit universe (unread -1 rows map to 0).
+        region_table = (
+            *region_table[:5],
+            *(np.searchsorted(context.canonical.hit_values, values).astype(np.int32) for values in region_table[5:7]),
+            region_table[7],
+        )
     return region_table, _region_table_bytes(region_table), float(time.perf_counter() - build_t0)
 
 
@@ -532,6 +548,7 @@ def _schedule_first_frontier_region_groups(
                 n=int(context.n),
                 action_k=np.ascontiguousarray(group_items[0][4], dtype=np.int32),
                 raw_fever_fill=float(table_key[0]),
+                real_time_count=len(context.canonical.unique_real_times) if len(context.lane_bounds) else 0,
             )
             for table_key, group_items in group_entries
         )
@@ -540,6 +557,7 @@ def _schedule_first_frontier_region_groups(
                 n=int(context.n),
                 action_k=np.ascontiguousarray(group_items[0][4], dtype=np.int32),
                 raw_fever_fill=float(table_key[0]),
+                real_time_count=len(context.canonical.unique_real_times) if len(context.lane_bounds) else 0,
             )
             for table_key, group_items in group_entries
         )
@@ -548,6 +566,7 @@ def _schedule_first_frontier_region_groups(
                 _legacy_single_region_table_peak_bound_bytes(
                     n=int(context.n),
                     region_action_count=int(np.asarray(group_items[0][4]).shape[0]),
+                    real_time_count=len(context.canonical.unique_real_times) if len(context.lane_bounds) else 0,
                 )
                 for _table_key, group_items in group_entries
             ),

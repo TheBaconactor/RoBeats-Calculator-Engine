@@ -95,6 +95,39 @@ def _exact_force_greats_note_graph(
     )
 
 
+def test_frame_robust_held_perfect_leaves_room_for_an_early_great_tail():
+    n = 103
+    ts = 1.0 + np.arange(n) * 0.1
+    ts[100:102] = 11.2
+    nt = np.ones(n, dtype=np.int16)
+    nt[100] = 3
+    trace = [{"section": 1, "activation_index": 99, "fever_end_index": 102,
+              "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
+              "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+              "fever_window_end_ms": 11163.0, "early_great_start": 101, "early_great_end": 102}]
+    graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts,
+                                         note_types=nt, timing_mode="frame_robust")
+    assert graph[100]["note_result"] == "Perfect"
+    assert graph[101]["note_result"] == "Great"
+    assert -39.0 <= graph[100]["delta_ms"] <= graph[101]["delta_ms"] <= -38.0
+    assert graph[100]["fever"] and graph[101]["fever"]
+
+
+def test_frame_robust_base_spaces_same_lane_hits_after_its_last_fever():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
+    from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS
+
+    graph = timeline_frontier_note_graph(
+        frontier_trace=[{"section": 1, "activation_index": 0, "fever_start_note_index": 0,
+                         "fever_end_index": 1, "activation_hit_offset_ms": 0.0,
+                         "fever_window_end_ms": 1100.0, "fever_duration_ms": 100.0}],
+        total_notes=4, timestamps=np.asarray([1.0, 2.0, 2.0, 3.0]),
+        note_types=np.ones(4), lanes=np.zeros(4), timing_mode="frame_robust",
+    )
+    assert graph[2]["delta_ms"] - graph[1]["delta_ms"] >= FRAME_MARGIN_MS
+    assert [node["fever"] for node in graph] == [True, False, False, False]
+
+
 def _build_options(n, non_fever_base, real_fever_time):
     from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
@@ -258,6 +291,7 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "real_fever_time",
         "use_forced_great_timing",
         "edge_options_cache",
+        "lane_bounds",
     }
     # no stat vector, base_value, perfect-points, element color, or frontier/DP object
     for stat_like in ("stats", "base_value", "perfect_points", "frontier", "tier", "team_buff"):
@@ -1768,6 +1802,26 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
     assert g[2]["hit_time_ms"] + g[2]["delta_ms"] < cutoff
 
     assert g[1]["hit_time_ms"] + g[1]["delta_ms"] <= g[2]["hit_time_ms"] + g[2]["delta_ms"]
+
+
+@pytest.mark.parametrize("start,great,kind,tied,count,delta", [
+    (0, 0, 1, True, 1, -20.0), (101, 101, 3, True, 1, -40.0),
+    (0, 1, 1, True, 1, 41.0), (0, 0, 1, False, 1, 41.0), (0, 0, 1, True, 2, 41.0),
+])
+def test_zero_ms_early_great_only_precedes_first_perfect_in_tie(start, great, kind, tied, count, delta):
+    n = max(start, great) + 3
+    ts = np.arange(n, dtype=np.float64)
+    if tied:
+        ts[start + 1] = ts[start]
+    nt = np.ones(n, dtype=np.int16)
+    nt[great] = kind
+    trace = [{"section": 1, "activation_index": n - 1, "fever_end_index": n,
+              "forced_start_index": 0, "forced_run_start_index": great, "forced_run_count": count,
+              "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0}]
+    graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts,
+                                         note_types=nt, timing_mode="zero_ms")
+    assert graph[great]["delta_ms"] == delta
+    assert all(note["delta_ms"] == 0.0 for note in graph if note["note_result"] == "Perfect")
 
 
 def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():

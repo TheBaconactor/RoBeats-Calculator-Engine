@@ -54,6 +54,7 @@ def _color_flags(primary_color: str, secondary_color: str, selected_color: str) 
         int(secondary == "Rush"),
         int(primary == selected and bool(selected)),
         int(secondary == selected and bool(selected)),
+        int(primary == secondary),
     )
 
 
@@ -174,6 +175,7 @@ def _fg_response_surface_score_native_f64(
     pp_factor,
     combo_mul,
     fever_mul,
+    single_color,
 ):
     """f64 CPU port of ``_fg_response_score_device``: exact score of one surface for a fixed
     (gem-allocated) stat line. Same op order / per-term ``floor`` / i32 accumulation as the
@@ -195,12 +197,10 @@ def _fg_response_surface_score_native_f64(
     )
     great_base = 0.0
     if body_great > 0 or great_or != 0:
-        great_head_base = (
-            int(np.floor(float(primary_val) * (4.0 / 3.0)))
-            + int(np.floor(float(secondary_val) * (2.0 / 3.0)))
-            + 150
+        great_base = float(
+            primary_val * 2 + 150 if single_color else
+            int(np.floor(float(primary_val) * (4.0 / 3.0))) + int(np.floor(float(secondary_val) * (2.0 / 3.0))) + 150
         )
-        great_base = float(great_head_base)
         great_combo_val = int(np.floor(great_base * combo_mul))
         great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
         if body_great > 0:
@@ -456,6 +456,7 @@ def _score_fg_response_groups_native_f64(
                                         pp_ref_cache[g_pp],
                                         cm_mul,
                                         fm_mul,
+                                        color_flags[8],
                                     )
                                     if score > best_score or (
                                         score == best_score
@@ -493,6 +494,7 @@ def _score_fg_response_groups_native_f64(
                                 pp_factor,
                                 cm_mul,
                                 fm_mul,
+                                color_flags[8],
                             )
                             if score > best_score or (
                                 score == best_score

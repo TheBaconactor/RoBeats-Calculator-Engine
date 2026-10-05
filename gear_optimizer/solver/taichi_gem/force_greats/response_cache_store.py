@@ -79,6 +79,24 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Region core tables shared between fills with the same half-unit count, one structural reducer: the complete
+    # bundles of the 40-chart sample (all three modes) built by this code are byte-identical, one to one, to the
+    # 10e19c37d4fa producer's builds (gates r5/b2_zms, r5/b2_pwfr). Ratify it and its ratified predecessors
+    # (non-transitive).
+    "fg-response-frontier-visible-first-v31+logic-aa1f5e045c00": (
+        "fg-response-frontier-visible-first-v31+logic-10e19c37d4fa",
+        "fg-response-frontier-visible-first-v31+logic-e9c86ce774f6",
+        "fg-response-frontier-visible-first-v31+logic-8aaeee788edb",
+        "fg-response-frontier-visible-first-v31+logic-3cb7f7d17e0f",
+        "fg-response-frontier-visible-first-v31+logic-b59710681424",
+        "fg-response-frontier-visible-first-v31+logic-806c8cda331e",
+        "fg-response-frontier-visible-first-v31+logic-8c948e5e17d3",
+        "fg-response-frontier-visible-first-v31+logic-fc7fff0f4398",
+        "fg-response-frontier-visible-first-v31+logic-529c17599261",
+        "fg-response-frontier-visible-first-v31+logic-260f7b254d34",
+        "fg-response-frontier-visible-first-v31+logic-d73bd8aab735",
+        "fg-response-frontier-visible-first-v31+logic-60e33a1d805f",
+    ),
     # Early fever exits (perfect_window cache revision 2, frame_robust 3) and the producer speedups: the zero_ms
     # bundles of the 40-chart sample built by this code are byte-identical, one to one, to the deployed e9c86ce774f6
     # producer's builds (gate r5/g16_zms); perfect_window and frame_robust bundles carry new cache revisions in their
@@ -314,10 +332,6 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
         "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
     ),
-    # Same-color Great scoring now preserves the production chart's two color slots and their
-    # separate floor operations. This changes only surface scoring: the V31 producer, ordered
-    # surfaces, stat-key mapping, and compact sidecars are unchanged. Preserve the complete
-    # already-ratified lineage explicitly so the corrected scorer reuses the finished pool.
     "fg-response-frontier-visible-first-v31+logic-52861c6156f1": (
         "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
         "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
@@ -596,6 +610,19 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "fg-response-frontier-visible-first-v30+logic-a6d09c0280bd",
     ),
 }
+
+
+# Lane-aware Frame-Safe (frame_robust@4: its old bundles never match) and Non-Precise tied Greats (a witness change
+# only): the 40-chart sample's Precise and zero_ms bundles are byte-identical, one to one, to aa1f5e045c00's builds
+# (40-chart byte gates). Ratify it and its ratified predecessors (non-transitive).
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-fa1b09f9e592"] = (
+    "fg-response-frontier-visible-first-v31+logic-aa1f5e045c00",
+    *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-aa1f5e045c00"],
+)
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-2278a0e06009"] = (
+    "fg-response-frontier-visible-first-v31+logic-fa1b09f9e592",
+    *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-fa1b09f9e592"],
+)
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):

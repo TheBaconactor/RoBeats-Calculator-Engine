@@ -133,18 +133,12 @@ def _visible_stats(fd: dict) -> tuple[dict, str]:
 
 
 def _statsdict_for_oracle(final: dict, primary: str, secondary: str = "") -> tuple[dict, list[str]]:
-    """Map FINAL optimizer stats -> WebPort raw-point statsdict + color-stat key list.
-
-    Feeds BOTH chart color slots ([primary, secondary]) so the oracle's colorPointBonus matches the
-    production chart contract (primary 2x, secondary 1x). Equal color values remain two slots;
-    deduplicating them changes the game's per-component floor order for Great hits. Feeding only the
-    Selected Element (the old bug) manufactured a spurious ~30% delta on two-color songs.
-    """
+    """Map final optimizer stats and distinct chart colors into the WebPort."""
     sd: dict[str, int] = {}
     for opt_key, wp_key in _STAT_TO_WEBPORT.items():
         sd[wp_key] = int(final.get(opt_key, 0) or 0)
     colors: list[str] = []
-    for col in (primary, secondary):
+    for col in dict.fromkeys((primary, secondary)):
         if not col:
             continue
         wp_color = _COLOR_TO_WEBPORT.get(col)

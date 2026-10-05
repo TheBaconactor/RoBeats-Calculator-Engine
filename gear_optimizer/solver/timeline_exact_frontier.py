@@ -99,6 +99,7 @@ def reconstruct_timeline_physical_trace(
     raw_fever_fill: float,
     real_fever_time: float,
     exit_ceiling_timestamps: np.ndarray | None = None,
+    lane_bounds: np.ndarray | None = None,
 ) -> list[dict[str, object]]:
     """Decode one retained Base surface through the same exact lane-aware producer owner."""
     from .taichi_gem.force_greats.response_builder import reconstruct_force_greats_response_trace
@@ -132,6 +133,7 @@ def reconstruct_timeline_physical_trace(
         real_fever_time=float(real_fever_time),
         use_forced_great_timing=False,
         exit_ceiling_timestamps=exit_ceiling_timestamps,
+        lane_bounds=lane_bounds,
     )
 
 
@@ -145,6 +147,7 @@ def build_timeline_frontier_grid_payload(
     fever_times: np.ndarray,
     fever_fills: np.ndarray,
     exit_ceiling_timestamps: np.ndarray | None = None,
+    lane_bounds: np.ndarray | None = None,
 ) -> TimelineFrontierGridPayload:
     """Build every FT/FF Base cell from exact lane-aware all-Perfect producer surfaces.
 
@@ -193,6 +196,7 @@ def build_timeline_frontier_grid_payload(
         geometries=geometries,
         use_forced_great_timing=False,
         exit_ceiling_timestamps=exit_ceiling_timestamps,
+        lane_bounds=lane_bounds,
     )
     if len(physical_frontiers) != len(geometries):
         raise ValueError("timeline physical producer returned the wrong number of geometries")

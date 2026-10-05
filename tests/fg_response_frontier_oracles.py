@@ -228,6 +228,7 @@ def edge_surface_option_details(
         ),
         lanes=lanes,
         fever_fill_denom=float(raw_fever_fill),
+        real_fever_time=real_fever_time,
     )
     return [
         _option_with_witness(
@@ -288,6 +289,7 @@ def input_engine_rebuild_first_frontier(
         great_candidate_timestamps=great_candidate_timestamps,
         lanes=lanes,
         fever_fill_denom=float(raw_fever_fill),
+        real_fever_time=real_fever_time,
     )
     memo: dict[tuple[int, bool], tuple[FgResponseSurface, ...]] = {}
     states_evaluated = 0

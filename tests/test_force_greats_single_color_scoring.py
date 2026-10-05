@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from gear_optimizer.chart import load_chart
 from gear_optimizer.gamedata import load_stat_curves
@@ -12,27 +13,33 @@ from gear_optimizer.solver.timing_envelope import time_song
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_same_color_force_greats_formula_preserves_component_floor_order() -> None:
-    from tests.parity.force_greats.fg_atom_champion import compute_great_penalty_base
+@pytest.mark.parametrize("secondary, expected, colors", [("Chill", 1774, ["ColorBlue"]), ("Flow", 1773, ["ColorBlue", "ColorPurple"])])
+def test_great_rounding_uses_chart_colors(secondary, expected, colors) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _color_flags, _fg_response_surface_score_native_f64
+    from tools.verify.loadout_oracle_replay import _statsdict_for_oracle
 
-    assert compute_great_penalty_base(812, 812) == 1773
+    assert _fg_response_surface_score_native_f64(
+        np.zeros((1, 8), dtype=np.uint32), 0, 0, 1, 0, 0, 1, 812, 812, 0.0, 1.0, 1.0,
+        _color_flags("Chill", secondary, "Chill")[8],
+    ) == expected
+    assert _statsdict_for_oracle({"Chill": 812, "Flow": 812}, "Chill", secondary)[1] == colors
 
 
-def test_dark_sheep_force_greats_matches_observed_game_score() -> None:
-    song = time_song(load_chart(ROOT / "Data" / "Hard" / "Dark Sheep [EXTENDED CUT] (Hard) by Chroma.txt"))
+def test_reflections_force_greats_matches_observed_game_score() -> None:
+    song = time_song(load_chart(ROOT / "Data" / "Normal" / "Reflections by Rutra.txt"))
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     stats = {
         "Perfect Points": 85,
-        "Combo Multiplier": 66,
-        "Fever Multiplier": 68,
-        "Fever Time": 74,
-        "Fever Fill Rate": 65,
-        "Beat": 769,
-        "Vibe": 55,
-        "Rush": 180,
-        "Flow": 72,
-        "Chill": 35,
+        "Combo Multiplier": 60,
+        "Fever Multiplier": 70,
+        "Fever Time": 39,
+        "Fever Fill Rate": 54,
+        "Beat": 50,
+        "Vibe": 54,
+        "Rush": 34,
+        "Flow": 6,
+        "Chill": 767,
     }
-    surface = FgResponseSurface(0, 0, 0, 0, 131071, 0, 0, 0, 3420, 4, 3)
+    surface = FgResponseSurface(0, 0, 4292870144, 15, 0, 0, 0, 0, 587, 3, 3)
 
-    assert score_force_greats_response_surface_exact(stats, song, curves, surface) == 129185709
+    assert score_force_greats_response_surface_exact(stats, song, curves, surface) == 22640729

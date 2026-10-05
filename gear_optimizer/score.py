@@ -44,7 +44,7 @@ def factors(stats: dict[str, int], curves: StatCurves, primary: str, secondary: 
         base=float(primary_value * 2 + secondary_value) + curves.factor("Perfect Points", stats["Perfect Points"]),
         combo=curves.factor("Combo Multiplier", stats["Combo Multiplier"]),
         fever=curves.factor("Fever Multiplier", stats["Fever Multiplier"]),
-        great_base=floor(float(primary_value) * (4.0 / 3.0)) + floor(float(secondary_value) * (2.0 / 3.0)) + GREAT_POINTS,
+        great_base=(primary_value * 2 if primary == secondary else floor(float(primary_value) * (4.0 / 3.0)) + floor(float(secondary_value) * (2.0 / 3.0))) + GREAT_POINTS,
         fever_time_row=stats["Fever Time"],
         fever_fill_row=stats["Fever Fill Rate"],
     )

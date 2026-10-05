@@ -38,8 +38,8 @@ Two graphs per loadout, matching the intended software behavior:
 ``timing_mode`` selects the timing semantic (issue #66):
   * ``"perfect_window"`` (default): apply activation witness offsets, endpoint-early
     guidance, and fever-end safe-target guidance.
-  * ``"zero_ms"``: every playable hit at chart time (`delta_ms=0.0`; Great selectors
-    stay ``None``). Fever/great sets and witness metadata are unchanged.
+  * ``"zero_ms"``: Perfects stay on time. Leading Greats in a tie can be early to
+    precede its first Perfect; other Greats use their canonical late hit.
 
 Both are reconstructable losslessly from already-persisted data (FG: `frontier_trace`
 + `response_surface`; BASE: the packed stats, replayed through the fever timeline),
@@ -528,23 +528,17 @@ def _mark_same_time_selector_order_deltas(
     total_notes: int,
     note_types: Sequence[int] | np.ndarray | None,
 ) -> None:
-    """Give same-time forced-Great selectors concrete offsets when combo order matters.
+    """Preserve selector order inside score-bearing ties.
 
-    A selector Great (`delta_ms is None`) is not a fever-boundary witness, but in the first
-    100-note ramp its physical order still changes score. The scored surface indexes head
-    bits in chart order, so the replay/display witness must keep same-chart-time clusters in
-    that order. Great-before-Perfect therefore uses the early-Great band; Perfect-before-Great
-    uses the late-Great band. If a mixed cluster cannot be ordered without changing a judgment,
-    fail loudly: that surface is not a legal witness for the scored ramp.
+    Windowed modes preserve chart order in the combo ramp. With on-time Perfects,
+    only leading Greats can be early; body ties also determine fill order.
     """
     graph_n = min(int(total_notes), len(notes))
     if graph_n <= 1:
         return
 
-    # Chart-index ordering is score-bearing only while the combo multiplier ramps. Include the
-    # complete same-time cluster crossing the head/body boundary, but leave body-only clusters to
-    # their physical event times and the exact activation constraints below.
-    n = min(graph_n, 100)
+    # Include the complete cluster crossing the combo ramp.
+    n = graph_n if _BUILD.get().mode == "zero_ms" else min(graph_n, 100)
     while n < graph_n and _same_chart_time_ms(notes[n - 1]["hit_time_ms"], notes[n]["hit_time_ms"]):
         n += 1
 
@@ -577,6 +571,12 @@ def _mark_same_time_selector_order_deltas(
                     "same-time forced-Great selector timing at judgment bounds -- it is never guessed"
                 )
             nt = np.asarray(note_types).reshape(-1)
+
+        if _BUILD.get().mode == "zero_ms":
+            stop = min((j for j in cluster if notes[j]["note_result"] == "Perfect"), default=cluster[0])
+            for j in range(cluster[0], stop):
+                notes[j]["delta_ms"] = _early_great_bounds_ms_at(nt, j)[1]
+            continue
 
         latest_deltas = [np.inf] * len(cluster)
         latest_delta = np.inf
@@ -1026,12 +1026,7 @@ def _materialize_remaining_selector_deltas(
     *,
     note_types: Sequence[int] | np.ndarray,
 ) -> None:
-    """Give every remaining Perfect-window selector one canonical physical hit.
-
-    Schedule-sensitive selectors were already moved by the exact order passes. The rows left with
-    no delta are order-neutral Great selectors; materialize the first legal late-Great millisecond
-    here so every consumer receives the same event stream instead of inventing a frontend default.
-    """
+    """Give every remaining Great selector its canonical physical hit."""
     nt = np.asarray(note_types).reshape(-1)
     if int(nt.shape[0]) != len(notes):
         raise ValueError("note_graph: note_types must match the graph before selector materialization")
@@ -1199,6 +1194,9 @@ def _mark_endpoint_early_hits(
     cutoff = float(fever_window_end_ms)
     upper_hit = _strictly_before_cutoff_ms(cutoff)
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
+    if _BUILD.get().robust and skip_range is not None:
+        upper_hit = min(upper_hit, *(float(notes[j]["hit_time_ms"]) + _early_great_bounds_ms_at(nt, j)[1]
+                                    for j in range(*skip_range)))
     prev_hit = -np.inf  # running largest shown hit across the section (monotonic order)
     for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
         if skip_range is not None and int(skip_range[0]) <= j < int(skip_range[1]):
@@ -1502,6 +1500,52 @@ def _mark_fever_exit_push_delta(
         j += 1
 
 
+def _materialize_frame_robust_schedule(notes, *, frontier_trace, note_types, lanes) -> None:
+    order = sorted(range(len(notes)), key=lambda j: int(notes[j]["input_order"]))
+    nt, lane_arr = np.asarray(note_types), np.asarray(lanes)
+    activations = {int(sec["activation_index"]): sec for sec in frontier_trace}
+    low, high, preferred = {}, {}, {}
+    end = None
+    for j in order:
+        note = notes[j]
+        hit = float(note["hit_time_ms"])
+        delta = float(note["delta_ms"])
+        preferred[j] = hit + delta
+        band = 0 if note["note_result"] == "Perfect" else 1 if delta < 0 else 2
+        lo, hi = _bounds_at(nt, j)[band]
+        low[j], high[j] = hit + lo, hit + hi
+        if j in activations:
+            low[j] = high[j] = preferred[j]
+            end = preferred[j] + _trace_fever_duration_ms(activations[j], activation_chart_ms=hit)
+        elif end is not None:
+            if note["fever"]:
+                high[j] = min(high[j], _strictly_before_cutoff_ms(end))
+            else:
+                low[j] = max(low[j], end + _FRAME_ROBUST_EXIT_GAP_MS)
+    following = {}
+    cap = np.inf
+    for j in reversed(order):
+        cap = min(cap, high[j])
+        lane = int(lane_arr[j])
+        if lane in following:
+            successor = following[lane]
+            cap = min(cap, high[successor] - (0.0 if nt[successor] == HELD_TAIL_TYPE else _FRAME_ROBUST_SCHEDULE_GAP_MS))
+        high[j] = cap
+        following[lane] = j
+    previous = {}
+    floor = -np.inf
+    for j in order:
+        floor = max(floor, low[j])
+        lane = int(lane_arr[j])
+        if lane in previous and nt[j] != HELD_TAIL_TYPE:
+            floor = max(floor, previous[lane] + _FRAME_ROBUST_SCHEDULE_GAP_MS)
+        if floor > high[j]:
+            raise UnplayableTrace(f"note_graph: frame_robust note {j} has no ordered hit inside its judgment/fever bounds")
+        chosen = min(max(preferred[j], floor), high[j])
+        notes[j]["delta_ms"] = chosen - float(notes[j]["hit_time_ms"])
+        floor = previous[lane] = chosen
+
+
 def _require_frame_robust_play(
     notes: list[dict[str, Any]],
     *,
@@ -1695,6 +1739,7 @@ def timeline_frontier_note_graph(
             ))
             _assign_exact_input_order(notes, input_order_constraints)
         if mode == "frame_robust":
+            _materialize_frame_robust_schedule(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
             _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
 
         return notes
@@ -1901,12 +1946,12 @@ def force_greats_note_graph(
                     note_types=note_types,
                 )
 
+        _mark_same_time_selector_order_deltas(
+            notes,
+            total_notes=n,
+            note_types=note_types,
+        )
         if apply_guidance:
-            _mark_same_time_selector_order_deltas(
-                notes,
-                total_notes=n,
-                note_types=note_types,
-            )
             input_order_constraints = _mark_activation_preemptor_order_deltas(
                 notes,
                 frontier_trace=frontier_trace,
@@ -1915,10 +1960,12 @@ def force_greats_note_graph(
                 lanes=lanes,
                 require_exact_schedule=True,
             )
-            _materialize_remaining_selector_deltas(notes, note_types=note_types)
-            _assign_exact_input_order(notes, input_order_constraints)
+        _materialize_remaining_selector_deltas(notes, note_types=note_types)
+        _assign_exact_input_order(notes, input_order_constraints if apply_guidance else ())
+        if apply_guidance:
             _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)
         if mode == "frame_robust":
+            _materialize_frame_robust_schedule(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
             _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
 
         return notes

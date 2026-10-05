@@ -15,15 +15,6 @@ from gear_optimizer.rules import (
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_response_group_meta_cpu
 
-GREAT_RESULT_POINTS = 150
-
-
-def compute_great_penalty_base(primary_val: int, secondary_val: int) -> int:
-    """A head Great's element value: floor(4/3 primary) + floor(2/3 secondary) + the Great's result points."""
-    primary, secondary = float(int(primary_val)), float(int(secondary_val))
-    return int(floor(primary * (4.0 / 3.0)) + floor(secondary * (2.0 / 3.0)) + GREAT_RESULT_POINTS)
-
-
 @dataclass(frozen=True, slots=True)
 class ChampionAtom:
     surface_index: int
@@ -107,6 +98,7 @@ def _score_surface_atom(
     pp_factor: float,
     combo_mul: float,
     fever_mul: float,
+    single_color: bool,
 ) -> int:
     fever_words = tuple(int(v) for v in np.asarray(words[:4], dtype=np.uint32))
     great_words = tuple(int(v) for v in np.asarray(words[4:8], dtype=np.uint32))
@@ -122,8 +114,7 @@ def _score_surface_atom(
     fever_val = _score_floor(base_value * combo_f * fever_f)
     score = int(body_fever) * int(fever_val) + int(body_normal) * int(combo_val)
 
-    great_head_base = compute_great_penalty_base(primary_val, secondary_val)
-    great_base = float(great_head_base)
+    great_base = float((2 * primary_val if single_color else floor(primary_val * (4.0 / 3.0)) + floor(secondary_val * (2.0 / 3.0))) + 150)
 
     if int(body_great) > 0:
         body_normal_great = max(0, int(body_great) - int(body_fever_great))
@@ -142,7 +133,7 @@ def _score_surface_atom(
         perfect_value = base_value * scaling
         perfect_val = _score_floor(perfect_value * fever_f) if is_fever else _score_floor(perfect_value)
         if is_great:
-            great_value = float(great_head_base) * scaling
+            great_value = great_base * scaling
             great_score = _score_floor(great_value * fever_f) if is_fever else _score_floor(great_value)
             perfect_val -= max(0, int(perfect_val) - int(great_score))
         score += int(perfect_val)
@@ -247,6 +238,7 @@ def _score_atom_for_group(
         pp_factor=_lookup_ref(curves.f64["Perfect Points"], int(final_pp)),
         combo_mul=_lookup_ref(curves.f64["Combo Multiplier"], int(final_cm)),
         fever_mul=_lookup_ref(curves.f64["Fever Multiplier"], int(final_fm)),
+        single_color=primary_color == secondary_color,
     )
     return np.asarray(
         [

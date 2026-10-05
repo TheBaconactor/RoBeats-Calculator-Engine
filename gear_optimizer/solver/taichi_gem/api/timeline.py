@@ -224,6 +224,22 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Region core tables shared between fills with the same half-unit count, one structural reducer: the 40-chart
+    # sample's timeline payloads (all three modes) are byte-identical, one to one, to the b342a66d6b1b producer's builds
+    # (gates r5/b2_zms, r5/b2_pwfr). Ratify it and its ratified predecessors (non-transitive).
+    "exact-frontier-v12+logic-92a162c8fc85": (
+        "exact-frontier-v12+logic-b342a66d6b1b",
+        "exact-frontier-v12+logic-f9a5dbc5860a",
+        "exact-frontier-v12+logic-b38e47923b2b",
+        "exact-frontier-v12+logic-f06c1b1fe6ca",
+        "exact-frontier-v12+logic-56a41dacb9b6",
+        "exact-frontier-v12+logic-e0f26c1952cc",
+        "exact-frontier-v12+logic-dac3ca4b6278",
+        "exact-frontier-v12+logic-ede645c00a02",
+        "exact-frontier-v12+logic-e2108556084d",
+        "exact-frontier-v12+logic-920bc4af7ee6",
+        "exact-frontier-v12+logic-be26caca62b4",
+    ),
     # Early fever exits (perfect_window cache revision 2, frame_robust 3): the 40-chart sample's zero_ms timeline
     # payloads are byte-identical, one to one, to the deployed f9a5dbc5860a producer's builds (gate r5/g16_zms);
     # perfect_window and frame_robust payloads carry new cache revisions in their keys. Keep everything the deployed
@@ -353,6 +369,15 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "exact-frontier-v12+logic-e0b0e8ef6411",
     ),
 }
+
+
+# Lane-aware Frame-Safe (frame_robust@4: its old payloads never match) and Non-Precise tied Greats (a witness change
+# only): the 40-chart sample's Precise and zero_ms payloads are byte-identical, one to one, to 92a162c8fc85's builds
+# (40-chart byte gates). Ratify it and its ratified predecessors (non-transitive).
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3c72edf5d46c"] = (
+    "exact-frontier-v12+logic-92a162c8fc85",
+    *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-92a162c8fc85"],
+)
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:
@@ -681,6 +706,7 @@ def build_or_load_timeline_frontier_payload(
                 perfect_floor_timestamps=lookup["perfect_floor"],
                 exit_ceiling_timestamps=lookup["exit_ceiling"],
                 lanes=lookup["lanes"],
+                lane_bounds=song.lane_bounds,
                 fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
                 fever_fills=fever_fill_raw(
                     max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"], song.mode
@@ -794,6 +820,7 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
         exit_ceiling_timestamps=np.asarray(lookup["exit_ceiling"], dtype=np.float32),
         lanes=np.asarray(lookup["lanes"], dtype=np.int32),
+        lane_bounds=song.lane_bounds,
         fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
         fever_fills=fever_fill_raw(
             max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"], song.mode

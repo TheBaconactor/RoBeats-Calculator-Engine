@@ -295,6 +295,7 @@ def _build_response_frontier_cache_payload(
             late_great_floor_timestamps=song_inputs.late_great_floor,
             exit_ceiling_timestamps=song_inputs.exit_ceiling,
             lanes=song_inputs.lanes,
+            lane_bounds=song_inputs.lane_bounds,
             geometries=tuple(item[1] for item in missing_items),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
         )

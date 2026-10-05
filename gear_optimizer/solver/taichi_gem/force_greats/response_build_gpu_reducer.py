@@ -344,16 +344,6 @@ def _first_frontier_result_from_precomputed_end_indices(
     action arrays); `context` is the song's _FirstFrontierGroupContext; `fill_runs` = the Perfect and late-Great
     fill runs of the item's action table."""
     successor_epoch = workspace.next_successor_epoch()
-    region_perfect_end_by_real_time = context.region_perfect_end_by_real_time
-    region_great_end_by_real_time = context.region_great_end_by_real_time
-    if (
-        int(region_perfect_end_by_real_time.ndim) != 2
-        or int(region_great_end_by_real_time.ndim) != 2
-        or region_perfect_end_by_real_time.shape != region_great_end_by_real_time.shape
-    ):
-        raise ValueError("FG region endpoint tables must be aligned two-dimensional arrays")
-    if int(real_time_idx) < 0 or int(real_time_idx) >= int(region_perfect_end_by_real_time.shape[0]):
-        raise ValueError("FG region real-time index escaped its endpoint tables")
     action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
         np.ascontiguousarray(values, dtype=np.int32) for values in item[4:11]
     )
@@ -413,9 +403,10 @@ def _first_frontier_result_from_precomputed_end_indices(
             region_table[5],
             region_table[6],
             region_table[7],
-            context.region_hit_token_to_id,
-            region_perfect_end_by_real_time[int(real_time_idx)],
-            region_great_end_by_real_time[int(real_time_idx)],
+            region_table[8][real_time_idx] if len(context.lane_bounds) else canonical.hit_ends[0, real_time_idx],
+            region_table[9][real_time_idx] if len(context.lane_bounds) else canonical.hit_ends[1, real_time_idx],
+            context.lane_bounds,
+            canonical.lane_chain_ends[real_time_idx],
             workspace.pair_values,
             workspace.pair_stamps,
             workspace.pair_touched,
