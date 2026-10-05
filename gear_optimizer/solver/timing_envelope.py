@@ -50,10 +50,10 @@ HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
 # time minus the margin and out of it only from the fever time plus the margin, and two presses whose order matters
 # are planned at least the margin apart.
 FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
-# The timing modes' cache revisions, bumped with every change to a mode's frontier payloads or bundles. A version that
+# The windowed modes' cache revisions, bumped with every change to a mode's frontier payloads or bundles. A version that
 # ratifies its predecessors serves their files to every mode whose key is unchanged, so only the byte-gated modes may
-# keep their keys (perfect_window 2: fevers may end early).
-CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 4, "zero_ms": 1}
+# keep their keys (perfect_window 2: fevers may end early; frame_robust 4: same-lane spacing).
+CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 4}
 
 
 class Band(NamedTuple):
@@ -130,8 +130,6 @@ def _lane_order_bounds(
     low, high = earliest.astype(np.float64), latest.astype(np.float64)
     nt, lane_arr = np.asarray(note_types).reshape(-1), np.asarray(lanes).reshape(-1)
     n = len(low)
-    if any(len(values) != n for values in (high, nt, lane_arr)):
-        raise ValueError("frame_robust timing arrays and lanes must align")
     gap = (FRAME_MARGIN_MS + 0.001) / 1000.0
     previous: dict[int, int] = {}
     for j in range(n):

@@ -232,11 +232,11 @@ def exact_label_hit_intervals(
     expected_perfect_floor = np.maximum.accumulate(raw_perfect_low.copy())
     expected_great_floor = np.maximum.accumulate(raw_great_low.copy())
     if mode == "frame_robust":
-        from ...timing_envelope import _lane_order_bounds
+        from ...timing_envelope import HELD_TAIL_TYPE, _lane_order_bounds
 
         if lanes is None:
             raise ValueError("frame_robust label intervals require chart lanes")
-        note_types = np.where(is_tail, 3, 1)
+        note_types = np.where(is_tail, HELD_TAIL_TYPE, 1)
         expected_perfect_floor, _ = _lane_order_bounds(
             expected_perfect_floor, perfect_high, note_types, np.asarray(lanes)
         )

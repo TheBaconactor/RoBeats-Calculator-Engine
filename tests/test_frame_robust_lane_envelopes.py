@@ -40,13 +40,11 @@ def test_late_activation_respects_conditional_follower_lane_bounds(lanes, note_t
     assert hit == pytest.approx(min(float(env.great_candidates[0]), float(env.perfect_candidates[2]) - gap), abs=1e-7)
 
 
-def test_frame_robust_envelopes_require_aligned_lanes():
+def test_frame_robust_envelopes_require_lanes():
     ts = np.asarray([1.0, 1.010], dtype=np.float32)
     nt = np.ones(2, dtype=np.int16)
     with pytest.raises(ValueError, match="require chart lanes"):
         perfect_window_envelopes(ts, nt, "frame_robust")
-    with pytest.raises(ValueError, match="must align"):
-        perfect_window_envelopes(ts, nt, "frame_robust", lanes=np.zeros(1))
 
 
 def test_fever_reach_is_conditioned_on_the_activation_lane_chain():

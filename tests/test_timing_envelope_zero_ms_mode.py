@@ -64,7 +64,6 @@ def test_zero_ms_song_is_chart_only():
     song = _song("zero_ms")
 
     assert song.mode == "zero_ms"
-    assert song.cache_mode == "zero_ms@1"
     assert song.hit_timestamps is song.chart.timestamps
     assert song.perfect_candidates is None and song.great_floor is None
 

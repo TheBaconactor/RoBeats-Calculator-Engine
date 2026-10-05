@@ -45,11 +45,11 @@ RegionTables = namedtuple(
         "region_activations",
         "region_great_ends",
         "region_is_greats",
-        "region_act_hits",
-        "region_perfect_hits",
+        "region_act_hit_ids",
+        "region_perfect_hit_ids",
         "region_perfect_valids",
-        "perfect_end_by_hit",
-        "great_end_by_hit",
+        "region_perfect_end_by_hit",
+        "region_great_end_by_hit",
         "real_fever_time",
         "lane_bounds",
         "lane_chain_ends",
@@ -1066,7 +1066,7 @@ def _numba_region_run_core_for_offset(
 @njit(cache=True, nogil=True, inline="always")
 def _numba_region_run_edge_from_core(
     n: int, section_start: int, offset: int, core_activation: int, core_great_end: int,
-    core_is_great: int, core_activation_hit: int, core_perfect_hit: int,
+    core_is_great: int, core_activation_hit_id: int, core_perfect_hit_id: int,
     core_perfect_valid: int, core_valid: int,
     perfect_end_by_hit, great_end_by_hit,
     lane_chain_ends,
@@ -1079,21 +1079,21 @@ def _numba_region_run_edge_from_core(
     if int(core_perfect_valid) != 0:
         perfect_e = _numba_clamped_end_idx(
             int(n), int(core_activation),
-            int(perfect_end_by_hit[int(core_perfect_hit)]),
+            int(perfect_end_by_hit[int(core_perfect_hit_id)]),
         )
         perfect_eg_e = _numba_clamped_end_idx(
             int(n), int(core_activation),
-            int(great_end_by_hit[int(core_perfect_hit)]),
+            int(great_end_by_hit[int(core_perfect_hit_id)]),
         )
     if int(core_is_great) == 0:
         return int(core_activation), int(perfect_e), int(run_start), int(core_great_end), -1, int(perfect_eg_e), 1
     activation_e = _numba_clamped_end_idx(
         int(n), int(core_activation),
-        int(perfect_end_by_hit[int(core_activation_hit)]),
+        int(perfect_end_by_hit[int(core_activation_hit_id)]),
     )
     activation_eg_e = _numba_clamped_end_idx(
         int(n), int(core_activation),
-        int(great_end_by_hit[int(core_activation_hit)]),
+        int(great_end_by_hit[int(core_activation_hit_id)]),
     )
     if int(perfect_e) >= 0 and not _numba_late_edge_extends(
         int(perfect_e), int(activation_e), int(activation_eg_e), int(perfect_eg_e)
@@ -1275,7 +1275,7 @@ def _numba_mark_region_entries_for_section(
 ) -> int:
     """rt-finish + reachability marking for every valid region core of one section row. Returns
     the max early-Great extension width, exactly like the per-candidate marking it replaces."""
-    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hits, region_perfect_hits, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit, region_real_fever_time, lane_bounds, lane_chain_ends = region
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit, region_real_fever_time, lane_bounds, lane_chain_ends = region
     max_width = 0
     for idx in range(int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])):
         activation, edge_e, _run_start, _great_end, activation_great_idx, eg_e, valid = (
@@ -1286,8 +1286,8 @@ def _numba_mark_region_entries_for_section(
                 int(region_activations[int(idx)]),
                 int(region_great_ends[int(idx)]),
                 int(region_is_greats[int(idx)]),
-                int(region_act_hits[int(idx)]),
-                int(region_perfect_hits[int(idx)]),
+                int(region_act_hit_ids[int(idx)]),
+                int(region_perfect_hit_ids[int(idx)]),
                 int(region_perfect_valids[int(idx)]),
                 1,
                 region_perfect_end_by_hit,
@@ -2536,7 +2536,7 @@ def _numba_emit_region2_head_edges(
     # _numba_append_same_end_head_edge_to_chain); node rows are call-local (cursor restarts at
     # 0), and the drain below resets every touched end's head/tail to -1, so the tables come
     # back clean for the next call without an O(n) sweep.
-    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hits, region_perfect_hits, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit, region_real_fever_time, lane_bounds, lane_chain_ends = region
+    region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit, region_real_fever_time, lane_bounds, lane_chain_ends = region
     if int(use_forced_great_timing_i) == 0:
         return generated, generated_scores, 0, int(bounded_mode), node_surface, node_next
     added_total = 0
@@ -2551,8 +2551,8 @@ def _numba_emit_region2_head_edges(
                 int(region_activations[int(entry_idx)]),
                 int(region_great_ends[int(entry_idx)]),
                 int(region_is_greats[int(entry_idx)]),
-                int(region_act_hits[int(entry_idx)]),
-                int(region_perfect_hits[int(entry_idx)]),
+                int(region_act_hit_ids[int(entry_idx)]),
+                int(region_perfect_hit_ids[int(entry_idx)]),
                 int(region_perfect_valids[int(entry_idx)]),
                 1,
                 region_perfect_end_by_hit,
@@ -5237,8 +5237,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
     region_activations,
     region_great_ends,
     region_is_greats,
-    region_act_hits,
-    region_perfect_hits,
+    region_act_hit_ids,
+    region_perfect_hit_ids,
     region_perfect_valids,
     region_perfect_end_by_hit,
     region_great_end_by_hit,
@@ -5279,8 +5279,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
         region_activations,
         region_great_ends,
         region_is_greats,
-        region_act_hits,
-        region_perfect_hits,
+        region_act_hit_ids,
+        region_perfect_hit_ids,
         region_perfect_valids,
         region_perfect_end_by_hit,
         region_great_end_by_hit,

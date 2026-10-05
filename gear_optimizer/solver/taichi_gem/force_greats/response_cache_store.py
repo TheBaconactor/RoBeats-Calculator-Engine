@@ -79,7 +79,10 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Precise and Frame-Safe passed the 40-chart byte gates; zero_ms revision 1 separates its changed witness.
+    # Region core tables shared between fills with the same half-unit count, one structural reducer: the complete
+    # bundles of the 40-chart sample (all three modes) built by this code are byte-identical, one to one, to the
+    # 10e19c37d4fa producer's builds (gates r5/b2_zms, r5/b2_pwfr). Ratify it and its ratified predecessors
+    # (non-transitive).
     "fg-response-frontier-visible-first-v31+logic-aa1f5e045c00": (
         "fg-response-frontier-visible-first-v31+logic-10e19c37d4fa",
         "fg-response-frontier-visible-first-v31+logic-e9c86ce774f6",
@@ -613,9 +616,13 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-beade5939886"] = ("fg-response-frontier-visible-first-v31+logic-aa1f5e045c00", *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-aa1f5e045c00"])
-_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-ce04feaf7cb3"] = ("fg-response-frontier-visible-first-v31+logic-beade5939886", *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-beade5939886"])
-_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-0808017cb32a"] = ("fg-response-frontier-visible-first-v31+logic-ce04feaf7cb3", *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-ce04feaf7cb3"])
+# Lane-aware Frame-Safe (frame_robust@4: its old bundles never match) and Non-Precise tied Greats (a witness change
+# only): the 40-chart sample's Precise and zero_ms bundles are byte-identical, one to one, to aa1f5e045c00's builds
+# (40-chart byte gates). Ratify it and its ratified predecessors (non-transitive).
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-fa1b09f9e592"] = (
+    "fg-response-frontier-visible-first-v31+logic-aa1f5e045c00",
+    *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-aa1f5e045c00"],
+)
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):

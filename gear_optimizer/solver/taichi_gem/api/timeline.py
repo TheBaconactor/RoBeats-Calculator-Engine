@@ -224,7 +224,9 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Precise and Frame-Safe passed the 40-chart byte gates; zero_ms revision 1 separates its changed witness.
+    # Region core tables shared between fills with the same half-unit count, one structural reducer: the 40-chart
+    # sample's timeline payloads (all three modes) are byte-identical, one to one, to the b342a66d6b1b producer's builds
+    # (gates r5/b2_zms, r5/b2_pwfr). Ratify it and its ratified predecessors (non-transitive).
     "exact-frontier-v12+logic-92a162c8fc85": (
         "exact-frontier-v12+logic-b342a66d6b1b",
         "exact-frontier-v12+logic-f9a5dbc5860a",
@@ -369,9 +371,13 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-bd882056eb01"] = ("exact-frontier-v12+logic-92a162c8fc85", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-92a162c8fc85"])
-_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3e855b8e8a4b"] = ("exact-frontier-v12+logic-bd882056eb01", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-bd882056eb01"])
-_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-0a82279bb0fc"] = ("exact-frontier-v12+logic-3e855b8e8a4b", *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3e855b8e8a4b"])
+# Lane-aware Frame-Safe (frame_robust@4: its old payloads never match) and Non-Precise tied Greats (a witness change
+# only): the 40-chart sample's Precise and zero_ms payloads are byte-identical, one to one, to 92a162c8fc85's builds
+# (40-chart byte gates). Ratify it and its ratified predecessors (non-transitive).
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3c72edf5d46c"] = (
+    "exact-frontier-v12+logic-92a162c8fc85",
+    *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-92a162c8fc85"],
+)
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:

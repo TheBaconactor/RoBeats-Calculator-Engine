@@ -285,10 +285,10 @@ def _build_region_table(
             np.searchsorted(context.great_floor_timestamps, cutoffs).astype(np.int32),
         )
     else:
-        # Valid hits are exact keys, so interpolation returns their integer indices.
+        # Every read hit is an exact key of the song's hit universe (unread -1 rows map to 0).
         region_table = (
             *region_table[:5],
-            *(np.interp(values, context.canonical.hit_values, np.arange(len(context.canonical.hit_values))).astype(np.int32) for values in region_table[5:7]),
+            *(np.searchsorted(context.canonical.hit_values, values).astype(np.int32) for values in region_table[5:7]),
             region_table[7],
         )
     return region_table, _region_table_bytes(region_table), float(time.perf_counter() - build_t0)
