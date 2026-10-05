@@ -332,10 +332,6 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
         "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
     ),
-    # Same-color Great scoring now preserves the production chart's two color slots and their
-    # separate floor operations. This changes only surface scoring: the V31 producer, ordered
-    # surfaces, stat-key mapping, and compact sidecars are unchanged. Preserve the complete
-    # already-ratified lineage explicitly so the corrected scorer reuses the finished pool.
     "fg-response-frontier-visible-first-v31+logic-52861c6156f1": (
         "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
         "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
@@ -622,6 +618,10 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-fa1b09f9e592"] = (
     "fg-response-frontier-visible-first-v31+logic-aa1f5e045c00",
     *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-aa1f5e045c00"],
+)
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-2278a0e06009"] = (
+    "fg-response-frontier-visible-first-v31+logic-fa1b09f9e592",
+    *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-fa1b09f9e592"],
 )
 
 

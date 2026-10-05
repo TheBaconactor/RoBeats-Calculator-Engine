@@ -372,8 +372,7 @@ def score_from_game_source(
     great_points = math.floor(gear_curve(35, 75, 150, 225, 300, HIDDEN_GREAT_POINTS_STAT))
     great_base = int(
         great_points
-        + math.floor((4.0 / 3.0) * primary_val)
-        + math.floor((2.0 / 3.0) * secondary_val)
+        + (2 * primary_val if primary_color == secondary_color else math.floor((4.0 / 3.0) * primary_val) + math.floor((2.0 / 3.0) * secondary_val))
     )
 
     score = 0
