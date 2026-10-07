@@ -66,7 +66,7 @@ def fg_response_frontier_song_cache_key(song: TimedSong) -> tuple:
         bytes(array_sig16(perfect_floor)),
         bytes(array_sig16(great_floor)),
         bytes(array_sig16(lanes)),
-        # The windowed modes carry their cache revisions; non_precise's key stays as built.
+        # The windowed modes carry their cache revisions; non-precise's key stays as built.
         *((song.cache_mode,) if song.mode != "non-precise" else ()),
     )
 
@@ -131,7 +131,7 @@ def _response_axes(song: TimedSong, curves: StatCurves) -> tuple[Any, np.ndarray
     if int(ref_ft.shape[0]) <= MAX_STAT or int(ref_ff.shape[0]) <= MAX_STAT:
         raise ValueError("FG response cache requires full Fever Time and Fever Fill Rate ref arrays")
     hit_objects = max(0, int(song_inputs.total_notes) - int(song_inputs.long_notes))
-    raw_fill_by_ff = fever_fill_raw(hit_objects, ref_ff[: MAX_STAT + 1], song.mode)
+    raw_fill_by_ff = fever_fill_raw(hit_objects, ref_ff[: MAX_STAT + 1])
     non_fever_base_by_ff = np.asarray([int(ceil(float(v))) for v in raw_fill_by_ff], dtype=np.int32)
-    real_time_by_ft = fever_window_times(song_inputs.last_note_time, ref_ft[: MAX_STAT + 1], song.mode)
+    real_time_by_ft = fever_window_times(song_inputs.last_note_time, ref_ft[: MAX_STAT + 1])
     return song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft

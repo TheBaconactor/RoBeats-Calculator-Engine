@@ -392,7 +392,7 @@ def _compare_entry_mode(
         # Single canonical recipe shared with serving for BOTH timing modes: the GPU base exhaustive
         # search (MoltenVK-correct after the warmstart fix) reads timing from the song; the final
         # exact rescore follows its timing mode. Using the SAME production helper here is what makes
-        # served base == native (delta=0) for non_precise AND precise.
+        # served base == native (delta=0) for non-precise AND precise.
         resolved, resolved_score = resolve_tier_base(
             fixed_song_stats=target_fixed_stats,
             loadout_items=loadout_items,
@@ -468,7 +468,7 @@ def main() -> int:
         "--mode",
         choices=("meta", "fg", "both"),
         default="meta",
-        help="Replay surface to compare against the exact non_precise re-solve.",
+        help="Replay surface to compare against the exact non-precise re-solve.",
     )
     parser.add_argument("--team-buff-color", type=str, default="")
     parser.add_argument("--primary-element", type=str, default="")

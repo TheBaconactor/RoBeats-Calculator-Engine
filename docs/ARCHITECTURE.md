@@ -100,10 +100,12 @@ than reaching into kernel internals.
 - `gear_optimizer/solver/timeline_exact_frontier.py` constructs exact,
   non-dominated timing surfaces.
 - `gear_optimizer/solver/timing_envelope.py` applies the selected timing model:
-  `perfect_window` (hits anywhere inside their judgment windows, event-time fever), `zero_ms` (every hit at chart
-  time), or `frame_robust` (claims only what holds at every frame timing: the game judges inputs at frame time and
-  its server floors event times to whole ms, so judgment bands and fever windows end `FRAME_MARGIN_MS` early and the
-  note graph keeps order-sensitive inputs a frame apart; see `judgment_bounds` and `fever_window_times`).
+  `non-precise` (the default: Perfects at chart time, early Greats only to order tied notes) or `precise`
+  (hits anywhere inside their judgment windows, event-time fever). Official Non-Precise service solves populate
+  the canonical catalog; Precise solves stay isolated. Changing an existing Precise catalog requires rebuilding
+  it from Non-Precise solves: the database does not store timing mode, and best-score merging cannot replace higher
+  Precise scores with their Non-Precise counterparts. Hit guidance describes the selected mode's judgment and fever
+  boundaries; neither mode promises the retired Frame-Safe guarantee at every frame timing.
 
 CPU exact scoring is a production canonicalization boundary as well as a parity
 oracle. It is not a silent recovery path for failed GPU execution.

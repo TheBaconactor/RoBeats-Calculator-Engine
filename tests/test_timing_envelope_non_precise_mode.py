@@ -61,7 +61,7 @@ def _stats() -> dict[str, int]:
 
 
 def test_non_precise_song_is_chart_only():
-    song = _song("non-precise")
+    song = time_song(_chart())
 
     assert song.mode == "non-precise"
     assert song.hit_timestamps is song.chart.timestamps

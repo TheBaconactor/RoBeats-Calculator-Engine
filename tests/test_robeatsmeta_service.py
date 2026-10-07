@@ -507,16 +507,16 @@ def test_a_persistent_solve_asks_the_worker_to_promote(monkeypatch):
     assert "promoteTo" not in payloads[1]
 
 
-def test_only_clean_precise_official_solves_are_promoted(tmp_path, monkeypatch):
+def test_only_clean_non_precise_official_solves_are_promoted(tmp_path, monkeypatch):
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "evolution.db"))
     clean = {"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []}
     custom = {**clean, "gear": [{"name": "Custom"}]}
 
-    def target(request, timing_mode="precise", pool=clean):
+    def target(request, timing_mode="non-precise", pool=clean):
         return service._promotion_target(request, timing_mode=timing_mode, custom_pool=pool)
 
     assert target({"targetSongId": "Official"}) == str(tmp_path / "evolution.db")
-    assert target({"targetSongId": "Official"}, timing_mode="non-precise") is None
+    assert target({"targetSongId": "Official"}, timing_mode="precise") is None
     assert target({"targetSongId": "Official"}, pool=custom) is None
     assert target({"chartText": "Song Data\n"}) is None
     assert target({"targetSongId": "Official", "chartText": "Song Data\n"}) is None
@@ -1119,7 +1119,7 @@ def test_catalog_build_solves_described_official_charts_missing_from_the_catalog
     service.build_missing_catalog_songs()
 
     # Only the chart the game data describes and the catalog lacks, as a clean official request
-    # (default precise timing, no custom pool) so its result is promoted into the catalog.
+    # (default non-precise timing, no custom pool) so its result is promoted into the catalog.
     assert solved == [{"jobId": solved[0]["jobId"], "targetSongId": "New (Hard) by Artist"}]
 
 

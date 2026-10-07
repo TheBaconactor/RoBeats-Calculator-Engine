@@ -280,7 +280,6 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=denom,
-        real_fever_time=0.0,
     )
     rng = np.random.default_rng(20260713)
     for case_idx in range(240):

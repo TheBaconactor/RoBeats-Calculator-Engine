@@ -557,7 +557,7 @@ def _score_response_group_meta_cpu(
     surface_counts: np.ndarray,
     surface_pattern_head_coeffs: np.ndarray,
 ) -> tuple[np.ndarray, int]:
-    """Score the FG response groups in exact native f64, for the gems-fixed (non_precise / total_budget == 0) serving
+    """Score the FG response groups in exact native f64, for the gems-fixed (non-precise / total_budget == 0) serving
     path and the gem-search (total_budget > 0) optimizer path: the gem-allocation enumeration, the upper-bound prune
     and the lexicographic tie-break, parallelized over CPU cores. Returns the per-group result rows and the number
     of logical surface rows scored."""

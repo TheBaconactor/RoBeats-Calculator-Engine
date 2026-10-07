@@ -7,12 +7,11 @@ surfaces, because a tier or a team color shifts the stat vector and with it the 
 - FG: re-allocated through the canonical FG response frontier, scored exactly. The one carry: at precise
   timing, the baseline tier and no team-color shift, nothing differs from the solve that produced the entry, so its
   stored force payload is that optimum and is served verbatim.
-The song's timing mode (song.mode) is the timing the replay answers: non_precise puts every hit at its chart time.
+The song's timing mode (song.mode) is the timing the replay answers: non-precise puts every hit at its chart time.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 from heapq import nsmallest
@@ -29,13 +28,11 @@ from ...core.utils import get_selected_element, safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...gamedata import Gear, Mini, SongMini, StatCurves, load_gears, load_minis, song_minis
 from ...settings import paths
-from ...solver.fg_response_scoring.note_graph import UnplayableTrace
 from ...solver.timing_envelope import TimedSong
 from ...stats import total
 from .fg_payload import require_response_surface
 from .song_config import baseline_fixed_stats
 
-logger = logging.getLogger(__name__)
 _SOURCE_KEYS = ("source_score", "source_fg_base_score", "source_fg_score")
 
 
@@ -279,7 +276,7 @@ def resolve_tier_base_batch(
     selected_color: str,
 ) -> list:
     """Lossless BASE re-solve of N loadouts (their items) in ONE GPU dispatch (n_genomes=N): the exhaustive gem
-    search from the shared tier-shifted song fixed stats, scored exactly at the song's timing (non_precise: fixed chart
+    search from the shared tier-shifted song fixed stats, scored exactly at the song's timing (non-precise: fixed chart
     timing; precise: the timing frontier). Returns N ``(payload, score)`` in order, the payload holding the
     served base fields (Stats, GemCounts, FT, FF). Each loadout's search is independent of the batch."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
@@ -351,12 +348,12 @@ def _replay_entries(entries: list, song: TimedSong) -> list[_ReplayEntry]:
         if has_fg:
             require_response_surface(force)
         if song.mode == "non-precise" and secondary:
-            # The non_precise re-solve selects the song's primary for the whole batch, as the native optimizer does for
+            # The non-precise re-solve selects the song's primary for the whole batch, as the native optimizer does for
             # meta loadouts; a loadout stored with another selected element would silently diverge from native.
             stored = _norm_text(get_selected_element(force)) or _norm_text(get_selected_element(details))
             if stored and stored != primary:
                 raise ValueError(
-                    f"non_precise re-solve invariant violated: loadout {_norm_text(entry.get('loadout_hash'))!r} "
+                    f"non-precise re-solve invariant violated: loadout {_norm_text(entry.get('loadout_hash'))!r} "
                     f"persists selected element {stored!r} != song primary {primary!r}; the "
                     f"forced-primary re-solve would diverge from native. The re-solve must honor the "
                     f"per-loadout selected element before this can serve."
@@ -584,7 +581,7 @@ def _served_rows(surface: str, tier_payload: dict, originals: dict[str, dict]) -
 def _tier_details(orig: dict, witness: object, tier: str, song: TimedSong, curves: StatCurves) -> dict:
     """A served base row's details at a tier: the stored details with the tier's re-solved Stats, GemCounts, FT and FF
     (never the stored T5 allocation or its compact st/gc/gk copies) and a TimelineFrontier recomputed for those Stats.
-    non_precise rows carry no TimelineFrontier: the consumer draws the chart-time timeline (every delta 0) from Stats."""
+    non-precise rows carry no TimelineFrontier: the consumer draws the chart-time timeline (every delta 0) from Stats."""
     from ...solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
 
     details = orig.get("details")
@@ -629,7 +626,7 @@ def build_team_buff_tier_db_batches(
     - "meta": the top-N by re-solved base score (details: the re-solved base, see _tier_details);
     - "fg": the top-N by re-solved FG score (force: the tier's witness; details: identity fields only);
     - "both" (any other value): their union, for persistence canonicalization.
-    non_precise (song.mode) answers at fixed chart timing: its rankings come from the chart-only response frontier, base
+    non-precise (song.mode) answers at fixed chart timing: its rankings come from the chart-only response frontier, base
     rows carry no TimelineFrontier and FG rows the re-solved force with its chart-fixed trace; a derived view, never
     persisted to the canonical leaderboards.
     """
@@ -668,14 +665,7 @@ def build_team_buff_tier_db_batches(
             }
             if surface != "fg":
                 row["score"] = scores["score"]
-                try:
-                    row["details"] = _tier_details(orig, base_witnesses.get(tier, {}).get(h), tier, song, curves)
-                except UnplayableTrace as exc:
-                    if song.mode != "frame_robust":
-                        raise
-                    # As an unplayable FG plan's loadout gets no FG row: no frame timing plays this Base plan.
-                    logger.warning("%s: no %s row for %s, its Base plan is unplayable: %s", song.chart.name, tier, h, exc)
-                    continue
+                row["details"] = _tier_details(orig, base_witnesses.get(tier, {}).get(h), tier, song, curves)
             if surface != "meta":
                 witness = fg_witnesses.get(tier, {}).get(h)
                 row["fg_score"] = scores["fg_score"]

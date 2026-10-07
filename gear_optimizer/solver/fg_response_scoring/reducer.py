@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import TimedSong, fever_fill_is_order_sensitive
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
@@ -81,7 +81,6 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
             perfect_candidate_timestamps=pc,
             great_floor_timestamps=gf,
             great_candidate_timestamps=gc,
-            lanes=lanes,
         )
         units = np.where(is_great, np.float32(0.5), np.float32(1.0)).astype(np.float32)
         h_a = float(row.get("activation_hit_window_upper_ms", float(hi[a]) * 1000.0)) / 1000.0
@@ -120,10 +119,6 @@ def materialize_force_payload_from_response_frontier(
     trace_cache: FgTraceMaterializationCache | None = None,
     song_inputs: Any | None = None,
 ) -> dict[str, Any]:
-    if song.mode == "frame_robust" and fever_fill_is_order_sensitive(float(result.raw_fever_fill)):
-        # Great half-fills can end exactly on this fill, where the game's double sum activates or not by the order of
-        # its adds (T6): no plan holds at every frame timing.
-        raise UnplayableTrace(f"the fever fill {result.raw_fever_fill} is order-sensitive")
     if trace_cache is not None:
         trace_cache.bind(song)
     frontier = result.frontier
@@ -176,7 +171,6 @@ def materialize_force_payload_from_response_frontier(
             late_great_floor_timestamps=song_inputs.late_great_floor,
             exit_ceiling_timestamps=song_inputs.exit_ceiling,
             lanes=song_lanes,
-            lane_bounds=song_inputs.lane_bounds,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
@@ -309,7 +303,7 @@ class FgResultReducer:
                     song_inputs=song_inputs,
                 )
             except UnplayableTrace as exc:
-                # The non_precise FG model can pick a plan no hit timing plays (a held tail's Great between two Perfect
+                # The non-precise FG model can pick a plan no hit timing plays (a held tail's Great between two Perfect
                 # presses of its own chord); until the FG model rewrite rules them out, drop that loadout's FG result
                 # rather than the whole song (owner 09-30).
                 logger.warning("%s: no FG result for %s, its plan is unplayable: %s", song.chart.name, job.loadout, exc)

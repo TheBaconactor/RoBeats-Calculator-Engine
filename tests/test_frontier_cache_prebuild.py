@@ -67,14 +67,14 @@ class _Run:
             )
         return tally
 
-    def write(self, chart: str, timing_mode: str = "precise", content: bytes = b"complete") -> Path:
+    def write(self, chart: str, timing_mode: str = "non-precise", content: bytes = b"complete") -> Path:
         path = self.cache.chart_file(str(chart), CURVES, timing_mode)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         return path
 
     def run(self, charts: list[Path], **kwargs):
-        kwargs.setdefault("timing_modes", ("precise",))
+        kwargs.setdefault("timing_modes", ("non-precise",))
         return prebuild_frontier_cache(
             self.prebuild, song_queue=[(str(chart),) for chart in charts], curves=CURVES, data_root=None, **kwargs
         )

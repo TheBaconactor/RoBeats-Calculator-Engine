@@ -1,4 +1,4 @@
-"""Custom per-note baseline timing on the FG (force-greats) path (generalizes non_precise). GPU.
+"""Custom per-note baseline timing on the FG (force-greats) path (generalizes non-precise). GPU.
 
 The FG response-frontier search consumes the song's hit timeline, which
 ``time_song(chart, "non-precise", baseline_offset=T)`` sets to ``chart + T``. These GPU
@@ -70,7 +70,7 @@ def _song(baseline_offset=None):
 
 
 def test_zero_offset_matches_plain_non_precise_surface(tmp_path, monkeypatch):
-    """An all-zero baseline offset reproduces the plain non_precise FG surface bit-for-bit."""
+    """An all-zero baseline offset reproduces the plain non-precise FG surface bit-for-bit."""
     from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))

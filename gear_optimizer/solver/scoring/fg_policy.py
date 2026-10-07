@@ -17,7 +17,6 @@ class FGSongInputs:
     great_floor: Any
     late_great_floor: Any
     exit_ceiling: Any
-    lane_bounds: Any
     lanes: Any
     use_forced_great_timing: bool
     total_notes: int
@@ -30,7 +29,7 @@ class FGSongInputs:
 def fg_song_inputs(song) -> FGSongInputs:
     """The FG solver's view of a TimedSong.
 
-    precise and frame_robust carry the Perfect/Great candidate and floor envelopes (carry-aware FG); non_precise
+    Precise carries the Perfect/Great candidate and floor envelopes (carry-aware FG); Non-Precise
     scores every activation and boundary at the hit timeline and has no forced-Great carry.
     """
     chart = song.chart
@@ -45,7 +44,6 @@ def fg_song_inputs(song) -> FGSongInputs:
         late_great_floor=song.late_great_floor if enveloped else None,
         exit_ceiling=song.exit_ceiling if enveloped else None,
         lanes=chart.lanes,
-        lane_bounds=song.lane_bounds,
         use_forced_great_timing=enveloped,
         total_notes=chart.total_notes,
         long_notes=chart.long_notes,

@@ -154,13 +154,14 @@ def test_an_fg_result_without_a_replay_trace_is_rejected():
 
 def test_real_song_base_result_is_the_exhaustive_gem_optimum_scored_by_exact_replay():
     """Be Right There (Hard), T5: the canonical meta result of a frozen loadout (the old persistence contract)."""
-    from gear_optimizer.solver.song_preparation import prepare_song
+    from gear_optimizer.chart import load_chart
+    from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
     frozen = json.loads(
         (Path(__file__).parent / "fixtures" / "persistence_authority_be_right_there_t5.json").read_text()
     )
-    song = prepare_song(str(Path(__file__).resolve().parents[1] / frozen["song_file_rel"]))
+    song = time_song(load_chart(Path(__file__).resolve().parents[1] / frozen["song_file_rel"]), "precise")
     curves = load_stat_curves(paths().stats_txt)
     build_or_load_timeline_frontier_payload(song, curves)
     base = frozen["base_entry"]

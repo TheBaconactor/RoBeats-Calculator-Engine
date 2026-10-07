@@ -49,7 +49,6 @@ class FirstOnlyCanonicalization:
     capped_eg_late_e: np.ndarray
     capped_perfect_exit_e: np.ndarray
     capped_late_exit_e: np.ndarray
-    lane_chain_ends: np.ndarray
     hit_values: np.ndarray
     hit_ends: np.ndarray
 
@@ -68,13 +67,12 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     late_great_floor_timestamps: np.ndarray,
     use_forced_great_timing: bool,
     lanes: np.ndarray | None = None,
-    lane_bounds: np.ndarray | None = None,
 ) -> FirstOnlyCanonicalization:
     hit_values = np.unique(np.concatenate((
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps,
         perfect_candidate_timestamps.astype(np.float64) - 0.000001,
         great_candidate_timestamps.astype(np.float64) - 0.000001,
-    ))) if lane_bounds is None or not len(lane_bounds) else np.empty(0, dtype=np.float64)
+    )))
     real_times = np.asarray([item[3] for item in prepared], dtype=np.float64)
     unique_real_times = np.unique(real_times)
     cutoffs = (hit_values[None, :] + unique_real_times[:, None]).astype(np.float32)
@@ -94,7 +92,6 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             empty,
             empty,
             empty3,
-            empty,
             empty,
             empty,
             empty,
@@ -129,15 +126,6 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         lanes=lanes,
         real_times=real_times,
     )
-    from .response_build_gpu_numba import _NO_LANE_BOUNDS, _numba_lane_chain_end_table
-
-    lane_chain_ends = _numba_lane_chain_end_table(
-        len(timestamps), _NO_LANE_BOUNDS if lane_bounds is None else lane_bounds, unique_real_times
-    )
-    for table in (timestamp_end_idx, perfect_end_idx, great_end_idx, capped_perfect_edge_e,
-                  capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e):
-        np.minimum(table, lane_chain_ends, out=table)
-    np.minimum(great_floor_end_idx, lane_chain_ends[:, :, None], out=great_floor_end_idx)
     if len(prepared) == 1:
         source_idx = int(prepared[0][0])
         return FirstOnlyCanonicalization(
@@ -155,7 +143,6 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             capped_eg_late_e,
             capped_perfect_exit_e,
             capped_late_exit_e,
-            lane_chain_ends,
             hit_values,
             hit_ends,
         )
@@ -232,7 +219,6 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         capped_eg_late_e,
         capped_perfect_exit_e,
         capped_late_exit_e,
-        lane_chain_ends,
         hit_values,
         hit_ends,
     )

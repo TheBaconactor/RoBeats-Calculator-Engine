@@ -17,9 +17,9 @@ def _cpu_frontier_payload(song, curves):
         perfect_candidate_timestamps=song.perfect_candidates,
         perfect_floor_timestamps=song.perfect_floor,
         lanes=song.chart.lanes,
-        fever_times=fever_window_times(song.chart.last_note_time, curves.f32["Fever Time"], song.mode),
+        fever_times=fever_window_times(song.chart.last_note_time, curves.f32["Fever Time"]),
         fever_fills=fever_fill_raw(
-            max(0, song.chart.total_notes - song.chart.long_notes), curves.f32["Fever Fill Rate"], song.mode
+            max(0, song.chart.total_notes - song.chart.long_notes), curves.f32["Fever Fill Rate"]
         ),
     )
 

@@ -5,7 +5,7 @@ Per loadout of the GA surface:
   their equivalence groups in display rotation;
 - meta result: the gem allocation re-solved exhaustively for the loadout's items (song fixed stats: the baseline
   TeamBuff), scored by exact replay (precise: score + TimelineFrontier witness, physically validated;
-  non_precise: fixed chart timing, no witness);
+  non-precise: fixed chart timing, no witness);
 - Force Greats result, for every loadout the FG stage solved: its result (solved at the song's timing), scored by an
   exact surface replay of a physically validated trace (the FG materializer's); it stays attached whether or not it
   beats the meta score (the store ranks the FG board);
@@ -16,7 +16,6 @@ loadouts whose FG result beat the base score it was solved against (FG stage ord
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -31,7 +30,6 @@ from ..data.loadout_equivalence import (
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
 from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names
 from ..helpers.song_helpers.song_config import baseline_fixed_stats
-from ..solver.fg_response_scoring.note_graph import UnplayableTrace
 from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats, total
@@ -42,7 +40,6 @@ from .results import SolvedFg, SolvedLoadout, SongSolve
 if TYPE_CHECKING:
     from ..solver.scoring.fever_solver import GemSolve
 
-logger = logging.getLogger(__name__)
 # The stats a score reads, besides the song's and the selected element.
 _SCORE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
 
@@ -83,14 +80,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
             return stored_stats(fixed_tier, ident, gears, song_view, element, allocation, solved, (primary, secondary))
 
         meta_gems, meta_stats = solves[i].gems, {k: int(v) for k, v in solves[i].stats.items()}
-        try:
-            score, meta_trace = _meta_score(meta_stats, song, curves)
-        except UnplayableTrace as exc:
-            if song.mode != "frame_robust":
-                raise
-            # No frame timing plays this loadout's Base plan: it gets no row, rather than failing the song.
-            logger.warning("%s: no row for %s, its Base plan is unplayable: %s", solve.song, ident.loadout_hash, exc)
-            continue
+        score, meta_trace = _meta_score(meta_stats, song, curves)
         meta = MetaResult(
             element=primary, gems=meta_gems, stats=stats_of(primary, meta_gems, meta_stats), updated=0, seq=0
         )

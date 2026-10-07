@@ -36,9 +36,9 @@ Two graphs per loadout, matching the intended software behavior:
         order.
 
 ``timing_mode`` selects the timing semantic (issue #66):
-  * ``"precise"`` (default): apply activation witness offsets, endpoint-early
+  * ``"precise"``: apply activation witness offsets, endpoint-early
     guidance, and fever-end safe-target guidance.
-  * ``"non-precise"``: Perfects stay on time. Leading Greats in a tie can be early to
+  * ``"non-precise"`` (default): Perfects stay on time. Leading Greats in a tie can be early to
     precede its first Perfect; other Greats use their canonical late hit.
 
 Both are reconstructable losslessly from already-persisted data (FG: `frontier_trace`
@@ -51,16 +51,14 @@ from __future__ import annotations
 import heapq
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 
 from gear_optimizer.core.time_quantize import snap_near_int_ms
-from gear_optimizer.score import HEAD_NOTES
 
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
 from gear_optimizer.solver.timing_envelope import (
-    FRAME_MARGIN_MS,
     HELD_TAIL_TYPE,
     HELD_TAIL_WINDOW_SCALE,
     PERFECT_UPPER_MS,
@@ -77,42 +75,16 @@ __all__ = [
 ]
 
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
-# frame_robust: a note left out of a window is hit at least this long after the window's (margin-shortened) end, i.e.
-# the margin past the game's fever end.
-_FRAME_ROBUST_EXIT_GAP_MS = 2.0 * FRAME_MARGIN_MS
-# frame_robust schedules order gaps a hair above the margin, so float rounding of chart time + delta never lands one ulp
-# short of the margin _require_frame_robust_play checks.
-_FRAME_ROBUST_SCHEDULE_GAP_MS = FRAME_MARGIN_MS + 0.001
-
-
-class _Build(NamedTuple):
-    """The timing mode of the graph being built and its reachable planned offsets (ms, timing_envelope.judgment_bounds)
-    per window scale: (Perfect, early Great, late Great), each (earliest, latest). The early-Great band ends at the
-    inclusive Perfect lower edge (judged Great, issue #68), the late-Great band at the note removal."""
-
-    mode: str
-    robust: bool
-    bounds: dict[int, tuple[tuple[float, float], ...]]
-
-
-_BUILDS = {
-    mode: _Build(
-        mode,
-        mode == "frame_robust",
-        {
-            scale: tuple((float(band.earliest), float(band.latest)) for band in judgment_bounds(scale, mode))
-            for scale in (1, HELD_TAIL_WINDOW_SCALE)
-        },
-    )
-    for mode in TIMING_MODES
+_BOUNDS = {
+    scale: tuple((float(band.earliest), float(band.latest)) for band in judgment_bounds(scale))
+    for scale in (1, HELD_TAIL_WINDOW_SCALE)
 }
-# The public builders set the build for the duration of a build.
-_BUILD: ContextVar[_Build] = ContextVar("note_graph_build", default=_BUILDS["precise"])
+_BUILD: ContextVar[str] = ContextVar("note_graph_build", default="precise")
 
 
 @contextmanager
 def _building(mode: str) -> Iterator[None]:
-    token = _BUILD.set(_BUILDS[mode])
+    token = _BUILD.set(mode)
     try:
         yield
     finally:
@@ -124,7 +96,7 @@ class UnplayableTrace(ValueError):
 
 
 def _normalize_timing_mode(timing_mode: str) -> str:
-    mode = str(timing_mode or "precise").strip().lower()
+    mode = str(timing_mode or "non-precise").strip().lower()
     if mode not in TIMING_MODES:
         raise ValueError(f"note_graph: unknown timing_mode {timing_mode!r}")
     return mode
@@ -141,44 +113,14 @@ def _strictly_before_cutoff_ms(cutoff_ms: float) -> float:
     return float(upper)
 
 
-def _activation_follower_gap_ms(
-    notes: Sequence[Mapping[str, Any]], note_types: np.ndarray, lanes: np.ndarray | None, a: int, y: int
-) -> float:
-    """The gap input y must keep after activation a. A late-Great activation adds the smallest fill, so any of its
-    followers on another lane completes the bar too if the frame reads it first: that follower activates instead and a
-    joins the fever, the same fevered set. Past the combo ramp the score is the same, so it needs no gap (the play check
-    also requires every earlier input to stay a frame before it)."""
-    if (
-        lanes is not None
-        and int(lanes[a]) != int(lanes[y])
-        and min(a, y) >= HEAD_NOTES
-        and notes[a].get("note_result") == "Great"
-    ):
-        return 0.0
-    return _input_gap_ms(notes, note_types, lanes, a, y)
-
-
 def _bounds_at(note_types: np.ndarray, j: int) -> tuple[tuple[float, float], ...]:
-    """Note j's (Perfect, early Great, late Great) reachable planned offsets in the build's mode."""
+    """Note j's (Perfect, early Great, late Great) reachable planned offsets."""
     if int(note_types.shape[0]) <= j:
         raise ValueError(
             "note_graph: note_types (length == total_notes) is required to place a hit at the note's "
             "legal judgment bounds -- it is never guessed"
         )
-    return _BUILD.get().bounds[HELD_TAIL_WINDOW_SCALE if int(note_types[j]) == HELD_TAIL_TYPE else 1]
-
-
-def _input_gap_ms(notes: Sequence[Mapping[str, Any]], note_types: np.ndarray, lanes: np.ndarray | None, x: int, y: int) -> float:
-    """The planned time input y must follow input x by. 0 (ties are ordered exactly) except in a frame_robust build,
-    where the game may read one frame's inputs in either order: a press after an input on its own lane, or an input on
-    another lane with a different judgment, comes FRAME_MARGIN_MS later (_require_frame_robust_play)."""
-    if not _BUILD.get().robust or lanes is None:
-        return 0.0
-    if int(lanes[x]) == int(lanes[y]):
-        return _FRAME_ROBUST_SCHEDULE_GAP_MS if int(note_types[y]) != HELD_TAIL_TYPE else 0.0
-    if notes[x].get("note_result", "Perfect") != notes[y].get("note_result", "Perfect"):
-        return _FRAME_ROBUST_SCHEDULE_GAP_MS
-    return 0.0
+    return _BOUNDS[HELD_TAIL_WINDOW_SCALE if int(note_types[j]) == HELD_TAIL_TYPE else 1]
 
 
 def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
@@ -333,19 +275,14 @@ def _activation_materialized_delta_ms(
             selected_preactivation = frozenset(int(index) for index in exact_order_raw)
             hit_ms = float(chart_ms) + float(hi)
             hit_lo_ms = float(chart_ms) + float(lo)
-            robust = _BUILD.get().robust
-            reach_ms = _FRAME_ROBUST_SCHEDULE_GAP_MS if robust else 0.0
             for j in range(a + 1, n):
                 if int(j) in selected_preactivation:
                     continue
-                if float(chart_timestamps_ms[j]) >= float(hit_ms) + reach_ms:
+                if float(chart_timestamps_ms[j]) >= float(hit_ms):
                     break
                 # The exact schedule adds activation -> follower to canonical input_order below.
-                # Equal event times are therefore legal and need no synthetic separation (frame_robust: the
-                # follower's gap, see _input_gap_ms).
+                # Equal event times are therefore legal and need no synthetic separation.
                 latest_ms = float(label_high_ms[j])
-                if robust:
-                    latest_ms -= _activation_follower_gap_ms(notes, nt, lane_arr, a, j)
                 hit_ms = min(float(hit_ms), latest_ms)
                 if float(hit_ms) < float(hit_lo_ms):
                     hit_ms = None
@@ -538,7 +475,7 @@ def _mark_same_time_selector_order_deltas(
         return
 
     # Include the complete cluster crossing the combo ramp.
-    n = graph_n if _BUILD.get().mode == "non-precise" else min(graph_n, 100)
+    n = graph_n if _BUILD.get() == "non-precise" else min(graph_n, 100)
     while n < graph_n and _same_chart_time_ms(notes[n - 1]["hit_time_ms"], notes[n]["hit_time_ms"]):
         n += 1
 
@@ -572,7 +509,7 @@ def _mark_same_time_selector_order_deltas(
                 )
             nt = np.asarray(note_types).reshape(-1)
 
-        if _BUILD.get().mode == "non-precise":
+        if _BUILD.get() == "non-precise":
             stop = min((j for j in cluster if notes[j]["note_result"] == "Perfect"), default=cluster[0])
             for j in range(cluster[0], stop):
                 notes[j]["delta_ms"] = _early_great_bounds_ms_at(nt, j)[1]
@@ -636,24 +573,17 @@ def _materialize_preactivation_schedule(
     notes: list[dict[str, Any]],
     *,
     note_types: np.ndarray,
-    lanes: np.ndarray | None,
     exact_order: Sequence[int],
     activation_index: int,
     boundary_index: int | None,
 ) -> None:
     """Project preferred witness times into one exact monotone interval schedule."""
-    gap_lanes = lanes if _BUILD.get().robust else None  # no gaps outside frame_robust
     activation = notes[int(activation_index)]
     activation_press = float(activation["hit_time_ms"]) + float(activation["delta_ms"])
 
     latest_presses = [0.0] * len(exact_order)
     latest_press = float(activation_press)
     successor_index = int(activation_index)
-    # Inputs keep their gap to their own lane's neighbours too, not only to their neighbours in the order (an early
-    # activation can otherwise come within a frame of an earlier input on its lane): each lane's nearest later input.
-    lane_next: dict[int, tuple[float, int]] = {}
-    if gap_lanes is not None:
-        lane_next[int(gap_lanes[int(activation_index)])] = (float(activation_press), int(activation_index))
     for position in range(len(exact_order) - 1, -1, -1):
         index = int(exact_order[position])
         note = notes[index]
@@ -661,19 +591,13 @@ def _materialize_preactivation_schedule(
         # The input engine processes presses before releases at the same timestamp. A release that
         # must precede a later press therefore needs a strictly earlier event time; equality would
         # reverse the selected fill order even though both judgments remain legal.
-        ordered_latest_press = float(latest_press) - _input_gap_ms(notes, note_types, gap_lanes, index, successor_index)
+        ordered_latest_press = float(latest_press)
         if (
             int(note_types[index]) == HELD_TAIL_TYPE
             and int(note_types[successor_index]) != HELD_TAIL_TYPE
         ):
             ordered_latest_press = float(
                 np.nextafter(np.float64(ordered_latest_press), np.float64(-np.inf))
-            )
-        if gap_lanes is not None and int(gap_lanes[index]) in lane_next:
-            lane_press, lane_index = lane_next[int(gap_lanes[index])]
-            ordered_latest_press = min(
-                float(ordered_latest_press),
-                float(lane_press) - _input_gap_ms(notes, note_types, gap_lanes, index, int(lane_index)),
             )
         latest_delta = _delta_at_or_before_ms(
             note_types,
@@ -684,29 +608,19 @@ def _materialize_preactivation_schedule(
         latest_press = float(note["hit_time_ms"]) + float(latest_delta)
         latest_presses[position] = float(latest_press)
         successor_index = int(index)
-        if gap_lanes is not None:
-            lane_next[int(gap_lanes[index])] = (float(latest_press), int(index))
 
     required_press = -np.inf
     if boundary_index is not None:
         boundary = notes[int(boundary_index)]
         result = str(boundary.get("note_result", "Perfect"))
         successor = int(exact_order[0]) if exact_order else int(activation_index)
-        boundary_upper = (latest_presses[0] if exact_order else float(activation_press)) - _input_gap_ms(
-            notes, note_types, gap_lanes, int(boundary_index), successor
-        )
+        boundary_upper = latest_presses[0] if exact_order else float(activation_press)
         if (
             int(note_types[int(boundary_index)]) == HELD_TAIL_TYPE
             and int(note_types[successor]) != HELD_TAIL_TYPE
         ):
             boundary_upper = float(
                 np.nextafter(np.float64(boundary_upper), np.float64(-np.inf))
-            )
-        if gap_lanes is not None and int(gap_lanes[int(boundary_index)]) in lane_next:
-            lane_press, lane_index = lane_next[int(gap_lanes[int(boundary_index)])]
-            boundary_upper = min(
-                float(boundary_upper),
-                float(lane_press) - _input_gap_ms(notes, note_types, gap_lanes, int(boundary_index), int(lane_index)),
             )
         boundary_delta = _bounded_judgment_delta_ms(
             note_types,
@@ -724,24 +638,10 @@ def _materialize_preactivation_schedule(
         boundary["delta_ms"] = float(boundary_delta)
         required_press = float(boundary["hit_time_ms"]) + float(boundary_delta)
 
-    previous_index = boundary_index
-    # Each lane's latest scheduled input, for the same reason as lane_next.
-    lane_prev: dict[int, tuple[float, int]] = {}
-    if gap_lanes is not None and boundary_index is not None:
-        lane_prev[int(gap_lanes[int(boundary_index)])] = (float(required_press), int(boundary_index))
     for note_index, latest_note_press in zip(exact_order, latest_presses, strict=True):
         index = int(note_index)
         note = notes[index]
         result = str(note.get("note_result", "Perfect"))
-        if previous_index is not None:
-            required_press = float(required_press) + _input_gap_ms(notes, note_types, gap_lanes, int(previous_index), index)
-        if gap_lanes is not None and int(gap_lanes[index]) in lane_prev:
-            lane_press, lane_index = lane_prev[int(gap_lanes[index])]
-            required_press = max(
-                float(required_press),
-                float(lane_press) + _input_gap_ms(notes, note_types, gap_lanes, int(lane_index), index),
-            )
-        previous_index = index
         chosen_delta = _bounded_judgment_delta_ms(
             note_types,
             index,
@@ -757,8 +657,6 @@ def _materialize_preactivation_schedule(
         )
         note["delta_ms"] = float(chosen_delta)
         required_press = float(note["hit_time_ms"]) + float(chosen_delta)
-        if gap_lanes is not None:
-            lane_prev[int(gap_lanes[index])] = (float(required_press), int(index))
 
 
 def _mark_activation_preemptor_order_deltas(
@@ -881,7 +779,6 @@ def _mark_activation_preemptor_order_deltas(
             _materialize_preactivation_schedule(
                 notes,
                 note_types=nt,
-                lanes=lane_arr,
                 exact_order=exact_order,
                 activation_index=int(a),
                 boundary_index=boundary_index,
@@ -897,8 +794,6 @@ def _mark_activation_preemptor_order_deltas(
         required_press_by_lane: dict[int, float] = {}
         previous_order_index_by_lane: dict[int, int] = {}
         global_required_press = float(activation_press)
-        robust = _BUILD.get().robust
-        reach_ms = _FRAME_ROBUST_SCHEDULE_GAP_MS if robust else 0.0
 
         scan_start = int(sec.get("forced_start_index", a + 1)) if require_exact_schedule else a + 1
         for j in range(int(scan_start), n):
@@ -909,15 +804,6 @@ def _mark_activation_preemptor_order_deltas(
             lane_key = -1 if lane_arr is None else int(lane_arr[j])
             previous_order_index = int(previous_order_index_by_lane.get(lane_key, a))
             required_press = float(required_press_by_lane.get(lane_key, activation_press))
-            if robust:
-                # The lane's previous input, or the activation itself when j is its lane's first follower.
-                lane_gap = (_activation_follower_gap_ms if previous_order_index == a else _input_gap_ms)(
-                    notes, nt, lane_arr, previous_order_index, j
-                )
-                required_press = max(
-                    required_press + lane_gap,
-                    float(activation_press) + _activation_follower_gap_ms(notes, nt, lane_arr, a, j),
-                )
             # Chart times are monotone and every legal Perfect/Great press lies within 200ms of
             # chart, so once chart_j - 200 clears every lane-local requirement nothing later can
             # press before it. Do NOT stop at the first note whose press already satisfies the
@@ -925,7 +811,7 @@ def _mark_activation_preemptor_order_deltas(
             # delayed -- a forced-Great bundle sibling at the activation's own late edge satisfies
             # the requirement while still-on-time chord partners behind it would preempt the
             # activation's fill (the Aurora 47,502,676 witness shape).
-            if int(j) > int(a) and chart_j - 200.0 > global_required_press + reach_ms:
+            if int(j) > int(a) and chart_j - 200.0 > global_required_press:
                 break
             if (
                 not require_exact_schedule
@@ -978,7 +864,6 @@ def _materialize_base_preactivation_schedules(
     frontier_trace: Sequence[Mapping[str, Any]],
     total_notes: int,
     note_types: Sequence[int] | np.ndarray | None,
-    lanes: Sequence[int] | np.ndarray | None,
 ) -> list[tuple[int, int]]:
     """Materialize the chart-order fill events that precede each Base activation."""
     n = min(int(total_notes), len(notes))
@@ -1005,7 +890,6 @@ def _materialize_base_preactivation_schedules(
         _materialize_preactivation_schedule(
             notes,
             note_types=nt,
-            lanes=None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1),
             exact_order=exact_order,
             activation_index=int(activation_index),
             boundary_index=previous_exit,
@@ -1194,9 +1078,6 @@ def _mark_endpoint_early_hits(
     cutoff = float(fever_window_end_ms)
     upper_hit = _strictly_before_cutoff_ms(cutoff)
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
-    if _BUILD.get().robust and skip_range is not None:
-        upper_hit = min(upper_hit, *(float(notes[j]["hit_time_ms"]) + _early_great_bounds_ms_at(nt, j)[1]
-                                    for j in range(*skip_range)))
     prev_hit = -np.inf  # running largest shown hit across the section (monotonic order)
     for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
         if skip_range is not None and int(skip_range[0]) <= j < int(skip_range[1]):
@@ -1500,150 +1381,6 @@ def _mark_fever_exit_push_delta(
         j += 1
 
 
-def _materialize_frame_robust_schedule(notes, *, frontier_trace, note_types, lanes) -> None:
-    order = sorted(range(len(notes)), key=lambda j: int(notes[j]["input_order"]))
-    nt, lane_arr = np.asarray(note_types), np.asarray(lanes)
-    activations = {int(sec["activation_index"]): sec for sec in frontier_trace}
-    low, high, preferred = {}, {}, {}
-    end = None
-    for j in order:
-        note = notes[j]
-        hit = float(note["hit_time_ms"])
-        delta = float(note["delta_ms"])
-        preferred[j] = hit + delta
-        band = 0 if note["note_result"] == "Perfect" else 1 if delta < 0 else 2
-        lo, hi = _bounds_at(nt, j)[band]
-        low[j], high[j] = hit + lo, hit + hi
-        if j in activations:
-            low[j] = high[j] = preferred[j]
-            end = preferred[j] + _trace_fever_duration_ms(activations[j], activation_chart_ms=hit)
-        elif end is not None:
-            if note["fever"]:
-                high[j] = min(high[j], _strictly_before_cutoff_ms(end))
-            else:
-                low[j] = max(low[j], end + _FRAME_ROBUST_EXIT_GAP_MS)
-    following = {}
-    cap = np.inf
-    for j in reversed(order):
-        cap = min(cap, high[j])
-        lane = int(lane_arr[j])
-        if lane in following:
-            successor = following[lane]
-            cap = min(cap, high[successor] - (0.0 if nt[successor] == HELD_TAIL_TYPE else _FRAME_ROBUST_SCHEDULE_GAP_MS))
-        high[j] = cap
-        following[lane] = j
-    previous = {}
-    floor = -np.inf
-    for j in order:
-        floor = max(floor, low[j])
-        lane = int(lane_arr[j])
-        if lane in previous and nt[j] != HELD_TAIL_TYPE:
-            floor = max(floor, previous[lane] + _FRAME_ROBUST_SCHEDULE_GAP_MS)
-        if floor > high[j]:
-            raise UnplayableTrace(f"note_graph: frame_robust note {j} has no ordered hit inside its judgment/fever bounds")
-        chosen = min(max(preferred[j], floor), high[j])
-        notes[j]["delta_ms"] = chosen - float(notes[j]["hit_time_ms"])
-        floor = previous[lane] = chosen
-
-
-def _require_frame_robust_play(
-    notes: list[dict[str, Any]],
-    *,
-    frontier_trace: Sequence[Mapping[str, Any]],
-    note_types: Sequence[int] | np.ndarray | None,
-    lanes: Sequence[int] | np.ndarray | None,
-) -> None:
-    """frame_robust: the play must score the same at every frame timing (frame_mode/FRAME_TIMING_SPEC.md, section 4).
-    Its judgments sit inside the margin-shortened bands by construction; this checks the rest, in planned press times:
-    - fever: after each activation and before the next, a fever note is pressed before the window's end (the
-      activation press + the trace's window time, already FRAME_MARGIN_MS short of the game's fever time) and every
-      other note at least FRAME_MARGIN_MS past the game's fever end;
-    - same lane: a press comes at least FRAME_MARGIN_MS after the lane's previous input, or the game merges the two
-      presses (or reads a press before the release that precedes it);
-    - order: the game reads one frame's inputs in a fixed lane order, so two inputs on different lanes less than
-      FRAME_MARGIN_MS apart may score in either order. That changes the score when their judgments differ and one of
-      them is in the combo ramp, an activation, or the first note after a window (whose fill is wasted). A follower of
-      a late-Great activation is the exception (_activation_follower_gap_ms) when every input before the activation
-      stays a frame before it: read first, it activates in the activation's place."""
-    if note_types is None or lanes is None:
-        raise ValueError("note_graph: a frame_robust play is checked against chart note_types and lanes")
-    nt = np.asarray(note_types).reshape(-1)
-    lane_arr = np.asarray(lanes).reshape(-1)
-    events = [
-        float(note["hit_time_ms"]) + _selector_default_delta_ms(nt, j, str(note["note_result"]), note["delta_ms"])
-        for j, note in enumerate(notes)
-    ]
-    order = [int(note["input_order"]) for note in notes]
-    by_order = sorted(range(len(notes)), key=order.__getitem__)
-    activations: set[int] = set()
-    wasted: set[int] = set()
-    sections = sorted(frontier_trace, key=lambda sec: order[int(sec["activation_index"])])
-    for k, sec in enumerate(sections):
-        a = int(sec["activation_index"])
-        duration_ms = _trace_fever_duration_ms(sec, activation_chart_ms=float(notes[a]["hit_time_ms"]))
-        if duration_ms is None:
-            raise ValueError(f"note_graph: frame_robust window at note {a} has no fever duration")
-        end_ms = events[a] + float(duration_ms)
-        stop = order[int(sections[k + 1]["activation_index"])] if k + 1 < len(sections) else len(notes)
-        activations.add(a)
-        first_out = None
-        for j in by_order:
-            if not order[a] < order[j] < stop:
-                continue
-            if notes[j]["fever"] and not events[j] < end_ms:
-                raise UnplayableTrace(
-                    f"note_graph: frame_robust fever note {j} is hit at {events[j]:.3f} ms, not before its window's "
-                    f"end {end_ms:.3f} ms"
-                )
-            if not notes[j]["fever"]:
-                if events[j] < end_ms + _FRAME_ROBUST_EXIT_GAP_MS:
-                    raise UnplayableTrace(
-                        f"note_graph: frame_robust note {j} after the window ending {end_ms:.3f} ms is hit at "
-                        f"{events[j]:.3f} ms, inside the frame-dependent band"
-                    )
-                if first_out is None:
-                    first_out = j
-        if first_out is not None:
-            wasted.add(first_out)
-    previous_on_lane: dict[int, int] = {}
-    for j in by_order:
-        previous = previous_on_lane.get(int(lane_arr[j]))
-        if previous is not None and int(nt[j]) != HELD_TAIL_TYPE and events[j] - events[previous] < FRAME_MARGIN_MS:
-            raise UnplayableTrace(
-                f"note_graph: frame_robust note {j} is pressed {events[j] - events[previous]:.3f} ms after lane "
-                f"{int(lane_arr[j])}'s previous input (note {previous}), inside one frame"
-            )
-        previous_on_lane[int(lane_arr[j])] = j
-    def follows_great_activation(position: int, y: int) -> bool:
-        """y follows the late-Great activation at by_order[position] and every earlier input is a frame before y."""
-        a = by_order[position]
-        if a not in activations or notes[a]["note_result"] != "Great":
-            return False
-        for z in reversed(by_order[:position]):
-            if events[y] - events[z] >= FRAME_MARGIN_MS:
-                return True
-            if lane_arr[z] != lane_arr[y]:
-                return False
-        return True
-
-    for position, x in enumerate(by_order):
-        for y in by_order[position + 1:]:
-            if events[y] - events[x] >= FRAME_MARGIN_MS:
-                break
-            if lane_arr[x] == lane_arr[y] or notes[x]["note_result"] == notes[y]["note_result"]:
-                continue
-            past_ramp_not_wasted = min(order[x], order[y]) >= HEAD_NOTES and x not in wasted and y not in wasted
-            if past_ramp_not_wasted and y not in activations and (
-                x not in activations or follows_great_activation(position, y)
-            ):
-                continue
-            raise UnplayableTrace(
-                f"note_graph: frame_robust notes {x} ({notes[x]['note_result']}) and {y} "
-                f"({notes[y]['note_result']}) are {events[y] - events[x]:.3f} ms apart on different lanes, and "
-                "their order changes the score"
-            )
-
-
 def timeline_frontier_note_graph(
     *,
     frontier_trace: Sequence[Mapping[str, Any]],
@@ -1651,7 +1388,7 @@ def timeline_frontier_note_graph(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "precise",
+    timing_mode: str = "non-precise",
 ) -> list[dict[str, Any]]:
     """BASE note-graph from the selected timeline-frontier witness trace.
 
@@ -1663,7 +1400,6 @@ def timeline_frontier_note_graph(
     n = int(total_notes)
     mode = _normalize_timing_mode(timing_mode)
     apply_guidance = mode != "non-precise"
-    exit_gap_ms = _FRAME_ROBUST_EXIT_GAP_MS if mode == "frame_robust" else 0.0
     has_exact_schedule = bool(
         frontier_trace
         and all(int(section.get("activation_schedule_schema_version", 0) or 0) == 1 for section in frontier_trace)
@@ -1713,7 +1449,7 @@ def timeline_frontier_note_graph(
                 # drain excludes it exactly as the served surface does (keeps replay == card).
                 _mark_fever_exit_push_delta(
                     notes, fever_end_index=e, total_notes=n,
-                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms) + exit_gap_ms,
+                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms),
                     note_types=note_types,
                 )
 
@@ -1729,7 +1465,6 @@ def timeline_frontier_note_graph(
                 frontier_trace=frontier_trace,
                 total_notes=n,
                 note_types=note_types,
-                lanes=lanes,
             )
             input_order_constraints.extend(_mark_activation_preemptor_order_deltas(
                 notes,
@@ -1738,9 +1473,6 @@ def timeline_frontier_note_graph(
                 note_types=note_types,
             ))
             _assign_exact_input_order(notes, input_order_constraints)
-        if mode == "frame_robust":
-            _materialize_frame_robust_schedule(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
-            _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
 
         return notes
 
@@ -1753,7 +1485,7 @@ def base_note_graph(
     frontier_trace: Sequence[Mapping[str, Any]] | None = None,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "precise",
+    timing_mode: str = "non-precise",
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
 
@@ -1792,7 +1524,7 @@ def force_greats_note_graph(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "precise",
+    timing_mode: str = "non-precise",
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
 
@@ -1813,7 +1545,6 @@ def force_greats_note_graph(
     n = int(total_notes)
     mode = _normalize_timing_mode(timing_mode)
     apply_guidance = mode != "non-precise"
-    exit_gap_ms = _FRAME_ROBUST_EXIT_GAP_MS if mode == "frame_robust" else 0.0
     with _building(mode):
         if apply_guidance:
             if note_types is None or lanes is None:
@@ -1942,7 +1673,7 @@ def force_greats_note_graph(
                 # drain excludes it exactly as the served surface does (keeps replay == card).
                 _mark_fever_exit_push_delta(
                     notes, fever_end_index=e, total_notes=n,
-                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms) + exit_gap_ms,
+                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms),
                     note_types=note_types,
                 )
 
@@ -1964,9 +1695,6 @@ def force_greats_note_graph(
         _assign_exact_input_order(notes, input_order_constraints if apply_guidance else ())
         if apply_guidance:
             _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)
-        if mode == "frame_robust":
-            _materialize_frame_robust_schedule(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
-            _require_frame_robust_play(notes, frontier_trace=frontier_trace, note_types=note_types, lanes=lanes)
 
         return notes
 

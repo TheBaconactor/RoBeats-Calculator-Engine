@@ -1,4 +1,4 @@
-"""Custom per-note timing base replay (generalizes non_precise).
+"""Custom per-note timing base replay (generalizes non-precise).
 
 ``score_stats_timing_exact_batch`` scores the base leaderboard under an EXPLICIT per-note
 hit-time timeline (chart + T). These CPU tests pin:
@@ -62,7 +62,7 @@ def _chart(song) -> np.ndarray:
 
 
 def test_timing_at_zero_offset_matches_fixed_timing_bit_exact():
-    """Parity gate: T == 0 (hit_timestamps == chart) == the non_precise fixed-0ms scorer."""
+    """Parity gate: T == 0 (hit_timestamps == chart) == the non-precise fixed-0ms scorer."""
     rows = [_stats(), {**_stats(), "Fever Time": 5, "Fever Fill Rate": 5}]
     song = _song()
     ref = _curves()
@@ -117,7 +117,7 @@ def test_wrong_length_offset_fails_loud():
         score_stats_timing_exact_batch([_stats()], song, ref, _chart(song)[:-1])
 
 
-# --- time_song(baseline_offset=T): the prep-time T lever (non_precise = T==0 preset) ---
+# --- time_song(baseline_offset=T): the prep-time T lever (non-precise = T==0 preset) ---
 
 
 def test_non_precise_preset_leaves_chart_and_empty_hash():
@@ -147,7 +147,7 @@ def test_distinct_offsets_give_disjoint_cache_context():
     assert ctx0 != ctxa
     assert ctx0 != ctxb
     assert ctxa != ctxb
-    # T == 0 context is unchanged from the historical non_precise (empty baseline slot).
+    # T == 0 context is unchanged from the historical non-precise (empty baseline slot).
     assert ctx0[2] == ""
 
 
@@ -181,7 +181,7 @@ def test_baseline_offset_rejected_for_precise():
 def test_cache_context_is_inert_at_zero_t_lossless():
     """LOSSLESS GUARD: the per-note ``T`` hash lives in the timing-context reserved slots, so at
     ``T == 0`` the timing cache keys are byte-identical to their pre-feature values. These frozen
-    tuples lock that existing non_precise cache keys (and therefore cached scores) are unchanged and that
+    tuples lock that existing non-precise cache keys (and therefore cached scores) are unchanged and that
     precise carries only its cache revision -- if a future edit leaks a non-empty hash at
     ``T == 0``, this fails."""
     assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "non-precise", "", 0)

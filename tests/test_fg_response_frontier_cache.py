@@ -32,7 +32,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
 
 
 def _song(name: str = "FG Cache Unit", timestamps=(0.0, 0.2, 0.4)):
-    # non_precise: the chart-only FG inputs (no Perfect-window envelopes, no forced-Great carry).
+    # non-precise: the chart-only FG inputs (no Perfect-window envelopes, no forced-Great carry).
     return make_song(timestamps, mode="non-precise", name=name, difficulty="Easy", last_note_time=0.4)
 
 

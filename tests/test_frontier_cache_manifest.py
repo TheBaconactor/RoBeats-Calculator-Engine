@@ -48,7 +48,7 @@ def _entries(cache: FrontierCache) -> dict[str, dict]:
 
 
 def _built_file(cache: FrontierCache, chart: Path) -> Path:
-    path = cache.chart_file(str(chart), CURVES, "precise")
+    path = cache.chart_file(str(chart), CURVES, "non-precise")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"complete")
     return path

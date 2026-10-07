@@ -87,7 +87,7 @@ def test_fever_run_to_end_of_song_has_no_exit_note():
 
 
 def test_non_precise_mode_never_pushes():
-    # non_precise ships every hit at chart time; the exit push (like every witness offset) must not apply.
+    # non-precise ships every hit at chart time; the exit push (like every witness offset) must not apply.
     n = 10
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
     notes = timeline_frontier_note_graph(

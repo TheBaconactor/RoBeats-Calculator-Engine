@@ -26,7 +26,7 @@ def test_great_rounding_uses_chart_colors(secondary, expected, colors) -> None:
 
 
 def test_reflections_force_greats_matches_observed_game_score() -> None:
-    song = time_song(load_chart(ROOT / "Data" / "Normal" / "Reflections by Rutra.txt"))
+    song = time_song(load_chart(ROOT / "Data" / "Normal" / "Reflections by Rutra.txt"), "precise")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     stats = {
         "Perfect Points": 85,

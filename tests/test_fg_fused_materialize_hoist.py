@@ -287,7 +287,6 @@ def test_reducer_payload_accepts_hoisted_song_inputs_byte_identical(monkeypatch)
         late_great_floor=None,
         exit_ceiling=None,
         lanes=[0],
-        lane_bounds=None,
         use_forced_great_timing=True,
     )
     extract_calls = {"extract": 0}

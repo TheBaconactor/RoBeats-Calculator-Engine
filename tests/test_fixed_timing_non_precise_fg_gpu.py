@@ -6,7 +6,7 @@ Pins the two GPU-facing facts:
   greats still helps at 0ms because it changes the fill length and shifts where fever activates
   (a count effect independent of hit-offset), so FG 0ms is NOT base 0ms and the surface must be
   rebuilt (guards against a wrong "FG 0ms == base 0ms" short-circuit); and
-- a tier replay run produces per-tier top-N meta + FG leaderboards for a non_precise song.
+- a tier replay run produces per-tier top-N meta + FG leaderboards for a non-precise song.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, mon
         name="pytest_non_precise_tier",
         lanes=np.arange(timestamps.shape[0], dtype=np.int32) % 4,
     )
-    # Persisted surface is head-only valid for a <100-note song; under non_precise it is REBUILT,
+    # Persisted surface is head-only valid for a <100-note song; under non-precise it is REBUILT,
     # so its exact value is irrelevant -- it only has to pass the require_response_surface guard.
     surface_fixture = [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
     # Large element/PP values so tier deltas never drive the stats (or base value) negative.
@@ -87,7 +87,7 @@ def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, mon
         "Beat": 0,
         "Vibe": 0,
     }
-    # non_precise re-solves the gem allocation from gear/mini item stats, not from already allocated Stats.
+    # non-precise re-solves the gem allocation from gear/mini item stats, not from already allocated Stats.
     # Song fixed stats are zero here, so the pre-gem row is just the item sum.
     entry = {
         "loadout_hash": "pytest_non_precise_loadout",
@@ -118,7 +118,7 @@ def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, mon
         },
     }
 
-    # non_precise now re-solves the BASE gems too (GPU exhaustive search), which needs the
+    # non-precise now re-solves the BASE gems too (GPU exhaustive search), which needs the
     # candidate-independent timeline-frontier cache built first -- mirror the on-demand path.
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 

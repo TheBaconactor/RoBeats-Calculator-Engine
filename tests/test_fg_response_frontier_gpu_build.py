@@ -419,19 +419,18 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
     ]
 
 
-def test_region_packet_missing_core_receives_its_fever_time_and_lane_limits(monkeypatch) -> None:
+def test_region_packet_missing_core_receives_its_fever_time(monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
 
     n = 120
     empty = np.empty(0, dtype=np.int32)
     limits = np.full(n, n, dtype=np.int32)
     region = rb.RegionTables(np.zeros(n + 2, dtype=np.int64), *(empty for _ in range(9)),
-                             5.0, np.empty((0, 5)), limits)
+                             5.0)
     calls = []
 
     def edge(*args):
-        assert args[-2] == 5.0
-        assert args[-1] is limits
+        assert args[-1] == 5.0
         calls.append(args)
         return -1, -1, -1, -1, -1, -1, 0
 
@@ -523,24 +522,21 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
         action_k,
         4.0,
     )
-    expected = (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 168
+    expected = (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 120
     assert response_build_gpu_scheduler._region_table_build_peak_bound_bytes(
         n=n,
         action_k=action_k,
         raw_fever_fill=4.0,
-        real_time_count=1,
     ) == expected
     assert response_build_gpu_scheduler._region_table_retained_bound_bytes(
         n=n,
         action_k=action_k,
         raw_fever_fill=4.0,
-        real_time_count=1,
-    ) == (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 44
+    ) == (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 28
     assert response_build_gpu_scheduler._legacy_single_region_table_peak_bound_bytes(
         n=n,
         region_action_count=int(action_k.shape[0]),
-        real_time_count=1,
-    ) == (n + 2) * 8 + ((n + 1) * 4 * 2) * 168
+    ) == (n + 2) * 8 + ((n + 1) * 4 * 2) * 120
 
 
 def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatch) -> None:
@@ -848,9 +844,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                     great_candidates,
                     perfect_candidates + np.float32(0.001)),
                     lanes,
-                    np.empty((0, 5), dtype=np.float64),
                     1.75,
-                    np.full(len(timestamps), len(timestamps), dtype=np.int32),
                 )
                 activation_i, edge_e, run_start, great_end, activation_great_idx, _eg_e, valid = direct
                 assert int(activation_i) == int(activation)
@@ -1280,12 +1274,13 @@ def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation
 
 def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_boundaries() -> None:
     from gear_optimizer.gamedata import load_stat_curves
-    from gear_optimizer.solver.song_preparation import prepare_song
+    from gear_optimizer.chart import load_chart
+    from gear_optimizer.solver.timing_envelope import time_song
     from tests.fg_response_frontier_oracles import edge_end_oracle
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import _precompute_end_indices
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
 
-    song = prepare_song(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"))
+    song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     real_fever_time = float(real_time_by_ft[51])
@@ -1398,7 +1393,6 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=2.0,
-        real_fever_time=1.0,
     )
 
     options = _edge_surface_options(
@@ -1502,7 +1496,6 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=raw_fever_fill,
-        real_fever_time=1.0,
     )
 
     options = _edge_surface_options(
@@ -1883,7 +1876,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
                 common["region_starts"], common["region_offsets"], common["region_activations"],
                 common["region_great_ends"], common["region_is_greats"], empty_f64, empty_f64,
                 common["region_perfect_valids"], perfect_floor, great_floor,
-                common["real_fever_time"], np.empty((0, 5), dtype=np.float64), np.full(n, n, dtype=np.int32),
+                common["real_fever_time"],
             ),
             common["great_floor_timestamps"],
             perfect_successor,
@@ -2181,14 +2174,15 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
 
 def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
     """A body-only Base chart must not bypass capped activation ownership."""
-    from gear_optimizer.solver.song_preparation import prepare_song
+    from gear_optimizer.chart import load_chart
+    from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
     chart_path = ROOT / "Data" / "Normal" / "Sweat Around The World (Intense Mix) by Just Sweat [Just Dance].txt"
-    song_inputs = prepare_song(str(chart_path)).fg_inputs
+    song_inputs = time_song(load_chart(str(chart_path)), "precise").fg_inputs
     fill_count = 112.0
     real_fever_time = 33.10281210926771
 
@@ -2981,8 +2975,7 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
             columns[6],
             np.arange(n + 1, dtype=np.int32),
             np.arange(n + 1, dtype=np.int32),
-            0.0,
-            np.empty((0, 5), dtype=np.float64), np.full(n, n, dtype=np.int32)),
+            0.0),
             np.full((n,), n, dtype=np.int32),  # no early fever exits
             np.full((n,), n, dtype=np.int32),
             1,
@@ -3153,8 +3146,7 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
             table_columns[6],
             np.arange(n + 1, dtype=np.int32),
             np.arange(n + 1, dtype=np.int32),
-            0.0,
-            np.empty((0, 5), dtype=np.float64), np.full(n, n, dtype=np.int32)),
+            0.0),
             np.full((n,), n, dtype=np.int32),  # no early fever exits
             np.full((n,), n, dtype=np.int32),
             1,
@@ -3347,7 +3339,8 @@ def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
 
 def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.gamedata import load_stat_curves
-    from gear_optimizer.solver.song_preparation import prepare_song
+    from gear_optimizer.chart import load_chart
+    from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
@@ -3357,7 +3350,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
-    song = prepare_song(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"))
+    song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     raw_fever_fill = float(raw_fill_by_ff[67])
@@ -3517,7 +3510,6 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         great_candidate_timestamps=great_candidates,
         lanes=lanes,
         fever_fill_denom=raw_fever_fill,
-        real_fever_time=real_fever_time,
     )
     assert [row["forced_count"] for row in trace] == list(counts)
     assert all(

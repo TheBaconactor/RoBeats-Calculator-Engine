@@ -35,7 +35,7 @@ from gear_optimizer.settings import paths
 from gear_optimizer.solver.timing_envelope import time_song
 
 song_key = "Rainshower (Easy) by Silentroom"
-song = time_song(load_chart(Path("Data/Easy/Rainshower.txt")), "perfect_window")
+song = time_song(load_chart(Path("Data/Easy/Rainshower.txt")), "precise")
 
 entries = read_best_loadouts(paths().database, song_key, "T5", limit=51)
 
@@ -60,9 +60,9 @@ for one timing mode.
 
 ## Timing modes
 
-The song's timing mode selects the model: `time_song(chart, "perfect_window")`
+The song's timing mode selects the model: `time_song(chart, "precise")`
 uses the exact timing-envelope model and is the default; `time_song(chart,
-"zero_ms")` evaluates chart-time hits and recomputes both surfaces for that
+"non-precise")` evaluates chart-time hits and recomputes both surfaces for that
 timing model. The optimizer prebuilds both timing frontiers at
 startup; tier views remain derived rankings and must not replace the canonical
 persisted leaderboard.

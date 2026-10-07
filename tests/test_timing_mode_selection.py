@@ -10,22 +10,24 @@ import pytest
 def test_service_request_gate_preserves_each_supported_mode():
     from gear_optimizer import robeatsmeta_service
 
+    assert robeatsmeta_service._normalize_timing_mode(None) == "non-precise"
     assert robeatsmeta_service._normalize_timing_mode("precise") == "precise"
     assert robeatsmeta_service._normalize_timing_mode("non-precise") == "non-precise"
-    with pytest.raises(robeatsmeta_service.RequestError):
-        robeatsmeta_service._normalize_timing_mode("bogus")
+    for mode in ("bogus", "perfect_window", "zero_ms", "frame_robust"):
+        with pytest.raises(robeatsmeta_service.RequestError):
+            robeatsmeta_service._normalize_timing_mode(mode)
 
 
 def test_song_preparation_uses_chart_timing_metadata(tmp_path):
     from gear_optimizer.solver.song_preparation import prepare_song
 
-    chart = tmp_path / "non_precise_chart.txt"
+    chart = tmp_path / "precise_chart.txt"
     chart.write_text(
         "Song Name\tZero Chart\nDifficulty\tHard\nPrimary Color\tRush\nSecondary Color\tFlow\n"
-        "Last Note Time\t0.4\nLong Notes\t0\nTiming Mode\tnon-precise\nSong Data\n0.0 1 0 1\n0.4 2 1 1\n",
+        "Last Note Time\t0.4\nLong Notes\t0\nTiming Mode\tprecise\nSong Data\n0.0 1 0 1\n0.4 2 1 1\n",
         encoding="utf-8",
     )
-    assert prepare_song(str(chart)).mode == "non-precise"
+    assert prepare_song(str(chart)).mode == "precise"
 
 
 def test_startup_prepares_both_frontier_cache_families(monkeypatch):
@@ -48,8 +50,8 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
         announce_stream=io.StringIO(),
     )
     assert calls == {
-        "timeline": [("precise", "non-precise")],
-        "fg": [("precise", "non-precise")],
+        "timeline": [("non-precise", "precise")],
+        "fg": [("non-precise", "precise")],
     }
 
 

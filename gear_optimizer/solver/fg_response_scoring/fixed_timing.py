@@ -168,8 +168,8 @@ def build_fixed_timing_fg_replays(
                     trace_cache=trace_cache,
                 )
             except UnplayableTrace as exc:
-                # As the solver's materializer: a loadout whose plan no hit timing plays (non_precise: a held tail's Great
-                # between its chord's presses; frame_robust: inputs whose order the frame timing decides) has no FG
+                # As the solver's materializer: a loadout whose plan no hit timing plays (non-precise: a held tail's Great
+                # between its chord's presses) has no FG
                 # result, rather than failing the song.
                 logger.warning("%s: no FG result for a loadout, its plan is unplayable: %s", song.chart.name, exc)
                 force = None

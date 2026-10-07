@@ -576,7 +576,7 @@ def _job_slug(value: Any) -> str:
 
 
 def _normalize_timing_mode(value: Any) -> str:
-    mode = str(value or "precise").strip().lower()
+    mode = str(value or "non-precise").strip().lower()
     if mode not in TIMING_MODES:
         raise RequestError(f"unknown timingMode {value!r}")
     return mode
@@ -745,7 +745,7 @@ def _promotion_target(request: dict[str, Any], *, timing_mode: str, custom_pool:
     """The catalog database a clean official solve merges its results into (None: the results are the caller's)."""
     if str(request.get("chartText") or "").strip() or not str(request.get("targetSongId") or "").strip():
         return None
-    if timing_mode != "precise" or any(custom_pool.values()):
+    if timing_mode != "non-precise" or any(custom_pool.values()):
         return None
     return str(paths().database)
 

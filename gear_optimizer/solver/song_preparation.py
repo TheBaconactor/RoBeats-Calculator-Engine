@@ -27,7 +27,7 @@ class PreparedSongCore:
 
 
 def prepare_song(fp: str) -> TimedSong:
-    """The chart at ``fp`` in its default timing model (its Timing Mode header, else precise)."""
+    """The chart at ``fp`` in its default timing model (its Timing Mode header, else non-precise)."""
     return time_song(load_chart(Path(fp)))
 
 

@@ -68,6 +68,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         lanes=lanes,
         fill_count=int(timeline["fill_count"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
+        timing_mode="precise",
     )
     assert sum(physical.fever_mask) == 758
 
@@ -171,6 +172,7 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         lanes=song.chart.lanes,
         fill_count=int(timeline["fill_count"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
+        timing_mode="precise",
     )
     reset_timeline_state()
 
@@ -225,6 +227,7 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         lanes=song.chart.lanes,
         fill_count=int(timeline["fill_count"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
+        timing_mode="precise",
     )
     assert physical.event_order.index(586) < physical.event_order.index(587)
     reset_timeline_state()
