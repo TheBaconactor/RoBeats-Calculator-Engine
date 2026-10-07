@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -11,9 +11,6 @@ from gear_optimizer.core.types import JsonDict
 from gear_optimizer.gamedata import SongMini, StatCurves
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.timing_envelope import TimedSong
-
-if TYPE_CHECKING:
-    from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
 
 
 @dataclass
@@ -52,20 +49,9 @@ class NativeSongGPUInputs:
 
 
 @dataclass
-class NativeSongDecodeState:
-    ga_candidates: Optional[list[JsonDict]] = None
-    fg_surface_prepared: bool = False
-    best_data: Optional[JsonDict] = None
-
-
-@dataclass
 class NativeSongFGState:
-    fg_results: Optional[tuple[tuple[SolvedLoadout, SolvedFg], ...]] = None  # best FG score first
+    # The song's FG scoring bundle (pipeline.fg.prepare_fg_static), released once its FG results are materialized.
     fg_response_scoring_bundle: Any | None = None
-    fg_response_frontier_plan: Any | None = None
-    # The FG results the GA turn scored on the GPU owner thread ({base_components 7-tuple -> FgFusedOwnerScoreRow}),
-    # which the FG materialization reads (set by pipeline.ga.decode_ga_result).
-    fg_owner_score_map: Any | None = None
 
 
 @dataclass
@@ -79,7 +65,6 @@ class NativeSongDBState:
 @dataclass
 class NativeSongRuntimeState:
     song_slot: int = 0
-    decode: NativeSongDecodeState = field(default_factory=NativeSongDecodeState)
     fg: NativeSongFGState = field(default_factory=NativeSongFGState)
     db: NativeSongDBState = field(default_factory=NativeSongDBState)
 

@@ -3,9 +3,8 @@
 This module is the CPU-side specification for "Slice 1 - GPU effective-dedup"
 of the fused GA->FG handoff (docs/research/GA_FG_FUSED_HANDOFF_DESIGN_20260612.md).
 
-The production host selector ``select_top_base_ga_candidates``
-(``gear_optimizer/helpers/song_helpers/fg_candidate_selector.py``) dedups GA
-candidates by an *effective loadout hash* that folds:
+The FG stage's host select (``gear_optimizer/pipeline/fg.py``, ``_selected_surface``)
+dedups GA candidates by an *effective loadout hash* that folds:
 
 - gear NAME equivalence (two distinct item ids with the same ``Name`` collapse),
 - mini song-context signature equivalence (two distinct mini ids whose element

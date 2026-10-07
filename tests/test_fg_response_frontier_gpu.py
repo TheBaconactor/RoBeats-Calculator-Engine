@@ -28,17 +28,12 @@ def _prepare_and_score_sync(
     total_budget: int,
 ):
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier as rf
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import load_response_frontier_scoring_bundle
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
 
-    batch = rf.prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=base_stats_list,
-        song=song,
-        curves=curves,
-        selected_color=selected_color,
-        total_budget=int(total_budget),
-    )
-    return rf.score_prepared_force_greats_response_frontier_batch_sync(
-        batch,
-    )
+    bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=all_response_stat_keys())
+    return rf.fg_solve_results(base_stats_list, song=song, curves=curves, selected_color=selected_color,
+                               scoring_bundle=bundle, total_budget=int(total_budget))
 
 
 def _solve_one_batch(
@@ -212,10 +207,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        prepare_force_greats_response_frontier_scoring_batch,
-        score_prepared_force_greats_response_frontier_batch_sync,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import fg_solve_results
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "precise")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
@@ -236,18 +228,9 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     build_or_load_response_frontier_payload(song, curves, stat_keys=(stat_key,))
     scoring_bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=(stat_key,))
-    batch = prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=[final_stats],
-        song=song,
-        curves=curves,
-        selected_color="Vibe",
-        total_budget=0,
-        scoring_bundle=scoring_bundle,
-    )
 
-    result = score_prepared_force_greats_response_frontier_batch_sync(
-        batch,
-    )[0]
+    result = fg_solve_results([final_stats], song=song, curves=curves, selected_color="Vibe",
+                              scoring_bundle=scoring_bundle, total_budget=0)[0]
 
     assert int(result.best_score) == 29_340_273
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 6, 6)
@@ -334,10 +317,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        prepare_force_greats_response_frontier_scoring_batch,
-        score_prepared_force_greats_response_frontier_batch_sync,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import fg_solve_results
     from gear_optimizer.solver.timing_envelope import time_song
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), "precise")
@@ -359,17 +339,8 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     build_or_load_response_frontier_payload(song, curves, stat_keys=(stat_key,))
     scoring_bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=(stat_key,))
-    batch = prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=[final_stats],
-        song=song,
-        curves=curves,
-        selected_color="Chill",
-        total_budget=0,
-        scoring_bundle=scoring_bundle,
-    )
-    result = score_prepared_force_greats_response_frontier_batch_sync(
-        batch,
-    )[0]
+    result = fg_solve_results([final_stats], song=song, curves=curves, selected_color="Chill",
+                              scoring_bundle=scoring_bundle, total_budget=0)[0]
 
     assert int(result.best_score) == 47_502_676  # legal max; > the unreachable served 47,476,966
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 4095, 0, 0, 0, 1361, 5, 5)

@@ -8,9 +8,7 @@ import numpy as np
 
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, solved_fg
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
@@ -22,8 +20,6 @@ from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
 
-from .note_graph import UnplayableTrace
-from .planner import FgResponseFrontierPreparedPlan
 
 logger = logging.getLogger(__name__)
 from .physical_replay import validate_force_greats_physical_replay
@@ -243,71 +239,3 @@ def materialize_force_payload_from_response_frontier(
         "non_fever_base": int(frontier.non_fever_base),
     }
     return payload
-
-
-class FgResultReducer:
-    @staticmethod
-    def _result_cache(
-        plan: FgResponseFrontierPreparedPlan,
-        prepared_results: list[list[FgResponseFrontierSolveResult]],
-    ) -> dict[tuple[Any, ...], FgResponseFrontierSolveResult]:
-        result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult] = {}
-        if len(prepared_results) != len(plan.prepared_batches):
-            raise ValueError("ForceGreats response frontier plan received the wrong number of prepared result batches")
-        for prepared, results in zip(plan.prepared_batches, prepared_results, strict=True):
-            rows = list(prepared.rows)
-            if len(results) != len(rows):
-                raise ValueError("ForceGreats response frontier batch returned the wrong number of results")
-            for (cache_key, _base_stats), result in zip(rows, results, strict=True):
-                result_cache[cache_key] = result
-        return result_cache
-
-    @staticmethod
-    def materialize(
-        plan: FgResponseFrontierPreparedPlan,
-        prepared_results: list[list[FgResponseFrontierSolveResult]],
-    ) -> list[tuple[SolvedLoadout, SolvedFg]]:
-        """Every job's FG result with its validated replay, best FG score first (at most LOADOUTS_PER_SONG_LIMIT):
-        the jobs with the best solve scores are materialized, then ranked by their exact surface scores. A result
-        stays whether or not it beats its paired base score (owner 09-30); the store ranks the FG board. A job whose
-        plan no legal hit timing plays keeps no FG result and the next job takes its place."""
-        song = plan.song
-        result_cache = FgResultReducer._result_cache(plan, prepared_results)
-        solved_jobs = []
-        for job in plan.jobs:
-            result = result_cache.get(job.key)
-            if result is None:
-                raise ValueError("ForceGreats response frontier batch missed a candidate result")
-            solved_jobs.append((job, result))
-        solved_jobs.sort(key=lambda pair: int(pair[1].best_score), reverse=True)
-
-        # song is the single owner across every materialized loadout (the trace_cache enforces it), so its FG
-        # song inputs are extracted once, on the first materialized loadout.
-        song_inputs: Any | None = None
-        trace_cache = FgTraceMaterializationCache()
-        results: list[tuple[SolvedLoadout, SolvedFg]] = []
-        for job, result in solved_jobs:
-            if len(results) == int(LOADOUTS_PER_SONG_LIMIT):
-                break
-            if song_inputs is None:
-                song_inputs = song.fg_inputs
-            try:
-                payload = materialize_force_payload_from_response_frontier(
-                    base_stats=job.base_stats,
-                    paired_base_score=job.paired,
-                    selected_element=job.selected,
-                    result=result,
-                    song=song,
-                    curves=plan.curves,
-                    trace_cache=trace_cache,
-                    song_inputs=song_inputs,
-                )
-            except UnplayableTrace as exc:
-                # The non-precise FG model can pick a plan no hit timing plays (a held tail's Great between two Perfect
-                # presses of its own chord); until the FG model rewrite rules them out, drop that loadout's FG result
-                # rather than the whole song (owner 09-30).
-                logger.warning("%s: no FG result for %s, its plan is unplayable: %s", song.chart.name, job.loadout, exc)
-                continue
-            results.append((job.loadout, solved_fg(payload, default_element=job.selected)))
-        results.sort(key=lambda pair: pair[1].score, reverse=True)
-        return results[: int(LOADOUTS_PER_SONG_LIMIT)]

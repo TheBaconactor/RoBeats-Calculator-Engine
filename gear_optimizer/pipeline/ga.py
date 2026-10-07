@@ -1,12 +1,10 @@
-"""A song's GA stage: the GA's arguments for it, and the GA result decoded back onto it."""
+"""A song's GA stage: the GA's arguments for it."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.pipeline.song import NativeSong
-from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
 
 
 def ga_payload(song: NativeSong) -> dict[str, Any]:
@@ -34,25 +32,3 @@ def ga_payload(song: NativeSong) -> dict[str, Any]:
         "fg_mini_sig_id": song.gpu_inputs.fg_mini_sig_id,
         "fg_scoring_bundle": fg_scoring_bundle,
     }
-
-
-def decode_ga_result(song: NativeSong, ga_result: dict) -> tuple[dict, list, list, list[dict]]:
-    """The decoded GA result {runs_payload, fg_owner_score} (pipeline.solve.run_ga); the FG owner score map, scored
-    in the GA turn, goes onto the song for the FG materialization."""
-    gpu_inputs = song.gpu_inputs
-    song.runtime.fg.fg_owner_score_map = ga_result["fg_owner_score"]
-    return decode_gpu_native_ga_runs_payload(
-        runs_payload=ga_result["runs_payload"],
-        registry=gpu_inputs.registry,
-        selected_color=gpu_inputs.meta_primary_color,
-        base_stats_fixed=gpu_inputs.fixed_stats,
-        fg_candidate_limit=LOADOUTS_PER_SONG_LIMIT,
-    )
-
-
-def store_decode_result(song: NativeSong, decode_result: tuple[Any, Any, Any, Any]) -> None:
-    best_data, _best_gear, _best_minis, ga_candidates = decode_result
-    song.runtime.decode.best_data = best_data
-    # The raw GPU-deduped candidate pool (decode does not select): the canonical color-folded select runs at the
-    # FG-prep funnel (prepare_ga_candidate_surface_for_fg) and replaces it.
-    song.runtime.decode.ga_candidates = list(ga_candidates or [])

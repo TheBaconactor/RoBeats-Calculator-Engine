@@ -350,8 +350,8 @@ def ga_upload_fg_effective_tables(gear_name_rank_np: np.ndarray, mini_sig_id_np:
     Upload the GA->FG effective-dedup equivalence tables (Slice 1).
 
     These per-item i32 lookups let ga_select_top_base_fg_candidate_coords_kernel
-    fold name/color-equivalent loadouts before the top-N cut, like the host selector
-    (fg_candidate_selector.select_top_base_ga_candidates).
+    fold name/color-equivalent loadouts before the top-N cut, like the FG stage's host select
+    (pipeline.fg._selected_surface).
 
     Args:
         gear_name_rank_np: (n_items,) int32 - gear id -> name rank (0 for ids that

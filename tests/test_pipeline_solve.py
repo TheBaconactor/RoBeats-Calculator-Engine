@@ -152,6 +152,7 @@ def test_a_fatal_gpu_error_ends_the_run_after_the_songs_past_their_ga_finish(mon
 def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(monkeypatch):
     import inspect
 
+    from gear_optimizer.pipeline import fg as fg_stage
     from gear_optimizer.solver import genetic_pipeline
 
     bundle, ga_calls, fg_calls = object(), [], []
@@ -161,13 +162,13 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
         ga_calls.append(kwargs)
         return "runs payload"
 
-    def score_fg(**kwargs):
-        fg_calls.append(kwargs)
+    def score_fg(runs_payload, **kwargs):
+        fg_calls.append({"runs_payload": runs_payload, **kwargs})
         return "fg owner score"
 
     real_run = genetic_pipeline.run_gpu_native_ga_runs_payload_prebuilt
     monkeypatch.setattr(genetic_pipeline, "run_gpu_native_ga_runs_payload_prebuilt", run_ga_runs)
-    monkeypatch.setattr(genetic_pipeline, "score_fused_fg_from_selected_payload", score_fg)
+    monkeypatch.setattr(fg_stage, "score_payload_fg", score_fg)
     inputs = SimpleNamespace(timed_song="timed song", curves="curves", item_stats=1, slot_start=2, slot_count=3,
                              base_fixed_stats_arr=4, num_runs=3, n_genomes=128, init_heuristic_topk=None,
                              init_heuristic_k=0, init_heuristic_copies=25, gens_per_run=42,

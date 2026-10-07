@@ -1,37 +1,23 @@
-"""Slice 2 equivalence + bit-exactness proofs (GPU / Vulkan).
+"""The GA's device base_stats7 equals the host's pre-gem totals (GPU / Vulkan).
 
-Two proofs on REAL device data produced by the production GPU-native GA entrypoint
-(run_gpu_native_ga_runs_payload_prebuilt):
-
-1. INPUT equivalence: the packed payload ``base_stats7`` (cols 19..25 of each
-   candidate row) is bit-exact equal to the 7-vector the host FG path derives from
-   each candidate's ``BaseStats`` dict
-   ([pp, cm, fm, base[primary], base[secondary], ft, ff]). This is the design claim
-   the fused GA->FG handoff rests on.
-
-2. OUTPUT bit-exactness: scoring the SAME real GA candidates through the FG response
-   frontier with the device ``base_stats7`` (Slice 2) vs the host dict-derivation
-   (pre-Slice-2) produces IDENTICAL fg scores per candidate. This isolates the
-   Slice 2 source swap from the unseeded production GA's run-to-run drift: it proves
-   the swap itself changes nothing, deterministically.
-
-If proof 1 fails the design claim is falsified and Slice 2 must not proceed; if proof
-2 fails the swap is not bit-exact.
+On REAL device data from the production GPU-native GA entrypoint (run_gpu_native_ga_runs_payload_prebuilt): each
+selected row's packed base_stats7 (cols 19..25) is bit-exact equal to the 7-vector the FG stage derives on the host
+from the row's genome ids ([pp, cm, fm, base[primary], base[secondary], ft, ff] of the song's fixed stats plus the
+items). The FG stage scores the device vectors in the GA turn and looks each selected loadout's row up by its host
+vector, so this equality is what makes the lookup exact.
 """
 
 from __future__ import annotations
 
 from tests.curves_support import synthetic_curves
-import copy
 
 import numpy as np
 import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
-from gear_optimizer.solver.base_stats import build_stats_array
+from gear_optimizer.solver.base_stats import build_stats_array, build_stats_dict
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
-from gear_optimizer.solver.force_greats_common import FG_BASE_STATS7_KEY
+from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.genetic_pipeline import (
     run_gpu_native_ga_runs_payload_prebuilt,
 )
@@ -130,25 +116,10 @@ def _song(*, n_notes: int = 400):
     )
 
 
-def _host_base_components_from_dict(base_stats: dict, *, primary: str, secondary: str) -> tuple[int, ...]:
-    """The EXACT 7-vector prepare_force_greats_response_frontier_scoring_batch builds."""
-    return (
-        int(base_stats.get("Perfect Points", 0) or 0),
-        int(base_stats.get("Combo Multiplier", 0) or 0),
-        int(base_stats.get("Fever Multiplier", 0) or 0),
-        int(base_stats.get(primary, 0) or 0) if primary else 0,
-        int(base_stats.get(secondary, 0) or 0) if secondary else 0,
-        int(base_stats.get("Fever Time", 0) or 0),
-        int(base_stats.get("Fever Fill Rate", 0) or 0),
-    )
-
-
 @pytest.fixture(scope="module")
 def real_ga_run():
-    """Run the production GPU-native GA once on Vulkan; return decoded artifacts.
-
-    Yields (decoded_candidates, payload_base_stats7, song, curves).
-    """
+    """Run the production GPU-native GA once on Vulkan: (selected genome ids, their payload base_stats7, item stats,
+    fixed stats)."""
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
@@ -207,127 +178,18 @@ def real_ga_run():
     cand_rows = selected_payload[1 : 1 + selected_n]
     payload_base_stats7 = np.asarray(cand_rows[:, _BASE_STATS7_COL0 : _BASE_STATS7_COL0 + 7], dtype=np.int32)
 
-    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
-        runs_payload=selected_payload,
-        registry=registry,
-        selected_color=selected_color,
-        base_stats_fixed=base_stats_fixed,
-        fg_candidate_limit=51,
-    )
-    return decoded, payload_base_stats7, song, curves
+    return cand_rows[:, 3:12], payload_base_stats7, item_stats, base_fixed_stats_arr
 
 
 def test_payload_base_stats7_matches_host_base_components_on_real_ga(real_ga_run) -> None:
-    decoded, payload_base_stats7, _song_d, _ref_arrays_d = real_ga_run
-    selected_n = int(payload_base_stats7.shape[0])
-
-    # At least one candidate row must carry a nonzero base_stats7 (otherwise the proof
-    # is vacuous: zeros would trivially "match" a zero dict).
-    assert int(np.count_nonzero(payload_base_stats7)) > 0, (
-        "payload base_stats7 is all zeros; the equivalence proof would be vacuous"
-    )
-
-    # decoded[0] is the header global-best candidate (no candidate-row base_stats7).
-    # decoded[1:] correspond 1:1 (post identical dedup) to cand_rows order.
-    candidate_decoded = decoded[1:]
-    assert len(candidate_decoded) == selected_n, (
-        f"decode candidate count {len(candidate_decoded)} != payload selected_n {selected_n}; "
-        "the row-order/dedup assumption is broken"
-    )
-
-    mismatches: list[str] = []
-    for i, cand in enumerate(candidate_decoded):
-        data = cand.get("Data") or {}
-        base_stats = data.get("BaseStats")
-        assert isinstance(base_stats, dict) and base_stats, (
-            f"decoded candidate {i} is missing the BaseStats dict (decode contract changed)"
+    genomes, payload_base_stats7, item_stats, fixed = real_ga_run
+    # At least one row must carry a nonzero base_stats7, or zeros would trivially match.
+    assert int(np.count_nonzero(payload_base_stats7)) > 0
+    host = [
+        response_frontier_base_components_row(
+            build_stats_dict(fixed + item_stats[list(ids)].sum(axis=0)), None, primary_color=_PRIMARY_COLOR,
+            secondary_color=_SECONDARY_COLOR,
         )
-        # decode must also attach the device base_stats7 to every candidate (Slice 2).
-        attached = data.get(FG_BASE_STATS7_KEY)
-        assert attached is not None and tuple(int(v) for v in attached) == tuple(
-            int(v) for v in payload_base_stats7[i].tolist()
-        ), f"decoded candidate {i} did not carry the payload base_stats7 on its Data"
-
-        host_vec = _host_base_components_from_dict(base_stats, primary=_PRIMARY_COLOR, secondary=_SECONDARY_COLOR)
-        payload_vec = tuple(int(v) for v in payload_base_stats7[i].tolist())
-        if host_vec != payload_vec:
-            mismatches.append(
-                f"row {i}: payload={payload_vec} host_dict={host_vec} "
-                f"(ids={[int(x) for x in cand.get('GenomeIDs', [])]})"
-            )
-
-    assert not mismatches, (
-        "base_stats7 != host base_components on real device data — design claim FALSIFIED; "
-        "Slice 2 must not proceed.\n" + "\n".join(mismatches[:20])
-    )
-
-
-def _raw_fg_scores(plan) -> list[list[int]]:
-    """Per-batch, per-row raw FG best_score (before the winner-emit gate)."""
-    from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
-
-    return [[int(r.best_score) for r in batch_results] for batch_results in GpuScoreEngine.score_plan(plan)]
-
-
-def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> None:
-    """Scoring the real GA candidates with device base_stats7 (Slice 2) equals scoring
-    them with the host BaseStats-dict derivation (pre-Slice-2) — bit-exact fg scores.
-
-    Compares RAW per-row solve scores (before the FG winner-emit gate), so the proof
-    holds even when no candidate's FG beats its base on this synthetic song.
-    """
-    from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import build_or_load_response_frontier_payload
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
-
-    decoded, _payload_base_stats7, song, curves = real_ga_run
-
-    device_candidates = [copy.deepcopy(c) for c in decoded]
-    assert device_candidates, "no GA candidates decoded"
-    assert any(
-        isinstance(c.get("Data"), dict) and c["Data"].get(FG_BASE_STATS7_KEY) is not None for c in device_candidates
-    ), "fixture produced no candidate carrying device base_stats7"
-
-    # Pre-Slice-2 behaviour: strip the device vector so the planner derives
-    # base_components from each candidate's BaseStats dict instead.
-    dict_candidates = [copy.deepcopy(c) for c in decoded]
-    for cand in dict_candidates:
-        data = cand.get("Data")
-        if isinstance(data, dict):
-            data.pop(FG_BASE_STATS7_KEY, None)
-
-    with _GPU_LOCK:
-        # Build the candidate-independent FG response-frontier bundle for this song
-        # (the startup prebuild's job in production) so the sync scoring path has it.
-        reset_fg_response_frontier_payload_cache()
-        build_or_load_response_frontier_payload(
-            song,
-            curves,
-            stat_keys=tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1)),
-        )
-
-        device_plan = FgPlanner.plan_many(device_candidates, song, curves, _PRIMARY_COLOR)
-        dict_plan = FgPlanner.plan_many(dict_candidates, song, curves, _PRIMARY_COLOR)
-
-        # Sanity: the device plan must actually be sourced from base_stats7 (differs from
-        # the dict-derived array only if they were ever unequal; here they are equal, so
-        # assert the source wiring instead — device batches carry the payload vectors).
-        device_components = np.concatenate(
-            [np.asarray(p.batch.base_components, dtype=np.int64) for p in device_plan.prepared_batches]
-        )
-        dict_components = np.concatenate(
-            [np.asarray(p.batch.base_components, dtype=np.int64) for p in dict_plan.prepared_batches]
-        )
-        assert device_components.shape == dict_components.shape
-        assert np.array_equal(device_components, dict_components), (
-            "device base_stats7 and host dict base_components disagree (input equivalence broken)"
-        )
-
-        device_scores = _raw_fg_scores(device_plan)
-        dict_scores = _raw_fg_scores(dict_plan)
-
-    assert any(row for row in device_scores), "device scoring produced no solve results"
-    assert device_scores == dict_scores, (
-        "FG raw scores differ between device base_stats7 and host dict derivation — Slice 2 swap is NOT bit-exact"
-    )
+        for ids in genomes.tolist()
+    ]
+    assert host == [tuple(row) for row in payload_base_stats7.tolist()]

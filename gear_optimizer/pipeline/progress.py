@@ -4,10 +4,12 @@ task's completion (the completed set and the resume journal) or error payload.""
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from gear_optimizer.core.result_payloads import build_error_payload
+from gear_optimizer.pipeline.results import SolvedFg
 from gear_optimizer.pipeline.song import NativeSong, native_song_label
 
 # A run is a NEW record for the progress counter when its best score (base or FG) beats the song's stored best by
@@ -105,15 +107,16 @@ class ProgressTracker:
             progress_cb(completed_delta=completed_delta, failed_delta=failed_delta, record_info=record_info)
 
 
-def evaluate_fg_progress_record_update(song: NativeSong, progress_tracker: ProgressTracker | None) -> dict:
-    """The record info of a song whose FG stage finished (its run's best base score and best winning FG score)."""
+def evaluate_fg_progress_record_update(
+    song: NativeSong, run_score: int, fg_results: Sequence[SolvedFg], progress_tracker: ProgressTracker | None
+) -> dict:
+    """The record info of a song whose FG stage finished: its run's best base score and best winning FG score."""
     key = song.config.db_key
     db = song.runtime.db
     prev_best_score, prev_best_fg, baseline_valid = db.db_best_score, db.db_best_fg_score, db.db_baseline_valid
     if progress_tracker is not None and key:
         prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
-    run_score = song.runtime.decode.best_data["BaseScore"]
-    run_fg = max((fg.score for _loadout, fg in song.runtime.fg.fg_results or () if fg.score > fg.paired), default=0)
+    run_fg = max((fg.score for fg in fg_results if fg.score > fg.paired), default=0)
     record_info = run_record_info(run_score, run_fg, prev_best_score, prev_best_fg, baseline_valid=baseline_valid)
     record_info["song"] = native_song_label(song)
     if progress_tracker is not None and key and (record_info["is_better"] or record_info["is_fg_better"]):

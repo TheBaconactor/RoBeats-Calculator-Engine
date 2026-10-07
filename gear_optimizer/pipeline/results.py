@@ -1,9 +1,7 @@
 """A solved song: what the in-flight pipeline hands to canonicalization and the store.
 
 The song as timed for the solve, the stat curves, the GA's selected surface (the best effective loadouts, best
-first) and the Force Greats results the FG stage published for some of them, in the order it published them.
-The FG stage hands typed results; the surface is read from the pipeline's decode state (song_solve) until the
-GA stage returns typed results too.
+first) and the Force Greats results the FG stage (pipeline.fg.finish_fg) published for some of them, in its order.
 """
 
 from __future__ import annotations
@@ -13,12 +11,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.gem_defs import element_gem_count
-from ..core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from ..core.utils import get_selected_element
 from ..gamedata import ELEMENTS, STATS, StatCurves
 from ..helpers.song_helpers.fg_payload import require_response_surface, strip_retired_fg_fields
 from ..helpers.song_helpers.force_greats.result_application import read_visible_stats
-from ..helpers.song_helpers.ga_entry_utils import materialize_candidate_names
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, gems
 
@@ -50,31 +46,6 @@ class SongSolve:
     curves: StatCurves
     loadouts: tuple[SolvedLoadout, ...]  # the selected GA surface, best first
     fg: tuple[tuple[int, SolvedFg], ...]  # (index into loadouts, its FG result) in the FG stage's order (FG score)
-
-
-def song_solve(song: Any) -> SongSolve:
-    """The results of a NativeSong whose FG stage has finished."""
-    runtime = song.runtime
-    if not runtime.decode.fg_surface_prepared or runtime.fg.fg_results is None:
-        raise RuntimeError(f"{song.config.task_key}: results are read after the FG stage")
-    loadouts = []
-    for candidate in runtime.decode.ga_candidates:
-        gear, minis = materialize_candidate_names(candidate, registry=song.gpu_inputs.registry)
-        loadouts.append(SolvedLoadout(tuple(gear), tuple(minis)))
-    index = {x: i for i, x in enumerate(loadouts)}
-    fg = []
-    for loadout, solved in runtime.fg.fg_results:
-        if loadout not in index:
-            raise RuntimeError(f"{song.config.task_key}: an FG result for a loadout outside the GA surface {loadout}")
-        fg.append((index[loadout], solved))
-    return SongSolve(
-        song=str(song.config.db_key),
-        tier=OPTIMIZER_BASELINE_TEAM_BUFF,
-        timed=song.gpu_inputs.timed_song,
-        curves=song.gpu_inputs.curves,
-        loadouts=tuple(loadouts),
-        fg=tuple(fg),
-    )
 
 
 def solved_fg(payload: Mapping[str, Any], *, default_element: str) -> SolvedFg:

@@ -22,7 +22,7 @@ from collections.abc import Callable
 from typing import Any
 
 from gear_optimizer.domain.jobs import SongTask
-from gear_optimizer.pipeline.results import SongSolve, song_solve
+from gear_optimizer.pipeline.results import SongSolve
 
 # Slot 0 is the registry solves' (the meta gem re-solve); GA runs use 1..N-1 (song_slot_pool).
 _GA_SLOT = 1
@@ -33,19 +33,16 @@ _FINISH_BEHIND = 2
 
 
 def _ga_turn(payload: dict, abort_requested: Callable[[], bool]) -> dict:
-    """On the GPU owner thread: the song's GA runs, then the fused FG owner score of the payload they select."""
-    from gear_optimizer.solver.genetic_pipeline import (
-        run_gpu_native_ga_runs_payload_prebuilt,
-        score_fused_fg_from_selected_payload,
-    )
+    """On the GPU owner thread: the song's GA runs, then the FG score rows of the payload they select."""
+    from gear_optimizer.pipeline.fg import score_payload_fg
+    from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt
 
     ga_kwargs = dict(payload)
     fg_scoring_bundle = ga_kwargs.pop("fg_scoring_bundle")
     selected_color = ga_kwargs.pop("selected_color")
     runs_payload = run_gpu_native_ga_runs_payload_prebuilt(**ga_kwargs, abort_requested=abort_requested)
-    fg_owner_score = score_fused_fg_from_selected_payload(
-        runs_payload=runs_payload, fg_scoring_bundle=fg_scoring_bundle, song=ga_kwargs["song"],
-        curves=ga_kwargs["curves"], selected_color=selected_color)
+    fg_owner_score = score_payload_fg(runs_payload, song=ga_kwargs["song"], curves=ga_kwargs["curves"],
+                                      selected_color=selected_color, fg_scoring_bundle=fg_scoring_bundle)
     return {"runs_payload": runs_payload, "fg_owner_score": fg_owner_score}
 
 
@@ -62,21 +59,9 @@ def run_ga(song: Any, executor: Any) -> dict:
 
 def finish_song(song: Any, ga_result: Any, progress_tracker=None) -> SongSolve:
     """The SongSolve of a song from its GA result (no GPU work). `progress_tracker` (a run's) judges its records."""
-    from gear_optimizer.pipeline.fg import apply_fg_materialization_result, prepare_fg_plan, release_fg_song_surfaces
-    from gear_optimizer.pipeline.ga import decode_ga_result, store_decode_result
-    from gear_optimizer.solver.fg_materialization_worker import (
-        build_fg_materialization_request,
-        materialize_fg_request,
-    )
+    from gear_optimizer.pipeline.fg import finish_fg
 
-    store_decode_result(song, decode_ga_result(song, ga_result))
-    try:
-        prepare_fg_plan(song)
-        apply_fg_materialization_result(song, materialize_fg_request(build_fg_materialization_request(song)),
-                                        progress_tracker=progress_tracker)
-    finally:
-        release_fg_song_surfaces(song)
-    return song_solve(song)
+    return finish_fg(song, ga_result, progress_tracker)
 
 
 def solve_song(task: SongTask, executor: Any) -> SongSolve:

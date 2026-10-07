@@ -35,19 +35,16 @@ __all__ = [
     "FgResponseSurface",
     "FgBatchStage",
     "FgResponseFrontierPackedScoringBatch",
-    "FgResponseFrontierOwnerResult",
-    "FgFusedOwnerScoreRow",
-    "resolve_fused_owner_score_rows_from_batch",
+    "FgScoreRow",
     "score_fg_base_components",
-    "build_fused_owner_solve_result_from_score_row",
+    "fg_solve_result",
+    "fg_solve_results",
     "fg_batch_stage",
     "required_response_stat_keys_for_scoring_batch",
     "prepare_force_greats_response_frontier_scoring_batch",
     "build_prepared_force_greats_response_frontier_group_arrays",
     "build_prepared_force_greats_response_frontier_group_rows",
     "pack_prepared_force_greats_response_frontier_scoring_surfaces",
-    "score_prepared_force_greats_response_frontier_batch_on_cpu_owner",
-    "score_prepared_force_greats_response_frontier_batch_sync",
     "reconstruct_force_greats_response_trace",
 ]
 
@@ -184,35 +181,10 @@ class FgResponseFrontierPackedScoringBatch:
 
 
 @dataclass(frozen=True, slots=True)
-class FgResponseFrontierOwnerResult:
-    batch: FgResponseFrontierPackedScoringBatch
-    inner_rows: np.ndarray
-
-
-@dataclass(frozen=True, slots=True)
-class FgFusedOwnerScoreRow:
-    """The owner-computable FG solve result for ONE base_components 7-vector.
-
-    The fused GA->FG handoff (Slice 3) scores on the GPU owner straight from the
-    device ``base_stats7`` (== base_components), but cannot materialize the final
-    ``FgResponseFrontierSolveResult``: materialization needs the full 10-key
-    BaseStats dict (``stats.apply_gems`` over all stats) which lives only
-    on the host decode side. This record carries exactly the owner-resolved,
-    full-dict-INDEPENDENT pieces the driver materializer needs to finish the
-    result without any further GPU work:
-
-    * ``ft`` / ``ff``: the winning FT/FF gem counts,
-    * ``ft_stat`` / ``ff_stat``: the winning fever stat keys (the driver
-      reconstructs the frontier from these + the song-level scoring bundle),
-    * ``inner_row``: the 11-int inner result row
-      ``[best_score, surface_index, g_pp, g_cm, g_fm, g_ov, final_pp, final_cm,
-      final_fm, final_primary, final_secondary]``,
-    * ``surface``: the resolved winning ``FgResponseSurface`` (11 ints), extracted
-      on the owner from its packed surfaces.
-
-    Every field is a plain int / int-tuple (picklable). Keyed by the
-    base_components 7-tuple, which the driver re-derives identically from the same
-    device base_stats7 (Slice 2 bit-exactness)."""
+class FgScoreRow:
+    """A loadout's FG gem-search winner: its FT/FF gems and stat keys, the 11-int gem-search row (best score, surface
+    index, PP/CM/FM/element gems, final PP/CM/FM/primary/secondary) and the winning surface (11 ints). fg_solve_result
+    turns it into the full solve result with the loadout's pre-gem stats."""
 
     ft: int
     ff: int
@@ -405,13 +377,11 @@ def _unique_response_stat_keys_tuple(
 
 def _solve_result_from_row(
     *,
-    started: float,
     base_stats: dict[str, Any],
     selected_color: str,
-    song_inputs: Any,
     pair: _ResponsePair,
     row: tuple[int, int, int, int, int, int, int, int, int, int, int],
-    surface: FgResponseSurface | None = None,
+    surface: FgResponseSurface,
 ) -> FgResponseFrontierSolveResult:
     ft, ff, frontier, raw_fill, real_fever_time = pair
     inner = FgResponseInnerResult(
@@ -427,7 +397,6 @@ def _solve_result_from_row(
         final_primary=int(row[9]),
         final_secondary=int(row[10]),
     )
-    surface = surface if surface is not None else frontier.first_frontier[int(inner.surface_index)]
     final_stats = apply_gems(
         base_stats,
         gems(pp=inner.g_pp, cm=inner.g_cm, fm=inner.g_fm, ft=ft, ff=ff, element=inner.g_ov),
@@ -442,7 +411,7 @@ def _solve_result_from_row(
         surface=surface,
         frontier=frontier,
         inner=inner,
-        seconds=float(time.perf_counter() - started),
+        seconds=0.0,
         raw_fever_fill=float(raw_fill),
         real_fever_time=float(real_fever_time),
     )
@@ -459,9 +428,8 @@ def prepare_force_greats_response_frontier_scoring_batch(
     started: float | None = None,
     scoring_bundle: FgResponseFrontierScoringBundle | None = None,
 ) -> FgResponseFrontierPackedScoringBatch:
-    """Prepare the GA->FG candidate inputs. The group rows and scoring surfaces are built later
-    (build_prepared_force_greats_response_frontier_group_arrays) and scored by
-    `score_prepared_force_greats_response_frontier_batch_on_cpu_owner`.
+    """Prepare the FG candidate inputs of score_fg_base_components (group rows and scoring surfaces are built by
+    build_prepared_force_greats_response_frontier_group_arrays).
 
     ``base_stats7_list`` (when given) carries each candidate's authoritative base
     components by origin: the GPU-native GA pack kernel's device-computed
@@ -657,18 +625,15 @@ def build_prepared_force_greats_response_frontier_group_arrays(
     return pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
 
 
-def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
-    batch: FgResponseFrontierPackedScoringBatch,
-    floors: np.ndarray | None = None,
-) -> FgResponseFrontierOwnerResult:
-    """Score a finalized batch with the exact native-f64 scorer (CPU cores); with `floors` (a score per loadout) a
-    loadout's row is exact only when it reaches its floor."""
+def _score_packed_batch(batch: FgResponseFrontierPackedScoringBatch, floors: np.ndarray | None) -> np.ndarray:
+    """The gem-search rows of a packed batch (CPU cores); with `floors` (a score per loadout) a loadout's row is exact
+    only when it reaches its floor."""
     if fg_batch_stage(batch) is not FgBatchStage.SURFACES_PACKED:
         raise RuntimeError(
             "FG response frontier owner score requires a finalized batch "
             "(group rows built and scoring surfaces packed before submit)"
         )
-    inner_rows = _score_response_group_meta_cpu(
+    return _score_response_group_meta_cpu(
         group_meta=batch.group_meta,
         group_offsets=batch.scoring_group_offsets,
         group_lengths=batch.scoring_group_lengths,
@@ -683,129 +648,28 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
         surface_pattern_head_coeffs=batch.scoring_surface_pattern_head_coeffs,
         floors=floors,
     )
-    return FgResponseFrontierOwnerResult(batch=batch, inner_rows=inner_rows)
 
 
-def materialize_prepared_force_greats_response_frontier_batch_results(
-    batch: FgResponseFrontierPackedScoringBatch,
-    inner_rows: np.ndarray,
-) -> list[FgResponseFrontierSolveResult]:
-    scoring_bundle = batch.scoring_bundle
-    surface_pattern_ids = batch.scoring_surface_pattern_ids
-    surface_pattern_words = batch.scoring_surface_pattern_words
-    surface_counts = batch.scoring_surface_counts
-    group_offsets = batch.scoring_group_offsets
-    inner_rows = np.asarray(inner_rows, dtype=np.int32)
-    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact batch returned the wrong number of group results")
-    out: list[FgResponseFrontierSolveResult] = []
-    frontier_by_stat_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
-    for candidate_idx, (start, count) in enumerate(batch.candidate_slices):
-        if int(count) <= 0:
-            raise ValueError("response frontier exact batch produced no pair result")
-        local_idx = int(np.argmax(inner_rows[int(start) : int(start) + int(count), 0]))
-        row_idx = int(start) + int(local_idx)
-        ft = int(batch.group_ft[row_idx])
-        ff = int(batch.group_ff[row_idx])
-        ft_stat = int(batch.group_ft_stat[row_idx])
-        ff_stat = int(batch.group_ff_stat[row_idx])
-        stat_key = (int(ft_stat), int(ff_stat))
-        frontier = frontier_by_stat_key.get(stat_key)
-        if frontier is None:
-            frontier = frontier_result_from_scoring_bundle_for_stats(
-                batch.song,
-                batch.curves,
-                scoring_bundle,
-                ft_stat=int(ft_stat),
-                ff_stat=int(ff_stat),
-            )
-            frontier_by_stat_key[stat_key] = frontier
-        pair: _ResponsePair = (
-            int(ft),
-            int(ff),
-            frontier,
-            float(scoring_bundle.raw_fill_by_ff[ff_stat]),
-            float(scoring_bundle.real_time_by_ft[ft_stat]),
-        )
-        result_row = np.asarray(inner_rows[int(row_idx)], dtype=np.int32).copy()
-        result_surface_idx = int(group_offsets[int(row_idx)]) + int(result_row[1])
-        result_surface = _surface_from_packed_arrays(
-            surface_pattern_ids=surface_pattern_ids,
-            surface_pattern_words=surface_pattern_words,
-            surface_counts=surface_counts,
-            surface_idx=int(result_surface_idx),
+def _score_rows_from_batch(batch: FgResponseFrontierPackedScoringBatch, inner_rows: np.ndarray) -> list[FgScoreRow]:
+    """Each loadout's winner (its first group with the highest score), in batch order."""
+    out: list[FgScoreRow] = []
+    for start, count in batch.candidate_slices:
+        row_idx = int(start) + int(np.argmax(inner_rows[int(start) : int(start) + int(count), 0]))
+        row = inner_rows[row_idx]
+        surface = _surface_from_packed_arrays(
+            surface_pattern_ids=batch.scoring_surface_pattern_ids,
+            surface_pattern_words=batch.scoring_surface_pattern_words,
+            surface_counts=batch.scoring_surface_counts,
+            surface_idx=int(batch.scoring_group_offsets[row_idx]) + int(row[1]),
         )
         out.append(
-            _solve_result_from_row(
-                started=float(batch.started),
-                base_stats=batch.stats_inputs[int(candidate_idx)],
-                selected_color=batch.selected_color,
-                song_inputs=batch.song_inputs,
-                pair=pair,
-                row=result_row,
-                surface=result_surface,
-            )
-        )
-    return out
-
-
-def resolve_fused_owner_score_rows_from_batch(
-    batch: FgResponseFrontierPackedScoringBatch,
-    inner_rows: np.ndarray,
-) -> list[FgFusedOwnerScoreRow]:
-    """Resolve the per-candidate owner FG score rows for the fused GA->FG handoff.
-
-    This mirrors the winning-row + surface resolution inside
-    ``materialize_prepared_force_greats_response_frontier_batch_results`` but stops
-    before ``_solve_result_from_row`` (which needs the full BaseStats dict). One
-    row per ``batch.candidate_slices`` entry, in batch order. The caller keys these
-    by the batch's ``base_components`` rows (aligned 1:1 with candidate_slices).
-    """
-    surface_pattern_ids = batch.scoring_surface_pattern_ids
-    surface_pattern_words = batch.scoring_surface_pattern_words
-    surface_counts = batch.scoring_surface_counts
-    group_offsets = batch.scoring_group_offsets
-    inner_rows = np.asarray(inner_rows, dtype=np.int32)
-    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact batch returned the wrong number of group results")
-    out: list[FgFusedOwnerScoreRow] = []
-    for _candidate_idx, (start, count) in enumerate(batch.candidate_slices):
-        if int(count) <= 0:
-            raise ValueError("response frontier exact batch produced no pair result")
-        local_idx = int(np.argmax(inner_rows[int(start) : int(start) + int(count), 0]))
-        row_idx = int(start) + int(local_idx)
-        ft = int(batch.group_ft[row_idx])
-        ff = int(batch.group_ff[row_idx])
-        ft_stat = int(batch.group_ft_stat[row_idx])
-        ff_stat = int(batch.group_ff_stat[row_idx])
-        result_row = np.asarray(inner_rows[int(row_idx)], dtype=np.int32).copy()
-        result_surface_idx = int(group_offsets[int(row_idx)]) + int(result_row[1])
-        result_surface = _surface_from_packed_arrays(
-            surface_pattern_ids=surface_pattern_ids,
-            surface_pattern_words=surface_pattern_words,
-            surface_counts=surface_counts,
-            surface_idx=int(result_surface_idx),
-        )
-        out.append(
-            FgFusedOwnerScoreRow(
-                ft=int(ft),
-                ff=int(ff),
-                ft_stat=int(ft_stat),
-                ff_stat=int(ff_stat),
-                inner_row=tuple(int(v) for v in result_row.tolist()),
-                surface=(
-                    int(result_surface.fever0),
-                    int(result_surface.fever1),
-                    int(result_surface.fever2),
-                    int(result_surface.fever3),
-                    int(result_surface.great0),
-                    int(result_surface.great1),
-                    int(result_surface.great2),
-                    int(result_surface.great3),
-                    int(result_surface.body_fever),
-                    int(result_surface.body_great),
-                    int(result_surface.body_fever_great),
-                ),
+            FgScoreRow(
+                ft=int(batch.group_ft[row_idx]),
+                ff=int(batch.group_ff[row_idx]),
+                ft_stat=int(batch.group_ft_stat[row_idx]),
+                ff_stat=int(batch.group_ff_stat[row_idx]),
+                inner_row=tuple(int(v) for v in row),
+                surface=tuple(int(v) for v in surface),
             )
         )
     return out
@@ -820,42 +684,28 @@ def score_fg_base_components(
     scoring_bundle: FgResponseFrontierScoringBundle,
     total_budget: int = GEM_BUDGET,
     floors: np.ndarray | None = None,
-) -> dict[tuple[int, ...], FgFusedOwnerScoreRow]:
+) -> dict[tuple[int, ...], FgScoreRow]:
     """The FG score row of each distinct 7-vector of pre-gem totals (PP, CM, FM, primary, secondary, FT, FF), keyed by
-    it (CPU only). The GA turn scores its selected payload's device base_stats7 this way; the FG materializer looks a
-    plan candidate's row up by the same 7-vector and materializes it with the full BaseStats dict. Equal 7-vectors have
-    equal FG results, so duplicates are scored once. ``selected_color`` is the song's selected element; every other
-    input is song-level (the scoring bundle prepared before the GA). With `floors` (a score per row) a row is exact only
-    when it reaches its floor (the lowest of a 7-vector's floors); below it, its score is only known to be lower."""
-    base_components = np.ascontiguousarray(np.asarray(base_components, dtype=np.int32))
-    if int(base_components.ndim) != 2 or int(base_components.shape[1]) != 7:
-        raise ValueError("fused owner FG score requires a (N,7) base_components array")
-    if int(base_components.shape[0]) <= 0:
-        return {}
-
-    # Equal 7-vectors have equal FG results: score each once, at the lowest floor asked of it.
+    it (CPU only); equal 7-vectors have equal FG results, so each is scored once. ``selected_color`` is the song's
+    selected element; every other input is song-level (the scoring bundle). With `floors` (a score per row) a row is
+    exact only when it reaches its floor (the lowest of a 7-vector's floors); below it, its score is only known to be
+    lower."""
     floor_of: dict[tuple[int, ...], int] = {}
-    for idx, row in enumerate(base_components.tolist()):
-        key = tuple(int(v) for v in row)
+    for idx, row in enumerate(np.asarray(base_components, dtype=np.int32).tolist()):
+        key = tuple(row)
         floor = -1 if floors is None else int(floors[idx])
         floor_of[key] = min(floor_of.get(key, floor), floor)
     unique_rows = list(floor_of)
-
+    if not unique_rows:
+        return {}
     batch = prepare_force_greats_response_frontier_scoring_batch(
+        # Placeholders: base_stats7 is the scored vector (response_frontier_base_components_row).
         base_stats_list=[
-            {
-                "Perfect Points": int(row[0]),
-                "Combo Multiplier": int(row[1]),
-                "Fever Multiplier": int(row[2]),
-                # primary/secondary handled via base_stats7 below, so these dict
-                # values are placeholders only; base_stats7 is the authoritative
-                # source and overrides them in response_frontier_base_components_row.
-                "Fever Time": int(row[5]),
-                "Fever Fill Rate": int(row[6]),
-            }
+            {"Perfect Points": row[0], "Combo Multiplier": row[1], "Fever Multiplier": row[2], "Fever Time": row[5],
+             "Fever Fill Rate": row[6]}
             for row in unique_rows
         ],
-        base_stats7_list=[tuple(int(v) for v in row) for row in unique_rows],
+        base_stats7_list=unique_rows,
         song=song,
         curves=curves,
         selected_color=str(selected_color or ""),
@@ -863,92 +713,70 @@ def score_fg_base_components(
         scoring_bundle=scoring_bundle,
     )
     built = build_prepared_force_greats_response_frontier_group_arrays(batch)
-    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
-        built, None if floors is None else np.asarray(list(floor_of.values()), dtype=np.int64)
-    )
-    score_rows = resolve_fused_owner_score_rows_from_batch(owner.batch, owner.inner_rows)
-    if len(score_rows) != len(unique_rows):
-        raise ValueError(
-            "fused owner FG score produced a different row count than the deduped "
-            f"base_components set ({len(score_rows)} != {len(unique_rows)})"
-        )
-    return {key: row for key, row in zip(unique_rows, score_rows, strict=True)}
+    inner_rows = _score_packed_batch(built, None if floors is None else np.asarray(list(floor_of.values())))
+    return dict(zip(unique_rows, _score_rows_from_batch(built, inner_rows), strict=True))
 
 
-def build_fused_owner_solve_result_from_score_row(
+def fg_solve_result(
     *,
-    score_row: FgFusedOwnerScoreRow,
+    score_row: FgScoreRow,
     base_stats: dict[str, Any],
     selected_color: str,
     song: TimedSong,
     curves: StatCurves,
     scoring_bundle: FgResponseFrontierScoringBundle,
-    started: float | None = None,
-    song_inputs: Any | None = None,
-    frontier_by_stat_key: dict[tuple[int, int], FgResponseFrontierResult] | None = None,
+    frontier_by_stat_key: dict[tuple[int, int], FgResponseFrontierResult],
 ) -> FgResponseFrontierSolveResult:
-    """Materialize the final FG solve result for one candidate from the owner row.
-
-    Driver-side (full-dict-dependent) half of the fused GA->FG handoff: the GPU
-    owner already produced the scored ``score_row`` (inner result + winning surface)
-    for this candidate's base_components; here we recombine it with the candidate's
-    full ``base_stats`` dict (decode output, all 10 keys) to produce the same
-    ``FgResponseFrontierSolveResult`` the pre-fusion SCORE path returned. No GPU.
-
-    The frontier is reconstructed from ``(ft_stat, ff_stat)`` + the song-level
-    scoring bundle, exactly as ``materialize_prepared_force_greats_response_frontier
-    _batch_results`` does for the SCORE-request path.
-
-    ``song_inputs`` and ``frontier_by_stat_key`` are the song-invariant hoists a
-    caller materializing a whole batch shares across candidates (mirroring the batch
-    materialize sibling): ``song_inputs`` is a pure function of ``song`` and the
-    frontier is a pure function of ``(ft_stat, ff_stat)`` over the same song/ref/
-    scoring bundle, so passing them makes the per-candidate fingerprint + extract a
-    once-per-batch cost. Both default to the standalone per-call computation, keeping
-    single-candidate callers byte-identical.
-    """
-    stat_key = (int(score_row.ft_stat), int(score_row.ff_stat))
-    frontier = None if frontier_by_stat_key is None else frontier_by_stat_key.get(stat_key)
+    """A loadout's FG solve result from its score row and its pre-gem stats (all 10). The frontier of the winning stat
+    key comes from the scoring bundle, once per key for the callers sharing `frontier_by_stat_key`."""
+    stat_key = (score_row.ft_stat, score_row.ff_stat)
+    frontier = frontier_by_stat_key.get(stat_key)
     if frontier is None:
         frontier = frontier_result_from_scoring_bundle_for_stats(
-            song,
-            curves,
-            scoring_bundle,
-            ft_stat=int(score_row.ft_stat),
-            ff_stat=int(score_row.ff_stat),
+            song, curves, scoring_bundle, ft_stat=score_row.ft_stat, ff_stat=score_row.ff_stat
         )
-        if frontier_by_stat_key is not None:
-            frontier_by_stat_key[stat_key] = frontier
-    surface = FgResponseSurface(*(int(v) for v in score_row.surface))
-    if song_inputs is None:
-        song_inputs = song.fg_inputs
+        frontier_by_stat_key[stat_key] = frontier
     pair: _ResponsePair = (
-        int(score_row.ft),
-        int(score_row.ff),
+        score_row.ft,
+        score_row.ff,
         frontier,
-        float(scoring_bundle.raw_fill_by_ff[int(score_row.ff_stat)]),
-        float(scoring_bundle.real_time_by_ft[int(score_row.ft_stat)]),
+        float(scoring_bundle.raw_fill_by_ff[score_row.ff_stat]),
+        float(scoring_bundle.real_time_by_ft[score_row.ft_stat]),
     )
     return _solve_result_from_row(
-        started=float(time.perf_counter() if started is None else started),
         base_stats=base_stats,
         selected_color=str(selected_color or ""),
-        song_inputs=song_inputs,
         pair=pair,
-        row=tuple(int(v) for v in score_row.inner_row),
-        surface=surface,
+        row=score_row.inner_row,
+        surface=FgResponseSurface(*score_row.surface),
     )
 
 
-def score_prepared_force_greats_response_frontier_batch_sync(
-    batch: FgResponseFrontierPackedScoringBatch,
+def fg_solve_results(
+    stats_rows,
+    *,
+    song: TimedSong,
+    curves: StatCurves,
+    selected_color: str,
+    scoring_bundle: FgResponseFrontierScoringBundle,
+    total_budget: int = GEM_BUDGET,
 ) -> list[FgResponseFrontierSolveResult]:
-    if batch.scoring_surface_pattern_ids is None:
-        batch = build_prepared_force_greats_response_frontier_group_arrays(batch)
-    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
-    batch = owner.batch
-    out = materialize_prepared_force_greats_response_frontier_batch_results(
-        batch,
-        owner.inner_rows,
+    """Each stats row's FG solve result: rows of pre-gem stats re-solve the gems within total_budget; with
+    total_budget=0 the rows are allocated stats and only the FG plan is solved."""
+    song_inputs = song.fg_inputs
+    totals = [
+        response_frontier_base_components_row(
+            stats, None, primary_color=song_inputs.primary_color, secondary_color=song_inputs.secondary_color
+        )
+        for stats in stats_rows
+    ]
+    rows = score_fg_base_components(
+        base_components=np.asarray(totals, dtype=np.int32), song=song, curves=curves, selected_color=selected_color,
+        scoring_bundle=scoring_bundle, total_budget=total_budget,
     )
-    return out
+    frontiers: dict[tuple[int, int], FgResponseFrontierResult] = {}
+    return [
+        fg_solve_result(score_row=rows[key], base_stats=dict(stats), selected_color=selected_color, song=song,
+                        curves=curves, scoring_bundle=scoring_bundle, frontier_by_stat_key=frontiers)
+        for key, stats in zip(totals, stats_rows, strict=True)
+    ]

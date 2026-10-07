@@ -215,18 +215,14 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
         seen["load"] = tuple(stat_keys)
         return bundle
 
-    def _prepare(**kwargs):
-        seen["prepare_bundle"] = kwargs["scoring_bundle"]
-        return object()
+    def _score(**kwargs):
+        seen["score_bundle"] = kwargs["scoring_bundle"]
+        return {tuple(row): "winner" for row in kwargs["base_components"].tolist()}
 
     monkeypatch.setattr(response_cache, "ensure_response_frontier_cache_for_song", _ensure)
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _load)
-    monkeypatch.setattr(response_frontier, "prepare_force_greats_response_frontier_scoring_batch", _prepare)
-    monkeypatch.setattr(
-        response_frontier,
-        "score_prepared_force_greats_response_frontier_batch_sync",
-        lambda *_args, **_kwargs: [SimpleNamespace(surface="exact-surface")],
-    )
+    monkeypatch.setattr(response_frontier, "score_fg_base_components", _score)
+    monkeypatch.setattr(response_frontier, "fg_solve_result", lambda **_kwargs: SimpleNamespace(surface="exact-surface"))
 
     results = fixed_timing._solve_fixed_timing_response_results(
         [_stats()],
@@ -240,5 +236,5 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
     assert seen == {
         "ensure": ((70, 90),),
         "load": ((70, 90),),
-        "prepare_bundle": bundle,
+        "score_bundle": bundle,
     }

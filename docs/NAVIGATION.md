@@ -23,9 +23,9 @@ Use this page to find the current owner of a behavior. The
 - Songs end to end (the queue, one GA at a time): `gear_optimizer/pipeline/solve.py`
 - A song being solved and its preparation: `gear_optimizer/pipeline/song.py`,
   `gear_optimizer/pipeline/prepare.py`
-- GA request and decode: `gear_optimizer/pipeline/ga.py`
-- Force Great preparation, planning and results: `gear_optimizer/pipeline/fg.py`
-  (materialization: `gear_optimizer/solver/fg_materialization_worker.py`)
+- GA request: `gear_optimizer/pipeline/ga.py`
+- Force Great stage (scoring bundle, the payload's FG scores, the stored surface and its FG results):
+  `gear_optimizer/pipeline/fg.py`
 - Records, progress and completion: `gear_optimizer/pipeline/progress.py`
 - Post-processor process: `gear_optimizer/pipeline/post_processor.py`
 - A solved song's results: `gear_optimizer/pipeline/results.py`
@@ -34,7 +34,6 @@ Use this page to find the current owner of a behavior. The
 ## Solver and exact scoring
 
 - Genetic pipeline: `gear_optimizer/solver/genetic_pipeline.py`
-- Genetic result decode: `gear_optimizer/solver/genetic_pipeline_decode.py`
 - Scoring package: `gear_optimizer/solver/scoring/`
 - Fever timeline: `gear_optimizer/solver/fever_timeline.py`
 - Exact timing frontier:

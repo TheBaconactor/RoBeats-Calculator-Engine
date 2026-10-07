@@ -5,7 +5,7 @@ from gear_optimizer.pipeline.progress import (
     evaluate_fg_progress_record_update,
 )
 from gear_optimizer.gamedata import STATS
-from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
+from gear_optimizer.pipeline.results import SolvedFg
 from tests.native_song_factory import make_native_song
 
 
@@ -96,13 +96,11 @@ def test_new_counter_counts_native_fg_record_event_before_tracker_advances():
     song = make_native_song(
         db_key="fg-song",
         task_key="FG Song (Hard)",
-        best_data={"BaseScore": 1000},
-        fg_results=((SolvedLoadout(("Hat",) * 6, ("Mini",) * 3), _fg(score=1050, paired=1000)),),
         db_best_score=1000,
         db_best_fg_score=900,
     )
 
-    info = evaluate_fg_progress_record_update(song, tracker)
+    info = evaluate_fg_progress_record_update(song, 1000, [_fg(score=1050, paired=1000)], tracker)
     app._progress_event(completed_delta=0, record_info=info)
 
     assert app._session_new_records == 1

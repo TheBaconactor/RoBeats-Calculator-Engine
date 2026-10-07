@@ -5,7 +5,7 @@ from gear_optimizer.pipeline.progress import (
     task_error_payload,
 )
 from gear_optimizer.gamedata import STATS
-from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
+from gear_optimizer.pipeline.results import SolvedFg
 from tests.native_song_factory import make_native_song
 
 
@@ -134,14 +134,12 @@ def test_evaluate_fg_progress_record_update_uses_tracker_snapshot_and_updates_fg
     song = make_native_song(
         db_key="song-a",
         task_key="Song A (Hard)",
-        best_data={"BaseScore": 1000},
-        fg_results=((SolvedLoadout(("Hat",) * 6, ("Mini",) * 3), _fg(score=1050, paired=1000)),),
         db_best_score=1,
         db_best_fg_score=1,
         db_baseline_valid=False,
     )
 
-    record_info = evaluate_fg_progress_record_update(song, tracker)
+    record_info = evaluate_fg_progress_record_update(song, 1000, [_fg(score=1050, paired=1000)], tracker)
 
     assert isinstance(record_info, dict)
     assert record_info["is_fg_better"] is True
@@ -155,14 +153,12 @@ def test_evaluate_fg_progress_record_update_updates_base_session_best():
     song = make_native_song(
         db_key="song-a",
         task_key="Song A (Hard)",
-        best_data={"BaseScore": 1100},
-        fg_results=(),
         db_best_score=1,
         db_best_fg_score=1,
         db_baseline_valid=False,
     )
 
-    record_info = evaluate_fg_progress_record_update(song, tracker)
+    record_info = evaluate_fg_progress_record_update(song, 1100, [], tracker)
 
     assert isinstance(record_info, dict)
     assert record_info["is_better"] is True

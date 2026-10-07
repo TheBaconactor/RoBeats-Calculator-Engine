@@ -83,9 +83,8 @@ it never initializes or accesses the GPU.
 
 ### Genetic search
 
-- `gear_optimizer/solver/genetic_pipeline.py` constructs native GA requests.
-- `gear_optimizer/solver/genetic_pipeline_decode.py` decodes retained device
-  results.
+- `gear_optimizer/solver/genetic_pipeline.py` constructs native GA requests; the
+  FG stage (`gear_optimizer/pipeline/fg.py`) reads the selected payload it returns.
 - `gear_optimizer/solver/taichi_gem/api/` is the public Taichi solver surface.
 - `gear_optimizer/solver/taichi_gem/kernels/` contains device kernels.
 

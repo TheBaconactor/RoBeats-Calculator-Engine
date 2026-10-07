@@ -45,14 +45,13 @@ def _solve_fixed_timing_response_results(
         return []
 
     total_budget = int(total_budget)
-    from ..taichi_gem.force_greats.response_frontier import (
-        prepare_force_greats_response_frontier_scoring_batch,
-        required_response_stat_keys_for_scoring_batch,
-        score_prepared_force_greats_response_frontier_batch_sync,
-    )
     from ..taichi_gem.force_greats.response_cache import (
         ensure_response_frontier_cache_for_song,
         load_response_frontier_scoring_bundle,
+    )
+    from ..taichi_gem.force_greats.response_frontier import (
+        fg_solve_results,
+        required_response_stat_keys_for_scoring_batch,
     )
 
     # The chart-only bundle is distinct from precise and is prebuilt for the catalog at
@@ -74,21 +73,8 @@ def _solve_fixed_timing_response_results(
         curves,
         stat_keys=required_stat_keys,
     )
-    batch = prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=rows,
-        song=song,
-        curves=curves,
-        selected_color=str(selected_color or ""),
-        total_budget=total_budget,
-        scoring_bundle=scoring_bundle,
-    )
-    results = score_prepared_force_greats_response_frontier_batch_sync(batch)
-    if len(results) != len(rows):
-        raise ValueError(
-            "fixed-timing FG surface build produced a different row count than the stats batch "
-            f"({len(results)} != {len(rows)})"
-        )
-    return results
+    return fg_solve_results(rows, song=song, curves=curves, selected_color=str(selected_color or ""),
+                            scoring_bundle=scoring_bundle, total_budget=total_budget)
 
 
 def build_fixed_timing_fg_replays(
