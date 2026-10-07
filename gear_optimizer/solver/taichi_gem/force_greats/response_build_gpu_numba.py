@@ -1792,11 +1792,9 @@ def _numba_append_same_end_head_edge_to_chain(
 ):
     """Lossless pre-tail prune inside one `end_e` bucket, on the reusable chained node store.
 
-    Replaces the retired per-call typed Dict of per-end typed Lists: a bucket is a singly linked
-    chain of rows in the (cap, 7) uint64 `node_surface` arena. Chain order is insertion order
-    with dominated entries unlinked in place -- exactly the retired List's order under its
-    scan/pop(idx)/append protocol, so the ORDER-SENSITIVE same-end prune sees an identical
-    candidate sequence and retains an identical bucket sequence."""
+    A bucket is a singly linked chain of rows in the (cap, 7) uint64 `node_surface` arena, in insertion order with
+    dominated entries unlinked in place. The same-end prune is ORDER-SENSITIVE: it sees the candidates in producer
+    order and keeps the bucket in insertion order."""
     # phase 1: dominated by a retained entry? (chain order = retained insertion order)
     pos = int(bucket_head[int(end_e)])
     while pos != -1:
@@ -1850,9 +1848,8 @@ def _numba_append_head_edge_to_end_chains(
     edge,
     end_e: int,
 ):
-    """First touch of an end registers it in `pending_ends` (first-seen order, the retired
-    pending_edge_ends List); a bucket never empties once created (a dominating edge always
-    appends itself), so head == -1 exactly means untouched this call."""
+    """First touch of an end registers it in `pending_ends` (first-seen order); a bucket never empties once created
+    (a dominating edge always appends itself), so head == -1 exactly means untouched this call."""
     if int(bucket_head[int(end_e)]) == -1:
         pending_ends[int(pending_count)] = int(end_e)
         pending_count = int(pending_count) + 1
@@ -2050,11 +2047,10 @@ def _numba_emit_early_great_edges(
     min_surfaces: int,
     bounded_mode: int,
 ):
-    """Issue #44: emit one activation's early-Great extended edges. Each end e in (base_e, eg_e]
-    adds the tail [base_e, e) as fever-Greats and is composed via `_numba_append_edge_tail` exactly
-    like the base edge. Shared by the Perfect- and late-Great-activation branches of both the
-    per-state and first-frontier build loops (the CPU twin in response_builder.py factors the same
-    logic into `_early_great_options`)."""
+    """One activation's early-Great extended edges: each end e in (base_e, eg_e] adds the tail [base_e, e) as
+    fever-Greats and is composed via `_numba_append_edge_tail` like the base edge. Shared by the Perfect- and
+    late-Great-activation branches of the per-state and first-frontier loops (the trace reconstruction in
+    response_builder.py enumerates the same options in `_early_great_options`)."""
     eg_e = _numba_great_floor_extended_end_at_hit(
         int(n), int(fill_pos), float(activation_hit), float(real_fever_time), great_floor_timestamps
     )
@@ -2320,7 +2316,7 @@ def _numba_emit_activation_edges(
     min_surfaces: int, bounded_mode: int,
 ):
     """One activation's fever section as head candidates: the edge (activation at fill_pos, section end base_e, Greats
-    [great_start, great_end), activation_great_idx = the activation's own Great or -1) and, issue #44, its early-Great
+    [great_start, great_end), activation_great_idx = the activation's own Great or -1) and its early-Great
     extensions. Returns the candidates, the number added and the bounded mode."""
     edge = _numba_pack_edge(
         int(n), int(fill_pos), int(base_e), int(great_start), int(great_end), int(activation_great_idx)
@@ -2724,12 +2720,11 @@ def _numba_touch_body_candidate(
     return int(touched_count)
 
 
-# Issue #44 body-tail hull: the Pareto reduce and the per-normal-Great upper-hull filter are fused
-# into `_numba_reduce_touched_body_pairs` (allocation-free, byte-identical output); see its
-# docstring for the exactness and ordering proof.
+# Body-tail hull: the Pareto reduce and the per-normal-Great upper-hull filter are fused into
+# `_numba_reduce_touched_body_pairs`; see its docstring for the exactness and ordering proof.
 
 
-# Issue #44 Route A (LOSSLESS): the realizable stat box. The head+body score is MULTILINEAR in
+# The realizable stat box (lossless head prune). The head+body score is MULTILINEAR in
 # (v=base_value, c=combo_mul, f=fever_mul, g=great_base) on the realizable region (g<=v, c,f>=1, so
 # every floor's max/min is resolved), and a multilinear function attains its extrema at the box
 # VERTICES -- so a surface's exact dominance over the WHOLE box is decided at its 16 corners, with
@@ -2756,7 +2751,7 @@ def _numba_popcount64(x):
 # Only run the lossless cone-envelope prune once a head state's reduced frontier exceeds this size.
 # The early-Great cascade is what inflates a frontier past it; an ordinary (no-early-Great) head
 # state stays well under, and its Pareto set already IS small and a superset of the envelope, so
-# skipping the prune there is exact and keeps the build cost at the pre-#44 baseline. Genuine
+# skipping the prune there is exact and cheap. Genuine
 # cascades still cross the threshold and get pruned (preventing the exponential blow-up).
 _HEAD_FILTER_MIN_SURFACES = 96
 _HEAD_GENERATED_BOUND_MULTIPLIER = 64
@@ -2917,8 +2912,7 @@ def _numba_head_cached_scores_dominate(left_scores, right_scores, left_surface, 
     weighted absolute body deltas), so a corner where left trails right already fails the margin
     test -- the corner pre-pass rejects most pairs before the margin popcounts run. Comparison
     outcomes are identical to recomputing the corner scores from the two bases per pair; the
-    margin reads the original surface rows (`_numba_head_surface_margin`), which is value-
-    identical to the retired basis-tuple margin."""
+    margin reads the original surface rows (`_numba_head_surface_margin`), value-identical to the basis margin."""
     for cc in range(16):
         if left_scores[int(cc)] < right_scores[int(cc)]:
             return False
@@ -3408,7 +3402,7 @@ def _numba_maybe_promote_head_generated_with_scores(
 
 @njit(cache=True, nogil=True)
 def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
-    """Issue #44 Route A: LOSSLESS prune of the head frontier to its cone-Pareto set -- the surfaces
+    """LOSSLESS prune of the head frontier to its cone-Pareto set -- the surfaces
     that are best for SOME realizable stat cell. The head+body score is multilinear in (v,c,f,g) on
     the realizable region (g<=v, c,f>=1 resolve every floor's max/min), so its unfloored value hits
     its box extrema at the 16 corners. Surface K dominates C over the WHOLE realizable box iff
@@ -3435,8 +3429,7 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
     # The margin is non-negative, so the zero-threshold corner pre-pass rejects most pairs before
     # the margin popcounts run -- outcomes identical to computing the margin unconditionally.
     # Kept set lives in a fixed index array compacted in place on eviction (same pattern as the
-    # serve-time `_numba_session_box_keep_mask`); survivor order matches the retired
-    # rebuild-a-List formulation exactly.
+    # serve-time `_numba_session_box_keep_mask`); survivors keep their arrival order.
     kept_rows = np.empty(m, dtype=np.int64)
     kept_count = 0
     for i in range(m):
@@ -3672,33 +3665,22 @@ def _numba_reduce_touched_body_pairs(
     bit_stamp: int,
     frontier_values,
 ):
-    """Fused Pareto reduce + issue-#44 body-tail hull filter, allocation-free.
+    """Fused Pareto reduce + body-tail hull filter, allocation-free.
 
-    Emits the surviving (body_fever, body_great, body_fever_great) rows into the reusable
-    grow-doubling (cap, 3) uint64 `frontier_values` buffer and returns (buffer, count). Fusing the
-    two passes and dropping the intermediate typed List / sort copy / hull coordinate arrays is
-    byte-identical to the retired two-pass formulation:
+    Emits the surviving (body_fever, body_great, body_fever_great) rows into the reusable grow-doubling (cap, 3)
+    uint64 `frontier_values` buffer and returns (buffer, count). One pass is exact because:
 
-    - `touched_pair[:touched_count]` holds DISTINCT pair indices: `_numba_touch_body_candidate`
-      appends a pair_idx only on its first stamp-set (later touches only raise
-      best_fever_by_pair), and every touch batch bumps the stamp and resets touched_count
-      together. The retired duplicate-skipping scan after the sort was therefore dead, and
-      sorting the live slice IN PLACE is safe -- nothing reads the insertion order afterwards
-      (each batch rewrites [0, its own count) before the next reduce).
-    - The reduce visits pairs in ascending pair_idx = normal_great*pair_mod + fever_great order,
-      i.e. (normal_great asc, fever_great asc). A kept entry's body_fever strictly exceeds the
-      stamped-Fenwick prefix max over everything already processed with fever_great' <=
-      fever_great, which includes every earlier kept entry of the SAME normal_great group -- so
-      within a group kept rows have strictly increasing body_fever. The retired hull's argsort
-      key (normal_great * 2^24 + body_fever; body counts < total_notes << 2^24) is therefore
-      strictly increasing over the kept sequence: the argsort was the identity permutation, and
-      running the per-group upper hull of (body_fever, -fever_great) incrementally over the kept
-      stream (the finished-groups prefix of `frontier_values` doubles as the current group's
-      stack) visits the same points in the same order with the same int64 cross products. The
-      retired `count <= 2` group short-cut and the `m <= 2` whole-frontier short-cut emitted
-      those rows verbatim -- exactly what the chain does (a pop needs two prior in-group rows).
-    - The Fenwick update sequence is unchanged (one update per distinct pair, in the same order,
-      hull pops never touch it), so the carried bit_values/bit_stamps workspace stays identical.
+    - `touched_pair[:touched_count]` holds DISTINCT pair indices (`_numba_touch_body_candidate` appends a pair_idx
+      only on its first stamp-set; every touch batch bumps the stamp and resets touched_count), and nothing reads
+      their insertion order afterwards, so the live slice is sorted in place.
+    - Pairs are visited in ascending pair_idx = normal_great*pair_mod + fever_great, i.e. (normal_great asc,
+      fever_great asc). A kept entry's body_fever strictly exceeds the stamped-Fenwick prefix max over everything
+      already processed with fever_great' <= fever_great, which includes every earlier kept entry of the same
+      normal_great group, so within a group kept rows have strictly increasing body_fever and the per-group upper
+      hull of (body_fever, -fever_great) runs incrementally over the kept stream (the finished-groups prefix of
+      `frontier_values` doubles as the current group's stack); a group of one or two rows passes through as is.
+    - The Fenwick gets one update per distinct pair, in pair order (hull pops never touch it), so the carried
+      bit_values/bit_stamps workspace does not depend on what the hull removes.
 
     For a fixed (PP/combo/fever/color) cell the body score is LINEAR in the three body counts:
     `A*body_fever - pnp*normal_great - pfp*fever_great` with A,pnp,pfp >= 0. The early-Great
@@ -3774,8 +3756,8 @@ def _numba_packet_points_copy(src, src_start: int, src_end: int, dst, dst_cursor
 
 @njit(cache=True, nogil=True)
 def _numba_packet_points_append(buf, base: int, write: int, cf: int, cn: int, cq: int) -> int:
-    """Flat twin of the retired List-based packet-point Pareto insert: identical dominated
-    check, identical survivor compaction order, candidate appended last. The working set is
+    """Packet-point Pareto insert: a dominated candidate is dropped, the points it dominates are compacted out in
+    order, and the candidate is appended last. The working set is
     buf rows [base, write); returns the new write cursor."""
     for idx in range(int(base), int(write)):
         if buf[int(idx), 0] >= cf and buf[int(idx), 1] <= cn and buf[int(idx), 2] <= cq:
@@ -3823,10 +3805,8 @@ def _numba_packet_union(
     out_buf,
     out_cursor: int,
 ):
-    """Flat-range twin of the retired List-based packet union, case for case. Returns
-    (code, start, end): code 1 keeps the left range verbatim (the List version returned the
-    ``left`` object), code 2 the right range, code 0 wrote a fresh union into ``out_buf`` at
-    [out_cursor, end). Content and order match the List version exactly; the caller must
+    """Union of two packet ranges. Returns (code, start, end): code 1 = the left range verbatim, code 2 = the right
+    range, code 0 = a fresh union written into ``out_buf`` at [out_cursor, end). The caller must
     reserve (left_len + right_len) rows at ``out_cursor`` and guarantee [out_cursor, ...)
     does not overlap either input range (arena writes only ever land at the cursor, past
     every live range, so this holds by construction)."""
@@ -3996,12 +3976,10 @@ def _numba_packet_queue_transfer(
     back_pk_arenas,
     front_ag_arenas,
 ) -> None:
-    """Flat twin of the retired List-based back->front transfer: pop back entries newest
-    first, fold each packet into the running union exactly like ``union(packet, aggregate)``,
-    and append (alpha, aggregate range) to the front stack. Alias-returning unions become
-    range shares (aggregate kept -> the new front entry reuses the previous entry's range) or
-    materialized copies (packet kept -> its points are copied into the front arena, content
-    identical to the aliased List object). Front aggregate ends are non-decreasing along the
+    """Back->front transfer: pop back entries newest first, fold each packet into the running union
+    (``union(packet, aggregate)``) and append (alpha, aggregate range) to the front stack. A union that returns the
+    aggregate shares its range with the new front entry; one that returns the packet copies its points into the
+    front arena. Front aggregate ends are non-decreasing along the
     stack, so the arena cursor is always the top entry's end and pops rewind losslessly."""
     f = int(family_idx)
     base = int(seg_base)
@@ -4038,8 +4016,7 @@ def _numba_packet_queue_transfer(
                 int(front_cursor),
             )
             if int(code) == 1:
-                # Union kept the packet alone (the List version aliased the packet object):
-                # materialize its points into the front arena, content identical.
+                # The union is the packet alone: copy its points into the front arena.
                 run_start = int(front_cursor)
                 run_end = _numba_packet_points_copy(
                     pk_buf, int(pk_start), int(pk_end), front_arena, int(front_cursor)
@@ -4107,12 +4084,10 @@ def _numba_packet_queue_push_back(
     seg_limit: int,
     packet_queue,
 ) -> None:
-    """Flat twin of the retired List-based push_back. The packet occupies back-packet-arena
-    rows [pk_start, pk_end), already written at the arena cursor by the caller; callers
-    return early on empty packets exactly like the List version's length guard. The new top
-    aggregate is ``union(old_top, packet)``: fresh unions land at the aggregate-arena cursor,
-    an old-top alias shares the old range, and a packet alias (or the empty-back seed, which
-    the List version aliased by reference) is materialized with identical content."""
+    """Push a packet on the back stack. The packet occupies back-packet-arena rows [pk_start, pk_end), already
+    written at the arena cursor by the caller (callers skip empty packets). The new top aggregate is
+    ``union(old_top, packet)``: a fresh union lands at the aggregate-arena cursor, an old-top alias shares the old
+    range, and a packet alias (or the empty-back seed) is materialized with identical content."""
     back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
     f = int(family_idx)
     base = int(seg_base)
@@ -4203,12 +4178,11 @@ def _numba_packet_queue_push_activation(
         edge_eg_e = int(late_eg_e)
         fever_great_delta = 1
 
-    # Issue #44: extend the fever end from `edge_e` (the Perfect/late boundary) up to the
+    # Early Greats: extend the fever end from `edge_e` (the Perfect/late boundary) up to the
     # earliest-Great floor boundary `eg_e`. Each e in [edge_e, eg_e] is its own Pareto surface;
     # the notes [edge_e, e) are pulled into fever as GREATS (all body, since activation >= 100),
     # so each such e contributes (e - edge_e) extra fever-greats on top of the section's fever
-    # length. eg_e == edge_e on the overwhelming majority of activations -> the loop runs once
-    # and this is bit-for-bit the pre-#44 behaviour at zero added cost.
+    # length. eg_e == edge_e on the overwhelming majority of activations, so the loop usually runs once.
     eg_e = int(edge_eg_e)
     # The activation can also end its fever early, at every end in [perfect_exit_e / late_exit_e, edge_e).
     exit_e = ends.perfect_exit_e if int(mode) == 0 else ends.late_exit_e
@@ -4596,8 +4570,8 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     # most (family_end - family_start + 1) live entries (each alpha is pushed once, expired
     # entries are popped before pushes, and at touch time every entry is window-live).
     # Packet points and aggregates live in per-family grow-doubling (cap, 3) int64 arenas;
-    # per-entry (start, end) ranges replace the retired List objects, with union alias
-    # returns represented as range shares (see _numba_packet_queue_transfer / push_back).
+    # entries hold (start, end) ranges, and a union that returns one of its inputs shares that range
+    # (see _numba_packet_queue_transfer / push_back).
     seg_off = np.zeros(int(family_count) + 1, dtype=np.int64)
     for family_idx in range(int(family_count)):
         width = int(family_end[int(family_idx)]) - int(family_start[int(family_idx)]) + 1
@@ -5010,7 +4984,7 @@ def _numba_first_section_body_frontier(
                         best_fever_by_pair, touched_pair, int(touched_count),
                     )
                     first_generated_count += int(added_exit)
-                # Issue #44: early-Great extension of the first Perfect-activation section.
+                # The early-Great extension of the first Perfect-activation section.
                 # first_fill >= 100, so every extended end is in the body (head_great_count
                 # unchanged -> same bucket). Bucket membership (edge_e >= 100) proves the
                 # staged hit was prefix_perfect_hit[fill] -> the capped table is exact.
@@ -5078,7 +5052,7 @@ def _numba_first_section_body_frontier(
                     best_fever_by_pair, touched_pair, int(touched_count),
                 )
                 first_generated_count += int(added_exit)
-            # Issue #44: early-Great extension of the first late-Great-activation section.
+            # The early-Great extension of the first late-Great-activation section.
             # Bucket membership (activation_e >= 100) proves the staged hit was
             # prefix_late_hit[fill] -> the capped table is exact.
             eg_e_late = int(ends.eg_late_e[int(fill)])
@@ -5241,10 +5215,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
     # normal_great*pair_mod + body_fever_great, injective only while body_fever_great < pair_mod.
     # body_fever_great sums, per section, <=1 boundary Great plus the issue-#44 early-Great band
     # (<= max_eg_width extras), over at most `section_bound` sections -> true max is
-    # section_bound*(1 + max_eg_width). Size pair_mod one past that. max_eg_width == 0 on the common
-    # (no early-Great) path, collapsing this to the pre-#44 section-count bound (zero regression).
-    # Capped at n+1 since body_fever_great <= body_great <= n always. (Before this fix pair_mod was
-    # the bare section count, so a wide early-Great band overflowed the radix and aliased silently.)
+    # section_bound*(1 + max_eg_width). Size pair_mod one past that (max_eg_width == 0 on the common no-early-Great
+    # path). Capped at n+1 since body_fever_great <= body_great <= n always; a smaller radix would alias pairs.
     section_bound = int(n) // int(min_later_fill) + 4
     pair_mod = min(int(n) + 1, int(section_bound) * (1 + int(max_eg_width)) + 1)
     pair_size = (int(n) + 1) * int(pair_mod)
@@ -5324,9 +5296,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
     head_limit = min(int(n), 100)
     # Flat head-state store: retained per-state head frontiers live in one grow-doubling
     # (cap, 7) uint64 arena addressed by a state -> (start, count) CSR. Rows are written in the
-    # envelope filter's retained order (the order the retired per-state typed Lists held), and a
-    # state's rows are final before any earlier state composes against them (states run
-    # descending). Unreachable states keep count 0 (the retired empty Lists).
+    # envelope filter's retained order, and a state's rows are final before any earlier state composes against
+    # them (states run descending). Unreachable states keep count 0.
     head_pool = np.empty((256, 7), dtype=np.uint64)
     head_pool_cursor = 0
     head_state_start = np.zeros(max(1, int(head_limit)), dtype=np.int64)
@@ -5383,7 +5354,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
         )
         generated_count += int(added)
         generated_surfaces += generated_count
-        # Issue #44 Route A: prune each head-state tail set to its parametric upper envelope
+        # Prune each head-state tail set to its parametric upper envelope
         # (positions [state_i, head_limit)) before any earlier state composes against it, so the
         # early-Great head cascade never forms the exponential product. Bit-exact under the
         # additive edge/tail decomposition; see _numba_head_envelope_filter.
@@ -5502,8 +5473,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
             )
         )
         first_generated_count += int(added)
-        # Issue #44 Route A: same upper-envelope prune for the first-frontier head-activation
-        # branch (full plays from cursor 0, head positions [0, head_limit)).
+        # The same upper-envelope prune for the first-frontier head-activation branch (full plays from cursor 0,
+        # head positions [0, head_limit)).
         first_frontier = _numba_head_envelope_filter(
             _numba_reduce(first_generated), 0, int(head_limit), int(head_filter_min)
         )
