@@ -49,7 +49,6 @@ class FirstOnlyCanonicalization:
     capped_eg_late_e: np.ndarray
     capped_perfect_exit_e: np.ndarray
     capped_late_exit_e: np.ndarray
-    hit_values: np.ndarray
     hit_ends: np.ndarray
 
 
@@ -68,11 +67,12 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     use_forced_great_timing: bool,
     lanes: np.ndarray | None = None,
 ) -> FirstOnlyCanonicalization:
-    hit_values = np.unique(np.concatenate((
+    # Song tokens (response_build_gpu_numba._REGION_HIT_*) index the endpoint tables directly.
+    hit_values = np.concatenate((
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps,
         perfect_candidate_timestamps.astype(np.float64) - 0.000001,
         great_candidate_timestamps.astype(np.float64) - 0.000001,
-    )))
+    ))
     real_times = np.asarray([item[3] for item in prepared], dtype=np.float64)
     unique_real_times = np.unique(real_times)
     cutoffs = (hit_values[None, :] + unique_real_times[:, None]).astype(np.float32)
@@ -98,7 +98,6 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             empty,
             empty,
             empty,
-            hit_values,
             hit_ends,
         )
     (
@@ -143,7 +142,6 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             capped_eg_late_e,
             capped_perfect_exit_e,
             capped_late_exit_e,
-            hit_values,
             hit_ends,
         )
     end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
@@ -219,7 +217,6 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         capped_eg_late_e,
         capped_perfect_exit_e,
         capped_late_exit_e,
-        hit_values,
         hit_ends,
     )
 

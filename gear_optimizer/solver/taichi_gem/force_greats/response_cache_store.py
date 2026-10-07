@@ -623,6 +623,13 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+l
     "fg-response-frontier-visible-first-v31+logic-fa1b09f9e592",
     *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-fa1b09f9e592"],
 )
+# Frame-Safe retired; the modes' new names keep their cache names; Precise hit IDs are song tokens again: the
+# 40-chart sample's Precise and Non-Precise bundles are byte-identical, one to one, to 2278a0e06009's builds (40-chart
+# byte gates). Ratify it and its ratified predecessors (non-transitive).
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-cbed8e119777"] = (
+    "fg-response-frontier-visible-first-v31+logic-2278a0e06009",
+    *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-2278a0e06009"],
+)
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):

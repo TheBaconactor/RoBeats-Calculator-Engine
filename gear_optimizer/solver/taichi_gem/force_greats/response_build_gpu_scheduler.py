@@ -19,7 +19,7 @@ from .response_build_gpu_reducer import (
 from .response_types import FgResponseFrontierResult
 
 
-_REGION_TABLE_ENTRY_BYTES = 5 * np.dtype(np.int32).itemsize + 2 * np.dtype(np.float64).itemsize
+_REGION_TABLE_ENTRY_BYTES = 7 * np.dtype(np.int32).itemsize
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +73,7 @@ def _region_table_build_peak_bound_bytes(
         )
     )
     starts_bytes = (int(n) + 2) * np.dtype(np.int64).itemsize
-    return int(starts_bytes + int(capacity) * (2 * _REGION_TABLE_ENTRY_BYTES + 6 * 8))
+    return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
 
 
 def _region_table_retained_bound_bytes(
@@ -90,14 +90,14 @@ def _region_table_retained_bound_bytes(
         )
     )
     starts_bytes = (int(n) + 2) * np.dtype(np.int64).itemsize
-    return int(starts_bytes + int(capacity) * (7 * 4))
+    return int(starts_bytes + int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
 
 
 def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count: int) -> int:
     """Exhaustive one-live-table bound, including hit interning and endpoint tables."""
     capacity = (int(n) + 1) * max(1, int(region_action_count)) * 2
     starts_bytes = (int(n) + 2) * np.dtype(np.int64).itemsize
-    return int(starts_bytes + int(capacity) * (2 * _REGION_TABLE_ENTRY_BYTES + 6 * 8))
+    return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
 
 
 def _validate_region_group_memory_bounds(
@@ -270,11 +270,6 @@ def _build_region_table(
             context.late_great_floor_timestamps,
         ),
         context.lanes,
-    )
-    region_table = (
-        *region_table[:5],
-        *(np.searchsorted(context.canonical.hit_values, values).astype(np.int32) for values in region_table[5:7]),
-        region_table[7],
     )
     return region_table, _region_table_bytes(region_table), float(time.perf_counter() - build_t0)
 

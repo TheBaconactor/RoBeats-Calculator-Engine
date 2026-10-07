@@ -184,5 +184,5 @@ def test_cache_context_is_inert_at_zero_t_lossless():
     tuples lock that existing non-precise cache keys (and therefore cached scores) are unchanged and that
     precise carries only its cache revision -- if a future edit leaks a non-empty hash at
     ``T == 0``, this fails."""
-    assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "non-precise", "", 0)
-    assert _song(mode="precise").timeline_key[-4:] == ("TIMING_ENVELOPE", "precise@2", "", 0)
+    assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "zero_ms", "", 0)
+    assert _song(mode="precise").timeline_key[-4:] == ("TIMING_ENVELOPE", "perfect_window@2", "", 0)

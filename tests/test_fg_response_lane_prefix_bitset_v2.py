@@ -389,7 +389,7 @@ def _retired_boolean_region_core_for_offset(
         great_end = -1
         activation_hit = -1
         for candidate_end in range(int(activation) + 1, int(max_great_end) + 1):
-            hit, valid = rb._numba_late_great_activation_hit_for_run(
+            hit, valid, _token = rb._numba_late_great_activation_hit_for_run(
                 int(activation),
                 timestamps,
                 perfect_candidates,
@@ -421,7 +421,7 @@ def _retired_boolean_region_core_for_offset(
                 break
         if int(great_end) < 0:
             return -1, -1, 0, 0, -1, -1, 0
-        _perfect_hit, perfect_valid = (
+        _perfect_hit, perfect_valid, _token = (
             rb._numba_perfect_activation_hit_for_run(
                 int(activation),
                 timestamps,
@@ -445,7 +445,7 @@ def _retired_boolean_region_core_for_offset(
     great_end = min(int(n), int(run_start) + int(k))
     if int(great_end) <= int(run_start):
         return -1, -1, 0, 0, -1, -1, 0
-    perfect_hit, perfect_valid = rb._numba_perfect_activation_hit_for_run(
+    perfect_hit, perfect_valid, _token = rb._numba_perfect_activation_hit_for_run(
         int(activation),
         timestamps,
         perfect_candidates,
@@ -574,7 +574,11 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
                 expected_columns[6].append(int(perfect_valid))
     expected_starts.append(len(expected_columns[0]))
     assert np.array_equal(actual[0], np.asarray(expected_starts, dtype=np.int64))
-    for actual_column, expected_column in zip(actual[1:], expected_columns, strict=True):
+    # The hit columns hold song tokens: each must resolve to its expected hit.
+    capped = (perfect_candidates.astype(np.float64) - 0.000001, great_candidates.astype(np.float64) - 0.000001)
+    tokens = np.concatenate((timestamps, perfect_candidates, great_candidates, *capped))
+    hits = [np.where(column >= 0, tokens[column], -1.0) for column in actual[5:7]]
+    for actual_column, expected_column in zip((*actual[1:5], *hits, actual[7]), expected_columns, strict=True):
         assert np.array_equal(actual_column, np.asarray(expected_column, dtype=actual_column.dtype))
 
 

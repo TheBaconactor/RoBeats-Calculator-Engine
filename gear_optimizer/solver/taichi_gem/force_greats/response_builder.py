@@ -603,7 +603,7 @@ def _latest_activation_hit_for_labels(
     )
     if not (0 <= int(a) < int(n_eff)):
         raise ValueError("activation_index must be inside the section")
-    cap, valid = _rb_numba._numba_latest_activation_hit_for_contiguous_great_run(
+    cap, valid, _token = _rb_numba._numba_latest_activation_hit_for_contiguous_great_run(
         int(a),
         float(hit_lo),
         float(hit_hi),
@@ -613,6 +613,7 @@ def _latest_activation_hit_for_labels(
         int(great_start_i),
         int(great_count_i),
         int(n_eff),
+        -1,
     )
     return float(cap) if int(valid) else None
 

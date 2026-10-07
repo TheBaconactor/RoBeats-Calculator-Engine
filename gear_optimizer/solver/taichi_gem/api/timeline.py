@@ -378,6 +378,13 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3c72ed
     "exact-frontier-v12+logic-92a162c8fc85",
     *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-92a162c8fc85"],
 )
+# Frame-Safe retired; the modes' new names keep their cache names; Precise hit IDs are song tokens again: the
+# 40-chart sample's Precise and Non-Precise payloads are byte-identical, one to one, to 3c72edf5d46c's builds (40-chart
+# byte gates). Ratify it and its ratified predecessors (non-transitive).
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-4081f48488b6"] = (
+    "exact-frontier-v12+logic-3c72edf5d46c",
+    *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3c72edf5d46c"],
+)
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:

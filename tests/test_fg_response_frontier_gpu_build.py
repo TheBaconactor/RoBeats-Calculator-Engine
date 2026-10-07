@@ -413,24 +413,24 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
         np.dtype(np.int32),
         np.dtype(np.int32),
         np.dtype(np.int32),
-        np.dtype(np.float64),
-        np.dtype(np.float64),
+        np.dtype(np.int32),
+        np.dtype(np.int32),
         np.dtype(np.int32),
     ]
 
 
-def test_region_packet_missing_core_receives_its_fever_time(monkeypatch) -> None:
+def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
 
     n = 120
     empty = np.empty(0, dtype=np.int32)
     limits = np.full(n, n, dtype=np.int32)
-    region = rb.RegionTables(np.zeros(n + 2, dtype=np.int64), *(empty for _ in range(9)),
-                             5.0)
+    perfect_ends, great_ends = np.arange(3, dtype=np.int32), np.arange(4, dtype=np.int32)
+    region = rb.RegionTables(np.zeros(n + 2, dtype=np.int64), *(empty for _ in range(7)), perfect_ends, great_ends)
     calls = []
 
     def edge(*args):
-        assert args[-1] == 5.0
+        assert args[-2] is perfect_ends and args[-1] is great_ends
         calls.append(args)
         return -1, -1, -1, -1, -1, -1, 0
 
@@ -522,7 +522,7 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
         action_k,
         4.0,
     )
-    expected = (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 120
+    expected = (n + 2) * np.dtype(np.int64).itemsize + 2 * int(capacity) * 28
     assert response_build_gpu_scheduler._region_table_build_peak_bound_bytes(
         n=n,
         action_k=action_k,
@@ -536,7 +536,7 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
     assert response_build_gpu_scheduler._legacy_single_region_table_peak_bound_bytes(
         n=n,
         region_action_count=int(action_k.shape[0]),
-    ) == (n + 2) * 8 + ((n + 1) * 4 * 2) * 120
+    ) == (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 28
 
 
 def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatch) -> None:
@@ -727,7 +727,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
     )
 
     for activation in range(n):
-        expected_hit, expected_valid = rb._numba_perfect_activation_hit_for_run(
+        expected_hit, expected_valid, _token = rb._numba_perfect_activation_hit_for_run(
             activation,
             timestamps,
             perfect_hi,
@@ -739,7 +739,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
         assert int(perfect_valid[activation]) == int(expected_valid)
         assert float(perfect_hit[activation]) == pytest.approx(float(expected_hit))
 
-        expected_late_hit, expected_late_valid = (
+        expected_late_hit, expected_late_valid, _token = (
             rb._numba_late_great_activation_hit_for_run(
                 activation,
                 timestamps,
@@ -756,7 +756,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
 
         for great_start in range(max(0, activation - 3), activation + 1):
             great_count = max(0, activation - great_start)
-            direct_hit, direct_valid = rb._numba_perfect_activation_hit_for_run(
+            direct_hit, direct_valid, _token = rb._numba_perfect_activation_hit_for_run(
                 activation,
                 timestamps,
                 perfect_hi,
@@ -768,7 +768,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
             assert int(perfect_valid[activation]) == int(direct_valid)
             assert float(perfect_hit[activation]) == pytest.approx(float(direct_hit))
 
-            direct_late_hit, direct_late_valid = (
+            direct_late_hit, direct_late_valid, _token = (
                 rb._numba_late_great_activation_hit_for_run(
                     activation,
                     timestamps,
@@ -815,6 +815,10 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
     )
     assert any(int(family_end[idx]) > int(family_start[idx]) for idx in range(int(family_count)))
 
+    capped = (perfect_candidates.astype(np.float64) - 0.000001, great_candidates.astype(np.float64) - 0.000001)
+    tokens = np.concatenate((timestamps, perfect_candidates, great_candidates, *capped))
+    cutoffs = (tokens + 1.75).astype(np.float32)
+    perfect_ends, great_ends = (np.searchsorted(f, cutoffs).astype(np.int32) for f in (perfect_floor, great_floor))
     checked = 0
     for family_idx in range(int(family_count)):
         start = int(family_start[family_idx])
@@ -844,7 +848,8 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                     great_candidates,
                     perfect_candidates + np.float32(0.001)),
                     lanes,
-                    1.75,
+                    perfect_ends,
+                    great_ends,
                 )
                 activation_i, edge_e, run_start, great_end, activation_great_idx, _eg_e, valid = direct
                 assert int(activation_i) == int(activation)
@@ -1874,9 +1879,8 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
             int(common["use_forced_great_timing_i"]),
             RegionTables(
                 common["region_starts"], common["region_offsets"], common["region_activations"],
-                common["region_great_ends"], common["region_is_greats"], empty_f64, empty_f64,
+                common["region_great_ends"], common["region_is_greats"], empty_i32, empty_i32,
                 common["region_perfect_valids"], perfect_floor, great_floor,
-                common["real_fever_time"],
             ),
             common["great_floor_timestamps"],
             perfect_successor,
@@ -2970,12 +2974,11 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
             columns[1],
             columns[2],
             columns[3],
-            perfect_end_by_hit[columns[4]].astype(np.float64),
-            perfect_end_by_hit[columns[5]].astype(np.float64),
+            columns[4],
+            columns[5],
             columns[6],
-            np.arange(n + 1, dtype=np.int32),
-            np.arange(n + 1, dtype=np.int32),
-            0.0),
+            perfect_end_by_hit,
+            perfect_end_by_hit),
             np.full((n,), n, dtype=np.int32),  # no early fever exits
             np.full((n,), n, dtype=np.int32),
             1,
@@ -3141,12 +3144,11 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
             table_columns[1],
             table_columns[2],
             table_columns[3],
-            perfect_end_by_hit[table_columns[4]].astype(np.float64),
-            perfect_end_by_hit[table_columns[5]].astype(np.float64),
+            table_columns[4],
+            table_columns[5],
             table_columns[6],
-            np.arange(n + 1, dtype=np.int32),
-            np.arange(n + 1, dtype=np.int32),
-            0.0),
+            perfect_end_by_hit,
+            perfect_end_by_hit),
             np.full((n,), n, dtype=np.int32),  # no early fever exits
             np.full((n,), n, dtype=np.int32),
             1,
