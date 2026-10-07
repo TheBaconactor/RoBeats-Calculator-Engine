@@ -8,6 +8,41 @@ SURFACE_PATTERN_COLUMNS = 10
 EXPANDED_SURFACE_COLUMNS = 11
 EXPANDED_COEFF_COLUMNS = 4
 
+# Per 16-bit half of a head fever word: how many head notes it marks and the sum of their 1-based positions.
+_U16_BITS = np.unpackbits(
+    np.arange(1 << 16, dtype=np.uint16).view(np.uint8).reshape(-1, 2), axis=1, bitorder="little"
+).astype(np.int32)
+_U16_COUNT = np.sum(_U16_BITS, axis=1, dtype=np.int32)
+_U16_POS_SUM = np.sum(_U16_BITS * np.arange(1, 17, dtype=np.int32), axis=1, dtype=np.int32)
+del _U16_BITS
+
+
+def surface_head_coeffs(pattern_words: np.ndarray, *, head_len: int) -> np.ndarray:
+    """(n, 4) int32 per head pattern over its first min(head_len, 100) notes: normal notes, fever notes, the sum of
+    the normal notes' 1-based positions, the sum of the fever notes' (from the pattern's four fever words)."""
+    words = np.asarray(pattern_words, dtype=np.uint32)
+    coeffs = np.zeros((int(words.shape[0]), EXPANDED_COEFF_COLUMNS), dtype=np.int32)
+    head = max(0, min(int(head_len), 100))
+    for block in range(4):
+        start = 32 * block
+        take = min(32, head - start)
+        if take <= 0:
+            break
+        block_words = words[:, block]
+        low = (block_words & np.uint32((1 << min(16, take)) - 1)).astype(np.uint16)
+        fever = _U16_COUNT[low]
+        position_sum = _U16_POS_SUM[low]
+        if take > 16:
+            high = ((block_words >> np.uint32(16)) & np.uint32((1 << (take - 16)) - 1)).astype(np.uint16)
+            fever = fever + _U16_COUNT[high]
+            position_sum = position_sum + _U16_POS_SUM[high] + 16 * _U16_COUNT[high]
+        fever_position_sum = position_sum + start * fever
+        coeffs[:, 0] += take - fever
+        coeffs[:, 1] += fever
+        coeffs[:, 2] += take * (2 * start + take + 1) // 2 - fever_position_sum
+        coeffs[:, 3] += fever_position_sum
+    return coeffs
+
 
 def _intern_surface_row_words(
     surface_rows: np.ndarray,

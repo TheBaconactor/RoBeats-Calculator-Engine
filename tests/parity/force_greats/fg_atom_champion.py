@@ -13,7 +13,7 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_response_group_meta_cpu
+from gear_optimizer.solver.taichi_gem.force_greats.response_gem_search import _score_response_group_meta_cpu
 
 @dataclass(frozen=True, slots=True)
 class ChampionAtom:
@@ -48,7 +48,7 @@ def _score_single_frontier_domain(
     rows = np.ascontiguousarray(group_meta, dtype=np.int32)
     group_offsets = np.zeros((int(rows.shape[0]),), dtype=np.int32)
     group_lengths = np.full((int(rows.shape[0]),), int(surface_words.shape[0]), dtype=np.int32)
-    scored, _logical_rows = _score_response_group_meta_cpu(
+    scored = _score_response_group_meta_cpu(
         group_meta=rows,
         group_offsets=group_offsets,
         group_lengths=group_lengths,

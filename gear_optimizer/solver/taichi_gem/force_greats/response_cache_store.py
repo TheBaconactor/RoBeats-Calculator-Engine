@@ -30,6 +30,7 @@ from .response_cache_patterns import (
     expand_surface_rows,
     intern_surface_row_words,
     pack_surface_patterns,
+    surface_head_coeffs,
     unpack_surface_patterns,
 )
 from .response_cache_types import (
@@ -1090,7 +1091,6 @@ def release_fg_response_song_memory(bundle_key: tuple) -> int:
 
 def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
     from .response_cache_serde import _pack_frontiers
-    from .response_inner_host import _precompute_surface_head_coeffs
 
     path = FG_RESPONSE_FRONTIER_CACHE.file_path(cache_key)
     surface_generation = uuid.uuid4().hex
@@ -1110,7 +1110,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
     # unique table is identical to computing N logical rows and selecting each pattern's first
     # row, while deleting the N x 4 int32 + uint16 coefficient staging arrays.
     first_surface_rows, first_surface_pattern_words = intern_surface_row_words(first_surface_pool)
-    first_surface_pattern_coeffs = _precompute_surface_head_coeffs(
+    first_surface_pattern_coeffs = surface_head_coeffs(
         first_surface_pattern_words,
         head_len=int(first_surface_head_len),
     )

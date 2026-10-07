@@ -35,13 +35,13 @@ def _random_pattern_words(rng: np.random.Generator, pattern_count: int) -> np.nd
 
 
 def _random_in_memory_batch(seed: int):
-    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _precompute_surface_head_coeffs
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
 
     rng = np.random.default_rng(seed)
     pattern_count = 60
     pattern_words = _random_pattern_words(rng, pattern_count)
     pattern_coeffs = np.ascontiguousarray(
-        _precompute_surface_head_coeffs(pattern_words, head_len=_HEAD_LEN), dtype=np.int32
+        surface_head_coeffs(pattern_words, head_len=_HEAD_LEN), dtype=np.int32
     )
     segment_lengths = [int(v) for v in rng.integers(3, 51, size=20)]
     segment_offsets = [0]
@@ -131,14 +131,14 @@ def _retired_compact_pack(bundle, group_ft_stat, group_ff_stat):
 
 
 def _score_cpu_f64(group_meta, packed, *, allow_pp: bool) -> np.ndarray:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_fg_response_groups_native_f64
+    from gear_optimizer.solver.taichi_gem.force_greats.response_gem_search import _score_fg_response_groups_native_f64
 
     ids, words, counts, coeffs, group_offsets, group_lengths = packed[:6]
     idx = np.arange(MAX_STAT + 1, dtype=np.float64)
     color_flags = (
-        np.asarray([1, 0, 0, 0, 0, 0, 1, 0], dtype=np.int32)
+        np.asarray([1, 0, 0, 0, 0, 0, 1, 0, 0], dtype=np.int32)
         if allow_pp
-        else np.asarray([0, 0, 1, 0, 0, 1, 1, 0], dtype=np.int32)
+        else np.asarray([0, 0, 1, 0, 0, 1, 1, 0, 0], dtype=np.int32)
     )
     return np.asarray(
         _score_fg_response_groups_native_f64(

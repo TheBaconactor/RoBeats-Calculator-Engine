@@ -20,7 +20,7 @@ from .response_cache import load_response_frontier_scoring_bundle
 from .response_cache_serde import frontier_result_from_scoring_bundle_for_stats
 from .response_cache_store import load_first_surface_scoring_patterns
 from .response_cache_types import FgResponseFrontierScoringBundle, all_response_stat_keys
-from .response_inner_host import _score_response_group_meta_cpu
+from .response_gem_search import _score_response_group_meta_cpu
 from .response_types import (
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
@@ -710,45 +710,20 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
             "FG response frontier owner score requires a finalized batch "
             "(group rows built and scoring surfaces packed before submit)"
         )
-    surface_pattern_ids = batch.scoring_surface_pattern_ids
-    surface_pattern_words = batch.scoring_surface_pattern_words
-    surface_counts = batch.scoring_surface_counts
-    surface_pattern_head_coeffs = batch.scoring_surface_pattern_head_coeffs
-    group_offsets = batch.scoring_group_offsets
-    group_lengths = batch.scoring_group_lengths
-    if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
-        batch.group_meta.shape[0]
-    ):
-        raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
-    if (
-        int(surface_pattern_ids.ndim) != 1
-        or int(surface_pattern_words.ndim) != 2
-        or int(surface_pattern_words.shape[1]) != 8
-        or int(surface_counts.ndim) != 2
-        or int(surface_counts.shape[1]) != 3
-        or int(surface_pattern_head_coeffs.ndim) != 2
-        or int(surface_pattern_head_coeffs.shape[1]) != 4
-    ):
-        raise ValueError("response frontier prepared scoring arrays have invalid shape")
-    inner_rows, _logical_surface_rows = _score_response_group_meta_cpu(
+    inner_rows = _score_response_group_meta_cpu(
         group_meta=batch.group_meta,
-        group_offsets=group_offsets,
-        group_lengths=group_lengths,
+        group_offsets=batch.scoring_group_offsets,
+        group_lengths=batch.scoring_group_lengths,
         primary_color=batch.primary_color,
         secondary_color=batch.secondary_color,
         selected_color=batch.selected_color,
         curves=batch.curves,
-        surface_pattern_ids=surface_pattern_ids,
-        surface_pattern_words=surface_pattern_words,
-        surface_counts=surface_counts,
-        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
+        surface_pattern_ids=batch.scoring_surface_pattern_ids,
+        surface_pattern_words=batch.scoring_surface_pattern_words,
+        surface_counts=batch.scoring_surface_counts,
+        surface_pattern_head_coeffs=batch.scoring_surface_pattern_head_coeffs,
     )
-    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact batch returned the wrong number of group results")
-    return FgResponseFrontierOwnerResult(
-        batch=batch,
-        inner_rows=np.asarray(inner_rows, dtype=np.int32),
-    )
+    return FgResponseFrontierOwnerResult(batch=batch, inner_rows=inner_rows)
 
 
 def materialize_prepared_force_greats_response_frontier_batch_results(

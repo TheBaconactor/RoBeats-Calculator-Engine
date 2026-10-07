@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _precompute_surface_head_coeffs
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from tests.parity.force_greats.fg_atom_champion import prove_single_frontier_champions
 from tests.songs_support import make_song
@@ -56,7 +56,7 @@ def test_head_coefficients_are_not_a_semantic_surface_key() -> None:
         dtype=np.uint32,
     )
 
-    coeffs = _precompute_surface_head_coeffs(surface_words, head_len=8)
+    coeffs = surface_head_coeffs(surface_words, head_len=8)
 
     assert coeffs[0].tolist() == coeffs[1].tolist()
     # Real curves: with the synthetic linear tables both surfaces happen to score the same.
@@ -83,7 +83,7 @@ def test_exact_scorer_atom_champion_projection_preserves_declared_domain() -> No
         [[s.body_fever, s.body_great, s.body_fever_great] for s in surfaces],
         dtype=np.int32,
     )
-    surface_head_coeffs = _precompute_surface_head_coeffs(surface_words, head_len=8)
+    head_coeffs = surface_head_coeffs(surface_words, head_len=8)
     domain_rows = []
     for residual in (0, 1, 3, 7):
         for pp in (0, 80, 157):
@@ -98,7 +98,7 @@ def test_exact_scorer_atom_champion_projection_preserves_declared_domain() -> No
         group_meta=group_meta,
         surface_words=surface_words,
         surface_counts=surface_counts,
-        surface_head_coeffs=surface_head_coeffs,
+        surface_head_coeffs=head_coeffs,
         primary_color="Rush",
         secondary_color="Flow",
         selected_color="Rush",

@@ -556,7 +556,7 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     tmp_path: Path, monkeypatch
 ) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     reset_fg_response_frontier_payload_cache()
@@ -582,7 +582,7 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     def _raise_recompute(*_args, **_kwargs):
         raise AssertionError("persisted song-only head coeffs should be reused")
 
-    monkeypatch.setattr(response_inner_host, "_precompute_surface_head_coeffs", _raise_recompute)
+    monkeypatch.setattr(response_cache_store, "surface_head_coeffs", _raise_recompute)
     bundle = response_cache.load_response_frontier_scoring_bundle(
         _song(),
         _varying_ref_arrays(),
@@ -1750,7 +1750,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         assert kwargs["surface_pattern_words"].shape == (1, 8)
         assert kwargs["surface_counts"].shape == (1, 3)
         assert kwargs["surface_pattern_head_coeffs"].shape == (1, 4)
-        return np.asarray([[123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.int32), 1
+        return np.asarray([[123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.int32)
 
     monkeypatch.setattr(
         response_frontier,

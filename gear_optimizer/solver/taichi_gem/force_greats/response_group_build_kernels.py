@@ -1,22 +1,21 @@
 """GPU (Taichi/Vulkan) FG response-frontier group-row reduction.
 
 Canonical production group-row builder: prunes FT/FF pairs per loadout and
-emits the packed arrays the GPU inner scorer consumes. Integer-only; tests
+emits the packed arrays the CPU gem search (response_gem_search) consumes. Integer-only; tests
 compare against the prune-composition reference in `tests/fg_group_build_reference.py`.
 No toggles / no fallbacks (docs/ENGINEERING_PRINCIPLES.md).
 
 Scratch (head/tail/next/ordered/best/keep_mask) lives in persistent Taichi fields,
 NOT in read/write ndarray kernel args: mixing read/write ndarray scratch with
 read-only ndarray inputs triggers a device-buffer aliasing bug across launches
-(read-only inputs get clobbered on re-launch). The proven-repeatable kernels in
-this package (response_inner_host) pass only read-only input ndarrays + write-only
-output ndarrays, which is the pattern mirrored here.
+(read-only inputs get clobbered on re-launch), so kernels here take only read-only
+input ndarrays and write-only output ndarrays.
 
 Parallelism: the outer candidate loop runs PARALLEL (one GPU thread per candidate);
 every scratch buffer is per-candidate-slabbed so threads never share state. Each
 candidate's inner reduction stays serial within its thread, so per-candidate results
-(including all order-dependent tie-breaks) are bit-identical to the serialized
-original, and emit ranges are disjoint via the host-computed prefix sum.
+(including all order-dependent tie-breaks) are identical to a serial run, and emit
+ranges are disjoint via the host-computed prefix sum.
 Batches larger than _MAX_CAND run as sequential count+emit chunks; candidates are
 independent, so the concatenated result is identical to a single launch.
 

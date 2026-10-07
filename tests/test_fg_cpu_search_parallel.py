@@ -7,7 +7,8 @@ import numpy as np
 
 from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.settings import paths
-from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as host
+from gear_optimizer.solver.taichi_gem.force_greats import response_gem_search as search
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
 
 
 def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")):
@@ -37,8 +38,8 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
         rng.integers(0, patterns, surface_rows).astype(np.int32),
         words,
         counts,
-        host._precompute_surface_head_coeffs(words, head_len=100),
-        np.array(host._color_flags(*colors), dtype=np.int32),
+        surface_head_coeffs(words, head_len=100),
+        np.array(search.color_flags(*colors), dtype=np.int32),
         np.ascontiguousarray(refs["Perfect Points"], dtype=np.float64),
         np.ascontiguousarray(refs["Combo Multiplier"], dtype=np.float64),
         np.ascontiguousarray(refs["Fever Multiplier"], dtype=np.float64),
@@ -51,20 +52,20 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
 def test_parallel_search_equals_one_serial_call():
     for group_count, seed in ((1, 1), (7, 2), (33, 3), (257, 4), (1000, 5)):
         offsets, lengths, meta, shared = _random_batch(group_count, seed)
-        serial = host._score_fg_response_groups_native_f64(offsets, lengths, meta, *shared)
-        parallel = host._score_fg_response_groups_on_cpu_cores(offsets, lengths, meta, shared)
+        serial = search._score_fg_response_groups_native_f64(offsets, lengths, meta, *shared)
+        parallel = search._score_fg_response_groups_on_cpu_cores(offsets, lengths, meta, shared)
         np.testing.assert_array_equal(parallel, serial)
 
 
 def test_search_kernel_releases_the_gil():
     offsets, lengths, meta, shared = _random_batch(20000, 9)
-    host._score_fg_response_groups_native_f64(offsets[:2], lengths[:2], meta[:2], *shared)  # compile
+    search._score_fg_response_groups_native_f64(offsets[:2], lengths[:2], meta[:2], *shared)  # compile
     done = threading.Event()
     kernel = {}
 
     def run_kernel():
         kernel["start"] = time.perf_counter()
-        host._score_fg_response_groups_native_f64(offsets, lengths, meta, *shared)
+        search._score_fg_response_groups_native_f64(offsets, lengths, meta, *shared)
         kernel["stop"] = time.perf_counter()
         done.set()
 

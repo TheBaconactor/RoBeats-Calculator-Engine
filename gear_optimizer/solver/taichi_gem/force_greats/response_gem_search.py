@@ -1,12 +1,13 @@
-from collections import OrderedDict
+"""The exact FG gem search: for each loadout, the best gem allocation over its response surfaces, in CPU f64 numba."""
+
 from concurrent.futures import ThreadPoolExecutor
 import os
 import threading
-import weakref
 from typing import Any
 
 import numpy as np
 
+from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
@@ -15,33 +16,19 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
-from gear_optimizer.core.jit_setup import jit
 
-
-_SURFACE_HEAD_COEFF_CACHE_MAX = 4
-# The CPU FG gem search scores each group independently (it writes only that group's output row),
-# so contiguous group chunks scored on separate threads and concatenated in order equal one call.
+# The search scores each group independently (it writes only that group's output row), so contiguous group chunks
+# scored on separate threads and concatenated in order equal one call.
 _FG_CPU_SEARCH_WORKERS = max(1, min(8, (os.cpu_count() or 1)))
 _FG_CPU_SEARCH_CHUNKS_PER_WORKER = 4
 _FG_CPU_SEARCH_MIN_GROUPS_PER_CHUNK = 4
 _fg_cpu_search_pool: ThreadPoolExecutor | None = None
 _fg_cpu_search_pool_lock = threading.Lock()
-_U16_HEAD_VALUES = np.arange(1 << 16, dtype=np.uint16)
-_U16_HEAD_BITS = np.unpackbits(_U16_HEAD_VALUES.view(np.uint8).reshape(-1, 2), axis=1, bitorder="little").astype(
-    np.int32,
-    copy=False,
-)
-_U16_HEAD_COUNT = np.ascontiguousarray(np.sum(_U16_HEAD_BITS, axis=1, dtype=np.int32), dtype=np.int32)
-_U16_HEAD_POS_SUM = np.ascontiguousarray(
-    np.sum(_U16_HEAD_BITS * np.arange(1, 17, dtype=np.int32).reshape(1, 16), axis=1, dtype=np.int32),
-    dtype=np.int32,
-)
-del _U16_HEAD_BITS
-_SURFACE_HEAD_COEFF_CACHE: OrderedDict[tuple[int, int, tuple[int, ...], tuple[int, ...]], np.ndarray] = OrderedDict()
-_SURFACE_HEAD_COEFF_CACHE_LOCK = threading.RLock()
 
 
-def _color_flags(primary_color: str, secondary_color: str, selected_color: str) -> tuple[int, ...]:
+def color_flags(primary_color: str, secondary_color: str, selected_color: str) -> tuple[int, ...]:
+    """Which gem elements raise the song's colors: (PP->primary, PP->secondary, CM->p, CM->s, FM->p, FM->s,
+    element->p, element->s, single color)."""
     primary = str(primary_color or "")
     secondary = str(secondary_color or "")
     selected = str(selected_color or "")
@@ -56,76 +43,6 @@ def _color_flags(primary_color: str, secondary_color: str, selected_color: str) 
         int(secondary == selected and bool(selected)),
         int(primary == secondary),
     )
-
-
-def _precompute_surface_head_coeffs(
-    surface_words: np.ndarray,
-    *,
-    head_len: int,
-) -> np.ndarray:
-    source = np.asarray(surface_words)
-    cacheable = bool(source.dtype == np.uint32 and source.flags.c_contiguous)
-    words = source if cacheable else np.ascontiguousarray(source, dtype=np.uint32)
-    key = (int(id(words)), int(head_len), tuple(int(v) for v in words.shape), tuple(int(v) for v in words.strides))
-    if cacheable:
-        with _SURFACE_HEAD_COEFF_CACHE_LOCK:
-            cached = _SURFACE_HEAD_COEFF_CACHE.get(key)
-            if cached is not None:
-                _SURFACE_HEAD_COEFF_CACHE.move_to_end(key)
-                return cached
-    row_count = int(words.shape[0])
-    coeffs = np.zeros((row_count, 4), dtype=np.int32)
-    head = max(0, min(int(head_len), 100))
-    if row_count > 0 and head > 0:
-        if int(words.ndim) != 2 or int(words.shape[1]) < 4:
-            raise ValueError("response frontier GPU head-coeff precompute requires packed fever words")
-        for block in range(4):
-            start = int(block * 32)
-            if start >= int(head):
-                break
-            take = min(32, int(head) - int(start))
-            if take <= 0:
-                continue
-            block_words = np.asarray(words[:, block], dtype=np.uint32)
-            low_take = min(16, int(take))
-            low_mask = (1 << int(low_take)) - 1
-            low = np.asarray(block_words & np.uint32(low_mask), dtype=np.uint16)
-            fever_count = np.asarray(_U16_HEAD_COUNT[low], dtype=np.int32)
-            local_sigma_hf = np.asarray(_U16_HEAD_POS_SUM[low], dtype=np.int32)
-            if int(take) > 16:
-                high_take = int(take) - 16
-                high_mask = (1 << int(high_take)) - 1
-                high = np.asarray((block_words >> np.uint32(16)) & np.uint32(high_mask), dtype=np.uint16)
-                high_count = np.asarray(_U16_HEAD_COUNT[high], dtype=np.int32)
-                fever_count = np.asarray(fever_count + high_count, dtype=np.int32)
-                local_sigma_hf = np.asarray(
-                    local_sigma_hf + _U16_HEAD_POS_SUM[high] + (16 * high_count),
-                    dtype=np.int32,
-                )
-            coeffs[:, 1] += fever_count
-            coeffs[:, 0] += int(take) - fever_count
-            sigma_hf = np.asarray(local_sigma_hf + (int(start) * fever_count), dtype=np.int32)
-            coeffs[:, 3] += sigma_hf
-            sigma_total = int(take) * ((2 * int(start)) + int(take) + 1) // 2
-            coeffs[:, 2] += int(sigma_total) - sigma_hf
-    coeffs = np.ascontiguousarray(coeffs, dtype=np.int32)
-    if cacheable:
-        with _SURFACE_HEAD_COEFF_CACHE_LOCK:
-            _SURFACE_HEAD_COEFF_CACHE[key] = coeffs
-            _SURFACE_HEAD_COEFF_CACHE.move_to_end(key)
-            while len(_SURFACE_HEAD_COEFF_CACHE) > int(_SURFACE_HEAD_COEFF_CACHE_MAX):
-                _SURFACE_HEAD_COEFF_CACHE.popitem(last=False)
-        # The key embeds id(words): it identifies THIS array only while the array is alive.
-        # Once the pool is garbage-collected the id can be reused by a new same-shaped pool
-        # (stale-hit hazard) and the retained coeffs are unreachable dead weight (~370 MB per
-        # 23M-row pool in prebuild workers). Evict the entry the moment the source dies.
-        weakref.finalize(words, _evict_surface_head_coeff_entry, key)
-    return coeffs
-
-
-def _evict_surface_head_coeff_entry(key: tuple[int, int, tuple[int, ...], tuple[int, ...]]) -> None:
-    with _SURFACE_HEAD_COEFF_CACHE_LOCK:
-        _SURFACE_HEAD_COEFF_CACHE.pop(key, None)
 
 
 @jit(nopython=True, cache=True)
@@ -149,7 +66,8 @@ def _fg_response_upper_bound_native_f64(
     sigma_hn,
     sigma_hf,
 ):
-    """f64 CPU port of ``_fg_response_surface_upper_bound`` (the gem-search prune bound)."""
+    """Upper bound of a surface's score at one stat line: every head note at its Perfect value. Non-decreasing in
+    base_value, combo_mul and fever_mul."""
     ub_eps = 1024.0
     combo_val = int(np.floor(base_value * combo_mul))
     fever_val = int(np.floor(base_value * combo_mul * fever_mul))
@@ -177,9 +95,8 @@ def _fg_response_surface_score_native_f64(
     fever_mul,
     single_color,
 ):
-    """f64 CPU port of ``_fg_response_score_device``: exact score of one surface for a fixed
-    (gem-allocated) stat line. Same op order / per-term ``floor`` / i32 accumulation as the
-    GPU device function, run in CPU doubles (no MoltenVK shaderFloat64 needed)."""
+    """Exact score of one surface at a gem-allocated stat line: the game's per-note values with their per-term floor
+    order; a Great note scores the lower of its Perfect and Great value."""
     base_value = float((primary_val * 2) + secondary_val) + pp_factor
     combo_val = int(np.floor(base_value * combo_mul))
     fever_val = int(np.floor(base_value * combo_mul * fever_mul))
@@ -252,18 +169,13 @@ def _score_fg_response_groups_native_f64(
     allow_pp,
     total_rows,
 ):
-    """The FG inner response scoring in native f64, INCLUDING the gem search.
+    """Each group's best gem allocation over its surfaces (the residual budget's CM / FM / PP / element split): the
+    first surface reaching the group's highest score, with the lexicographically smallest (CM, FM, PP) gems; a gem
+    pair whose bound cannot beat the group's best so far is skipped. residual_budget == 0 scores the stats as they
+    are (the gems-fixed serving path).
 
-    Bit-for-bit f64 port of the GPU owner kernel: per group it enumerates the same gem
-    allocations (the g_cm/g_fm/g_pp partition of ``residual_budget``) with the identical
-    upper-bound prune, lexicographic tie-break, and per-term ``floor`` op order, scores every
-    candidate surface, and keeps the group argmax. Runs in CPU doubles so it needs no GPU
-    shaderFloat64 (MoltenVK/Metal has none, where the f32 GPU search mis-floors the razor-thin
-    greats argmax and drops every FG candidate). ``residual_budget == 0`` collapses to a single
-    allocation == current stats, identical to the prior gems-fixed serving twin.
-
-    Output columns: [best_score, best_surface, g_pp, g_cm, g_fm, g_ov,
-    final_pp, final_cm, final_fm, final_primary, final_secondary].
+    Output columns: [best_score, best_surface, g_pp, g_cm, g_fm, g_ov, final_pp, final_cm, final_fm, final_primary,
+    final_secondary].
     """
     group_count = int(row_meta.shape[0])
     out = np.zeros((group_count, 11), dtype=np.int64)
@@ -556,77 +468,32 @@ def _score_response_group_meta_cpu(
     surface_pattern_words: np.ndarray,
     surface_counts: np.ndarray,
     surface_pattern_head_coeffs: np.ndarray,
-) -> tuple[np.ndarray, int]:
-    """Score the FG response groups in exact native f64, for the gems-fixed (non-precise / total_budget == 0) serving
-    path and the gem-search (total_budget > 0) optimizer path: the gem-allocation enumeration, the upper-bound prune
-    and the lexicographic tie-break, parallelized over CPU cores. Returns the per-group result rows and the number
-    of logical surface rows scored."""
-    group_count = int(group_meta.shape[0])
-    if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
-        raise ValueError("response frontier CPU group metadata arrays have inconsistent lengths")
-    logical_surface_rows = int(np.sum(group_lengths, dtype=np.int64))
-    if logical_surface_rows <= 0:
-        return np.zeros((0, 11), dtype=np.int32), 0
-
-    group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
-    if int(group_meta_all.shape[1]) < 8:
-        raise ValueError("response frontier CPU group metadata requires head/body columns")
-
-    flags = _color_flags(primary_color, secondary_color, selected_color)
-    color_flags_all = np.ascontiguousarray(np.asarray(flags, dtype=np.int32))
-    # PP gems are the Chill element; the GPU search only enumerates PP gems when the song
-    # carries a Chill color (flags[0]/[1]). Mirror that gate exactly.
-    allow_pp = bool(int(flags[0]) != 0 or int(flags[1]) != 0)
-    # CPU exact-rescore path stays float64 (the numba scorer is the f64 authority), independent
-    # of the GPU search fp.
-    ref_pp = np.ascontiguousarray(np.asarray(curves.f64["Perfect Points"], dtype=np.float64))
-    ref_cm = np.ascontiguousarray(np.asarray(curves.f64["Combo Multiplier"], dtype=np.float64))
-    ref_fm = np.ascontiguousarray(np.asarray(curves.f64["Fever Multiplier"], dtype=np.float64))
-    surface_pattern_ids_all = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
-    surface_pattern_words_all = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
-    surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
-    surface_pattern_head_coeffs_all = np.ascontiguousarray(surface_pattern_head_coeffs, dtype=np.int32)
-    if int(surface_pattern_ids_all.shape[0]) != int(surface_counts_all.shape[0]):
-        raise ValueError("response frontier CPU surface arrays have inconsistent lengths")
-    if (
-        int(surface_pattern_ids_all.ndim) != 1
-        or int(surface_pattern_words_all.ndim) != 2
-        or int(surface_pattern_words_all.shape[1]) != 8
-        or int(surface_counts_all.ndim) != 2
-        or int(surface_counts_all.shape[1]) != 3
-        or int(surface_pattern_head_coeffs_all.ndim) != 2
-        or int(surface_pattern_head_coeffs_all.shape[0]) != int(surface_pattern_words_all.shape[0])
-        or int(surface_pattern_head_coeffs_all.shape[1]) != 4
-    ):
-        raise ValueError("response frontier CPU surface arrays have invalid shape")
-    if bool(np.any(surface_pattern_ids_all < 0)) or bool(
-        np.any(surface_pattern_ids_all >= int(surface_pattern_words_all.shape[0]))
-    ):
-        raise ValueError("response frontier CPU surface references an invalid head-pattern ID")
-    if bool(np.any(surface_counts_all < 0)):
-        raise ValueError("response frontier CPU surface counts must be nonnegative")
-
-    head_lengths = np.unique(np.ascontiguousarray(group_meta_all[:, 6], dtype=np.int32))
-    if int(head_lengths.shape[0]) != 1:
+) -> np.ndarray:
+    """The groups' best gem allocations (rows as in _score_fg_response_groups_native_f64), over CPU cores."""
+    group_meta = np.ascontiguousarray(group_meta, dtype=np.int32)
+    if int(np.unique(group_meta[:, 6]).shape[0]) != 1:
         raise ValueError("response frontier CPU group metadata has inconsistent head length")
-    out_rows = _score_fg_response_groups_on_cpu_cores(
+    flags = color_flags(primary_color, secondary_color, selected_color)
+    shared = (
+        np.ascontiguousarray(surface_pattern_ids, dtype=np.int32),
+        np.ascontiguousarray(surface_pattern_words, dtype=np.uint32),
+        np.ascontiguousarray(surface_counts, dtype=np.int32),
+        np.ascontiguousarray(surface_pattern_head_coeffs, dtype=np.int32),
+        np.asarray(flags, dtype=np.int32),
+        np.ascontiguousarray(curves.f64["Perfect Points"], dtype=np.float64),
+        np.ascontiguousarray(curves.f64["Combo Multiplier"], dtype=np.float64),
+        np.ascontiguousarray(curves.f64["Fever Multiplier"], dtype=np.float64),
+        # PP gems raise Chill: only a Chill song can want them.
+        bool(flags[0] or flags[1]),
+        int(MAX_STAT),
+    )
+    rows = _score_fg_response_groups_on_cpu_cores(
         np.ascontiguousarray(group_offsets, dtype=np.int64),
         np.ascontiguousarray(group_lengths, dtype=np.int64),
-        group_meta_all,
-        (
-            surface_pattern_ids_all,
-            surface_pattern_words_all,
-            surface_counts_all,
-            surface_pattern_head_coeffs_all,
-            color_flags_all,
-            ref_pp,
-            ref_cm,
-            ref_fm,
-            bool(allow_pp),
-            int(MAX_STAT),
-        ),
+        group_meta,
+        shared,
     )
-    return np.asarray(out_rows, dtype=np.int32), int(logical_surface_rows)
+    return np.asarray(rows, dtype=np.int32)
 
 
 def _fg_cpu_search_executor() -> ThreadPoolExecutor:
@@ -647,8 +514,8 @@ def _score_fg_response_groups_on_cpu_cores(
 ) -> np.ndarray:
     """``_score_fg_response_groups_native_f64`` over contiguous group chunks on several cores.
 
-    Chunks hold roughly equal surface rows (the search cost) and outnumber the workers so uneven
-    groups still balance. Output rows come back in group order, identical to a single call.
+    Chunks hold roughly equal surface rows (the search cost) and outnumber the workers so uneven groups still
+    balance. Output rows come back in group order, identical to a single call.
     """
     group_count = int(group_meta.shape[0])
     chunk_count = min(

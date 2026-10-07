@@ -32,7 +32,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
     load_first_surface_scoring_rows,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
-from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _precompute_surface_head_coeffs
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
 from tests.fg_response_frontier_oracles import intern_surface_rows
 
@@ -150,7 +150,7 @@ def _surfaces_from_pool(pool: np.ndarray) -> tuple[FgResponseSurface, ...]:
 
 def _coeffs_for(pool: np.ndarray, *, total_notes: int) -> np.ndarray:
     head_len = min(int(total_notes), 100)
-    coeffs = _precompute_surface_head_coeffs(np.ascontiguousarray(pool, dtype=np.uint32), head_len=int(head_len))
+    coeffs = surface_head_coeffs(np.ascontiguousarray(pool, dtype=np.uint32), head_len=int(head_len))
     return np.ascontiguousarray(np.asarray(coeffs, dtype=np.uint16))
 
 
@@ -293,8 +293,6 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host
-
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache_store.reset_fg_response_frontier_payload_cache()
 
@@ -305,14 +303,14 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
     pool[7, :8] = pool[1, :8]
     expected_pattern_words = np.unique(pool[:, :8], axis=0)
     expected_coeffs = _coeffs_for(pool, total_notes=total_notes).astype(np.int32)
-    real_precompute = response_inner_host._precompute_surface_head_coeffs
+    real_precompute = response_cache_store.surface_head_coeffs
     precompute_inputs: list[np.ndarray] = []
 
     def _track_pattern_precompute(surface_words: np.ndarray, *, head_len: int) -> np.ndarray:
         precompute_inputs.append(np.asarray(surface_words).copy())
         return real_precompute(surface_words, head_len=int(head_len))
 
-    monkeypatch.setattr(response_inner_host, "_precompute_surface_head_coeffs", _track_pattern_precompute)
+    monkeypatch.setattr(response_cache_store, "surface_head_coeffs", _track_pattern_precompute)
     cache_key = ("unit", "issue116-pattern-coeff-owner")
     _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
 

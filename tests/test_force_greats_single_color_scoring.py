@@ -15,12 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize("secondary, expected, colors", [("Chill", 1774, ["ColorBlue"]), ("Flow", 1773, ["ColorBlue", "ColorPurple"])])
 def test_great_rounding_uses_chart_colors(secondary, expected, colors) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _color_flags, _fg_response_surface_score_native_f64
+    from gear_optimizer.solver.taichi_gem.force_greats.response_gem_search import _fg_response_surface_score_native_f64, color_flags
     from tools.verify.loadout_oracle_replay import _statsdict_for_oracle
 
     assert _fg_response_surface_score_native_f64(
         np.zeros((1, 8), dtype=np.uint32), 0, 0, 1, 0, 0, 1, 812, 812, 0.0, 1.0, 1.0,
-        _color_flags("Chill", secondary, "Chill")[8],
+        color_flags("Chill", secondary, "Chill")[8],
     ) == expected
     assert _statsdict_for_oracle({"Chill": 812, "Flow": 812}, "Chill", secondary)[1] == colors
 
