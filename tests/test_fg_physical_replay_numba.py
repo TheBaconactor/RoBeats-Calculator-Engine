@@ -252,6 +252,7 @@ def _call(graph, *, note_types, lanes, denom=1.0, duration=10.0):
         lanes=np.asarray(lanes, dtype=np.int32),
         raw_fever_fill=denom,
         real_fever_time=duration,
+        timing_mode="precise",
     )
 
 

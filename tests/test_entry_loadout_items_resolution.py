@@ -1,8 +1,8 @@
-"""Regression tests for the perfect_window persistence break (commit 9c38d2d2).
+"""Regression tests for the precise persistence break (commit 9c38d2d2).
 
 The canonical persistence path (`canonicalize_and_assemble` -> `_normalize_entry_shape`)
 stores a loadout's gear/minis as NAME STRINGS (the loadout hash is derived from names). The
-per-tier gem re-solve, made unconditional for `perfect_window` by 9c38d2d2, calls
+per-tier gem re-solve, made unconditional for `precise` by 9c38d2d2, calls
 `_entry_loadout_items`, which needs the 6 gear + 3 minis. Before the fix that mismatch raised
 "tier re-solve needs 6 gear + 3 mini stat-dicts, got 0" for every song.
 

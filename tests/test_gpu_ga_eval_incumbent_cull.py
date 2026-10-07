@@ -111,7 +111,7 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _song(*, n_notes: int = 400, mode: str = "perfect_window"):
+def _song(*, n_notes: int = 400, mode: str = "precise"):
     return make_song(
         np.linspace(0, 90, int(n_notes)),
         mode=mode,

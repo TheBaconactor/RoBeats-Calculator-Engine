@@ -1,9 +1,9 @@
-"""Custom per-note timing base replay (generalizes zero_ms).
+"""Custom per-note timing base replay (generalizes non-precise).
 
 ``score_stats_timing_exact_batch`` scores the base leaderboard under an EXPLICIT per-note
 hit-time timeline (chart + T). These CPU tests pin:
 
-- the parity gate: ``T == 0`` (hit_timestamps == chart) reproduces the fixed-0ms/``zero_ms``
+- the parity gate: ``T == 0`` (hit_timestamps == chart) reproduces the fixed-0ms/``non-precise``
   scorer bit-for-bit -- the property that lets the general path replace the bespoke one;
 - uniform-shift invariance (a constant offset cannot change the relative timeline);
 - that a non-uniform offset genuinely moves the exact score; and
@@ -37,7 +37,7 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _song(baseline_offset=None, mode: str = "zero_ms"):
+def _song(baseline_offset=None, mode: str = "non-precise"):
     timestamps = np.round(np.arange(250, dtype=np.float32) * np.float32(0.1), 3).astype(np.float32)
     return time_song(make_chart(timestamps, primary="Rush", secondary="Flow"), mode, baseline_offset)
 
@@ -62,7 +62,7 @@ def _chart(song) -> np.ndarray:
 
 
 def test_timing_at_zero_offset_matches_fixed_timing_bit_exact():
-    """Parity gate: T == 0 (hit_timestamps == chart) == the zero_ms fixed-0ms scorer."""
+    """Parity gate: T == 0 (hit_timestamps == chart) == the non-precise fixed-0ms scorer."""
     rows = [_stats(), {**_stats(), "Fever Time": 5, "Fever Fill Rate": 5}]
     song = _song()
     ref = _curves()
@@ -117,17 +117,17 @@ def test_wrong_length_offset_fails_loud():
         score_stats_timing_exact_batch([_stats()], song, ref, _chart(song)[:-1])
 
 
-# --- time_song(baseline_offset=T): the prep-time T lever (zero_ms = T==0 preset) ---
+# --- time_song(baseline_offset=T): the prep-time T lever (non-precise = T==0 preset) ---
 
 
-def test_zero_ms_preset_leaves_chart_and_empty_hash():
+def test_non_precise_preset_leaves_chart_and_empty_hash():
     song = _song()  # no baseline_offset -> T == 0
-    assert song.mode == "zero_ms"
+    assert song.mode == "non-precise"
     assert song.baseline_hash == ""
     np.testing.assert_array_equal(song.hit_timestamps, _chart(song))
 
 
-def test_all_zero_offset_equals_zero_ms_preset():
+def test_all_zero_offset_equals_non_precise_preset():
     song = _song(np.zeros(250, dtype=np.float32))
     assert song.baseline_hash == ""
     np.testing.assert_array_equal(song.hit_timestamps, _chart(song))
@@ -147,7 +147,7 @@ def test_distinct_offsets_give_disjoint_cache_context():
     assert ctx0 != ctxa
     assert ctx0 != ctxb
     assert ctxa != ctxb
-    # T == 0 context is unchanged from the historical zero_ms (empty baseline slot).
+    # T == 0 context is unchanged from the historical non-precise (empty baseline slot).
     assert ctx0[2] == ""
 
 
@@ -173,16 +173,16 @@ def test_baseline_offset_reordering_fails_loud_in_prep():
         _song(bad)
 
 
-def test_baseline_offset_rejected_for_perfect_window():
+def test_baseline_offset_rejected_for_precise():
     with pytest.raises(ValueError, match="only valid for fixed"):
-        _song(np.full(250, 0.02, dtype=np.float32), mode="perfect_window")
+        _song(np.full(250, 0.02, dtype=np.float32), mode="precise")
 
 
 def test_cache_context_is_inert_at_zero_t_lossless():
     """LOSSLESS GUARD: the per-note ``T`` hash lives in the timing-context reserved slots, so at
     ``T == 0`` the timing cache keys are byte-identical to their pre-feature values. These frozen
-    tuples lock that existing zero_ms cache keys (and therefore cached scores) are unchanged and that
-    perfect_window carries only its cache revision -- if a future edit leaks a non-empty hash at
+    tuples lock that existing non-precise cache keys (and therefore cached scores) are unchanged and that
+    precise carries only its cache revision -- if a future edit leaks a non-empty hash at
     ``T == 0``, this fails."""
     assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "zero_ms", "", 0)
-    assert _song(mode="perfect_window").timeline_key[-4:] == ("TIMING_ENVELOPE", "perfect_window@2", "", 0)
+    assert _song(mode="precise").timeline_key[-4:] == ("TIMING_ENVELOPE", "perfect_window@2", "", 0)

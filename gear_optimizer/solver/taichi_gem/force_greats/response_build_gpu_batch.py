@@ -154,7 +154,6 @@ def build_force_greats_response_first_frontiers_gpu_batch(
     lanes: Any | None = None,
     use_forced_great_timing: bool = True,
     stats_sink: dict[str, Any] | None = None,
-    lane_bounds: Any | None = None,
     late_great_floor_timestamps: Any | None = None,
     exit_ceiling_timestamps: Any | None = None,
 ) -> tuple[FgResponseFrontierResult, ...]:
@@ -187,9 +186,8 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
         great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
     )
-    lane_bounds = _rb_numba._NO_LANE_BOUNDS if lane_bounds is None else np.ascontiguousarray(lane_bounds, dtype=np.float64)
     prefix_perfect_hit, prefix_perfect_valid, prefix_late_hit, prefix_late_valid = (
-        _rb_numba._numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts, late_great_floor_ts, lane_bounds)
+        _rb_numba._numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts, late_great_floor_ts)
     )
     prepared = _prepared_geometries(geometry_rows, bool(use_forced_great_timing))
 
@@ -210,7 +208,6 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         late_great_floor_timestamps=late_great_floor_ts,
         use_forced_great_timing=bool(use_forced_great_timing),
         lanes=lane_arr,
-        lane_bounds=lane_bounds,
     )
     prepared = canonical.prepared
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
@@ -241,7 +238,6 @@ def build_force_greats_response_first_frontiers_gpu_batch(
     # Without forced-Great timing every region key shares one contentless table.
     empty_region_table = None if bool(use_forced_great_timing) else (
         np.zeros(int(n) + 2, dtype=np.int64), *(np.empty(0, dtype=np.int32) for _ in range(7)),
-        *(np.empty((len(canonical.unique_real_times), 0), dtype=np.int32) for _ in range(2))
     )
 
     group_results, schedule_stats = _schedule_first_frontier_region_groups(
@@ -255,7 +251,6 @@ def build_force_greats_response_first_frontiers_gpu_batch(
             great_floor_timestamps=great_floor_ts,
             late_great_floor_timestamps=late_great_floor_ts,
             lanes=lane_arr,
-            lane_bounds=lane_bounds,
             prefix_perfect_hit=prefix_perfect_hit,
             prefix_perfect_valid=prefix_perfect_valid,
             prefix_late_hit=prefix_late_hit,

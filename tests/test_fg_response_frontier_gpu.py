@@ -105,7 +105,7 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
         timestamps=ts,
         note_types=note_types,
         lanes=lanes,
-        timing_mode="perfect_window",
+        timing_mode="precise",
     )
     surface = tuple(map(int, result.surface))
     reconcile_force_greats_note_graph(
@@ -175,7 +175,7 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
     })
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
-    song = make_song(timestamps, mode="zero_ms")
+    song = make_song(timestamps, mode="non-precise")
     base_stats = {
         "Perfect Points": 1,
         "Combo Multiplier": 2,
@@ -217,7 +217,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
         score_prepared_force_greats_response_frontier_batch_sync,
     )
 
-    song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "perfect_window")
+    song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "precise")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     final_stats = {
         "Perfect Points": 25,
@@ -272,7 +272,7 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
         "Fever Time": np.full(rows, 0.4, dtype=np.float64),
     })
     timestamps = np.asarray([0.0, 0.3, 0.7, 1.4, 2.2, 3.0, 3.2, 3.4, 4.0], dtype=np.float32)
-    song = make_song(timestamps, mode="zero_ms")
+    song = make_song(timestamps, mode="non-precise")
     base_a = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -340,7 +340,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     )
     from gear_optimizer.solver.timing_envelope import time_song
 
-    song = time_song(load_chart(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), "perfect_window")
+    song = time_song(load_chart(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), "precise")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     final_stats = {
         "Perfect Points": 29,

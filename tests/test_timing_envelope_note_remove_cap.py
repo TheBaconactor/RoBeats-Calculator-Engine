@@ -18,7 +18,7 @@ import numpy as np
 from gear_optimizer.solver.timing_envelope import (
     NOTE_REMOVE_LATE_CAP_MS,
     judgment_windows_ms,
-    perfect_window_envelopes,
+    precise_envelopes,
 )
 
 TAP, HEAD, TAIL = 1, 2, 3
@@ -37,6 +37,6 @@ def test_reachable_windows_per_note_type() -> None:
 
 def test_great_candidate_envelope_emits_capped_tail_candidates() -> None:
     ts = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
-    out = perfect_window_envelopes(ts, np.asarray([TAP, TAIL, HEAD], dtype=np.int16)).great_candidates
+    out = precise_envelopes(ts, np.asarray([TAP, TAIL, HEAD], dtype=np.int16)).great_candidates
     deltas_ms = np.round((out - ts) * 1000.0).astype(int)
     assert deltas_ms.tolist() == [190, NOTE_REMOVE_LATE_CAP_MS, 190]

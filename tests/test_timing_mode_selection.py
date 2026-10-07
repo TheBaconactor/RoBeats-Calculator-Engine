@@ -10,22 +10,24 @@ import pytest
 def test_service_request_gate_preserves_each_supported_mode():
     from gear_optimizer import robeatsmeta_service
 
-    assert robeatsmeta_service._normalize_timing_mode("perfect_window") == "perfect_window"
-    assert robeatsmeta_service._normalize_timing_mode("zero_ms") == "zero_ms"
-    with pytest.raises(robeatsmeta_service.RequestError):
-        robeatsmeta_service._normalize_timing_mode("bogus")
+    assert robeatsmeta_service._normalize_timing_mode(None) == "non-precise"
+    assert robeatsmeta_service._normalize_timing_mode("precise") == "precise"
+    assert robeatsmeta_service._normalize_timing_mode("non-precise") == "non-precise"
+    for mode in ("bogus", "perfect_window", "zero_ms", "frame_robust"):
+        with pytest.raises(robeatsmeta_service.RequestError):
+            robeatsmeta_service._normalize_timing_mode(mode)
 
 
 def test_song_preparation_uses_chart_timing_metadata(tmp_path):
     from gear_optimizer.solver.song_preparation import prepare_song
 
-    chart = tmp_path / "zero_ms_chart.txt"
+    chart = tmp_path / "precise_chart.txt"
     chart.write_text(
         "Song Name\tZero Chart\nDifficulty\tHard\nPrimary Color\tRush\nSecondary Color\tFlow\n"
-        "Last Note Time\t0.4\nLong Notes\t0\nTiming Mode\tzero_ms\nSong Data\n0.0 1 0 1\n0.4 2 1 1\n",
+        "Last Note Time\t0.4\nLong Notes\t0\nTiming Mode\tprecise\nSong Data\n0.0 1 0 1\n0.4 2 1 1\n",
         encoding="utf-8",
     )
-    assert prepare_song(str(chart)).mode == "zero_ms"
+    assert prepare_song(str(chart)).mode == "precise"
 
 
 def test_startup_prepares_both_frontier_cache_families(monkeypatch):
@@ -48,8 +50,8 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
         announce_stream=io.StringIO(),
     )
     assert calls == {
-        "timeline": [("perfect_window", "zero_ms")],
-        "fg": [("perfect_window", "zero_ms")],
+        "timeline": [("non-precise", "precise")],
+        "fg": [("non-precise", "precise")],
     }
 
 

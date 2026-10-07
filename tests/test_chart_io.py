@@ -35,10 +35,10 @@ def test_prepared_song_is_the_shared_chart_timed_in_its_default_mode(tmp_path):
 
     assert song.chart is load_chart(song_path)
     assert song.chart.name == "Shared IO Song"
-    assert song.mode == "perfect_window"
+    assert song.mode == "non-precise"
     assert np.array_equal(song.chart.note_types, np.asarray([1, 3, 1], dtype=np.int16))
     assert np.array_equal(song.hit_timestamps, song.chart.timestamps)
-    assert song.perfect_candidates is not None and song.great_floor is not None
+    assert song.perfect_candidates is None and song.great_floor is None
 
 
 def test_read_header_reads_the_fields_without_the_notes(tmp_path):

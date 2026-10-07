@@ -378,6 +378,13 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3c72ed
     "exact-frontier-v12+logic-92a162c8fc85",
     *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-92a162c8fc85"],
 )
+# Frame-Safe retired; the modes' new names keep their cache names; Precise hit IDs are song tokens again: the
+# 40-chart sample's Precise and Non-Precise payloads are byte-identical, one to one, to 3c72edf5d46c's builds (40-chart
+# byte gates). Ratify it and its ratified predecessors (non-transitive).
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-4081f48488b6"] = (
+    "exact-frontier-v12+logic-3c72edf5d46c",
+    *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS["exact-frontier-v12+logic-3c72edf5d46c"],
+)
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:
@@ -531,8 +538,8 @@ def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dic
     total_notes = chart.total_notes
     if total_notes > fields.MAX_SONG_NOTES:
         raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
-    if song.mode == "zero_ms":
-        # The zero_ms payload is a deterministic singleton built from fixed hit timestamps; the
+    if song.mode == "non-precise":
+        # The Non-Precise payload is a deterministic singleton built from fixed hit timestamps; the
         # physical Perfect-window inputs are absent and never consumed.
         perfect_candidates = np.empty(0, dtype=np.float32)
         perfect_floor = np.empty(0, dtype=np.float32)
@@ -579,30 +586,30 @@ def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) ->
     )
 
 
-def _build_zero_ms_timeline_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierGridPayload:
+def _build_non_precise_timeline_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierGridPayload:
     """Build the exact singleton chart-time surface for every FT/FF cell.
 
-    zero_ms is fixed timing (every hit at its chart timestamp), so each (Fever Time, Fever Fill)
+    non-precise is fixed timing (every hit at its chart timestamp), so each (Fever Time, Fever Fill)
     cell has exactly ONE deterministic fever surface -- there is no Perfect-window candidate
     frontier to search. This is the cheap "partial" build: it reuses the same per-cell fever kernel
     (``calculate_fever_timeline_indices``) the fixed-timing base scorer uses, so the payload scores
     bit-identically to ``score_stats_fixed_timing_exact`` while costing a fraction of the full
-    carry-envelope DP that ``build_timeline_frontier_grid_payload`` runs for perfect_window. It is
+    carry-envelope DP that ``build_timeline_frontier_grid_payload`` runs for precise. It is
     the subset of the shared representation the user's thin gate promotes to a full frontier only
-    when perfect_window is actually requested.
+    when precise is actually requested.
     """
-    if song.mode != "zero_ms":
-        raise ValueError("fixed chart-time timeline payload requires a zero_ms song")
+    if song.mode != "non-precise":
+        raise ValueError("fixed chart-time timeline payload requires a non-precise song")
     timestamps = song.hit_timestamps
     total_notes = int(timestamps.shape[0])
     if total_notes > 1 and bool(np.any(np.diff(timestamps) < np.float32(0.0))):
-        raise ValueError("zero_ms chart timestamps must be non-decreasing")
+        raise ValueError("non-precise chart timestamps must be non-decreasing")
 
     ref_ft = curves.f32["Fever Time"]
     ref_ff = curves.f32["Fever Fill Rate"]
     grid_size = MAX_STAT + 1
     if ref_ft.shape != (grid_size,) or ref_ff.shape != (grid_size,):
-        raise ValueError(f"zero_ms timeline axes must both have shape ({grid_size},)")
+        raise ValueError(f"non-precise timeline axes must both have shape ({grid_size},)")
 
     shape = (1, grid_size, grid_size)
     grid_count_body_fever = np.zeros(shape, dtype=np.int32)
@@ -653,7 +660,7 @@ def _build_zero_ms_timeline_payload(song: TimedSong, curves: StatCurves) -> Time
             if pool_idx is None:
                 pool_idx = len(pool_by_surface)
                 if pool_idx >= pool_cap:
-                    raise RuntimeError(f"zero_ms timeline surface pool overflow: cap={pool_cap}")
+                    raise RuntimeError(f"non-precise timeline surface pool overflow: cap={pool_cap}")
                 pool_by_surface[surface] = pool_idx
                 body_fever_pool[0, pool_idx] = int(body_fever)
                 body_normal_pool[0, pool_idx] = int(body_normal)
@@ -688,16 +695,16 @@ def build_or_load_timeline_frontier_payload(
     The song's exact timeline frontier payload: the memory or disk cache's, else built and persisted.
 
     Host-side (no Taichi fields are touched) and the one entry point of runtime scoring, background
-    lookahead and offline disk-cache prebuilding, so they share the cache signatures. zero_ms is fixed
-    timing: its payload is the cheap chart-time singleton, never the perfect_window candidate frontier.
+    lookahead and offline disk-cache prebuilding, so they share the cache signatures. non-precise is fixed
+    timing: its payload is the cheap chart-time singleton, never the precise candidate frontier.
     """
     t0 = time.perf_counter()
     lookup = _timeline_payload_lookup_context(song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload, cache_source = _cached_frontier_payload(cache_key)
     if payload is None:
-        if song.mode == "zero_ms":
-            payload = _build_zero_ms_timeline_payload(song, curves)
+        if song.mode == "non-precise":
+            payload = _build_non_precise_timeline_payload(song, curves)
         else:
             payload = build_timeline_frontier_grid_payload(
                 total_notes=int(lookup["total_notes"]),
@@ -706,10 +713,9 @@ def build_or_load_timeline_frontier_payload(
                 perfect_floor_timestamps=lookup["perfect_floor"],
                 exit_ceiling_timestamps=lookup["exit_ceiling"],
                 lanes=lookup["lanes"],
-                lane_bounds=song.lane_bounds,
-                fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
+                fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"]),
                 fever_fills=fever_fill_raw(
-                    max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"], song.mode
+                    max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"]
                 ),
             )
         raw = _encode_frontier_payload_npz(payload)
@@ -820,10 +826,9 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
         exit_ceiling_timestamps=np.asarray(lookup["exit_ceiling"], dtype=np.float32),
         lanes=np.asarray(lookup["lanes"], dtype=np.int32),
-        lane_bounds=song.lane_bounds,
-        fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"], song.mode),
+        fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"]),
         fever_fills=fever_fill_raw(
-            max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"], song.mode
+            max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"]
         ),
     )
     frontier_result = FrontierCacheLoad(

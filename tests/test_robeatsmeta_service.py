@@ -413,7 +413,7 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     monkeypatch.setattr(service.legacy, "read_best_loadouts", fake_loadouts)
 
     result = service.solve(
-        {"jobId": "job_abc", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"}
+        {"jobId": "job_abc", "targetSongId": "Feeding [Hard]", "timingMode": "non-precise"}
     )
 
     assert result == [entry]  # full T5 leaderboard returned verbatim for host persistence/replay
@@ -448,14 +448,14 @@ def test_official_solve_uses_persistent_worker_for_mode_switches(data_root, monk
             "jobId": "persistent_mode_switch",
             "targetSongId": "Feeding [Hard]",
             "reasoning": "strong",
-            "timingMode": "zero_ms",
+            "timingMode": "non-precise",
         }
     )
 
     assert result == [entry]
     assert len(worker_calls) == 1
     assert worker_calls[0]["reasoning"] == "strong"
-    assert "Timing Mode\tzero_ms" in str(worker_calls[0]["chartText"])
+    assert "Timing Mode\tnon-precise" in str(worker_calls[0]["chartText"])
 
 
 def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
@@ -507,16 +507,16 @@ def test_a_persistent_solve_asks_the_worker_to_promote(monkeypatch):
     assert "promoteTo" not in payloads[1]
 
 
-def test_only_clean_perfect_window_official_solves_are_promoted(tmp_path, monkeypatch):
+def test_only_clean_non_precise_official_solves_are_promoted(tmp_path, monkeypatch):
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "evolution.db"))
     clean = {"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []}
     custom = {**clean, "gear": [{"name": "Custom"}]}
 
-    def target(request, timing_mode="perfect_window", pool=clean):
+    def target(request, timing_mode="non-precise", pool=clean):
         return service._promotion_target(request, timing_mode=timing_mode, custom_pool=pool)
 
     assert target({"targetSongId": "Official"}) == str(tmp_path / "evolution.db")
-    assert target({"targetSongId": "Official"}, timing_mode="zero_ms") is None
+    assert target({"targetSongId": "Official"}, timing_mode="precise") is None
     assert target({"targetSongId": "Official"}, pool=custom) is None
     assert target({"chartText": "Song Data\n"}) is None
     assert target({"targetSongId": "Official", "chartText": "Song Data\n"}) is None
@@ -575,9 +575,9 @@ def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monke
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
 
-    service.solve({"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"})
+    service.solve({"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "non-precise"})
 
-    assert "Timing Mode\tzero_ms" in captured["chart"]
+    assert "Timing Mode\tnon-precise" in captured["chart"]
 
 
 def test_solve_rejects_unknown_timing_mode(data_root):
@@ -1119,7 +1119,7 @@ def test_catalog_build_solves_described_official_charts_missing_from_the_catalog
     service.build_missing_catalog_songs()
 
     # Only the chart the game data describes and the catalog lacks, as a clean official request
-    # (default perfect_window timing, no custom pool) so its result is promoted into the catalog.
+    # (default non-precise timing, no custom pool) so its result is promoted into the catalog.
     assert solved == [{"jobId": solved[0]["jobId"], "targetSongId": "New (Hard) by Artist"}]
 
 

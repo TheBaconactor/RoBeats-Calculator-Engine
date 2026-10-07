@@ -35,10 +35,11 @@ def test_exact_climb_keeps_the_search_allocation_when_no_move_strictly_improves(
 def test_real_song_gem_search_climbs_past_a_float32_near_tie():
     """Kanpai (Hard), baseline T5: the GPU search, ranking in float32, picks 7 FM / 19 FF / 64 element (float32
     66,025,156, exact 66,023,473); moving one element gem to Fever Fill Rate scores 66,024,847."""
-    from gear_optimizer.solver.song_preparation import prepare_song
+    from gear_optimizer.chart import load_chart
+    from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
-    song = prepare_song(str(Path(__file__).resolve().parents[1] / "Data" / "Hard" / "Kanpai (Hard) by Kagi.txt"))
+    song = time_song(load_chart(Path(__file__).resolve().parents[1] / "Data" / "Hard" / "Kanpai (Hard) by Kagi.txt"), "precise")
     curves = load_stat_curves(paths().stats_txt)
     build_or_load_timeline_frontier_payload(song, curves)
     gears = load_gears(paths().gears_csv)

@@ -32,8 +32,8 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
 
 
 def _song(name: str = "FG Cache Unit", timestamps=(0.0, 0.2, 0.4)):
-    # zero_ms: the chart-only FG inputs (no Perfect-window envelopes, no forced-Great carry).
-    return make_song(timestamps, mode="zero_ms", name=name, difficulty="Easy", last_note_time=0.4)
+    # non-precise: the chart-only FG inputs (no Perfect-window envelopes, no forced-Great carry).
+    return make_song(timestamps, mode="non-precise", name=name, difficulty="Easy", last_note_time=0.4)
 
 
 def _curves() -> dict[str, np.ndarray]:
@@ -690,7 +690,7 @@ def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> N
     representatives, duplicates = _dedupe_paths_by_response_bundle_key(
         [str(first_path), str(second_path)],
         _curves(),
-        "perfect_window",
+        "precise",
     )
 
     # Representatives carry the note count from the same parse pass (admission weight input).
@@ -1622,7 +1622,7 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_types
 
-    timed_song = make_song([0.0], mode="zero_ms")
+    timed_song = make_song([0.0], mode="non-precise")
     curves = synthetic_curves({"Fever Time": np.zeros(161), "Fever Fill Rate": np.zeros(161)})
     canonical_keys = ((0, 0), (1, 1))
     # surface_row_count=0 -> the session-box prune early-returns the bundle unchanged, keeping
@@ -1689,7 +1689,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
     batch = response_frontier.FgResponseFrontierPackedScoringBatch(
         started=0.0,
         stats_inputs=(empty_stats(),),
-        song=make_song([0.0], mode="zero_ms"),
+        song=make_song([0.0], mode="non-precise"),
         song_inputs=SimpleNamespace(
             timestamps=np.asarray([0.0], dtype=np.float32),
             perfect_candidates=np.asarray([0.0], dtype=np.float32),

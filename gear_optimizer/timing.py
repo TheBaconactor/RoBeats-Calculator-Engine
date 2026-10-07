@@ -1,4 +1,4 @@
-"""The deterministic fever timeline of play at fixed hit times (Non-Precise / zero_ms, or chart + offset).
+"""The deterministic fever timeline of play at fixed hit times (Non-Precise / non-precise, or chart + offset).
 
 The fever bar fills after `fill` scored notes: ceil((notes - long notes) x 0.333 x the Fever Fill Rate
 factor). The note that fills it is the first fever note, and the first section needs one note less

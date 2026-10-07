@@ -60,7 +60,7 @@ def test_team_buff_color_override_keeps_a_one_color_song_one_color():
 
     song, base_override, target_override = MODULE._prepare_active_song(
         chart,
-        timing_mode="zero_ms",
+        timing_mode="non-precise",
         team_buff_color_override="Beat",
         primary_element_override="",
         secondary_element_override="",

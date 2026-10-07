@@ -1,9 +1,9 @@
-"""Custom per-note baseline timing on the FG (force-greats) path (generalizes zero_ms). GPU.
+"""Custom per-note baseline timing on the FG (force-greats) path (generalizes non-precise). GPU.
 
 The FG response-frontier search consumes the song's hit timeline, which
-``time_song(chart, "zero_ms", baseline_offset=T)`` sets to ``chart + T``. These GPU
+``time_song(chart, "non-precise", baseline_offset=T)`` sets to ``chart + T``. These GPU
 tests pin:
-- an all-zero ``T`` reproduces the plain ``zero_ms`` surface bit-for-bit (the FG-path T==0 gate
+- an all-zero ``T`` reproduces the plain ``non-precise`` surface bit-for-bit (the FG-path T==0 gate
   through the new param); and
 - a non-zero per-note ``T`` re-optimizes to a VALID surface, exactly scored under ``chart + T``.
 
@@ -66,11 +66,11 @@ _TIMESTAMPS = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np
 def _song(baseline_offset=None):
     from gear_optimizer.solver.timing_envelope import time_song
 
-    return time_song(make_chart(_TIMESTAMPS, name="pytest_custom_timing_fg"), "zero_ms", baseline_offset)
+    return time_song(make_chart(_TIMESTAMPS, name="pytest_custom_timing_fg"), "non-precise", baseline_offset)
 
 
-def test_zero_offset_matches_plain_zero_ms_surface(tmp_path, monkeypatch):
-    """An all-zero baseline offset reproduces the plain zero_ms FG surface bit-for-bit."""
+def test_zero_offset_matches_plain_non_precise_surface(tmp_path, monkeypatch):
+    """An all-zero baseline offset reproduces the plain non-precise FG surface bit-for-bit."""
     from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))

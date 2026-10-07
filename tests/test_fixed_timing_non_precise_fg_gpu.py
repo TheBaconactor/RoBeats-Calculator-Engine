@@ -6,7 +6,7 @@ Pins the two GPU-facing facts:
   greats still helps at 0ms because it changes the fill length and shifts where fever activates
   (a count effect independent of hit-offset), so FG 0ms is NOT base 0ms and the surface must be
   rebuilt (guards against a wrong "FG 0ms == base 0ms" short-circuit); and
-- a tier replay run produces per-tier top-N meta + FG leaderboards for a zero_ms song.
+- a tier replay run produces per-tier top-N meta + FG leaderboards for a non-precise song.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _loadout_items(name: str, **stats: int) -> list:
     return gear + minis
 
 
-def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeypatch):
+def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeypatch):
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
@@ -67,11 +67,11 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
     song = make_song(
         timestamps,
-        mode="zero_ms",
-        name="pytest_zero_ms_tier",
+        mode="non-precise",
+        name="pytest_non_precise_tier",
         lanes=np.arange(timestamps.shape[0], dtype=np.int32) % 4,
     )
-    # Persisted surface is head-only valid for a <100-note song; under zero_ms it is REBUILT,
+    # Persisted surface is head-only valid for a <100-note song; under non-precise it is REBUILT,
     # so its exact value is irrelevant -- it only has to pass the require_response_surface guard.
     surface_fixture = [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
     # Large element/PP values so tier deltas never drive the stats (or base value) negative.
@@ -87,10 +87,10 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         "Beat": 0,
         "Vibe": 0,
     }
-    # zero_ms re-solves the gem allocation from gear/mini item stats, not from already allocated Stats.
+    # non-precise re-solves the gem allocation from gear/mini item stats, not from already allocated Stats.
     # Song fixed stats are zero here, so the pre-gem row is just the item sum.
     entry = {
-        "loadout_hash": "pytest_zero_ms_loadout",
+        "loadout_hash": "pytest_non_precise_loadout",
         "score": 1,
         "fg_score": 1,
         "gear": [
@@ -118,7 +118,7 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         },
     }
 
-    # zero_ms now re-solves the BASE gems too (GPU exhaustive search), which needs the
+    # non-precise now re-solves the BASE gems too (GPU exhaustive search), which needs the
     # candidate-independent timeline-frontier cache built first -- mirror the on-demand path.
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
@@ -139,7 +139,7 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         assert int(tier["fg_top51"][0]["fg_score"]) > 0
 
 
-def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch):
+def test_non_precise_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch):
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
         build_team_buff_tier_db_batches,
@@ -156,7 +156,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
 
     curves = _curves(MAX_STAT + 1)
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
-    song = make_song(timestamps, mode="zero_ms", name="pytest_zero_ms_batch_parity")
+    song = make_song(timestamps, mode="non-precise", name="pytest_non_precise_batch_parity")
     build_or_load_timeline_frontier_payload(song, curves)
 
     fixed_song_stats = {

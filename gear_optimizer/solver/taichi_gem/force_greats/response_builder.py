@@ -93,8 +93,6 @@ class _ActivationReachabilityContext:
     late_great_floor_timestamps: np.ndarray
     exit_ceiling_timestamps: np.ndarray
     lanes: np.ndarray
-    lane_bounds: np.ndarray
-    lane_chain_ends: np.ndarray
     fever_fill_denom: float
 
 
@@ -109,8 +107,6 @@ def _build_activation_reachability_context(
     fever_fill_denom: float,
     late_great_floor_timestamps: Any | None = None,
     exit_ceiling_timestamps: Any | None = None,
-    lane_bounds: Any | None = None,
-    real_fever_time: float,
 ) -> _ActivationReachabilityContext:
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_floor = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
@@ -142,7 +138,6 @@ def _build_activation_reachability_context(
         )
     ):
         raise ValueError("FG activation reachability arrays must match timestamps")
-    lane_bounds = _rb_numba._NO_LANE_BOUNDS if lane_bounds is None else np.ascontiguousarray(lane_bounds, dtype=np.float64)
     return _ActivationReachabilityContext(
         timestamps=ts,
         perfect_floor_timestamps=perfect_floor,
@@ -152,8 +147,6 @@ def _build_activation_reachability_context(
         late_great_floor_timestamps=late_great_floor,
         exit_ceiling_timestamps=exit_ceiling,
         lanes=lane_arr,
-        lane_bounds=lane_bounds,
-        lane_chain_ends=_rb_numba._numba_lane_chain_end_table(n, lane_bounds, np.asarray([real_fever_time]))[0],
         fever_fill_denom=float(fever_fill_denom),
     )
 
@@ -164,7 +157,7 @@ def _early_exit_min_fill(perfect_floor_timestamps: np.ndarray, perfect_candidate
     The search state is a fever's end, not its cutoff, and every note after an early exit is hit at or past the cutoff,
     so an early exit is planned only where the activation `fill` notes past any note has its earliest Perfect two frame
     margins past that note's (and every later note's) latest Perfect: past any cutoff a fever can end there at, its
-    Frame-Safe out margin and a press spacing."""
+    conservative separation from the cutoff and next press."""
     floor = np.asarray(perfect_floor_timestamps, dtype=np.float64)
     latest = np.asarray(perfect_candidate_timestamps, dtype=np.float64)
     reach = np.minimum.accumulate(latest[::-1])[::-1] + 2.0 * FRAME_MARGIN_MS / 1000.0
@@ -190,7 +183,7 @@ def _song_arrays(
     lanes: Any | None,
 ) -> tuple[np.ndarray, ...]:
     """Coerce and check one song's per-note arrays (candidates default to the chart timestamps, the late-Great floor to
-    1 ms past the latest Perfect and the exit ceiling to the suffix minimum of the latest Perfects: perfect_window's).
+    1 ms past the latest Perfect and the exit ceiling to the suffix minimum of the latest Perfects: precise's).
     """
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     n = int(ts.shape[0])
@@ -386,7 +379,7 @@ def _trace_timing_fields(
         source = "activation_late_great"
         note_idx = int(carry_idx)
     elif float(start_time) != float(chart_time):
-        source = "perfect_window"
+        source = "precise"
         note_idx = int(activation_idx)
     else:
         source = "chart_perfect"
@@ -598,7 +591,6 @@ def _latest_activation_hit_for_labels(
     timestamps: np.ndarray,
     perfect_ts: np.ndarray,
     great_ts: np.ndarray,
-    lane_bounds: np.ndarray,
 ) -> float | None:
     great_start_i = max(0, min(int(great_start), int(n)))
     great_count_i = max(0, int(great_count))
@@ -611,13 +603,7 @@ def _latest_activation_hit_for_labels(
     )
     if not (0 <= int(a) < int(n_eff)):
         raise ValueError("activation_index must be inside the section")
-    if len(lane_bounds):
-        cap, valid = _rb_numba._numba_frame_latest_activation_hit_for_run(
-            int(a), float(hit_lo), float(hit_hi), perfect_ts, great_ts,
-            int(great_start_i), int(great_count_i), int(n_eff), lane_bounds,
-        )
-        return float(cap) if int(valid) else None
-    cap, valid = _rb_numba._numba_latest_activation_hit_for_contiguous_great_run(
+    cap, valid, _token = _rb_numba._numba_latest_activation_hit_for_contiguous_great_run(
         int(a),
         float(hit_lo),
         float(hit_hi),
@@ -627,6 +613,7 @@ def _latest_activation_hit_for_labels(
         int(great_start_i),
         int(great_count_i),
         int(n_eff),
+        -1,
     )
     return float(cap) if int(valid) else None
 
@@ -684,7 +671,6 @@ def _minimal_reachable_region_great_end(
             timestamps=timestamps,
             perfect_ts=perfect_ts,
             great_ts=great_ts,
-            lane_bounds=reachability_context.lane_bounds,
         )
         if hit is None:
             continue
@@ -834,7 +820,6 @@ def _edge_surface_options(
         # One Pareto surface per end ee in (base_e, eg_e]; the tail [base_e, ee) is fever-great.
         # The activation witness is unchanged (it still reproduces the Perfect/late extent
         # base_e), so reuse the base witness (its target_end is already base_e).
-        eg_e = min(eg_e, int(reachability_context.lane_chain_ends[a]))
         for ee in range(int(base_e) + 1, int(eg_e) + 1):
             opt = dict(base)
             opt["next_state"] = int(ee)
@@ -894,8 +879,6 @@ def _edge_surface_options(
         reachability_context.lanes,
         float(raw_fever_fill),
         float(real_fever_time),
-        reachability_context.lane_bounds,
-        reachability_context.lane_chain_ends,
     )
     if bool(np.any(_act_err)):
         # The scalar wrapper's fail-loud bound check, verbatim (first tripping action wins).
@@ -1053,8 +1036,7 @@ def _edge_surface_options(
                     )
                     perfect_hit_region = _latest_activation_hit_for_labels(
                         a=int(a_region),
-                        hit_lo=(float(reachability_context.lane_bounds[a_region, 4]) if reachability_context.lane_bounds.shape[0]
-                                else min(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)]))),
+                        hit_lo=min(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
                         hit_hi=max(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
                         great_start=int(run_start),
                         great_count=int(actual_great_end_i) - int(run_start),
@@ -1062,9 +1044,7 @@ def _edge_surface_options(
                         timestamps=timestamps,
                         perfect_ts=perfect_ts,
                         great_ts=great_ts,
-                        lane_bounds=reachability_context.lane_bounds,
                     )
-                    activation_e = min(activation_e, int(reachability_context.lane_chain_ends[a_region]))
                     if perfect_hit_region is None:
                         perfect_e_region = -1
                     else:
@@ -1076,7 +1056,6 @@ def _edge_surface_options(
                             real_fever_time=float(real_fever_time),
                             perfect_floor_timestamps=perfect_floor_timestamps,
                         )
-                    perfect_e_region = min(perfect_e_region, int(reachability_context.lane_chain_ends[a_region]))
                     if int(activation_e) <= int(perfect_e_region) and not (
                         perfect_hit_region is not None
                         and _great_floor_end(
@@ -1136,8 +1115,7 @@ def _edge_surface_options(
                         continue
                     perfect_region_hit = _latest_activation_hit_for_labels(
                         a=int(a_region),
-                        hit_lo=(float(reachability_context.lane_bounds[a_region, 4]) if reachability_context.lane_bounds.shape[0]
-                                else min(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)]))),
+                        hit_lo=min(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
                         hit_hi=max(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
                         great_start=int(run_start),
                         great_count=int(actual_great_end) - int(run_start),
@@ -1145,7 +1123,6 @@ def _edge_surface_options(
                         timestamps=timestamps,
                         perfect_ts=perfect_ts,
                         great_ts=great_ts,
-                        lane_bounds=reachability_context.lane_bounds,
                     )
                     if perfect_region_hit is None or not _activation_reachable(
                         context=reachability_context,
@@ -1166,7 +1143,6 @@ def _edge_surface_options(
                         real_fever_time=float(real_fever_time),
                         perfect_floor_timestamps=perfect_floor_timestamps,
                     )
-                    e_region = min(e_region, int(reachability_context.lane_chain_ends[a_region]))
                     chart_time = float(timestamps[int(a_region)])
                     base = _section_option(
                         k=int(actual_great_end) - int(run_start),
@@ -1182,8 +1158,7 @@ def _edge_surface_options(
                         witness={
                             "activation_idx": int(a_region),
                             "chart_time": float(chart_time),
-                            "lo": (float(reachability_context.lane_bounds[a_region, 4]) if reachability_context.lane_bounds.shape[0]
-                                   else min(float(chart_time), float(perfect_activation_ts[int(a_region)]))),
+                            "lo": min(float(chart_time), float(perfect_activation_ts[int(a_region)])),
                             "hi": float(perfect_region_hit),
                             "target_end": int(e_region),
                             "carry_idx": int(region_carry_idx),
@@ -1248,7 +1223,6 @@ def _option_with_witness(
         perfect_candidate_timestamps=reachability_context.perfect_candidate_timestamps,
         great_floor_timestamps=reachability_context.great_floor_timestamps,
         great_candidate_timestamps=reachability_context.great_candidate_timestamps,
-        lanes=reachability_context.lanes,
     )
     fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
     preactivation_event_count = int(activation_idx) - int(section_start)
@@ -1381,7 +1355,6 @@ def reconstruct_force_greats_response_trace(
     edge_options_cache: FgTraceEdgeOptionsCache | None = None,
     late_great_floor_timestamps: Any | None = None,
     exit_ceiling_timestamps: Any | None = None,
-    lane_bounds: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
     n = int(np.asarray(timestamps).reshape(-1).shape[0])
     if n <= 0 or target_surface == _EMPTY_SURFACE:
@@ -1406,8 +1379,6 @@ def reconstruct_force_greats_response_trace(
                 late_great_floor_timestamps=late_great_floor_ts,
                 exit_ceiling_timestamps=exit_ceiling_ts,
                 lanes=lane_arr,
-                lane_bounds=lane_bounds,
-                real_fever_time=float(real_fever_time),
                 fever_fill_denom=float(raw_fever_fill),
             )
         return reachability_context

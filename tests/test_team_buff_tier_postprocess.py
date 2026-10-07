@@ -76,7 +76,7 @@ _CURRENT_BASE_EFFECT: dict[str, dict] = {"effect": {}}
 def _install_synthetic_tier_resolve(monkeypatch, *, song, curves) -> None:
     """Replace the GPU per-(tier, color) re-solve helpers with deterministic CPU-exact synthetics.
 
-    The perfect_window (default) postprocess now RE-SOLVES gems per (tier, color) via the GPU
+    The precise (default) postprocess now RE-SOLVES gems per (tier, color) via the GPU
     helpers ``resolve_tier_base_batch`` / ``resolve_tier_fg_force_batch`` and requires each loadout
     to carry 6 gear + 3 mini stat-dicts. These tests exercise the postprocess LOGIC (tier
     reordering, color modes, FG inclusion/score, identity/mini-repair, witness graft) on entries
@@ -854,7 +854,7 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
 
 
 def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monkeypatch):
-    """Regression (PR #87 review): the baseline (T5) perfect_window identical-context carry ranks
+    """Regression (PR #87 review): the baseline (T5) precise identical-context carry ranks
     FG rows from the entry-level ``fg_score`` WITHOUT re-solving. If an entry reaches the FG loop
     with a VALID force payload (valid config + response surface) but a stale/missing non-positive
     top-level ``fg_score``, the pre-fix carry wrote 0 into the rank list and the ``fg_score > 0``
@@ -1238,11 +1238,11 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
     assert row["source_fg_score"] == 95
 
 
-def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_identity(monkeypatch):
+def test_build_team_buff_tier_db_batches_non_precise_fg_preserves_persisted_loadout_identity(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    song = _mock_song(name="pytest_team_buff_zero_ms_fg_identity", n_notes=12, mode="zero_ms")
+    song = _mock_song(name="pytest_team_buff_non_precise_fg_identity", n_notes=12, mode="non-precise")
     curves = _curves(MAX_STAT + 1)
 
     stats = {

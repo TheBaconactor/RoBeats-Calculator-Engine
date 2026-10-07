@@ -4,8 +4,8 @@ Per loadout of the GA surface:
 - identity: the effective loadout hash (gear names + each mini's signature as the song sees it) and the minis as
   their equivalence groups in display rotation;
 - meta result: the gem allocation re-solved exhaustively for the loadout's items (song fixed stats: the baseline
-  TeamBuff), scored by exact replay (perfect_window: score + TimelineFrontier witness, physically validated;
-  zero_ms: fixed chart timing, no witness);
+  TeamBuff), scored by exact replay (precise: score + TimelineFrontier witness, physically validated;
+  non-precise: fixed chart timing, no witness);
 - Force Greats result, for every loadout the FG stage solved: its result (solved at the song's timing), scored by an
   exact surface replay of a physically validated trace (the FG materializer's); it stays attached whether or not it
   beats the meta score (the store ranks the FG board);
@@ -16,7 +16,6 @@ loadouts whose FG result beat the base score it was solved against (FG stage ord
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -31,7 +30,6 @@ from ..data.loadout_equivalence import (
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
 from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names
 from ..helpers.song_helpers.song_config import baseline_fixed_stats
-from ..solver.fg_response_scoring.note_graph import UnplayableTrace
 from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats, total
@@ -42,7 +40,6 @@ from .results import SolvedFg, SolvedLoadout, SongSolve
 if TYPE_CHECKING:
     from ..solver.scoring.fever_solver import GemSolve
 
-logger = logging.getLogger(__name__)
 # The stats a score reads, besides the song's and the selected element.
 _SCORE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
 
@@ -83,14 +80,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
             return stored_stats(fixed_tier, ident, gears, song_view, element, allocation, solved, (primary, secondary))
 
         meta_gems, meta_stats = solves[i].gems, {k: int(v) for k, v in solves[i].stats.items()}
-        try:
-            score, meta_trace = _meta_score(meta_stats, song, curves)
-        except UnplayableTrace as exc:
-            if song.mode != "frame_robust":
-                raise
-            # No frame timing plays this loadout's Base plan: it gets no row, rather than failing the song.
-            logger.warning("%s: no row for %s, its Base plan is unplayable: %s", solve.song, ident.loadout_hash, exc)
-            continue
+        score, meta_trace = _meta_score(meta_stats, song, curves)
         meta = MetaResult(
             element=primary, gems=meta_gems, stats=stats_of(primary, meta_gems, meta_stats), updated=0, seq=0
         )
@@ -181,16 +171,16 @@ def _meta_resolve(
 
 
 def _meta_score(stats: Mapping[str, int], song: TimedSong, curves: StatCurves) -> tuple[int, dict[str, Any] | None]:
-    """The exact score of the meta stats and, for perfect_window, the TimelineFrontier witness (the exact replay
+    """The exact score of the meta stats and, for precise, the TimelineFrontier witness (the exact replay
     validates it physically when it reconstructs it)."""
-    if song.mode == "zero_ms":
+    if song.mode == "non-precise":
         return int(score_stats_fixed_timing_exact(stats, song, curves)), None
     replay = score_stats_exact_with_timeline_trace(stats, song, curves)
     return int(replay["score"]), replay["TimelineFrontier"]
 
 
 def _fg_trace(solved: SolvedFg, song: TimedSong) -> dict[str, Any]:
-    """An FG result's replay witness (validated by the FG materializer); perfect_window results must carry one."""
-    if song.mode != "zero_ms" and not solved.trace.get("frontier_trace"):
+    """An FG result's replay witness (validated by the FG materializer); precise results must carry one."""
+    if song.mode != "non-precise" and not solved.trace.get("frontier_trace"):
         raise ValueError(f"{song.chart.name}: an FG result without a frontier trace")
     return solved.trace

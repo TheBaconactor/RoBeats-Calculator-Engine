@@ -218,7 +218,7 @@ def main(argv=None) -> int:
         args.db, args.song, args.rank)
     chart_fp, chart_name = _chart_path(song_name)
 
-    song = time_song(load_chart(Path(chart_fp)), "perfect_window")
+    song = time_song(load_chart(Path(chart_fp)), "precise")
     ts = song.chart.timestamps
     nt = song.chart.note_types
     lanes = song.chart.lanes
@@ -253,7 +253,7 @@ def main(argv=None) -> int:
         timestamps=ts,
         note_types=nt,
         lanes=lanes,
-        timing_mode="perfect_window",
+        timing_mode="precise",
     )
     physical_replay = validate_force_greats_physical_replay(
         frontier_trace=fd["ForceGreats"]["frontier_trace"],

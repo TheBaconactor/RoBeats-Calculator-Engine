@@ -37,8 +37,8 @@ def _build_small_payload():
         perfect_candidate_timestamps=timestamps + np.float32(0.04),
         perfect_floor_timestamps=timestamps - np.float32(0.019),
         lanes=np.arange(6, dtype=np.int32),
-        fever_times=fever_window_times(1.8, ref_ft, "perfect_window"),
-        fever_fills=fever_fill_raw(6, ref_ff, "perfect_window"),
+        fever_times=fever_window_times(1.8, ref_ft),
+        fever_fills=fever_fill_raw(6, ref_ff),
     )
     return payload
 

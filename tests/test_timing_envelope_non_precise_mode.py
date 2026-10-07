@@ -1,6 +1,6 @@
 """Fixed-timing (0ms) replay mode: CPU-side mode prep + base scorer (issue #51).
 
-These tests pin the parts that need no GPU: that `time_song(chart, "zero_ms")` is a chart-only
+These tests pin the parts that need no GPU: that `time_song(chart, "non-precise")` is a chart-only
 song distinct from the Perfect-window one, and that `score_stats_fixed_timing_exact[_batch]` is the
 deterministic chart-time fever timeline (independent of any timing frontier payload).
 """
@@ -41,7 +41,7 @@ def _chart(header=None):
     return make_chart(timestamps, primary="Rush", secondary="Flow", header=header)
 
 
-def _song(mode: str = "zero_ms"):
+def _song(mode: str = "non-precise"):
     return time_song(_chart(), mode)
 
 
@@ -60,27 +60,27 @@ def _stats() -> dict[str, int]:
     }
 
 
-def test_zero_ms_song_is_chart_only():
-    song = _song("zero_ms")
+def test_non_precise_song_is_chart_only():
+    song = time_song(_chart())
 
-    assert song.mode == "zero_ms"
+    assert song.mode == "non-precise"
     assert song.hit_timestamps is song.chart.timestamps
     assert song.perfect_candidates is None and song.great_floor is None
 
 
-def test_chart_metadata_selects_zero_ms_when_mode_is_omitted():
-    song = time_song(_chart({"Timing Mode": "zero_ms"}))
+def test_chart_metadata_selects_non_precise_when_mode_is_omitted():
+    song = time_song(_chart({"Timing Mode": "non-precise"}))
 
-    assert song.mode == "zero_ms"
+    assert song.mode == "non-precise"
     # No Perfect-window envelope streams: the FG build uses the chart timeline.
     for stream in (song.perfect_candidates, song.perfect_floor, song.great_floor, song.great_candidates):
         assert stream is None
 
 
-def test_perfect_window_mode_attaches_envelope_streams():
-    song = _song("perfect_window")
+def test_precise_mode_attaches_envelope_streams():
+    song = _song("precise")
 
-    assert song.mode == "perfect_window"
+    assert song.mode == "precise"
     assert song.perfect_candidates is not None
     assert song.great_candidates is not None
 
@@ -143,8 +143,8 @@ def test_fixed_timing_base_scorer_is_mode_prep_invariant():
     stats = _stats()
     ref = _curves()
 
-    assert score_stats_fixed_timing_exact(stats, _song("zero_ms"), ref) == score_stats_fixed_timing_exact(
-        stats, _song("perfect_window"), ref
+    assert score_stats_fixed_timing_exact(stats, _song("non-precise"), ref) == score_stats_fixed_timing_exact(
+        stats, _song("precise"), ref
     )
 
 
@@ -159,7 +159,7 @@ def test_fixed_timing_base_scorer_batch_matches_single():
     assert batch[0] != batch[1]  # different FT/FF -> different fixed timeline
 
 
-def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_path, monkeypatch):
+def test_non_precise_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_path, monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import timeline
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))

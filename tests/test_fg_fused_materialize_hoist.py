@@ -29,7 +29,7 @@ _SONG_INPUTS = object()
 class _CountingSong:
     """A song whose FG-input reads are counted (each read returns ``make_inputs()``)."""
 
-    mode = "perfect_window"
+    mode = "precise"
 
     def __init__(self, calls, make_inputs, *, note_types=(1,)):
         self._calls = calls
@@ -287,7 +287,6 @@ def test_reducer_payload_accepts_hoisted_song_inputs_byte_identical(monkeypatch)
         late_great_floor=None,
         exit_ceiling=None,
         lanes=[0],
-        lane_bounds=None,
         use_forced_great_timing=True,
     )
     extract_calls = {"extract": 0}

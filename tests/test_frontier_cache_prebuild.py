@@ -67,14 +67,14 @@ class _Run:
             )
         return tally
 
-    def write(self, chart: str, timing_mode: str = "perfect_window", content: bytes = b"complete") -> Path:
+    def write(self, chart: str, timing_mode: str = "non-precise", content: bytes = b"complete") -> Path:
         path = self.cache.chart_file(str(chart), CURVES, timing_mode)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         return path
 
     def run(self, charts: list[Path], **kwargs):
-        kwargs.setdefault("timing_modes", ("perfect_window",))
+        kwargs.setdefault("timing_modes", ("non-precise",))
         return prebuild_frontier_cache(
             self.prebuild, song_queue=[(str(chart),) for chart in charts], curves=CURVES, data_root=None, **kwargs
         )
@@ -168,7 +168,7 @@ def test_every_timing_mode_is_verified_and_summed(tmp_path: Path, monkeypatch) -
     run = _Run(tmp_path, monkeypatch)
     charts = [_chart(tmp_path / "charts" / f"{name}.txt", name) for name in ("A", "B")]
 
-    summary = run.run(charts, timing_modes=("perfect_window", "zero_ms"))
+    summary = run.run(charts, timing_modes=("precise", "non-precise"))
 
     assert run.calls.count("build:2") == 2
     assert (summary.total, summary.built) == (4, 4)
@@ -183,7 +183,7 @@ def test_an_empty_queue_verifies_every_chart_under_the_data_root(tmp_path: Path,
     _chart(data / "Other" / "ignored.txt", "C")
 
     summary = prebuild_frontier_cache(
-        run.prebuild, song_queue=[], curves=CURVES, data_root=data, timing_modes=("perfect_window",)
+        run.prebuild, song_queue=[], curves=CURVES, data_root=data, timing_modes=("precise",)
     )
 
     assert summary.built == 2

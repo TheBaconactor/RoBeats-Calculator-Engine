@@ -1,5 +1,5 @@
 """The pre-frontier head/body score model (a reference lookup and one score formula) that the FG decomposition
-experiment tests and the zero_ms timing test compare against. Production scores through
+experiment tests and the non-precise timing test compare against. Production scores through
 gear_optimizer.solver.scoring.exact_rescore and the GPU kernels; nothing in the engine imports this."""
 
 import numpy as np

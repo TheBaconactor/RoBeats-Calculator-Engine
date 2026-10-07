@@ -46,5 +46,5 @@ def make_chart(
     )
 
 
-def make_song(timestamps, *, mode: str = "perfect_window", **chart_fields) -> TimedSong:
+def make_song(timestamps, *, mode: str = "precise", **chart_fields) -> TimedSong:
     return time_song(make_chart(timestamps, **chart_fields), mode)

@@ -61,7 +61,7 @@ not directly from kernel internals.
 ## Data and persistence
 
 - Charts (parsing, header reads, cached loads): `gear_optimizer/chart.py`
-- Timing models (a chart timed for perfect_window or zero_ms): `gear_optimizer/solver/timing_envelope.py`
+- Timing models (a chart timed for Precise or default Non-Precise): `gear_optimizer/solver/timing_envelope.py`
 - Exported-data synchronization:
   `gear_optimizer/data/exported_game_data_sync.py`
 - Results store: `gear_optimizer/store/` (typed rows in `records.py`, schema and
