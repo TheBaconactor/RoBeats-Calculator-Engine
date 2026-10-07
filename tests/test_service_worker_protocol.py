@@ -199,7 +199,7 @@ def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch
 
     session._initialize()
 
-    assert events == ["load curves", "native_prewarm:12", "reassert"]
+    assert events == ["load curves", "native_prewarm:20", "reassert"]
 
 
 def test_service_worker_passes_the_promotion_target_to_the_solve(monkeypatch):

@@ -105,8 +105,8 @@ The repository includes chart and gear data under [`Data/`](DATA.md). Set `Song_
 | `[IterationEngine]` | `SongRepeats` | `1` | Solves per chart, each with its own search seed |
 | | `SongQueueLimit` | `0` (no limit) | Charts per pass |
 | | `IgnoreResumeQueue` | `false` | Ignore the charts left over from a memory-guard restart |
-| | `GA_SearchDepth` | `125` | Search generations |
-| | `GA_MultiStart` | `3` | Independent search populations |
+| | `GA_SearchDepth` | `210` | Search generations over all populations (42 each by default) |
+| | `GA_MultiStart` | `5` | Independent search populations |
 | | `MemorySoftLimitGB` | `0` (off) | Restart before the process uses this much memory |
 | | `MemorySoftLimitPercent` | platform default | The same limit as a share of physical memory (`0` disables) |
 

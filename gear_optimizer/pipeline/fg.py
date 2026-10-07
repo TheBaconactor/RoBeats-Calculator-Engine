@@ -42,8 +42,8 @@ if TYPE_CHECKING:
     from gear_optimizer.pipeline.progress import ProgressTracker
 
 logger = logging.getLogger(__name__)
-# The FG search's beam: this many loadouts per GA run (the reasoning level sets the runs: 3 / 6 / 12).
-FG_SEARCH_BEAM_PER_GA_RUN = 2
+# The FG search's beam: this many loadouts per GA run (the reasoning level sets the runs: 5 / 10 / 20).
+FG_SEARCH_BEAM_PER_GA_RUN = 1
 
 
 def prepare_fg_static(song: NativeSong) -> None:

@@ -16,10 +16,8 @@ from .runtime import is_initialized, init_taichi
 IS_METAL = sys.platform == "darwin"
 logger = logging.getLogger(__name__)
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
-MAX_GENOMES = 4608  # Active-population genome pool. Sized to fit a full GA batch
-# at production q24 geometry: 6 runs x 705 genomes = 4230 <= 4608 (was 4096, which
-# only fit 5 of the 6 runs and capped batch width below the genome-unification target).
-# +~25MB VRAM on the 24GB RX 7900 XTX across all MAX_GENOMES-sized buffers.
+MAX_GENOMES = 4608  # Active-population genome pool: 13 runs of 352 genomes per GA batch (one batch for the
+# default 5 and the strong 10 runs). ~25MB VRAM on the 24GB RX 7900 XTX across all MAX_GENOMES-sized buffers.
 MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill

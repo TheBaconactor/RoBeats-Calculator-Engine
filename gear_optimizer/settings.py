@@ -132,8 +132,8 @@ class RunSettings:
     song_repeats: int = 1
     song_queue_limit: int = 0
     ignore_resume_queue: bool = False
-    search_depth: int = 125
-    multi_start: int = 3
+    search_depth: int = 210  # generations over all runs: 42 per run
+    multi_start: int = 5
     memory_soft_limit_gb: float = 0.0  # 0: no absolute cap
     memory_soft_limit_percent: float | None = None  # None: the platform default; <= 0 disables
 

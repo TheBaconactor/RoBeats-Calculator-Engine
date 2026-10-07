@@ -2,19 +2,19 @@ from gear_optimizer.solver.gpu_tuning_policy import choose_ga_batch_runs
 
 
 def test_choose_ga_batch_runs_production_shape_batches_all_runs_by_genome_capacity():
-    # Production q24 geometry: 6 runs x 705 genomes. With MAX_GENOMES=4608 the
-    # genome pool fits all 6 runs (6*705=4230 <= 4608), so the whole multistart
-    # batches into a single dispatch. The eval budget is NOT a factor in sizing
+    # Production geometry at the strong reasoning level: 10 runs x 352 genomes. With
+    # MAX_GENOMES=4608 the genome pool fits 13 runs (13*352=4576 <= 4608), so the whole
+    # multistart batches into a single dispatch. The eval budget is NOT a factor in sizing
     # (combo chunking owns TDR safety downstream).
     plan = choose_ga_batch_runs(
-        n_genomes=705,
-        num_runs=6,
+        n_genomes=352,
+        num_runs=10,
         max_genomes=4608,
     )
 
-    assert plan.max_runs_by_genomes == 6
-    assert plan.batch_runs == 6
-    assert plan.num_runs == 6
+    assert plan.max_runs_by_genomes == 13
+    assert plan.batch_runs == 10
+    assert plan.num_runs == 10
     assert plan.override_applied is False
 
 

@@ -95,9 +95,9 @@ def test_malformed_values_are_errors(tmp_path, text, message):
 
 
 def test_reasoning_levels_scale_the_default_search():
-    assert reasoning_search("default") == (125, 3)
-    assert reasoning_search("strong") == (250, 6)
-    assert reasoning_search("max") == (500, 12)
+    assert reasoning_search("default") == (210, 5)
+    assert reasoning_search("strong") == (420, 10)
+    assert reasoning_search("max") == (840, 20)
     with pytest.raises(KeyError):
         reasoning_search("ultra")
 

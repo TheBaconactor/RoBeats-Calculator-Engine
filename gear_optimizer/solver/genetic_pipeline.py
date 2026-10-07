@@ -21,7 +21,10 @@ from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from .gpu_tuning_policy import choose_ga_batch_runs
 
 
-GA_POPULATION_SIZE = 705
+# Runs fall into a song's basins independently, so more, smaller runs reach the best one more often: 5 runs of 352
+# (5/6 of the evaluations of the former 3 x 705) missed the best-known Base #1 in 1.5% of default searches on 31
+# held-out charts vs 3.8%, with 7-15% less GA time (PLAN.md 10-07).
+GA_POPULATION_SIZE = 352
 # GA selection/variation policy (fixed; the config.ini overrides were never set in production).
 GA_MUTATION_RATE = 0.35
 GA_ELITISM = 1

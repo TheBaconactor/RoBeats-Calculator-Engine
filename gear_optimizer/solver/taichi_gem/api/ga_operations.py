@@ -73,8 +73,8 @@ def warmup_ga_kernels_light() -> None:
     from .timeline import precompute_timeline_gpu_for_warmup
 
     n_slots = 9
-    n_runs = min(3, int(fields.MAX_GA_RUNS))
-    n_genomes = min(705, int(fields.MAX_GA_RUN_GENOMES), int(fields.MAX_GENOMES))
+    n_runs = min(5, int(fields.MAX_GA_RUNS))
+    n_genomes = min(352, int(fields.MAX_GA_RUN_GENOMES), int(fields.MAX_GENOMES))
     n_genomes = max(1, int(n_genomes))
     n_runs = max(1, min(int(n_runs), max(1, int(fields.MAX_GENOMES) // int(n_genomes))))
     total_budget = min(90, int(fields.MAX_TOTAL_BUDGET))
