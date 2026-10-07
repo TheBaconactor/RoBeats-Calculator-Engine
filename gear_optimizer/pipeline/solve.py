@@ -33,16 +33,21 @@ _FINISH_BEHIND = 2
 
 
 def _ga_turn(payload: dict, abort_requested: Callable[[], bool]) -> dict:
-    """On the GPU owner thread: the song's GA runs, then the FG score rows of the payload they select."""
-    from gear_optimizer.pipeline.fg import score_payload_fg
+    """On the GPU owner thread: the song's GA runs, then the FG turn on the payload they select (its FG scores and the
+    FG search's board candidates; the search widens with the GA's runs, i.e. the reasoning level)."""
+    from gear_optimizer.pipeline.fg import FG_SEARCH_BEAM_PER_GA_RUN, fg_turn
     from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt
 
     ga_kwargs = dict(payload)
     fg_scoring_bundle = ga_kwargs.pop("fg_scoring_bundle")
     selected_color = ga_kwargs.pop("selected_color")
     runs_payload = run_gpu_native_ga_runs_payload_prebuilt(**ga_kwargs, abort_requested=abort_requested)
-    fg_owner_score = score_payload_fg(runs_payload, song=ga_kwargs["song"], curves=ga_kwargs["curves"],
-                                      selected_color=selected_color, fg_scoring_bundle=fg_scoring_bundle)
+    runs_payload, fg_owner_score = fg_turn(
+        runs_payload, song=ga_kwargs["song"], curves=ga_kwargs["curves"], selected_color=selected_color,
+        fg_scoring_bundle=fg_scoring_bundle, item_stats=ga_kwargs["item_stats"], slot_start=ga_kwargs["slot_start"],
+        slot_count=ga_kwargs["slot_count"], base_fixed_stats_arr=ga_kwargs["base_fixed_stats_arr"],
+        beam_width=FG_SEARCH_BEAM_PER_GA_RUN * ga_kwargs["num_runs"],
+    )
     return {"runs_payload": runs_payload, "fg_owner_score": fg_owner_score}
 
 

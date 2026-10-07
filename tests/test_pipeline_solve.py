@@ -162,13 +162,13 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
         ga_calls.append(kwargs)
         return "runs payload"
 
-    def score_fg(runs_payload, **kwargs):
+    def fg_turn(runs_payload, **kwargs):
         fg_calls.append({"runs_payload": runs_payload, **kwargs})
-        return "fg owner score"
+        return runs_payload, "fg owner score"
 
     real_run = genetic_pipeline.run_gpu_native_ga_runs_payload_prebuilt
     monkeypatch.setattr(genetic_pipeline, "run_gpu_native_ga_runs_payload_prebuilt", run_ga_runs)
-    monkeypatch.setattr(fg_stage, "score_payload_fg", score_fg)
+    monkeypatch.setattr(fg_stage, "fg_turn", fg_turn)
     inputs = SimpleNamespace(timed_song="timed song", curves="curves", item_stats=1, slot_start=2, slot_count=3,
                              base_fixed_stats_arr=4, num_runs=3, n_genomes=128, init_heuristic_topk=None,
                              init_heuristic_k=0, init_heuristic_copies=25, gens_per_run=42,
@@ -191,7 +191,9 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
     assert ga_calls[0]["song"] == "timed song" and ga_calls[0]["n_generations"] == 42 and ga_calls[0]["ga_seed"] == 7
     assert ga_calls[0]["abort_requested"] == abort.is_set
     assert fg_calls == [{"runs_payload": "runs payload", "fg_scoring_bundle": bundle, "song": "timed song",
-                         "curves": "curves", "selected_color": "rush"}]
+                         "curves": "curves", "selected_color": "rush", "item_stats": 1, "slot_start": 2,
+                         "slot_count": 3, "base_fixed_stats_arr": 4,
+                         "beam_width": fg_stage.FG_SEARCH_BEAM_PER_GA_RUN * 3}]
 
 
 def test_only_an_executor_abort_counts_as_a_stop_abort():

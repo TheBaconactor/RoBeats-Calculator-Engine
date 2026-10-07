@@ -206,7 +206,7 @@ def upload_ga_global_static_state(
     gpu_api.ga_upload_fg_effective_tables(fg_gear_name_rank, fg_mini_sig_id)
 
 
-def _one_swap_neighborhood(
+def one_swap_neighborhood(
     incumbent: "np.ndarray",
     slot_start: "np.ndarray",
     slot_count: "np.ndarray",
@@ -281,7 +281,7 @@ def _polish_runs_best_one_swap(
                 "invalid GA state after generation loop"
             )
         hoods = [
-            _one_swap_neighborhood(prev[r, 1 : 1 + int(n_slots)], slot_start, slot_count, int(n_slots))
+            one_swap_neighborhood(prev[r, 1 : 1 + int(n_slots)], slot_start, slot_count, int(n_slots))
             for r in range(n_runs)
         ]
         k_max = max(h.shape[0] for h in hoods)
