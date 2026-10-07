@@ -1,14 +1,11 @@
 """Test-only references for retired Issue #116 B/C frontier semantics.
 
-These deliberately use plain Python scans and Lists instead of the production Fenwick tree,
-fused hull stack, and chained node arena.  They are differential oracles, not alternate runtime
-routes.
+These deliberately use plain Python scans and Lists instead of the production Fenwick tree and
+fused hull stack.  They are differential oracles, not alternate runtime routes.
 
 Provenance is committed main ``f00747a5``.  Body mirrors the retired
 ``_numba_touch_body_candidate`` -> ``_numba_reduce_touched_body_pairs`` ->
-``_numba_hull_filter_body_pairs`` pipeline.  Region buckets mirror retired
-``_numba_append_same_end_head_edge_to_bucket`` and
-``_numba_append_head_edge_to_end_buckets``.
+``_numba_hull_filter_body_pairs`` pipeline.
 """
 from __future__ import annotations
 
@@ -18,16 +15,8 @@ import numpy as np
 from numba import njit
 from numba.typed import List
 
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-    _NUMBA_HEAD_SCORES_TYPE,
-    _NUMBA_SURFACE_TYPE,
-    _numba_head_cached_scores_dominate,
-)
 
 BodyRow = tuple[int, int, int]
-SurfaceRow = tuple[int, int, int, int, int, int, int]
-
-
 def clamped_end_idx_at_hit(
     n: int,
     activation_idx: int,
@@ -44,53 +33,6 @@ def clamped_end_idx_at_hit(
         )
     )
     return min(int(n), max(int(activation_idx) + 1, int(raw_end)))
-
-
-@njit(cache=True, nogil=True)
-def retired_head_envelope_insert_with_scores(
-    frontier,
-    frontier_scores,
-    candidate,
-    candidate_scores,
-):
-    """Retired sequential cached-score inserter used only as a differential oracle."""
-    if len(frontier) <= 0:
-        out = List.empty_list(_NUMBA_SURFACE_TYPE)
-        out_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
-        out.append(candidate)
-        out_scores.append(candidate_scores.copy())
-        return out, out_scores
-    for idx in range(len(frontier)):
-        if _numba_head_cached_scores_dominate(
-            frontier_scores[idx], candidate_scores, frontier[idx], candidate
-        ):
-            return frontier, frontier_scores
-    dominated_idx = -1
-    for idx in range(len(frontier)):
-        if _numba_head_cached_scores_dominate(
-            candidate_scores, frontier_scores[idx], candidate, frontier[idx]
-        ):
-            dominated_idx = idx
-            break
-    if dominated_idx < 0:
-        frontier.append(candidate)
-        frontier_scores.append(candidate_scores.copy())
-        return frontier, frontier_scores
-    write = int(dominated_idx)
-    for idx in range(int(dominated_idx) + 1, len(frontier)):
-        kept_scores = frontier_scores[idx]
-        if not _numba_head_cached_scores_dominate(
-            candidate_scores, kept_scores, candidate, frontier[idx]
-        ):
-            frontier[int(write)] = frontier[idx]
-            frontier_scores[int(write)] = kept_scores
-            write += 1
-    while len(frontier) > int(write):
-        frontier.pop()
-        frontier_scores.pop()
-    frontier.append(candidate)
-    frontier_scores.append(candidate_scores.copy())
-    return frontier, frontier_scores
 
 
 def retired_nested_action_reachability_prepass(
@@ -432,67 +374,3 @@ def _retired_body_hull_group(rows: Sequence[BodyRow]) -> list[BodyRow]:
         stack.append(row)
     return stack
 
-
-def retired_surface_structurally_dominates(left: SurfaceRow, right: SurfaceRow) -> bool:
-    lf_lo, lf_hi, lg_lo, lg_hi, lbf, lbg, lbfg = (int(value) for value in left)
-    rf_lo, rf_hi, rg_lo, rg_hi, rbf, rbg, rbfg = (int(value) for value in right)
-    if (lf_lo & lg_lo) != (rf_lo & rg_lo) or (lf_hi & lg_hi) != (rf_hi & rg_hi):
-        return False
-    return (
-        lbf >= rbf
-        and lbg - lbfg <= rbg - rbfg
-        and lbfg <= rbfg
-        and (rf_lo & ~lf_lo) == 0
-        and (rf_hi & ~lf_hi) == 0
-        and (lg_lo & ~rg_lo) == 0
-        and (lg_hi & ~rg_hi) == 0
-    )
-
-
-class RetiredRegionEndBuckets:
-    """Retired Dict[end, List[surface]] insertion, pending order, and drain behavior."""
-
-    def __init__(self) -> None:
-        self._buckets: dict[int, list[SurfaceRow]] = {}
-        self.pending_ends: list[int] = []
-
-    def append(self, end_e: int, edge: Iterable[int]) -> bool:
-        row = tuple(int(value) for value in edge)
-        if len(row) != 7:
-            raise ValueError("retired region-bucket surface must contain seven values")
-        surface: SurfaceRow = (
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-            row[4],
-            row[5],
-            row[6],
-        )
-        bucket = self._buckets.get(int(end_e))
-        if bucket is None:
-            bucket = []
-            self._buckets[int(end_e)] = bucket
-            self.pending_ends.append(int(end_e))
-        if any(retired_surface_structurally_dominates(kept, surface) for kept in bucket):
-            return False
-        bucket[:] = [
-            kept
-            for kept in bucket
-            if not retired_surface_structurally_dominates(surface, kept)
-        ]
-        bucket.append(surface)
-        return True
-
-    def bucket(self, end_e: int) -> list[SurfaceRow]:
-        return list(self._buckets.get(int(end_e), ()))
-
-    def drain(self) -> list[tuple[int, SurfaceRow]]:
-        rows = [
-            (int(end_e), surface)
-            for end_e in self.pending_ends
-            for surface in self._buckets[int(end_e)]
-        ]
-        self._buckets.clear()
-        self.pending_ends.clear()
-        return rows

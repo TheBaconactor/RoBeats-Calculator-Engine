@@ -364,12 +364,10 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
     stat cell (the best_fg_score criterion) -- EXACTLY, by the 16-corner proof, not probe sampling."""
     import random
 
-    from numba.typed import List
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _numba_head_envelope_filter,
         _HEAD_DOM_C,
         _HEAD_DOM_F,
-        _NUMBA_SURFACE_TYPE,
     )
 
     head_len = 24
@@ -385,10 +383,8 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
     family = sorted(raw)
     assert len(family) > 60  # a genuinely rich set
 
-    lst = List.empty_list(_NUMBA_SURFACE_TYPE)
-    for fever, great in family:
-        lst.append(_mk_head_surface(fever, great))
-    kept = _numba_head_envelope_filter(lst, 0, head_len, 0)  # min_surfaces=0 -> always prune
+    rows = np.array([_mk_head_surface(fever, great) for fever, great in family], dtype=np.uint64)
+    kept = _numba_head_envelope_filter(rows, 0, head_len, 0)  # min_surfaces=0 -> always prune
 
     kept_keys = {(int(s[0]), int(s[2])) for s in kept}
     family_keys = {(sum(1 << p for p in fv), sum(1 << p for p in gr)) for fv, gr in family}
@@ -411,180 +407,6 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
         all_max = max(_head_surface_score(fv, gr, head_len, v, c, f, g) for fv, gr in family)
         keep_max = max(_head_surface_score(fv, gr, head_len, v, c, f, g) for fv, gr in kept_family)
         assert keep_max == all_max, (v, c, f, g, all_max, keep_max)  # (c) max preserved at every realizable cell
-
-
-def test_head_generated_incremental_bound_preserves_best_score():
-    """Incremental head checkpointing must be equivalent to one-shot full reduction.
-
-    This derisks generation-time bounding: surfaces may be dropped before the final reducer only
-    when the same 16-corner cone certificate proves they cannot win for any realizable stat cell.
-    """
-    import random
-
-    from numba.typed import List
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-        _HEAD_DOM_C,
-        _HEAD_DOM_F,
-        _NUMBA_HEAD_SCORES_TYPE,
-        _NUMBA_SURFACE_TYPE,
-        _numba_head_envelope_filter,
-        _numba_maybe_promote_head_generated_with_scores,
-        _numba_reduce,
-    )
-
-    head_len = 32
-    rng = random.Random(20260618)
-    family = []
-    for _ in range(5200):
-        e = rng.randint(4, head_len)
-        g = rng.randint(0, e)
-        family.append((tuple(range(0, e)), tuple(range(e - g, e))))
-
-    full = List.empty_list(_NUMBA_SURFACE_TYPE)
-    stream = List.empty_list(_NUMBA_SURFACE_TYPE)
-    stream_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
-    for idx, (fever, great) in enumerate(family):
-        surface = _mk_head_surface(fever, great)
-        full.append(surface)
-        stream.append(surface)
-        if idx % 137 == 0:
-            # `_numba_maybe_promote_head_generated_with_scores` with bounded_mode=0 is the
-            # score-carrying periodic bound: over threshold it returns the same
-            # `_numba_head_envelope_filter(_numba_reduce(...))` reduction the deleted
-            # `_numba_bound_head_generated` did, else the stream unchanged.
-            stream, stream_scores, _bounded = (
-                _numba_maybe_promote_head_generated_with_scores(
-                    stream, stream_scores, 0, head_len, 0, 0
-                )
-            )
-
-    full_once = _numba_head_envelope_filter(_numba_reduce(full), 0, head_len, 0)
-    stream = _numba_head_envelope_filter(_numba_reduce(stream), 0, head_len, 0)
-    assert len(stream) < len(family) // 10
-    assert {(int(s[0]), int(s[1]), int(s[2]), int(s[3])) for s in stream}.issubset(
-        {(int(s[0]), int(s[1]), int(s[2]), int(s[3])) for s in full_once}
-    )
-
-    def positions(surface, offset):
-        out = []
-        lo = int(surface[offset])
-        hi = int(surface[offset + 1])
-        for pos in range(head_len):
-            if pos < 64:
-                hit = (lo >> pos) & 1
-            else:
-                hit = (hi >> (pos - 64)) & 1
-            if hit:
-                out.append(pos)
-        return tuple(out)
-
-    cs = (_HEAD_DOM_C[0], 0.5 * (_HEAD_DOM_C[0] + _HEAD_DOM_C[1]), _HEAD_DOM_C[1])
-    fs = (_HEAD_DOM_F[0], 0.5 * (_HEAD_DOM_F[0] + _HEAD_DOM_F[1]), _HEAD_DOM_F[1])
-    grid = [
-        (v, c, f, u * v)
-        for v in (700.0, 1800.0, 4200.0, 7600.0)
-        for c in cs
-        for f in fs
-        for u in (0.35, 0.62, 0.95)
-    ]
-    full_positions = [(positions(s, 0), positions(s, 2)) for s in full]
-    stream_positions = [(positions(s, 0), positions(s, 2)) for s in stream]
-    for v, c, f, g in grid:
-        full_max = max(_head_surface_score(fv, gr, head_len, v, c, f, g) for fv, gr in full_positions)
-        stream_max = max(_head_surface_score(fv, gr, head_len, v, c, f, g) for fv, gr in stream_positions)
-        assert stream_max == full_max, (v, c, f, g, full_max, stream_max)
-
-
-def test_head_generation_promotion_then_bounded_insert_preserves_best_score():
-    """Once a stream is promoted into bounded mode, exact candidate-by-candidate insertion must
-    preserve the same winners as the full one-shot head envelope."""
-    import random
-
-    import numpy as np
-    from numba.typed import List
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-        _HEAD_DOM_C,
-        _HEAD_DOM_F,
-        _NUMBA_HEAD_SCORES_TYPE,
-        _NUMBA_SURFACE_TYPE,
-        _numba_head_basis_corner_scores_row,
-        _numba_head_envelope_filter,
-        _numba_head_surface_basis,
-        _numba_maybe_promote_head_generated_with_scores,
-        _numba_reduce,
-    )
-    from tests.retired_fg_frontier_semantics import retired_head_envelope_insert_with_scores
-
-    head_len = 32
-    rng = random.Random(20260619)
-    family = []
-    for _ in range(5600):
-        e = rng.randint(4, head_len)
-        g = rng.randint(0, e)
-        family.append((tuple(range(0, e)), tuple(range(e - g, e))))
-
-    full = List.empty_list(_NUMBA_SURFACE_TYPE)
-    stream = List.empty_list(_NUMBA_SURFACE_TYPE)
-    stream_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
-    cand_scores = np.empty(16, dtype=np.float64)
-    bounded_mode = 0
-    promoted_at = -1
-    for idx, (fever, great) in enumerate(family):
-        surface = _mk_head_surface(fever, great)
-        full.append(surface)
-        if bounded_mode == 0:
-            stream.append(surface)
-            stream, stream_scores, bounded_mode = (
-                _numba_maybe_promote_head_generated_with_scores(
-                    stream, stream_scores, 0, head_len, 0, bounded_mode
-                )
-            )
-            if bounded_mode != 0 and promoted_at < 0:
-                promoted_at = idx
-        else:
-            candidate_basis = _numba_head_surface_basis(surface, 0, head_len)
-            _numba_head_basis_corner_scores_row(candidate_basis, cand_scores)
-            stream, stream_scores = retired_head_envelope_insert_with_scores(
-                stream, stream_scores, surface, cand_scores
-            )
-
-    assert promoted_at >= 4096
-    assert promoted_at < len(family) - 500
-
-    full_once = _numba_head_envelope_filter(_numba_reduce(full), 0, head_len, 0)
-    bounded_once = _numba_head_envelope_filter(_numba_reduce(stream), 0, head_len, 0)
-    assert len(stream) == len(bounded_once)
-
-    def positions(surface, offset):
-        out = []
-        lo = int(surface[offset])
-        hi = int(surface[offset + 1])
-        for pos in range(head_len):
-            if pos < 64:
-                hit = (lo >> pos) & 1
-            else:
-                hit = (hi >> (pos - 64)) & 1
-            if hit:
-                out.append(pos)
-        return tuple(out)
-
-    cs = (_HEAD_DOM_C[0], 0.5 * (_HEAD_DOM_C[0] + _HEAD_DOM_C[1]), _HEAD_DOM_C[1])
-    fs = (_HEAD_DOM_F[0], 0.5 * (_HEAD_DOM_F[0] + _HEAD_DOM_F[1]), _HEAD_DOM_F[1])
-    grid = [
-        (v, c, f, u * v)
-        for v in (700.0, 1800.0, 4200.0, 7600.0)
-        for c in cs
-        for f in fs
-        for u in (0.35, 0.62, 0.95)
-    ]
-    full_positions = [(positions(s, 0), positions(s, 2)) for s in full_once]
-    bounded_positions = [(positions(s, 0), positions(s, 2)) for s in stream]
-    for v, c, f, g in grid:
-        full_max = max(_head_surface_score(fv, gr, head_len, v, c, f, g) for fv, gr in full_positions)
-        bounded_max = max(
-            _head_surface_score(fv, gr, head_len, v, c, f, g) for fv, gr in bounded_positions
-        )
-        assert bounded_max == full_max, (v, c, f, g, full_max, bounded_max)
 
 
 def test_early_great_is_a_genuine_pareto_tradeoff():

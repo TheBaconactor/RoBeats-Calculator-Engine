@@ -40,8 +40,8 @@ class _FirstFrontierStampWorkspace:
     are zeroed on (re)creation and deterministic epoch rollover (a fresh np.empty could contain
     garbage colliding with a live epoch); value/touched arrays are only ever read under a matching
     stamp or a write-first touched count, so their initial contents are irrelevant. Capacities come
-    from the song's workspace plan (a provable upper bound on every geometry's pair radix, see
-    ``_FirstFrontierWorkspacePlan``), so one workspace serves every geometry of a song build;
+    from the song's workspace plan (pair arrays: a provable upper bound on every geometry's pair radix, see
+    ``_FirstFrontierWorkspacePlan``; Fenwick arrays: n + 2), so one workspace serves every geometry of a song build;
     a song needing more capacity forces recreation. The kernel fail-loud-guards the capacities
     against its true per-geometry radix, so an undersized plan can never corrupt memory.
     """
@@ -49,22 +49,18 @@ class _FirstFrontierStampWorkspace:
     __slots__ = (
         "pair_capacity",
         "bit_capacity",
-        "branch_a_capacity",
         "successor_capacity",
         "pair_values",
         "pair_stamps",
         "pair_touched",
         "bit_values",
         "bit_stamps",
-        "branch_a_values",
-        "branch_a_stamps",
         "perfect_successor",
         "perfect_successor_stamps",
         "late_successor",
         "late_successor_stamps",
         "pair_epoch",
         "bit_epoch",
-        "branch_a_epoch",
         "successor_epoch",
     )
 
@@ -72,12 +68,10 @@ class _FirstFrontierStampWorkspace:
         self,
         pair_capacity: int,
         bit_capacity: int,
-        branch_a_capacity: int,
         successor_capacity: int,
     ) -> None:
         self.pair_capacity = int(pair_capacity)
         self.bit_capacity = int(bit_capacity)
-        self.branch_a_capacity = int(branch_a_capacity)
         self.successor_capacity = int(successor_capacity)
         if int(self.successor_capacity) < 1:
             raise ValueError("FG successor workspace capacity must be positive")
@@ -86,15 +80,12 @@ class _FirstFrontierStampWorkspace:
         self.pair_touched = np.zeros(self.pair_capacity, dtype=np.int32)
         self.bit_values = np.zeros(self.bit_capacity, dtype=np.int32)
         self.bit_stamps = np.zeros(self.bit_capacity, dtype=np.int32)
-        self.branch_a_values = np.zeros(self.branch_a_capacity, dtype=np.int32)
-        self.branch_a_stamps = np.zeros(self.branch_a_capacity, dtype=np.int32)
         self.perfect_successor = np.empty(self.successor_capacity, dtype=np.int32)
         self.perfect_successor_stamps = np.zeros(self.successor_capacity, dtype=np.int32)
         self.late_successor = np.empty(self.successor_capacity, dtype=np.int32)
         self.late_successor_stamps = np.zeros(self.successor_capacity, dtype=np.int32)
         self.pair_epoch = 0
         self.bit_epoch = 0
-        self.branch_a_epoch = 0
         self.successor_epoch = 0
 
     @property
@@ -105,8 +96,6 @@ class _FirstFrontierStampWorkspace:
             + self.pair_touched.nbytes
             + self.bit_values.nbytes
             + self.bit_stamps.nbytes
-            + self.branch_a_values.nbytes
-            + self.branch_a_stamps.nbytes
             + self.perfect_successor.nbytes
             + self.perfect_successor_stamps.nbytes
             + self.late_successor.nbytes
@@ -121,21 +110,17 @@ class _FirstFrontierStampWorkspace:
             self.successor_epoch = 1
         return int(self.successor_epoch)
 
-    def store_epochs(self, pair_epoch: int, bit_epoch: int, branch_a_epoch: int) -> None:
+    def store_epochs(self, pair_epoch: int, bit_epoch: int) -> None:
         """Persist the kernel's final epochs, resetting any counter that passed the int32
         headroom bound (zero its stamps so epoch 0 is fresh again, like a new workspace)."""
         self.pair_epoch = int(pair_epoch)
         self.bit_epoch = int(bit_epoch)
-        self.branch_a_epoch = int(branch_a_epoch)
         if self.pair_epoch > _STAMP_EPOCH_RESET_LIMIT:
             self.pair_stamps[:] = 0
             self.pair_epoch = 0
         if self.bit_epoch > _STAMP_EPOCH_RESET_LIMIT:
             self.bit_stamps[:] = 0
             self.bit_epoch = 0
-        if self.branch_a_epoch > _STAMP_EPOCH_RESET_LIMIT:
-            self.branch_a_stamps[:] = 0
-            self.branch_a_epoch = 0
 
 
 _WORKSPACE_TLS = threading.local()
@@ -244,7 +229,7 @@ class _FirstFrontierWorkspacePlan:
     every region-table group.
     """
 
-    __slots__ = ("n", "pair_mod_bound", "pair_capacity", "bit_capacity", "branch_a_capacity", "_lock", "allocations", "allocated_bytes")
+    __slots__ = ("n", "pair_mod_bound", "pair_capacity", "bit_capacity", "_lock", "allocations", "allocated_bytes")
 
     def __init__(self, *, n: int, pair_mod_bound: int) -> None:
         if int(pair_mod_bound) < 1 or int(pair_mod_bound) > int(n) + 1:
@@ -252,8 +237,7 @@ class _FirstFrontierWorkspacePlan:
         self.n = int(n)
         self.pair_mod_bound = int(pair_mod_bound)
         self.pair_capacity = (int(n) + 1) * int(pair_mod_bound)
-        self.bit_capacity = int(pair_mod_bound) + 1
-        self.branch_a_capacity = (int(pair_mod_bound) + 1) * (int(n) + 2)
+        self.bit_capacity = int(n) + 2
         self._lock = threading.Lock()
         self.allocations = 0
         self.allocated_bytes = 0
@@ -266,7 +250,6 @@ class _FirstFrontierWorkspacePlan:
             * (
                 3 * int(self.pair_capacity)
                 + 2 * int(self.bit_capacity)
-                + 2 * int(self.branch_a_capacity)
                 + 4 * (int(self.n) + 1)
             )
         )
@@ -277,13 +260,11 @@ class _FirstFrontierWorkspacePlan:
             workspace is None
             or int(workspace.pair_capacity) < int(self.pair_capacity)
             or int(workspace.bit_capacity) < int(self.bit_capacity)
-            or int(workspace.branch_a_capacity) < int(self.branch_a_capacity)
             or int(workspace.successor_capacity) < int(self.n) + 1
         ):
             workspace = _FirstFrontierStampWorkspace(
                 int(self.pair_capacity),
                 int(self.bit_capacity),
-                int(self.branch_a_capacity),
                 int(self.n) + 1,
             )
             _WORKSPACE_TLS.workspace = workspace
@@ -357,7 +338,6 @@ def _first_frontier_result_from_precomputed_end_indices(
         max_state_frontier,
         pair_epoch,
         bit_epoch,
-        branch_a_epoch,
     ) = (
         _first_frontier_from_precomputed_end_indices_numba(
             int(context.n),
@@ -410,8 +390,6 @@ def _first_frontier_result_from_precomputed_end_indices(
             workspace.pair_touched,
             workspace.bit_values,
             workspace.bit_stamps,
-            workspace.branch_a_values,
-            workspace.branch_a_stamps,
             workspace.perfect_successor,
             workspace.perfect_successor_stamps,
             workspace.late_successor,
@@ -419,10 +397,9 @@ def _first_frontier_result_from_precomputed_end_indices(
             int(successor_epoch),
             int(workspace.pair_epoch),
             int(workspace.bit_epoch),
-            int(workspace.branch_a_epoch),
         )
     )
-    workspace.store_epochs(int(pair_epoch), int(bit_epoch), int(branch_a_epoch))
+    workspace.store_epochs(int(pair_epoch), int(bit_epoch))
     return FgResponseFrontierResult(
         first_frontier=SurfaceRowsFirstFrontier(first_rows),
         state_frontiers={},

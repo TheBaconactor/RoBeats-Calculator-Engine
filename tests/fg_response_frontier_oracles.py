@@ -116,24 +116,14 @@ def _head_envelope_reduce_surfaces(
 ) -> tuple[FgResponseSurface, ...]:
     if not surfaces:
         return (_EMPTY_SURFACE,)
-    from numba.typed import List
-
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _HEAD_FILTER_MIN_SURFACES,
-        _NUMBA_SURFACE_TYPE,
         _numba_head_envelope_filter,
-        _numba_reduce,
     )
 
-    rows = List.empty_list(_NUMBA_SURFACE_TYPE)
-    for surface in surfaces:
-        rows.append(_to_numba_surface(surface))
-    reduced = _numba_head_envelope_filter(
-        _numba_reduce(rows),
-        int(lo_pos),
-        int(hi_pos),
-        int(_HEAD_FILTER_MIN_SURFACES),
-    )
+    # The surfaces are already the exact Pareto set (_reduce_surfaces).
+    rows = np.array([_to_numba_surface(surface) for surface in surfaces], dtype=np.uint64)
+    reduced = _numba_head_envelope_filter(rows, int(lo_pos), int(hi_pos), int(_HEAD_FILTER_MIN_SURFACES))
     return tuple(_from_numba_surface(reduced[idx]) for idx in range(len(reduced))) or (
         _EMPTY_SURFACE,
     )
