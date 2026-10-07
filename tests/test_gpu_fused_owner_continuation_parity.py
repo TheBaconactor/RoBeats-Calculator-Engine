@@ -214,7 +214,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         build_fused_owner_solve_result_from_score_row,
-        score_fused_owner_base_components_on_gpu_owner,
+        score_fg_base_components,
     )
 
     decoded, song, curves = real_ga_run
@@ -263,7 +263,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         base_components = np.concatenate(
             [np.asarray(p.batch.base_components, dtype=np.int32) for p in fused_plan.prepared_batches]
         )
-        owner_map = score_fused_owner_base_components_on_gpu_owner(
+        owner_map = score_fg_base_components(
             base_components=base_components,
             song=song,
             curves=curves,

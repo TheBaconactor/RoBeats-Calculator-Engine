@@ -20,7 +20,7 @@ from .response_cache import load_response_frontier_scoring_bundle
 from .response_cache_serde import frontier_result_from_scoring_bundle_for_stats
 from .response_cache_store import load_first_surface_scoring_patterns
 from .response_cache_types import FgResponseFrontierScoringBundle, all_response_stat_keys
-from .response_gem_search import _score_response_group_meta_cpu
+from .response_gem_search import _score_response_group_meta_cpu, build_response_group_rows
 from .response_types import (
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
@@ -38,13 +38,13 @@ __all__ = [
     "FgResponseFrontierOwnerResult",
     "FgFusedOwnerScoreRow",
     "resolve_fused_owner_score_rows_from_batch",
-    "score_fused_owner_base_components_on_gpu_owner",
+    "score_fg_base_components",
     "build_fused_owner_solve_result_from_score_row",
     "fg_batch_stage",
     "required_response_stat_keys_for_scoring_batch",
     "prepare_force_greats_response_frontier_scoring_batch",
-    "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
-    "build_prepared_force_greats_response_frontier_group_rows_on_owner",
+    "build_prepared_force_greats_response_frontier_group_arrays",
+    "build_prepared_force_greats_response_frontier_group_rows",
     "pack_prepared_force_greats_response_frontier_scoring_surfaces",
     "score_prepared_force_greats_response_frontier_batch_on_cpu_owner",
     "score_prepared_force_greats_response_frontier_batch_sync",
@@ -152,7 +152,7 @@ class FgResponseFrontierPackedScoringBatch:
     secondary_color: str
     scoring_bundle: FgResponseFrontierScoringBundle
     scoring_bundle_ms: float
-    # Host-side prep inputs; group rows are built on the GPU owner, surfaces packed on FG workers.
+    # Prep inputs of the group rows (build_prepared_force_greats_response_frontier_group_rows).
     base_components: np.ndarray
     ft_values: np.ndarray
     ff_values: np.ndarray
@@ -231,10 +231,10 @@ def _surface_from_packed_arrays(
 ) -> FgResponseSurface:
     idx = int(surface_idx)
     if idx < 0 or idx >= int(surface_pattern_ids.shape[0]) or idx >= int(surface_counts.shape[0]):
-        raise ValueError("response frontier exact GPU selected surface is outside the packed pool")
+        raise ValueError("response frontier exact selected surface is outside the packed pool")
     pattern_idx = int(surface_pattern_ids[idx])
     if pattern_idx < 0 or pattern_idx >= int(surface_pattern_words.shape[0]):
-        raise ValueError("response frontier exact GPU selected surface has an invalid head-pattern ID")
+        raise ValueError("response frontier exact selected surface has an invalid head-pattern ID")
     word_row = np.asarray(surface_pattern_words[pattern_idx], dtype=np.uint32)
     count_row = np.asarray(surface_counts[idx], dtype=np.int32)
     return FgResponseSurface(
@@ -288,7 +288,7 @@ def _pack_scoring_surfaces_for_batch(
         raise ValueError("FG response frontier payload contains an empty first frontier")
     head_lengths = np.unique(np.ascontiguousarray(group_meta[:, 6], dtype=np.int32))
     if int(head_lengths.shape[0]) != 1:
-        raise ValueError("response frontier GPU group metadata has inconsistent head length")
+        raise ValueError("response frontier group metadata has inconsistent head length")
     unique_frontiers = np.ascontiguousarray(np.unique(kept_frontiers), dtype=np.int32)
 
     full_surface_pattern_ids = np.asarray(scoring_bundle.surface_pattern_ids)
@@ -403,48 +403,6 @@ def _unique_response_stat_keys_tuple(
     return tuple(zip((int(v) for v in unique_ft), (int(v) for v in unique_ff), strict=True))
 
 
-_GROUP_ROW_BUILDER_WARMED = False
-
-
-def warmup_response_frontier_group_builder() -> None:
-    global _GROUP_ROW_BUILDER_WARMED
-    if bool(_GROUP_ROW_BUILDER_WARMED):
-        return
-    from .response_group_build_kernels import build_response_group_rows_gpu
-
-    ft_values, ff_values, residual_values = ftff_combo_arrays(2)
-    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
-    for pos in range(int(ft_values.shape[0])):
-        ft_stat = min(MAX_STAT, int(ft_values[pos]) * STAT_GEM_GAIN_FEVER)
-        ff_stat = min(MAX_STAT, int(ff_values[pos]) * STAT_GEM_GAIN_FEVER)
-        frontier_idx_by_stat[ft_stat, ff_stat] = int(pos)
-    base_components = np.asarray([[0, 0, 0, 1, 2, 0, 0]], dtype=np.int32)
-    primary_delta = np.asarray(ft_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32)
-    secondary_delta = np.asarray(ff_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32)
-    group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices = build_response_group_rows_gpu(
-        np.ascontiguousarray(base_components, dtype=np.int32),
-        np.ascontiguousarray(ft_values, dtype=np.int32),
-        np.ascontiguousarray(ff_values, dtype=np.int32),
-        np.ascontiguousarray(residual_values, dtype=np.int32),
-        np.ascontiguousarray(frontier_idx_by_stat, dtype=np.int32),
-        np.ascontiguousarray(primary_delta, dtype=np.int32),
-        np.ascontiguousarray(secondary_delta, dtype=np.int32),
-        False,
-        1,
-        0,
-    )
-    if (
-        int(group_meta.shape[0]) != int(ft_values.shape[0])
-        or group_ft.tolist() != ft_values.astype(np.int32, copy=False).tolist()
-        or group_ff.tolist() != ff_values.astype(np.int32, copy=False).tolist()
-        or group_ft_stat.tolist() != (ft_values * STAT_GEM_GAIN_FEVER).astype(np.int32, copy=False).tolist()
-        or group_ff_stat.tolist() != (ff_values * STAT_GEM_GAIN_FEVER).astype(np.int32, copy=False).tolist()
-        or candidate_slices.tolist() != [[0, int(ft_values.shape[0])]]
-    ):
-        raise RuntimeError("FG response group-row builder warmup produced an invalid result")
-    _GROUP_ROW_BUILDER_WARMED = True
-
-
 def _solve_result_from_row(
     *,
     started: float,
@@ -501,8 +459,8 @@ def prepare_force_greats_response_frontier_scoring_batch(
     started: float | None = None,
     scoring_bundle: FgResponseFrontierScoringBundle | None = None,
 ) -> FgResponseFrontierPackedScoringBatch:
-    """Prepare the GA->FG candidate inputs (host, prep thread). The group rows + scoring
-    surfaces are built later on the GPU owner thread and scored by
+    """Prepare the GA->FG candidate inputs. The group rows and scoring surfaces are built later
+    (build_prepared_force_greats_response_frontier_group_arrays) and scored by
     `score_prepared_force_greats_response_frontier_batch_on_cpu_owner`.
 
     ``base_stats7_list`` (when given) carries each candidate's authoritative base
@@ -605,14 +563,12 @@ def prepare_force_greats_response_frontier_scoring_batch(
     )
 
 
-def build_prepared_force_greats_response_frontier_group_rows_on_owner(
+def build_prepared_force_greats_response_frontier_group_rows(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierPackedScoringBatch:
-    """Build pruned group rows on the GPU owner thread (Taichi kernels only)."""
+    """The batch with its loadouts' gem-search groups (response_gem_search.build_response_group_rows)."""
     if fg_batch_stage(batch) is not FgBatchStage.INPUT:
         return batch
-    from .response_group_build_kernels import build_response_group_rows_gpu
-
     gb_t0 = time.perf_counter()
     (
         group_meta,
@@ -621,7 +577,7 @@ def build_prepared_force_greats_response_frontier_group_rows_on_owner(
         group_ft_stat,
         group_ff_stat,
         candidate_slices_arr,
-    ) = build_response_group_rows_gpu(
+    ) = build_response_group_rows(
         batch.base_components,
         batch.ft_values,
         batch.ff_values,
@@ -658,7 +614,7 @@ def build_prepared_force_greats_response_frontier_group_rows_on_owner(
 def pack_prepared_force_greats_response_frontier_scoring_surfaces(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierPackedScoringBatch:
-    """Pack compact scoring surfaces on a CPU worker thread (not the GPU owner)."""
+    """The batch with the scoring surfaces of its groups packed."""
     if fg_batch_stage(batch) is FgBatchStage.INPUT:
         raise RuntimeError("FG response frontier surface pack requires built group rows")
     if fg_batch_stage(batch) is FgBatchStage.SURFACES_PACKED:
@@ -693,11 +649,11 @@ def pack_prepared_force_greats_response_frontier_scoring_surfaces(
     )
 
 
-def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
+def build_prepared_force_greats_response_frontier_group_arrays(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierPackedScoringBatch:
-    """Build response group rows on the GPU owner and pack scoring surfaces."""
-    built = build_prepared_force_greats_response_frontier_group_rows_on_owner(batch)
+    """The batch with its group rows built and their scoring surfaces packed."""
+    built = build_prepared_force_greats_response_frontier_group_rows(batch)
     return pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
 
 
@@ -738,12 +694,12 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
     group_offsets = batch.scoring_group_offsets
     inner_rows = np.asarray(inner_rows, dtype=np.int32)
     if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
+        raise ValueError("response frontier exact batch returned the wrong number of group results")
     out: list[FgResponseFrontierSolveResult] = []
     frontier_by_stat_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
     for candidate_idx, (start, count) in enumerate(batch.candidate_slices):
         if int(count) <= 0:
-            raise ValueError("response frontier exact GPU batch produced no pair result")
+            raise ValueError("response frontier exact batch produced no pair result")
         local_idx = int(np.argmax(inner_rows[int(start) : int(start) + int(count), 0]))
         row_idx = int(start) + int(local_idx)
         ft = int(batch.group_ft[row_idx])
@@ -808,11 +764,11 @@ def resolve_fused_owner_score_rows_from_batch(
     group_offsets = batch.scoring_group_offsets
     inner_rows = np.asarray(inner_rows, dtype=np.int32)
     if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
+        raise ValueError("response frontier exact batch returned the wrong number of group results")
     out: list[FgFusedOwnerScoreRow] = []
     for _candidate_idx, (start, count) in enumerate(batch.candidate_slices):
         if int(count) <= 0:
-            raise ValueError("response frontier exact GPU batch produced no pair result")
+            raise ValueError("response frontier exact batch produced no pair result")
         local_idx = int(np.argmax(inner_rows[int(start) : int(start) + int(count), 0]))
         row_idx = int(start) + int(local_idx)
         ft = int(batch.group_ft[row_idx])
@@ -852,7 +808,7 @@ def resolve_fused_owner_score_rows_from_batch(
     return out
 
 
-def score_fused_owner_base_components_on_gpu_owner(
+def score_fg_base_components(
     *,
     base_components: np.ndarray,
     song: TimedSong,
@@ -861,25 +817,11 @@ def score_fused_owner_base_components_on_gpu_owner(
     scoring_bundle: FgResponseFrontierScoringBundle,
     total_budget: int = GEM_BUDGET,
 ) -> dict[tuple[int, ...], FgFusedOwnerScoreRow]:
-    """Score FG response frontier for a candidate set on the GPU owner, fused.
-
-    The fused GA->FG handoff calls this on the owner thread immediately after the
-    GA pack/select, with ``base_components`` sliced from the selected payload rows'
-    device ``base_stats7`` (Slice 2). It builds the group rows + packs scoring
-    surfaces + runs the inner solve, all on the owner (Taichi only), and returns a
-    map ``base_components_7tuple -> FgFusedOwnerScoreRow``.
-
-    Rows are deduped by the exact base_components 7-tuple (the minimal scoring set;
-    equal base_components => identical FG result). The driver re-derives the same
-    7-tuples from the same device base_stats7 and looks up each plan candidate's
-    scored row, then materializes with the full BaseStats dict on the host. The
-    SCORE here is bit-exact equal to the pre-fusion driver SCORE (a pure function of
-    base_components; proven in tests/test_gpu_base_stats7_equivalence.py and the
-    Slice 3 fused-path GPU test).
-
-    ``selected_color`` is the song-level selected element (one batch). All other
-    FG inputs are song-level (prepared pre-GA via the scoring bundle).
-    """
+    """The FG score row of each distinct 7-vector of pre-gem totals (PP, CM, FM, primary, secondary, FT, FF), keyed by
+    it (CPU only). The GA turn scores its selected payload's device base_stats7 this way; the FG materializer looks a
+    plan candidate's row up by the same 7-vector and materializes it with the full BaseStats dict. Equal 7-vectors have
+    equal FG results, so duplicates are scored once. ``selected_color`` is the song's selected element; every other
+    input is song-level (the scoring bundle prepared before the GA)."""
     base_components = np.ascontiguousarray(np.asarray(base_components, dtype=np.int32))
     if int(base_components.ndim) != 2 or int(base_components.shape[1]) != 7:
         raise ValueError("fused owner FG score requires a (N,7) base_components array")
@@ -918,7 +860,7 @@ def score_fused_owner_base_components_on_gpu_owner(
         total_budget=int(total_budget),
         scoring_bundle=scoring_bundle,
     )
-    built = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+    built = build_prepared_force_greats_response_frontier_group_arrays(batch)
     owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(built)
     score_rows = resolve_fused_owner_score_rows_from_batch(owner.batch, owner.inner_rows)
     if len(score_rows) != len(unique_rows):
@@ -998,7 +940,7 @@ def score_prepared_force_greats_response_frontier_batch_sync(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> list[FgResponseFrontierSolveResult]:
     if batch.scoring_surface_pattern_ids is None:
-        batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+        batch = build_prepared_force_greats_response_frontier_group_arrays(batch)
     owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
     batch = owner.batch
     out = materialize_prepared_force_greats_response_frontier_batch_results(

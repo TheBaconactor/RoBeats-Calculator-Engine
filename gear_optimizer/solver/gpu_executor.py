@@ -94,21 +94,14 @@ def _stop_this_process(message: str) -> None:
 
 
 def _init_gpu() -> None:
-    """Taichi init + the FG and GA kernel warmups, on the owner thread."""
+    """Taichi init + the GA kernel warmups, on the owner thread."""
     # Import order matters: nothing that allocates Taichi fields is imported before init_taichi.
     from .taichi_gem import runtime as ti_runtime
 
     ti_runtime.init_taichi()
-    # The FG group-row builder's warm flag is not thread-safe: warmed here, no other thread dispatches first.
-    from .taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
-
-    warmup_response_frontier_group_builder()
     from .taichi_gem.api import ga_operations as ga_ops
 
     with ti_runtime.offline_cache_lock(timeout_sec=None):
-        from .taichi_gem.force_greats import fields as fg_fields
-
-        fg_fields.ensure_ready_with_warmup()
         ga_ops.warmup_ga_kernels_light()
 
 

@@ -1928,7 +1928,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
     assert batch.scoring_surface_pattern_head_coeffs is None
 
 
-def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -> None:
+def test_packed_scoring_batch_builds_its_groups_over_the_in_memory_pool() -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
@@ -1962,30 +1962,6 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
     )
 
 
-    from dataclasses import replace
-
-    monkeypatch.setattr(
-        response_frontier,
-        "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
-        lambda batch: replace(
-            batch,
-            group_meta=np.asarray([[0, 0, 0, 0, 0, 0, 1, 0]], dtype=np.int32),
-            group_ft=np.asarray([0], dtype=np.int32),
-            group_ff=np.asarray([0], dtype=np.int32),
-            group_ft_stat=np.asarray([0], dtype=np.int32),
-            group_ff_stat=np.asarray([0], dtype=np.int32),
-            candidate_slices=((0, 1),),
-            kept_stat_keys=((0, 0),),
-            scoring_surface_pattern_ids=np.zeros((1,), dtype=np.int32),
-            scoring_surface_pattern_words=surface_words[2:3],
-            scoring_surface_counts=surface_counts[2:3],
-            scoring_surface_pattern_head_coeffs=surface_head_coeffs[2:3],
-            scoring_group_offsets=np.asarray([0], dtype=np.int32),
-            scoring_group_lengths=np.asarray([1], dtype=np.int32),
-            scoring_unique_frontiers=1,
-        ),
-    )
-
     batch = response_frontier.prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=({"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0},),
         song=SimpleNamespace(fg_inputs=song_inputs),
@@ -1996,17 +1972,16 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
     )
     assert batch.scoring_surface_pattern_ids is None
 
-    built = response_frontier.build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+    built = response_frontier.build_prepared_force_greats_response_frontier_group_arrays(batch)
 
-    np.testing.assert_array_equal(built.scoring_surface_pattern_ids, np.zeros((1,), dtype=np.int32))
-    np.testing.assert_array_equal(built.scoring_surface_pattern_words, surface_words[2:3])
-    np.testing.assert_array_equal(built.scoring_surface_counts, surface_counts[2:3])
-    assert built.scoring_group_offsets.tolist() == [0]
+    # One FT/FF split (budget 0) reaching frontier 1: one group over its single surface, scored in place.
+    assert built.group_meta.tolist() == [[0, 0, 0, 0, 0, 0, 3, 0]]
+    assert built.candidate_slices == ((0, 1),)
+    assert built.kept_stat_keys == ((0, 0),)
+    assert built.scoring_group_offsets.tolist() == [2]
     assert built.scoring_group_lengths.tolist() == [1]
-    np.testing.assert_array_equal(built.scoring_surface_pattern_head_coeffs, surface_head_coeffs[2:3])
-    assert not hasattr(built, "scoring_logical_owners")
-    assert not hasattr(built, "scoring_logical_surfaces")
-    assert not hasattr(built, "scoring_logical_work_cumsum")
+    assert np.shares_memory(built.scoring_surface_pattern_words, surface_words)
+    assert np.shares_memory(built.scoring_surface_counts, surface_counts)
 
 
 def test_packed_scoring_batch_scores_in_memory_pool_in_place() -> None:

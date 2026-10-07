@@ -204,7 +204,7 @@ def score_fused_fg_from_selected_payload(
         raise ValueError("fused GA->FG handoff requires stat curves")
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        score_fused_owner_base_components_on_gpu_owner,
+        score_fg_base_components,
     )
 
     payload = np.asarray(runs_payload, dtype=np.int32)
@@ -231,7 +231,7 @@ def score_fused_fg_from_selected_payload(
         )
     base_components = np.ascontiguousarray(cand_rows[:, base_stats7_col0 : base_stats7_col0 + 7], dtype=np.int32)
 
-    return score_fused_owner_base_components_on_gpu_owner(
+    return score_fg_base_components(
         base_components=base_components,
         song=song,
         curves=curves,

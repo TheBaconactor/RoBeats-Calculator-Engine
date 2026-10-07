@@ -56,6 +56,161 @@ def color_flags(primary_color: str, secondary_color: str, selected_color: str) -
 
 
 @jit(nopython=True, cache=True)
+def _kept_split_positions(
+    base_components,
+    ft_values,
+    ff_values,
+    residual_values,
+    frontier_idx_by_stat,
+    primary_ftff_delta_values,
+    secondary_ftff_delta_values,
+    score_elements_constant,
+):
+    """Each loadout's groups as positions into the FT/FF split arrays, flat in loadout order, and per-loadout counts.
+
+    A loadout's splits reach frontiers (frontier_idx_by_stat at the split's clipped FT/FF stats); per frontier, in
+    first-reached order, it keeps the split with the most residual gems (the first one on a tie), or, when the splits
+    reaching it give the song's colors different values, every split no other split there matches or beats in
+    (residual, primary, secondary) (the earlier split wins an exact tie), in split order. O(splits) per loadout, plus
+    the pairwise check inside a frontier reached by splits of different color values."""
+    candidate_count = base_components.shape[0]
+    pair_count = ft_values.shape[0]
+    frontier_count = int(frontier_idx_by_stat.max()) + 1
+    stamp = np.full(frontier_count, -1, dtype=np.int64)
+    head = np.empty(frontier_count, dtype=np.int64)
+    tail = np.empty(frontier_count, dtype=np.int64)
+    best = np.empty(frontier_count, dtype=np.int64)
+    next_pos = np.empty(pair_count, dtype=np.int64)
+    reached = np.empty(pair_count, dtype=np.int64)
+    positions = np.empty(candidate_count * pair_count, dtype=np.int32)
+    counts = np.zeros(candidate_count, dtype=np.int64)
+    write = 0
+    for c in range(candidate_count):
+        base_primary = base_components[c, 3]
+        base_secondary = base_components[c, 4]
+        reached_count = 0
+        for pos in range(pair_count):
+            ft_stat = min(max(base_components[c, 5] + ft_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
+            ff_stat = min(max(base_components[c, 6] + ff_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
+            fid = frontier_idx_by_stat[ft_stat, ff_stat]
+            if fid < 0:
+                raise ValueError("FG response frontier scoring bundle does not cover a requested stat key")
+            next_pos[pos] = -1
+            if stamp[fid] != c:
+                stamp[fid] = c
+                head[fid] = pos
+                tail[fid] = pos
+                best[fid] = pos
+                reached[reached_count] = fid
+                reached_count += 1
+            else:
+                next_pos[tail[fid]] = pos
+                tail[fid] = pos
+                if residual_values[pos] > residual_values[best[fid]]:
+                    best[fid] = pos
+        start = write
+        for r in range(reached_count):
+            fid = reached[r]
+            first = head[fid]
+            same_colors = True
+            if not score_elements_constant:
+                pos = next_pos[first]
+                while pos >= 0:
+                    if (
+                        primary_ftff_delta_values[pos] != primary_ftff_delta_values[first]
+                        or secondary_ftff_delta_values[pos] != secondary_ftff_delta_values[first]
+                    ):
+                        same_colors = False
+                        break
+                    pos = next_pos[pos]
+            if same_colors:
+                positions[write] = best[fid]
+                write += 1
+                continue
+            row = first
+            while row >= 0:
+                row_primary = base_primary + primary_ftff_delta_values[row]
+                row_secondary = base_secondary + secondary_ftff_delta_values[row]
+                dominated = False
+                other = first
+                while other >= 0:
+                    if other != row:
+                        other_primary = base_primary + primary_ftff_delta_values[other]
+                        other_secondary = base_secondary + secondary_ftff_delta_values[other]
+                        if (
+                            residual_values[other] >= residual_values[row]
+                            and other_primary >= row_primary
+                            and other_secondary >= row_secondary
+                            and (
+                                residual_values[other] > residual_values[row]
+                                or other_primary > row_primary
+                                or other_secondary > row_secondary
+                                or other < row
+                            )
+                        ):
+                            dominated = True
+                            break
+                    other = next_pos[other]
+                if not dominated:
+                    positions[write] = row
+                    write += 1
+                row = next_pos[row]
+        counts[c] = write - start
+    return positions[:write], counts
+
+
+def build_response_group_rows(
+    base_components: np.ndarray,
+    ft_values: np.ndarray,
+    ff_values: np.ndarray,
+    residual_values: np.ndarray,
+    frontier_idx_by_stat: np.ndarray,
+    primary_ftff_delta_values: np.ndarray,
+    secondary_ftff_delta_values: np.ndarray,
+    score_elements_constant: bool,
+    head_len: int,
+    body_total: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The gem search's groups for a batch of loadouts (base_components rows: PP, CM, FM, primary, secondary, FT, FF):
+    (group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices). group_meta rows: residual gems,
+    PP, CM, FM, primary and secondary with the split's element gains, head length, body notes; candidate_slices rows:
+    (first group, group count) per loadout."""
+    base_components = np.ascontiguousarray(base_components, dtype=np.int32)
+    positions, counts = _kept_split_positions(
+        base_components,
+        np.ascontiguousarray(ft_values, dtype=np.int32),
+        np.ascontiguousarray(ff_values, dtype=np.int32),
+        np.ascontiguousarray(residual_values, dtype=np.int32),
+        np.ascontiguousarray(frontier_idx_by_stat, dtype=np.int32),
+        np.ascontiguousarray(primary_ftff_delta_values, dtype=np.int32),
+        np.ascontiguousarray(secondary_ftff_delta_values, dtype=np.int32),
+        bool(score_elements_constant),
+    )
+    owner = np.repeat(np.arange(base_components.shape[0]), counts)
+    base = base_components[owner]
+    group_ft = np.ascontiguousarray(ft_values[positions], dtype=np.int32)
+    group_ff = np.ascontiguousarray(ff_values[positions], dtype=np.int32)
+    group_meta = np.empty((positions.shape[0], 8), dtype=np.int32)
+    group_meta[:, 0] = residual_values[positions]
+    group_meta[:, 1:4] = base[:, 0:3]
+    group_meta[:, 4] = base[:, 3] + primary_ftff_delta_values[positions]
+    group_meta[:, 5] = base[:, 4] + secondary_ftff_delta_values[positions]
+    group_meta[:, 6] = head_len
+    group_meta[:, 7] = body_total
+    candidate_slices = np.empty((base_components.shape[0], 2), dtype=np.int32)
+    candidate_slices[:, 0] = np.cumsum(counts) - counts
+    candidate_slices[:, 1] = counts
+    return (
+        group_meta,
+        group_ft,
+        group_ff,
+        np.clip(base[:, 5] + group_ft * STAT_GEM_GAIN_FEVER, 0, MAX_STAT).astype(np.int32),
+        np.clip(base[:, 6] + group_ff * STAT_GEM_GAIN_FEVER, 0, MAX_STAT).astype(np.int32),
+        candidate_slices,
+    )
+
+
+@jit(nopython=True, cache=True)
 def _stat_row(stat):
     if stat < 0:
         return 0

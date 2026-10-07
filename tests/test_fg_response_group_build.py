@@ -1,16 +1,12 @@
-"""Golden parity: GPU FG group-row builder == prune-composition reference."""
+"""Golden parity: the FG group-row builder == the prune-composition reference."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.gpu
-
 from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-from gear_optimizer.solver.taichi_gem.force_greats.response_group_build_kernels import (
-    build_response_group_rows_gpu,
-)
+from gear_optimizer.solver.taichi_gem.force_greats.response_gem_search import build_response_group_rows
 from tests.fg_group_build_reference import build_response_group_rows_reference
 
 
@@ -57,13 +53,13 @@ _FRONTIER_ID_BY_POS = {
 }
 
 
-def _assert_six_equal(gpu_out, ref_out):
+def _assert_six_equal(got_out, ref_out):
     names = ("group_meta", "group_ft", "group_ff", "group_ft_stat", "group_ff_stat", "candidate_slices")
-    for name, g, c in zip(names, gpu_out, ref_out):
+    for name, g, c in zip(names, got_out, ref_out):
         g = np.asarray(g)
         c = np.asarray(c)
         assert g.shape == c.shape, f"{name} shape {g.shape} != {c.shape}"
-        assert np.array_equal(g, c), f"{name} mismatch:\nGPU={g}\nREF={c}"
+        assert np.array_equal(g, c), f"{name} mismatch:\nGOT={g}\nREF={c}"
 
 
 def _run_case(*, budget, base_components, score_elements_constant, geometry, head_len=100, body_total=8):
@@ -93,8 +89,7 @@ def _run_case(*, budget, base_components, score_elements_constant, geometry, hea
         int(body_total),
     )
     ref_out = build_response_group_rows_reference(*args)
-    gpu_out = build_response_group_rows_gpu(*args)
-    _assert_six_equal(gpu_out, ref_out)
+    _assert_six_equal(build_response_group_rows(*args), ref_out)
 
 
 def test_group_build_constant_path_per_pos_geometry():
@@ -145,7 +140,6 @@ def test_group_build_accepts_sparse_stat_grid_frontier_ids():
 @pytest.mark.parametrize("score_elements_constant", (True, False))
 @pytest.mark.parametrize("candidate_count", (1, 51, 63, 64, 65, 128, 129, 300))
 def test_group_build_any_batch_size_matches_reference(candidate_count, score_elements_constant, frontier_ids):
-    # Sizes straddle the per-launch candidate chunk boundaries and exceed the old 256-candidate cap.
     rng = np.random.default_rng(candidate_count)
     base = np.concatenate(
         (rng.integers(0, 100, size=(candidate_count, 5)), rng.integers(0, 41, size=(candidate_count, 2))),
