@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
+from gear_optimizer.solver.timing_envelope import precise_envelopes
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
     _compact_first_frontier_action_arrays,
@@ -55,7 +55,7 @@ def build_kernel_args(
         )
         if int(great_ts.shape[0]) != n:
             raise ValueError("great_candidate_timestamps length must match timestamps")
-    envelopes = perfect_window_envelopes(ts, np.ones(n, dtype=np.int16))
+    envelopes = precise_envelopes(ts, np.ones(n, dtype=np.int16))
     floor_ts, great_floor_ts = envelopes.perfect_floor, envelopes.great_floor
     lane_arr = (
         np.arange(n, dtype=np.int32)

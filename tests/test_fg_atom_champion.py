@@ -20,7 +20,7 @@ def _curves(dtype=np.float32):
 
 
 def test_head_coefficients_are_not_a_semantic_surface_key() -> None:
-    song = make_song(np.linspace(0.0, 1.0, 8), mode="zero_ms", primary="Rush", secondary="Flow")
+    song = make_song(np.linspace(0.0, 1.0, 8), mode="non-precise", primary="Rush", secondary="Flow")
     stats = {
         "Perfect Points": 80,
         "Combo Multiplier": 80,

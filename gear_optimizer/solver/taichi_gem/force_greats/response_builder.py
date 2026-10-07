@@ -190,7 +190,7 @@ def _song_arrays(
     lanes: Any | None,
 ) -> tuple[np.ndarray, ...]:
     """Coerce and check one song's per-note arrays (candidates default to the chart timestamps, the late-Great floor to
-    1 ms past the latest Perfect and the exit ceiling to the suffix minimum of the latest Perfects: perfect_window's).
+    1 ms past the latest Perfect and the exit ceiling to the suffix minimum of the latest Perfects: precise's).
     """
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     n = int(ts.shape[0])
@@ -386,7 +386,7 @@ def _trace_timing_fields(
         source = "activation_late_great"
         note_idx = int(carry_idx)
     elif float(start_time) != float(chart_time):
-        source = "perfect_window"
+        source = "precise"
         note_idx = int(activation_idx)
     else:
         source = "chart_perfect"

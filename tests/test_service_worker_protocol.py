@@ -48,7 +48,7 @@ def test_persistent_worker_reuses_one_process(monkeypatch):
     monkeypatch.setattr(worker, "_start_locked", fake_start)
 
     assert worker.request({"mode": "default"}) == [{"mode": "default"}]
-    assert worker.request({"mode": "zero_ms"}) == [{"mode": "zero_ms"}]
+    assert worker.request({"mode": "non-precise"}) == [{"mode": "non-precise"}]
     assert starts == 1
 
 
@@ -103,7 +103,7 @@ def test_idle_reap_stops_worker_and_next_request_respawns(monkeypatch):
     assert solver.reap_if_idle() is True
     assert solver._proc is None
     assert killed == [1]
-    assert solver.request({"mode": "zero_ms"}) == [{"mode": "zero_ms"}]
+    assert solver.request({"mode": "non-precise"}) == [{"mode": "non-precise"}]
     assert len(starts) == 2
 
 

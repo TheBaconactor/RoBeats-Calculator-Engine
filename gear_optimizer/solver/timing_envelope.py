@@ -1,9 +1,9 @@
 """The timing models a chart is prepared for (TimedSong) and the per-note hit envelopes of the windowed models.
 
-perfect_window: every note may be hit anywhere inside its judgment window, so FG reads four per-note envelopes
+precise: every note may be hit anywhere inside its judgment window, so FG reads four per-note envelopes
 (float32 seconds): the latest Perfect hit (fever activations), the earliest Perfect and earliest early-Great hits (fever
 boundaries; prefix maxima, so one searchsorted finds a boundary exactly) and the latest late-Great hit. frame_robust:
-the same windows, claiming fever only for notes in fever at every frame timing (fever_window_times). zero_ms: every
+the same windows, claiming fever only for notes in fever at every frame timing (fever_window_times). non_precise: every
 note is hit at its chart time (or the chart plus a custom per-note offset) and has no envelopes.
 
 The judge's bands are `lower < delta <= upper` (SPUtil.timedelta_to_result, WebPort judgeWithEdges): the early edge is
@@ -35,10 +35,10 @@ from ..rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECON
 # classification edge reaches +380, but an input scheduled past +200 races the per-frame sweep and lands only if no
 # frame ticks inside the gap, which no frame rate guarantees: no hit is ever planned later than this.
 NOTE_REMOVE_LATE_CAP_MS = 200
-TIMING_MODES = ("perfect_window", "zero_ms", "frame_robust")
+TIMING_MODES = ("precise", "non-precise", "frame_robust")
 # The modes whose frontier caches the service prebuilds for every catalog chart; frame_robust builds a song's caches on
 # its first use.
-PREBUILT_TIMING_MODES = ("perfect_window", "zero_ms")
+PREBUILT_TIMING_MODES = ("precise", "non-precise")
 PERFECT_LOWER_MS, PERFECT_UPPER_MS = -20, 40
 GREAT_LOWER_EXTRA_MS, GREAT_UPPER_EXTRA_MS = -75, 150
 HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
@@ -52,8 +52,8 @@ HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
 FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
 # The windowed modes' cache revisions, bumped with every change to a mode's frontier payloads or bundles. A version that
 # ratifies its predecessors serves their files to every mode whose key is unchanged, so only the byte-gated modes may
-# keep their keys (perfect_window 2: fevers may end early; frame_robust 4: same-lane spacing).
-CACHE_REVISIONS = {"perfect_window": 2, "frame_robust": 4}
+# keep their keys (precise 2: fevers may end early; frame_robust 4: same-lane spacing).
+CACHE_REVISIONS = {"precise": 2, "frame_robust": 4}
 
 
 class Band(NamedTuple):
@@ -87,7 +87,7 @@ def judgment_bounds(scale: int, mode: str) -> JudgmentBounds:
 
 
 def judgment_windows_ms(
-    note_types: np.ndarray, mode: str = "perfect_window"
+    note_types: np.ndarray, mode: str = "precise"
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Per-note reachable hit offsets (int32 ms, see judgment_bounds): earliest Perfect, latest Perfect, earliest
     early-Great, latest late-Great and earliest late-Great."""
@@ -159,8 +159,8 @@ def _lane_order_bounds(
     return low32, high32
 
 
-def perfect_window_envelopes(
-    timestamps: np.ndarray, note_types: np.ndarray, mode: str = "perfect_window", *, lanes: np.ndarray | None = None
+def precise_envelopes(
+    timestamps: np.ndarray, note_types: np.ndarray, mode: str = "precise", *, lanes: np.ndarray | None = None
 ) -> Envelopes:
     """The six hit envelopes of a chart in a windowed mode (timestamps in float32 seconds, chart order)."""
     ts = np.asarray(timestamps, dtype=np.float32)
@@ -196,7 +196,7 @@ def perfect_window_envelopes(
             if predecessor >= 0:
                 lane_bounds[predecessor, 0] = j
             previous[lane] = j
-    # The earliest planned late-Great hit. perfect_window plans it 1 ms past the latest Perfect (in float32, one step
+    # The earliest planned late-Great hit. precise plans it 1 ms past the latest Perfect (in float32, one step
     # under the band's own encoding on most notes; kept as built). frame_robust's latest Perfect ends a margin early and
     # the hits between are judged by the frame, so its late Greats start at the band itself, encoded as the
     # materializer reads it (fill_crossing.exact_label_hit_intervals).
@@ -332,7 +332,7 @@ def baseline_hit_timeline(
 
     Returns ``(hit_timestamps, baseline_hash)`` where ``hit_timestamps = chart + T`` (float32
     seconds) and ``baseline_hash`` is a stable digest of ``T`` for cache separation. A ``None`` or
-    all-zero offset returns the chart unchanged and an empty hash -- the ``zero_ms`` (``T == 0``)
+    all-zero offset returns the chart unchanged and an empty hash -- the ``non-precise`` (``T == 0``)
     preset, bit-identical to the chart-only path. Fails loud if ``T`` reorders notes: the fever
     timeline searchsorts the hit times, so they must stay non-decreasing.
     """
@@ -360,8 +360,8 @@ class TimedSong:
     """A chart prepared for one timing model.
 
     hit_timestamps is the timeline FG scores against: the chart itself, or the chart plus a custom per-note offset
-    under zero_ms. perfect_window and frame_robust add the per-note Perfect/Great candidate and floor envelopes that
-    make FG carry-aware; zero_ms has none (every hit lands at its hit time).
+    under non_precise. precise and frame_robust add the per-note Perfect/Great candidate and floor envelopes that
+    make FG carry-aware; non_precise has none (every hit lands at its hit time).
     """
 
     chart: Chart
@@ -387,13 +387,13 @@ class TimedSong:
         """The timeline frontier cache key: chart identity, note arrays and the timing model.
 
         The physical input engine consumes chart order and lane-local matcher order, so the aligned
-        arrays are hashed in producer order. zero_ms fever membership depends only on timestamps, long
+        arrays are hashed in producer order. non_precise fever membership depends only on timestamps, long
         notes and the FT/FF axes, so note types and lanes are not part of its key.
         """
         chart = self.chart
         ts_sig = array_sig16(np.ascontiguousarray(chart.timestamps))
-        if self.mode == "zero_ms":
-            nt_sig = lane_sig = b"zero_ms"
+        if self.mode == "non-precise":
+            nt_sig = lane_sig = b"non-precise"
         else:
             nt_sig = array_sig16(np.ascontiguousarray(chart.note_types))
             lane_sig = array_sig16(np.ascontiguousarray(chart.lanes))
@@ -424,23 +424,23 @@ _TIMED_SONG_CACHE_LOCK = threading.Lock()
 
 
 def time_song(chart: Chart, mode: str | None = None, baseline_offset: np.ndarray | None = None) -> TimedSong:
-    """Prepare a chart for a timing model (default: the chart's Timing Mode header, else perfect_window).
+    """Prepare a chart for a timing model (default: the chart's Timing Mode header, else precise).
 
-    ``baseline_offset`` (seconds per note) is a custom played timeline and is only valid for zero_ms; an
+    ``baseline_offset`` (seconds per note) is a custom played timeline and is only valid for non_precise; an
     absent or all-zero offset is the canonical chart-time preset.
     """
-    timing_mode = str(mode if mode is not None else chart.header.get("Timing Mode") or "perfect_window").strip().lower()
+    timing_mode = str(mode if mode is not None else chart.header.get("Timing Mode") or "precise").strip().lower()
     if timing_mode not in TIMING_MODES:
         raise ValueError(f"time_song: unknown timing mode {mode!r}")
     custom = baseline_offset is not None and bool(np.any(np.asarray(baseline_offset)))
-    if custom and timing_mode != "zero_ms":
+    if custom and timing_mode != "non-precise":
         raise ValueError(
             "time_song: baseline_offset (custom per-note timing) is only valid for fixed timing "
-            f"(mode='zero_ms'), not {timing_mode!r}"
+            f"(mode='non-precise'), not {timing_mode!r}"
         )
     if custom:
         hit_ts, baseline_hash = baseline_hit_timeline(chart.timestamps, baseline_offset)
-        return TimedSong(chart=chart, mode="zero_ms", baseline_hash=baseline_hash, hit_timestamps=hit_ts)
+        return TimedSong(chart=chart, mode="non-precise", baseline_hash=baseline_hash, hit_timestamps=hit_ts)
 
     cache_key = (id(chart), timing_mode)
     with _TIMED_SONG_CACHE_LOCK:
@@ -448,15 +448,15 @@ def time_song(chart: Chart, mode: str | None = None, baseline_offset: np.ndarray
         if cached is not None and cached.chart is chart:
             return cached
     chart_ts = chart.timestamps
-    if timing_mode == "zero_ms":
-        song = TimedSong(chart=chart, mode="zero_ms", baseline_hash="", hit_timestamps=chart_ts)
+    if timing_mode == "non-precise":
+        song = TimedSong(chart=chart, mode="non-precise", baseline_hash="", hit_timestamps=chart_ts)
     else:
         song = TimedSong(
             chart=chart,
             mode=timing_mode,
             baseline_hash="",
             hit_timestamps=chart_ts,
-            **perfect_window_envelopes(chart_ts, chart.note_types, timing_mode, lanes=chart.lanes)._asdict(),
+            **precise_envelopes(chart_ts, chart.note_types, timing_mode, lanes=chart.lanes)._asdict(),
         )
     with _TIMED_SONG_CACHE_LOCK:
         _TIMED_SONG_CACHE[cache_key] = song

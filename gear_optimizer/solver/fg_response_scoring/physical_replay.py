@@ -194,10 +194,10 @@ def validate_base_physical_replay(
     lanes: Sequence[int] | np.ndarray,
     fill_count: int,
     fever_duration_ms: float,
-    timing_mode: str = "perfect_window",
+    timing_mode: str = "precise",
 ) -> BasePhysicalReplay:
     """Fail loudly unless a persisted Base witness is already canonical and score-exact (its graph built in
-    `timing_mode`: perfect_window or frame_robust)."""
+    `timing_mode`: precise or frame_robust)."""
     graph, replay = _base_graph_physical_replay(
         frontier_trace=frontier_trace,
         response_surface=response_surface,
@@ -387,7 +387,7 @@ def validate_force_greats_physical_replay(
     lanes: Sequence[int] | np.ndarray,
     raw_fever_fill: float,
     real_fever_time: float,
-    timing_mode: str = "perfect_window",
+    timing_mode: str = "precise",
 ) -> FgPhysicalReplay:
     """Fail loudly unless the mode's persisted witness replays to its exact score-bearing surface."""
     ts = np.asarray(timestamps, dtype=np.float64).reshape(-1)

@@ -129,13 +129,13 @@ def test_frame_robust_base_spaces_same_lane_hits_after_its_last_fever():
 
 
 def _build_options(n, non_fever_base, real_fever_time):
-    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
+    from gear_optimizer.solver.timing_envelope import precise_envelopes
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
 
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
     note_types = np.ones(n, dtype=np.int16)
-    envelopes = perfect_window_envelopes(timestamps, note_types)
+    envelopes = precise_envelopes(timestamps, note_types)
     perfect_candidates, perfect_floor, great_floor, great_candidates = envelopes[:4]
     raw_fever_fill = 1.0
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
@@ -415,7 +415,7 @@ def test_fg_note_graph_body_counts_synthetic():
         "section": 1, "activation_index": 12, "fever_end_index": 16,
         "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
-        "fever_start_source": "perfect_window",
+        "fever_start_source": "precise",
     }]
     gp = _exact_force_greats_note_graph(frontier_trace=trace_perfect, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
@@ -1532,7 +1532,7 @@ def test_base_delayed_activation_materializes_physical_chord_order():
         is_fever_mask=np.zeros(4, bool),
         frontier_trace=trace,
         note_types=np.ones(4, dtype=np.int16),
-        timing_mode="perfect_window",
+        timing_mode="precise",
     )
 
     assert graph[1]["delta_ms"] == pytest.approx(40.0)
@@ -1544,7 +1544,7 @@ def test_base_delayed_activation_materializes_physical_chord_order():
     assert all(note["note_result"] == "Perfect" for note in graph)
 
 
-def test_base_zero_ms_activation_does_not_retime_chord():
+def test_base_non_precise_activation_does_not_retime_chord():
     """The physical-order materializer is an exact no-op for canonical zero-ms replay."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
 
@@ -1562,7 +1562,7 @@ def test_base_zero_ms_activation_does_not_retime_chord():
         is_fever_mask=np.zeros(4, bool),
         frontier_trace=trace,
         note_types=np.ones(4, dtype=np.int16),
-        timing_mode="zero_ms",
+        timing_mode="non-precise",
     )
 
     assert [note["delta_ms"] for note in graph] == [0.0, 0.0, 0.0, 0.0]
@@ -1808,7 +1808,7 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
     (0, 0, 1, True, 1, -20.0), (101, 101, 3, True, 1, -40.0),
     (0, 1, 1, True, 1, 41.0), (0, 0, 1, False, 1, 41.0), (0, 0, 1, True, 2, 41.0),
 ])
-def test_zero_ms_early_great_only_precedes_first_perfect_in_tie(start, great, kind, tied, count, delta):
+def test_non_precise_early_great_only_precedes_first_perfect_in_tie(start, great, kind, tied, count, delta):
     n = max(start, great) + 3
     ts = np.arange(n, dtype=np.float64)
     if tied:
@@ -1819,13 +1819,13 @@ def test_zero_ms_early_great_only_precedes_first_perfect_in_tie(start, great, ki
               "forced_start_index": 0, "forced_run_start_index": great, "forced_run_count": count,
               "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0}]
     graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts,
-                                         note_types=nt, timing_mode="zero_ms")
+                                         note_types=nt, timing_mode="non-precise")
     assert graph[great]["delta_ms"] == delta
     assert all(note["delta_ms"] == 0.0 for note in graph if note["note_result"] == "Perfect")
 
 
-def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
-    """zero_ms mode must not inherit Perfect-window guidance deltas (issue #66)."""
+def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
+    """non_precise mode must not inherit Perfect-window guidance deltas (issue #66)."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
         base_note_graph,
         force_greats_note_graph,
@@ -1847,7 +1847,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
         total_notes=n,
         timestamps=ts,
         note_types=nt,
-        timing_mode="zero_ms",
+        timing_mode="non-precise",
     )
     assert all(note["delta_ms"] in (0.0, None) for note in fg_graph)
     assert fg_graph[0]["is_activation_witness"] is False
@@ -1857,7 +1857,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
         total_notes=n,
         timestamps=ts,
         note_types=nt,
-        timing_mode="perfect_window",
+        timing_mode="precise",
     )
     strict_cutoff = float(np.nextafter(np.float64(cutoff), np.float64(-np.inf)))
     expected = 0.5 * (-19.0 + strict_cutoff - float(pw_graph[2]["hit_time_ms"]))
@@ -1869,7 +1869,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
         is_fever_mask=np.zeros(n, bool),
         frontier_trace=trace_with_tight_fever_end,
         note_types=nt,
-        timing_mode="zero_ms",
+        timing_mode="non-precise",
     )
     assert all(note["delta_ms"] in (0.0, None) for note in base_graph)
     assert base_graph[0]["is_activation_witness"] is False
@@ -2379,7 +2379,7 @@ def test_physical_replay_models_one_wasted_exit_hit_without_frame_extension() ->
     assert fever == (False, True, False, False)
 
 
-def test_perfect_window_fg_rejects_legacy_trace_without_exact_schedule() -> None:
+def test_precise_fg_rejects_legacy_trace_without_exact_schedule() -> None:
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     with pytest.raises(ValueError, match="exact activation schedule schema v1 is required"):
@@ -2399,5 +2399,5 @@ def test_perfect_window_fg_rejects_legacy_trace_without_exact_schedule() -> None
             timestamps=np.asarray([0.0, 0.1], dtype=np.float32),
             note_types=np.ones(2, dtype=np.int16),
             lanes=np.asarray([0, 1], dtype=np.int32),
-            timing_mode="perfect_window",
+            timing_mode="precise",
         )

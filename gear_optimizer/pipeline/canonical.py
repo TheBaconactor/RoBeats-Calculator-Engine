@@ -4,8 +4,8 @@ Per loadout of the GA surface:
 - identity: the effective loadout hash (gear names + each mini's signature as the song sees it) and the minis as
   their equivalence groups in display rotation;
 - meta result: the gem allocation re-solved exhaustively for the loadout's items (song fixed stats: the baseline
-  TeamBuff), scored by exact replay (perfect_window: score + TimelineFrontier witness, physically validated;
-  zero_ms: fixed chart timing, no witness);
+  TeamBuff), scored by exact replay (precise: score + TimelineFrontier witness, physically validated;
+  non_precise: fixed chart timing, no witness);
 - Force Greats result, for every loadout the FG stage solved: its result (solved at the song's timing), scored by an
   exact surface replay of a physically validated trace (the FG materializer's); it stays attached whether or not it
   beats the meta score (the store ranks the FG board);
@@ -181,16 +181,16 @@ def _meta_resolve(
 
 
 def _meta_score(stats: Mapping[str, int], song: TimedSong, curves: StatCurves) -> tuple[int, dict[str, Any] | None]:
-    """The exact score of the meta stats and, for perfect_window, the TimelineFrontier witness (the exact replay
+    """The exact score of the meta stats and, for precise, the TimelineFrontier witness (the exact replay
     validates it physically when it reconstructs it)."""
-    if song.mode == "zero_ms":
+    if song.mode == "non-precise":
         return int(score_stats_fixed_timing_exact(stats, song, curves)), None
     replay = score_stats_exact_with_timeline_trace(stats, song, curves)
     return int(replay["score"]), replay["TimelineFrontier"]
 
 
 def _fg_trace(solved: SolvedFg, song: TimedSong) -> dict[str, Any]:
-    """An FG result's replay witness (validated by the FG materializer); perfect_window results must carry one."""
-    if song.mode != "zero_ms" and not solved.trace.get("frontier_trace"):
+    """An FG result's replay witness (validated by the FG materializer); precise results must carry one."""
+    if song.mode != "non-precise" and not solved.trace.get("frontier_trace"):
         raise ValueError(f"{song.chart.name}: an FG result without a frontier trace")
     return solved.trace

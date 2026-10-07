@@ -309,7 +309,7 @@ class FgResultReducer:
                     song_inputs=song_inputs,
                 )
             except UnplayableTrace as exc:
-                # The zero_ms FG model can pick a plan no hit timing plays (a held tail's Great between two Perfect
+                # The non_precise FG model can pick a plan no hit timing plays (a held tail's Great between two Perfect
                 # presses of its own chord); until the FG model rewrite rules them out, drop that loadout's FG result
                 # rather than the whole song (owner 09-30).
                 logger.warning("%s: no FG result for %s, its plan is unplayable: %s", song.chart.name, job.loadout, exc)

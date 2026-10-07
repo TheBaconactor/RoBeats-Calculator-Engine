@@ -181,7 +181,7 @@ class FrontierCache:
         song_paths: Iterable[str],
         curves: StatCurves,
         *,
-        timing_mode: str = "perfect_window",
+        timing_mode: str = "precise",
         persist_validated_entries: bool = True,
     ) -> FrontierCacheManifestPlan:
         """Split the charts into hits (a complete file serves them) and misses.
@@ -345,7 +345,7 @@ def _manifest_key(
     timing_mode: str,
     chart_digest: str,
 ) -> str:
-    parts = [str(cache_version), str(timing_mode or "perfect_window").strip().lower(), str(ref_sig_hex)]
+    parts = [str(cache_version), str(timing_mode or "precise").strip().lower(), str(ref_sig_hex)]
     if stat_sig_hex is not None:
         parts.append(str(stat_sig_hex))
     parts.append(str(chart_digest))

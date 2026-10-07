@@ -76,7 +76,7 @@ def test_rows_are_ordered_best_then_fg_results_in_fg_order_then_the_rest():
     assert row_order(0, []) == []
 
 
-def _solve(loadouts, fg=(), mode="perfect_window"):
+def _solve(loadouts, fg=(), mode="precise"):
     song = make_song(np.array([1.0, 2.0, 3.0]), mode=mode, name=SONG, primary="Flow", secondary="Vibe")
     return SongSolve(SONG, "T5", song, object(), tuple(loadouts), tuple(fg))
 

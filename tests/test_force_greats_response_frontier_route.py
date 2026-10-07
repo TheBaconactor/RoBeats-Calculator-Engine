@@ -11,10 +11,10 @@ from gear_optimizer.solver.force_greats_common import response_frontier_base_com
 
 
 def _engine_envelopes(timestamps):
-    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
+    from gear_optimizer.solver.timing_envelope import precise_envelopes
 
     ts = np.asarray(timestamps, dtype=np.float32)
-    env = perfect_window_envelopes(ts, np.ones(int(ts.shape[0]), dtype=np.int16))
+    env = precise_envelopes(ts, np.ones(int(ts.shape[0]), dtype=np.int16))
     return env.perfect_candidates, env.great_candidates, env.perfect_floor, env.great_floor
 
 
@@ -31,14 +31,14 @@ def _trace_row(forced_count: int) -> dict[str, object]:
 
 
 def _minimal_fg_song(note_count: int = 4):
-    return make_song(np.linspace(0.0, 1.0, int(note_count)), mode="zero_ms")
+    return make_song(np.linspace(0.0, 1.0, int(note_count)), mode="non-precise")
 
 
 def _stub_song(note_count: int):
     """A song reduced to what the FG planner/reducer read: its timing mode, FG inputs and chart note types."""
     ts = [float(i) for i in range(int(note_count))]
     return SimpleNamespace(
-        mode="perfect_window",
+        mode="precise",
         fg_inputs=SimpleNamespace(
             total_notes=int(note_count),
             timestamps=ts,
@@ -229,7 +229,7 @@ def test_prepare_fg_plan_uses_db_only_entries_for_response_frontier_route(monkey
 
 
     song = make_native_song(
-        timed_song=make_song([1.0], mode="zero_ms"),
+        timed_song=make_song([1.0], mode="non-precise"),
         ga_candidates=[
             {
                 "Score": 100,
@@ -267,7 +267,7 @@ def test_prepare_fg_plan_builds_plan_without_owner_build_prefetch(monkeypatch):
     monkeypatch.setattr(FgPlanner, "plan_many", staticmethod(lambda *_args, **_kwargs: "raw-plan"))
 
     song = make_native_song(
-        timed_song=make_song([1.0], mode="zero_ms"),
+        timed_song=make_song([1.0], mode="non-precise"),
         ga_candidates=[
             {
                 "Score": 100,
@@ -323,7 +323,7 @@ def test_prepare_fg_plan_canonicalizes_gpu_payload_before_response_frontier(monk
     }
 
     song = make_native_song(
-        timed_song=make_song([1.0], mode="zero_ms"),
+        timed_song=make_song([1.0], mode="non-precise"),
         ga_candidates=duplicate_prefix + [keeper],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -378,7 +378,7 @@ def test_prepare_fg_plan_processes_configured_top_base_candidate_limit(monkeypat
     ]
 
     song = make_native_song(
-        timed_song=make_song([1.0], mode="zero_ms"),
+        timed_song=make_song([1.0], mode="non-precise"),
         ga_candidates=ga_candidates,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -411,7 +411,7 @@ def test_prepare_fg_plan_requires_materialized_response_frontier_plan(monkeypatc
     )
 
     song = make_native_song(
-        timed_song=make_song([1.0], mode="zero_ms"),
+        timed_song=make_song([1.0], mode="non-precise"),
         ga_candidates=[{"BaseScore": 100, "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -453,7 +453,7 @@ def test_prepare_fg_static_loads_and_session_prunes_canonical_scoring_bundle(mon
     monkeypatch.setattr(response_cache, "session_prune_scoring_bundle", _fake_session_prune)
 
     song = make_native_song(
-        timed_song=make_song([1.0], mode="zero_ms"),
+        timed_song=make_song([1.0], mode="non-precise"),
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         db_key="song-db-key",
@@ -694,7 +694,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     chart = make_chart(timestamps)
     song = TimedSong(
         chart=chart,
-        mode="perfect_window",
+        mode="precise",
         baseline_hash="",
         hit_timestamps=chart.timestamps,
         perfect_candidates=perfect_candidates,

@@ -37,7 +37,7 @@ import pytest
 
 from tests.fg_response_frontier_oracles import edge_end_oracle
 from gear_optimizer.core.time_quantize import quantize_to_int_ms
-from gear_optimizer.solver.timing_envelope import judgment_windows_ms, perfect_window_envelopes
+from gear_optimizer.solver.timing_envelope import judgment_windows_ms, precise_envelopes
 
 # Perfect-hit window (ms): matches the optimizer envelope (timing_envelope.py defaults)
 # and the game's mid-stat Perfect window (GearStats get_perfect_upper_lower_time).
@@ -243,7 +243,7 @@ def test_fg_edge_end_models_endpoint_early_inclusion():
     lockstep, so all three FG fever-extent paths model endpoint-early inclusion exactly."""
     gt = _greedy_max_fever_extent(_CHART_MS, _ACTIVATION, _RFT_MS)
     chart_sec = np.asarray(_CHART_MS, dtype=np.float32) / np.float32(1000.0)
-    perfect_floor_sec = perfect_window_envelopes(chart_sec, np.ones(len(_CHART_MS), np.int16)).perfect_floor
+    perfect_floor_sec = precise_envelopes(chart_sec, np.ones(len(_CHART_MS), np.int16)).perfect_floor
     fixed = _fg_edge_fever_extent(_CHART_MS, _ACTIVATION, _RFT_MS, perfect_floor_sec)
     assert fixed == gt
 
@@ -355,7 +355,7 @@ def test_production_envelope_models_chord_tied_held_tail_exactly():
         assert gt == expected
         chart_sec = np.asarray(chart, np.float32) / np.float32(1000.0)
         nt = np.asarray(types, np.int16)
-        cand, floor, *_ = perfect_window_envelopes(chart_sec, nt)
+        cand, floor, *_ = precise_envelopes(chart_sec, nt)
         e, _s, _c = edge_end_oracle(
             n=len(chart), a=int(a), activation_great=False,
             real_fever_time=float(rft) / 1000.0, use_forced_great_timing=False,

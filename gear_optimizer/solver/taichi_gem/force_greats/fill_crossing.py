@@ -101,7 +101,7 @@ from gear_optimizer.core.time_quantize import quantize_to_int_ms
 from gear_optimizer.solver.timing_envelope import HELD_TAIL_WINDOW_SCALE, judgment_bounds
 
 # The timing modes whose hits move inside their judgment windows.
-_WINDOWED_MODES = ("perfect_window", "frame_robust")
+_WINDOWED_MODES = ("precise", "frame_robust")
 
 # Fill in PERFECT-UNITS: a Perfect contributes 1.0, a Great half (0.5).  The bar is full at
 # ``fever_fill_denom`` perfect-units (== normalized bar 1.0, since denom == feverFillDenom).  This is

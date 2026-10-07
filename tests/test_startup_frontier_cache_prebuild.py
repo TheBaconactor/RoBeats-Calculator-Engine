@@ -119,7 +119,7 @@ def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path:
         or FrontierCacheBuildResult(path=str(path), source="disk", build_ms=0.0, cache_file="cache.npz"),
     )
 
-    tally = prebuild._build_timeline_songs([str(song_path)], {}, "perfect_window")
+    tally = prebuild._build_timeline_songs([str(song_path)], {}, "precise")
 
     assert built == [str(song_path)]
     assert len(tally.results) == 1 and tally.sources["disk"] == 1
@@ -152,7 +152,7 @@ def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatc
     monkeypatch.setattr(prebuild, "frontier_prebuild_intra_worker_threads", lambda _workers: 1)
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
 
-    tally = prebuild._build_timeline_songs(["a.txt", "b.txt"], {}, "perfect_window")
+    tally = prebuild._build_timeline_songs(["a.txt", "b.txt"], {}, "precise")
 
     assert len(tally.results) == 2
     assert captured_kwargs["max_tasks_per_worker"] == prebuild._TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER
@@ -187,7 +187,7 @@ def test_timeline_multi_prebuild_counts_broken_worker_future_per_path(monkeypatc
     monkeypatch.setattr(prebuild, "frontier_prebuild_intra_worker_threads", lambda _workers: 1)
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
 
-    tally = prebuild._build_timeline_songs(["broken.txt", "ready.txt"], {}, "perfect_window")
+    tally = prebuild._build_timeline_songs(["broken.txt", "ready.txt"], {}, "precise")
 
     assert tally.total == 2
     assert tally.failures == 1
@@ -218,7 +218,7 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
         or FrontierCacheBuildResult(path=str(path), source="disk", build_ms=0.0, cache_file="cache.npz"),
     )
 
-    tally = prebuild._build_fg_songs([str(song_path)], {}, "perfect_window")
+    tally = prebuild._build_fg_songs([str(song_path)], {}, "precise")
 
     assert built == [str(song_path)]
     assert len(tally.results) == 1 and tally.sources["disk"] == 1
@@ -280,7 +280,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
     monkeypatch.setattr(prebuild.concurrent.futures, "wait", _fake_wait)
 
-    tally = prebuild._build_fg_songs([path for path, _notes in items], {}, "perfect_window")
+    tally = prebuild._build_fg_songs([path for path, _notes in items], {}, "precise")
 
     assert len(tally.results) == len(items)
     assert tally.failures == 0
@@ -333,7 +333,7 @@ def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch)
         lambda futures, **_kwargs: ({next(iter(futures))}, set()),
     )
 
-    tally = prebuild._build_fg_songs([path for path, _notes in items], {}, "perfect_window")
+    tally = prebuild._build_fg_songs([path for path, _notes in items], {}, "precise")
 
     assert [result.path for result in tally.results] == ["first.txt", "last.txt"]
     assert submitted_widths == [11, 11]
@@ -398,7 +398,7 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
     result = build_frontier_cache_for_chart(
         str(song_path),
         synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        "perfect_window",
+        "precise",
         ensure_response_frontier_cache_for_song,
     )
 
@@ -427,7 +427,7 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
     result = build_frontier_cache_for_chart(
         str(song_path),
         synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
-        "perfect_window",
+        "precise",
         ensure_response_frontier_cache_for_song,
     )
 

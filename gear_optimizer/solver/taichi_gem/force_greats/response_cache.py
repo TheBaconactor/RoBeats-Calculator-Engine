@@ -562,8 +562,8 @@ def ensure_response_frontier_cache_for_song(
     """Make sure the song's bundle with `stat_keys` (default: every FT/FF key) is on disk; returns (cache source,
     build ms, bundle file).
 
-    The candidate-independent bundle is keyed by the song's timing, so a chart-only (zero_ms) song has its own
-    bundle, distinct from the perfect_window one. A hit costs a metadata + sidecar-header probe: it skips
+    The candidate-independent bundle is keyed by the song's timing, so a chart-only (non_precise) song has its own
+    bundle, distinct from the precise one. A hit costs a metadata + sidecar-header probe: it skips
     build_or_load's per-row object materialization (seconds on heavy bundles), which no caller of this needs (scoring
     reads the slim bundle + sidecars). A miss builds the requested cells, publishes them, then releases the song's
     memory tiers: build_or_load pins the merged bundle and request payload (~1 GB of frontier rows on heavy charts)

@@ -53,7 +53,7 @@ def _warmup_song() -> TimedSong:
     )
     return TimedSong(
         chart=chart,
-        mode="perfect_window",
+        mode="precise",
         baseline_hash="",
         hit_timestamps=timestamps,
         perfect_candidates=timestamps,

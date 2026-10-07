@@ -23,7 +23,7 @@ from gear_optimizer.solver.timing_envelope import (
     fever_fill_raw,
     fever_window_times,
     judgment_bounds,
-    perfect_window_envelopes,
+    precise_envelopes,
     time_song,
 )
 
@@ -32,8 +32,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 def test_bands_end_one_frame_margin_earlier() -> None:
     # (earliest, latest) planned offsets in ms: (Perfect, early Great, late Great) for a tap and a held tail.
-    assert judgment_bounds(1, "perfect_window") == ((-19, 40), (-94, -20), (41, 190))
-    assert judgment_bounds(HELD_TAIL_WINDOW_SCALE, "perfect_window") == ((-39, 80), (-189, -40), (81, 200))
+    assert judgment_bounds(1, "precise") == ((-19, 40), (-94, -20), (41, 190))
+    assert judgment_bounds(HELD_TAIL_WINDOW_SCALE, "precise") == ((-39, 80), (-189, -40), (81, 200))
     assert judgment_bounds(1, "frame_robust") == ((-19, 22), (-94, -38), (41, 172))
     assert judgment_bounds(HELD_TAIL_WINDOW_SCALE, "frame_robust") == ((-39, 62), (-189, -58), (81, 182))
     for scale in (1, HELD_TAIL_WINDOW_SCALE):
@@ -45,14 +45,14 @@ def test_bands_end_one_frame_margin_earlier() -> None:
 
 def test_fever_windows_end_one_frame_margin_early() -> None:
     factors = np.asarray([0.0, 0.5, 1.0, 1.7], dtype=np.float32)
-    real = fever_window_times(120.0, factors, "perfect_window")
+    real = fever_window_times(120.0, factors, "precise")
     assert np.array_equal(real, (120.0 * 0.15 + 0.15) * factors.astype(np.float64))
     assert np.array_equal(fever_window_times(120.0, factors, "frame_robust"), np.maximum(real - FRAME_MARGIN_MS / 1000.0, 0.0))
 
 
 def test_song_has_its_own_envelopes_and_cache_identity() -> None:
     chart = load_chart(REPO / "Data" / "Normal" / "Surface by Dimrain47.txt")
-    window, robust = time_song(chart, "perfect_window"), time_song(chart, "frame_robust")
+    window, robust = time_song(chart, "precise"), time_song(chart, "frame_robust")
     assert robust.mode == "frame_robust"
     tail = chart.note_types == 3
     latest_perfect_ms = np.rint((robust.perfect_candidates.astype(np.float64) - chart.timestamps) * 1000.0)
@@ -63,23 +63,23 @@ def test_song_has_its_own_envelopes_and_cache_identity() -> None:
 
 
 def test_late_great_floor_starts_at_the_band() -> None:
-    # perfect_window plans a late Great from 1 ms past its latest Perfect. frame_robust's latest Perfect ends a margin
+    # precise plans a late Great from 1 ms past its latest Perfect. frame_robust's latest Perfect ends a margin
     # early and a hit in between is Perfect or Great by the frame, so its late Greats start at the band itself.
     ts = np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
     types = np.asarray([1, 3, 2], dtype=np.int16)
-    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust", lanes=np.arange(len(ts)))
+    window, robust = precise_envelopes(ts, types), precise_envelopes(ts, types, "frame_robust", lanes=np.arange(len(ts)))
     assert np.array_equal(window.late_great_floor, window.perfect_candidates + np.float32(0.001))
     assert np.rint((robust.late_great_floor.astype(np.float64) - ts) * 1000.0).tolist() == [41.0, 81.0, 41.0]
 
 
 def test_exit_ceiling_keeps_out_notes_past_the_fever_at_every_frame() -> None:
-    # A fever may end before notes charted inside it if those notes are hit at or past its end. perfect_window's
+    # A fever may end before notes charted inside it if those notes are hit at or past its end. precise's
     # ceiling is the latest Perfect of a note and every later one; frame_robust's is a full exit gap (2 margins)
     # earlier, since a note is out at every frame timing only from the end + the margin and the end itself moves by a
     # margin.
     ts = np.asarray([1.0, 2.0, 2.0, 3.0], dtype=np.float32)
     types = np.asarray([1, 3, 1, 2], dtype=np.int16)
-    window, robust = perfect_window_envelopes(ts, types), perfect_window_envelopes(ts, types, "frame_robust", lanes=np.arange(len(ts)))
+    window, robust = precise_envelopes(ts, types), precise_envelopes(ts, types, "frame_robust", lanes=np.arange(len(ts)))
     assert np.array_equal(window.exit_ceiling, np.minimum.accumulate(window.perfect_candidates[::-1])[::-1])
     target = np.minimum.accumulate(
         (robust.perfect_candidates.astype(np.float64) - 2.0 * FRAME_MARGIN_MS / 1000.0)[::-1]
@@ -104,7 +104,7 @@ def test_fever_fill_counts_perfects_as_the_game_does() -> None:
     from gear_optimizer.gamedata import load_stat_curves
 
     factors = load_stat_curves(REPO / "Data" / "Gear" / "Stats.txt").f32["Fever Fill Rate"]
-    window = fever_fill_raw(280, factors, "perfect_window")
+    window = fever_fill_raw(280, factors, "precise")
     assert np.array_equal(window, 280 * FEVER_FILL_PER_NOTE * factors.astype(np.float64))
     robust = fever_fill_raw(280, factors, "frame_robust")
     assert int(np.ceil(robust[80])) == 29 and fever_fill_is_order_sensitive(float(robust[80]))
@@ -123,8 +123,8 @@ def test_late_great_activation_is_never_planned_in_the_frame_judged_gap() -> Non
     # (+32 ms here under frame_robust), short of the late-Great band (+41), so no late-Great activation exists.
     ts = np.asarray([1.0, 1.010], dtype=np.float32)
     types = np.asarray([1, 1], dtype=np.int16)
-    for mode, late_valid in (("perfect_window", 1), ("frame_robust", 0)):
-        env = perfect_window_envelopes(ts, types, mode, lanes=np.arange(len(ts)))
+    for mode, late_valid in (("precise", 1), ("frame_robust", 0)):
+        env = precise_envelopes(ts, types, mode, lanes=np.arange(len(ts)))
         _hit, _valid, late_hit, valid = _numba_build_prefix_activation_hit_tables(
             2, ts, env.perfect_candidates, env.great_candidates, env.late_great_floor, env.lane_bounds
         )
@@ -207,11 +207,11 @@ def _fever_sets_per_frame_timing(chart, graph, ft: int, ff: int) -> set[tuple[in
 
 @pytest.mark.slow
 def test_base_plans_hold_at_every_frame_timing() -> None:
-    """Surface's FT/FF 0 perfect_window plan claims a fever note frames decide (found by T1); frame_robust's plans
+    """Surface's FT/FF 0 precise plan claims a fever note frames decide (found by T1); frame_robust's plans
     keep their claimed fever set at every phase and rate."""
     chart = load_chart(REPO / "Data" / "Normal" / "Surface by Dimrain47.txt")
     assert (chart.primary, chart.secondary) == ("Vibe", "Beat")
-    window_sets = [_fever_sets_per_frame_timing(chart, g, 0, 0) for g in _base_plans(chart, "perfect_window", 0, 0)]
+    window_sets = [_fever_sets_per_frame_timing(chart, g, 0, 0) for g in _base_plans(chart, "precise", 0, 0)]
     assert any(len(sets) > 1 for sets in window_sets)
     for graph in _base_plans(chart, "frame_robust", 0, 0):
         claimed = tuple(i for i, node in enumerate(graph) if node["fever"])

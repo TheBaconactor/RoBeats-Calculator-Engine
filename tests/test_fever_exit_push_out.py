@@ -32,7 +32,7 @@ def _graph(note_types, cutoff_ms, activation_index=2, fever_end_index=5):
         total_notes=n,
         timestamps=timestamps,
         note_types=np.asarray(note_types, dtype=np.int16),
-        timing_mode="perfect_window",
+        timing_mode="precise",
     )
 
 
@@ -81,13 +81,13 @@ def test_fever_run_to_end_of_song_has_no_exit_note():
         total_notes=n,
         timestamps=timestamps,
         note_types=np.ones(n, dtype=np.int16),
-        timing_mode="perfect_window",
+        timing_mode="precise",
     )
     assert all(note["delta_ms"] in (0.0, None) for note in notes)
 
 
-def test_zero_ms_mode_never_pushes():
-    # zero_ms ships every hit at chart time; the exit push (like every witness offset) must not apply.
+def test_non_precise_mode_never_pushes():
+    # non_precise ships every hit at chart time; the exit push (like every witness offset) must not apply.
     n = 10
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
     notes = timeline_frontier_note_graph(
@@ -95,6 +95,6 @@ def test_zero_ms_mode_never_pushes():
         total_notes=n,
         timestamps=timestamps,
         note_types=np.ones(n, dtype=np.int16),
-        timing_mode="zero_ms",
+        timing_mode="non-precise",
     )
     assert notes[5]["delta_ms"] == 0.0

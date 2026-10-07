@@ -16,11 +16,11 @@ def _lanes_for(timestamps):
 
 
 def _engine_envelopes(timestamps, note_types=None):
-    from gear_optimizer.solver.timing_envelope import perfect_window_envelopes
+    from gear_optimizer.solver.timing_envelope import precise_envelopes
 
     ts = np.asarray(timestamps, dtype=np.float32)
     types = np.ones(int(ts.shape[0]), dtype=np.int16) if note_types is None else note_types
-    env = perfect_window_envelopes(ts, types)
+    env = precise_envelopes(ts, types)
     return env.perfect_candidates, env.great_candidates, env.perfect_floor, env.great_floor
 
 
@@ -1031,7 +1031,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
     )
 
     assert trace[0]["activation_judgment"] == "perfect"
-    assert trace[0]["fever_start_source"] == "perfect_window"
+    assert trace[0]["fever_start_source"] == "precise"
     assert trace[0]["fever_end_index"] == 4
     assert trace[0]["activation_hit_offset_ms"] == pytest.approx(19.999980926513672)
     assert trace[0]["activation_hit_offset_lower_ms"] == pytest.approx(0.0)

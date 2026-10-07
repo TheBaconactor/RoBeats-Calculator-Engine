@@ -48,7 +48,7 @@ def _entries(cache: FrontierCache) -> dict[str, dict]:
 
 
 def _built_file(cache: FrontierCache, chart: Path) -> Path:
-    path = cache.chart_file(str(chart), CURVES, "perfect_window")
+    path = cache.chart_file(str(chart), CURVES, "precise")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"complete")
     return path
@@ -82,8 +82,8 @@ def test_manifest_keys_separate_timing_modes(tmp_path: Path) -> None:
     chart = _chart(tmp_path / "charts" / "A.txt", "A")
     path_key = os.path.abspath(chart).casefold()
 
-    perfect = cache.manifest_plan([str(chart)], CURVES, timing_mode="perfect_window").key_by_norm_path[path_key]
-    zero = cache.manifest_plan([str(chart)], CURVES, timing_mode="zero_ms").key_by_norm_path[path_key]
+    perfect = cache.manifest_plan([str(chart)], CURVES, timing_mode="precise").key_by_norm_path[path_key]
+    zero = cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise").key_by_norm_path[path_key]
 
     assert perfect != zero
 

@@ -64,6 +64,6 @@ def test_memories_of_blue_note89_duration_excludes_note375_without_tick_grace():
     old_tick_cutoff = cutoff + (1.0 / 60.0) * fever_time_factor
     assert notes[375][0] < old_tick_cutoff
 
-    zero_ms = _server_fever_flags(cutoff, {373: notes[373][0], 374: notes[374][0], 375: notes[375][0]})
-    assert zero_ms == {373: True, 374: True, 375: False}
+    non_precise = _server_fever_flags(cutoff, {373: notes[373][0], 374: notes[374][0], 375: notes[375][0]})
+    assert non_precise == {373: True, 374: True, 375: False}
 

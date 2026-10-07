@@ -29,7 +29,7 @@ _SONG_INPUTS = object()
 class _CountingSong:
     """A song whose FG-input reads are counted (each read returns ``make_inputs()``)."""
 
-    mode = "perfect_window"
+    mode = "precise"
 
     def __init__(self, calls, make_inputs, *, note_types=(1,)):
         self._calls = calls

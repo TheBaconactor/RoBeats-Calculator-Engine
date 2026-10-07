@@ -46,7 +46,7 @@ def test_reference_reload_cannot_reuse_old_scores(eval_device_state):
             load_curves(_curves())
 
 
-@pytest.mark.parametrize("timing_mode,n_notes", [("perfect_window", 80), ("zero_ms", 400)])
+@pytest.mark.parametrize("timing_mode,n_notes", [("precise", 80), ("non-precise", 400)])
 def test_replacing_song_slot_or_timing_cannot_reuse_old_scores(eval_device_state, timing_mode, n_notes):
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
@@ -71,7 +71,7 @@ def test_replacing_song_slot_or_timing_cannot_reuse_old_scores(eval_device_state
             for a, b in zip(actual, fresh, strict=True):
                 np.testing.assert_array_equal(a, b)
         finally:
-            upload("perfect_window", 400)
+            upload("precise", 400)
 
 
 def test_loading_another_run_batch_discards_cached_winners(eval_device_state):

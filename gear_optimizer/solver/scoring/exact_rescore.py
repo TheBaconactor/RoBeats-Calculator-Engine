@@ -118,9 +118,9 @@ def score_base_exact_batch(
     song: TimedSong,
     curves: StatCurves,
 ) -> list[int]:
-    """Exact base scores at the song's timing: zero_ms on its hit timeline, perfect_window on the Perfect-window
+    """Exact base scores at the song's timing: non_precise on its hit timeline, precise on the Perfect-window
     timing frontier."""
-    if song.mode == "zero_ms":
+    if song.mode == "non-precise":
         return score_stats_fixed_timing_exact_batch(stats_rows, song, curves)
     return score_stats_exact_batch(stats_rows, song, curves)
 
@@ -142,7 +142,7 @@ def score_stats_fixed_timing_exact_batch(
     """
     Exact f64 base replay at the song's hit timeline (fixed timing).
 
-    Scores ``song.hit_timestamps``: the chart itself, or ``chart + T`` for a custom zero_ms offset.
+    Scores ``song.hit_timestamps``: the chart itself, or ``chart + T`` for a custom non_precise offset.
     This is the deterministic hit-time fever timeline -- NOT the Perfect-window frontier used by
     ``score_stats_exact_batch`` -- and independent of any frontier payload.
     """

@@ -11,7 +11,7 @@ def _load_case(chart_path: Path):
     from gear_optimizer.settings import paths
     from gear_optimizer.solver.timing_envelope import time_song
 
-    return time_song(load_chart(chart_path), "perfect_window"), load_stat_curves(paths().stats_txt)
+    return time_song(load_chart(chart_path), "precise"), load_stat_curves(paths().stats_txt)
 
 
 def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) -> None:
@@ -77,7 +77,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         timestamps=timestamps,
         note_types=note_types,
         lanes=lanes,
-        timing_mode="perfect_window",
+        timing_mode="precise",
     )
     chart = NoteChart(
         timestamps_ms=[float(value) * 1000.0 for value in timestamps],

@@ -55,7 +55,7 @@ def _solve_fixed_timing_response_results(
         load_response_frontier_scoring_bundle,
     )
 
-    # The chart-only bundle is distinct from perfect_window and is prebuilt for the catalog at
+    # The chart-only bundle is distinct from precise and is prebuilt for the catalog at
     # optimizer startup. Build only the FT/FF cells this exact batch can address: base FT/FF plus
     # every legal gem pair, clipped by the same stat bounds as the canonical group builder. This is
     # complete reachability, not a score prune, so tier/buff changes still evaluate every legal
@@ -168,7 +168,7 @@ def build_fixed_timing_fg_replays(
                     trace_cache=trace_cache,
                 )
             except UnplayableTrace as exc:
-                # As the solver's materializer: a loadout whose plan no hit timing plays (zero_ms: a held tail's Great
+                # As the solver's materializer: a loadout whose plan no hit timing plays (non_precise: a held tail's Great
                 # between its chord's presses; frame_robust: inputs whose order the frame timing decides) has no FG
                 # result, rather than failing the song.
                 logger.warning("%s: no FG result for a loadout, its plan is unplayable: %s", song.chart.name, exc)

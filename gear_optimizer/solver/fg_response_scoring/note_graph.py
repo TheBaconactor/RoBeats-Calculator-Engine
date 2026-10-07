@@ -36,9 +36,9 @@ Two graphs per loadout, matching the intended software behavior:
         order.
 
 ``timing_mode`` selects the timing semantic (issue #66):
-  * ``"perfect_window"`` (default): apply activation witness offsets, endpoint-early
+  * ``"precise"`` (default): apply activation witness offsets, endpoint-early
     guidance, and fever-end safe-target guidance.
-  * ``"zero_ms"``: Perfects stay on time. Leading Greats in a tie can be early to
+  * ``"non-precise"``: Perfects stay on time. Leading Greats in a tie can be early to
     precede its first Perfect; other Greats use their canonical late hit.
 
 Both are reconstructable losslessly from already-persisted data (FG: `frontier_trace`
@@ -107,7 +107,7 @@ _BUILDS = {
     for mode in TIMING_MODES
 }
 # The public builders set the build for the duration of a build.
-_BUILD: ContextVar[_Build] = ContextVar("note_graph_build", default=_BUILDS["perfect_window"])
+_BUILD: ContextVar[_Build] = ContextVar("note_graph_build", default=_BUILDS["precise"])
 
 
 @contextmanager
@@ -124,7 +124,7 @@ class UnplayableTrace(ValueError):
 
 
 def _normalize_timing_mode(timing_mode: str) -> str:
-    mode = str(timing_mode or "perfect_window").strip().lower()
+    mode = str(timing_mode or "precise").strip().lower()
     if mode not in TIMING_MODES:
         raise ValueError(f"note_graph: unknown timing_mode {timing_mode!r}")
     return mode
@@ -538,7 +538,7 @@ def _mark_same_time_selector_order_deltas(
         return
 
     # Include the complete cluster crossing the combo ramp.
-    n = graph_n if _BUILD.get().mode == "zero_ms" else min(graph_n, 100)
+    n = graph_n if _BUILD.get().mode == "non-precise" else min(graph_n, 100)
     while n < graph_n and _same_chart_time_ms(notes[n - 1]["hit_time_ms"], notes[n]["hit_time_ms"]):
         n += 1
 
@@ -572,7 +572,7 @@ def _mark_same_time_selector_order_deltas(
                 )
             nt = np.asarray(note_types).reshape(-1)
 
-        if _BUILD.get().mode == "zero_ms":
+        if _BUILD.get().mode == "non-precise":
             stop = min((j for j in cluster if notes[j]["note_result"] == "Perfect"), default=cluster[0])
             for j in range(cluster[0], stop):
                 notes[j]["delta_ms"] = _early_great_bounds_ms_at(nt, j)[1]
@@ -1651,7 +1651,7 @@ def timeline_frontier_note_graph(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "perfect_window",
+    timing_mode: str = "precise",
 ) -> list[dict[str, Any]]:
     """BASE note-graph from the selected timeline-frontier witness trace.
 
@@ -1662,7 +1662,7 @@ def timeline_frontier_note_graph(
 
     n = int(total_notes)
     mode = _normalize_timing_mode(timing_mode)
-    apply_guidance = mode != "zero_ms"
+    apply_guidance = mode != "non-precise"
     exit_gap_ms = _FRAME_ROBUST_EXIT_GAP_MS if mode == "frame_robust" else 0.0
     has_exact_schedule = bool(
         frontier_trace
@@ -1753,7 +1753,7 @@ def base_note_graph(
     frontier_trace: Sequence[Mapping[str, Any]] | None = None,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "perfect_window",
+    timing_mode: str = "precise",
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
 
@@ -1792,7 +1792,7 @@ def force_greats_note_graph(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "perfect_window",
+    timing_mode: str = "precise",
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
 
@@ -1812,7 +1812,7 @@ def force_greats_note_graph(
     """
     n = int(total_notes)
     mode = _normalize_timing_mode(timing_mode)
-    apply_guidance = mode != "zero_ms"
+    apply_guidance = mode != "non-precise"
     exit_gap_ms = _FRAME_ROBUST_EXIT_GAP_MS if mode == "frame_robust" else 0.0
     with _building(mode):
         if apply_guidance:

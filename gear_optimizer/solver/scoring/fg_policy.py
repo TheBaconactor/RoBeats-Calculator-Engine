@@ -30,12 +30,12 @@ class FGSongInputs:
 def fg_song_inputs(song) -> FGSongInputs:
     """The FG solver's view of a TimedSong.
 
-    perfect_window and frame_robust carry the Perfect/Great candidate and floor envelopes (carry-aware FG); zero_ms
+    precise and frame_robust carry the Perfect/Great candidate and floor envelopes (carry-aware FG); non_precise
     scores every activation and boundary at the hit timeline and has no forced-Great carry.
     """
     chart = song.chart
     hits = song.hit_timestamps
-    enveloped = song.mode != "zero_ms"
+    enveloped = song.mode != "non-precise"
     return FGSongInputs(
         timestamps=hits,
         perfect_candidates=song.perfect_candidates if enveloped else hits,
