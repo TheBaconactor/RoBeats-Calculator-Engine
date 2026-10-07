@@ -631,6 +631,13 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+l
     "fg-response-frontier-visible-first-v31+logic-2278a0e06009",
     *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-2278a0e06009"],
 )
+# The FG gem search left the cache fingerprint and the head-coefficient writer moved to response_cache_patterns
+# (7f9df34c): the 40-chart sample's FG and timeline payloads are byte-identical to the verified builds in both modes
+# (gate r5/fgs1).
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-40f40c5d638f"] = (
+    "fg-response-frontier-visible-first-v31+logic-cbed8e119777",
+    *_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS["fg-response-frontier-visible-first-v31+logic-cbed8e119777"],
+)
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):
