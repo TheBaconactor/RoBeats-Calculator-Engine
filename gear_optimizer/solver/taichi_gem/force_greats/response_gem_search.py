@@ -1,8 +1,8 @@
 """The exact FG gem search: for each loadout, the best gem allocation over its response surfaces, in CPU f64 numba.
 
-A loadout's candidate groups are its FT/FF gem splits that reach distinct frontiers (the GPU group build); every
+A loadout's candidate groups are its FT/FF gem splits that reach distinct frontiers (build_response_group_rows); every
 consumer reads only each loadout's argmax group (first occurrence), so groups that cannot beat the loadout's best so
-far are pruned. Per surface, (CM, FM) gem pairs are visited in TILE x TILE blocks: the score bound is monotone in
+far, or a floor the caller gives it, are pruned. Per surface, (CM, FM) gem pairs are visited in TILE x TILE blocks: the score bound is monotone in
 CM and FM gems and base is linear in them, so a block's corner bounds every pair in it.
 Cost per loadout: Theta(G S K2) bound checks before (G groups, S surfaces per group, K2 (CM, FM) pairs), now
 O(G S + sum over surviving surfaces of K2 / TILE^2 + pairs in surviving blocks) (COMPLEXITY.md, section 3).
@@ -323,7 +323,7 @@ def _score_fg_response_groups_native_f64(
     group_offsets,
     group_lengths,
     row_meta,
-    first_of_candidate,
+    candidate_floor,
     surface_pattern_ids,
     surface_pattern_words,
     surface_counts,
@@ -335,12 +335,14 @@ def _score_fg_response_groups_native_f64(
 ):
     """Each group's best gem allocation over its surfaces (the residual budget's CM / FM / PP / element split).
 
-    A loadout's groups run in order (first_of_candidate starts a loadout). The loadout's winner is its first group
-    with the highest score; within it the first surface reaching that score, with the lexicographically smallest
-    (CM, FM, PP) gems. Every gem pair whose bound cannot reach max(this group's best, the loadout's best so far) is
-    skipped; a skipped pair can at most tie an earlier group, so the winner's row is exact while a losing group's row
-    may hold a lower score than its own best. Pair checks are non-strict (a tie is still scored) because blocks
-    visit pairs out of lexicographic order and the explicit tie-break must see every tie.
+    A loadout's groups run in order; candidate_floor holds, at a loadout's first group, the score its winner must reach
+    (-1: any), and -2 at every other group. The loadout's winner is its first group with the highest score; within it
+    the first surface reaching that score, with the lexicographically smallest (CM, FM, PP) gems. Every surface and gem
+    pair whose bound cannot reach max(this group's best, the loadout's best so far or its floor) is skipped; a skipped
+    pair can at most tie an earlier group, so the winner's row is exact when it reaches the floor, a loadout whose best
+    is below its floor reports a row below it, and a losing group's row may hold less than its own best. Pair checks
+    are non-strict (a tie is still scored) because blocks visit pairs out of lexicographic order and the explicit
+    tie-break must see every tie.
 
     Output columns: [best_score, best_surface, g_pp, g_cm, g_fm, g_ov, final_pp, final_cm, final_fm, final_primary,
     final_secondary].
@@ -369,8 +371,8 @@ def _score_fg_response_groups_native_f64(
 
     candidate_best = -1
     for g in range(group_count):
-        if first_of_candidate[g]:
-            candidate_best = -1
+        if candidate_floor[g] >= -1:
+            candidate_best = candidate_floor[g]
         residual_budget = int(row_meta[g, 0])
         cur_pp = int(row_meta[g, 1])
         cur_cm = int(row_meta[g, 2])
@@ -418,6 +420,12 @@ def _score_fg_response_groups_native_f64(
         # The base_value bound of a block of gem pairs: base_value is linear in (CM gems, FM gems) beyond the PP part.
         cm_lin_up = w_cm > w_ov
         fm_lin_up = w_fm > w_ov
+        # No allocation's base_value exceeds every residual gem on the heaviest weight plus the best PP part.
+        surface_base_max = float(base_init + residual_budget * max(w_cm, w_fm, w_ov))
+        if allow_pp:
+            surface_base_max += pp_bound_prefix_max[max_pp_gems]
+        else:
+            surface_base_max += pp_ref_base
 
         group_best_score = -1
         group_best_surface = 0
@@ -455,6 +463,12 @@ def _score_fg_response_groups_native_f64(
             best_final_primary = group_best_final_primary
             best_final_secondary = group_best_final_secondary
 
+            surface_ub = _fg_response_upper_bound_native_f64(
+                surface_base_max, cm_ref_cache[max_cm_gems], fm_ref_cache[max_fm_gems], body_fever, body_normal,
+                n_hn, n_hf, sigma_hn, sigma_hf,
+            )
+            if surface_ub < float(max(best_score, candidate_best)):
+                continue
             for cm0 in range(0, max_cm_gems + 1, _TILE):
                 cm1 = min(cm0 + _TILE - 1, max_cm_gems)
                 fm_top = min(max_fm_gems, residual_budget - cm0)
@@ -614,14 +628,16 @@ def _score_response_group_meta_cpu(
     surface_pattern_words: np.ndarray,
     surface_counts: np.ndarray,
     surface_pattern_head_coeffs: np.ndarray,
+    floors: np.ndarray | None = None,
 ) -> np.ndarray:
     """The groups' best gem allocations (rows as in _score_fg_response_groups_native_f64) over CPU cores; only each
-    loadout's argmax row (candidate_slices: its (first group, group count)) is exact for a losing group."""
+    loadout's argmax row (candidate_slices: its (first group, group count)) is exact, and with `floors` (one score per
+    loadout) only when it reaches the loadout's floor."""
     group_meta = np.ascontiguousarray(group_meta, dtype=np.int32)
     if int(np.unique(group_meta[:, 6]).shape[0]) != 1:
         raise ValueError("response frontier CPU group metadata has inconsistent head length")
-    first_of_candidate = np.zeros(int(group_meta.shape[0]), dtype=np.bool_)
-    first_of_candidate[[int(start) for start, _count in candidate_slices]] = True
+    candidate_floor = np.full(int(group_meta.shape[0]), -2, dtype=np.int64)
+    candidate_floor[[int(start) for start, _count in candidate_slices]] = -1 if floors is None else floors
     shared = (
         np.ascontiguousarray(surface_pattern_ids, dtype=np.int32),
         np.ascontiguousarray(surface_pattern_words, dtype=np.uint32),
@@ -636,7 +652,7 @@ def _score_response_group_meta_cpu(
         np.ascontiguousarray(group_offsets, dtype=np.int64),
         np.ascontiguousarray(group_lengths, dtype=np.int64),
         group_meta,
-        first_of_candidate,
+        candidate_floor,
         shared,
     )
     return np.asarray(rows, dtype=np.int32)
@@ -656,7 +672,7 @@ def _score_fg_response_groups_on_cpu_cores(
     group_offsets: np.ndarray,
     group_lengths: np.ndarray,
     group_meta: np.ndarray,
-    first_of_candidate: np.ndarray,
+    candidate_floor: np.ndarray,
     shared_args: tuple[Any, ...],
 ) -> np.ndarray:
     """``_score_fg_response_groups_native_f64`` over contiguous chunks of whole loadouts on several cores.
@@ -671,11 +687,11 @@ def _score_fg_response_groups_on_cpu_cores(
     )
     if _FG_CPU_SEARCH_WORKERS <= 1 or chunk_count <= 1:
         return _score_fg_response_groups_native_f64(
-            group_offsets, group_lengths, group_meta, first_of_candidate, *shared_args
+            group_offsets, group_lengths, group_meta, candidate_floor, *shared_args
         )
     cumulative = np.cumsum(group_lengths, dtype=np.int64)
     targets = cumulative[-1] * np.arange(1, chunk_count, dtype=np.int64) // chunk_count
-    loadout_starts = np.append(np.flatnonzero(first_of_candidate), group_count)
+    loadout_starts = np.append(np.flatnonzero(candidate_floor >= -1), group_count)
     cut_groups = np.searchsorted(cumulative, targets, side="right")
     cuts = np.unique(np.concatenate(([0], loadout_starts[np.searchsorted(loadout_starts, cut_groups)], [group_count])))
     futures = [
@@ -684,7 +700,7 @@ def _score_fg_response_groups_on_cpu_cores(
             group_offsets[start:stop],
             group_lengths[start:stop],
             group_meta[start:stop],
-            first_of_candidate[start:stop],
+            candidate_floor[start:stop],
             *shared_args,
         )
         for start, stop in zip(cuts[:-1], cuts[1:])

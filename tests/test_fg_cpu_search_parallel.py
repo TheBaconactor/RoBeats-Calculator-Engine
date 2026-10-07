@@ -1,4 +1,5 @@
-"""The CPU FG gem search split across cores equals one serial call, and releases the GIL."""
+"""The CPU FG gem search split across cores equals one serial call, keeps every loadout that reaches its floor exact,
+and releases the GIL."""
 
 import threading
 import time
@@ -46,8 +47,8 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
     )
     # Loadouts of 1-5 groups: the search prunes across a loadout's groups.
     starts = np.cumsum(np.concatenate(([0], rng.integers(1, 6, group_count))))
-    first = np.zeros(group_count, dtype=np.bool_)
-    first[starts[starts < group_count]] = True
+    first = np.full(group_count, -2, dtype=np.int64)
+    first[starts[starts < group_count]] = -1
     return offsets, lengths, meta, first, shared
 
 
@@ -85,3 +86,21 @@ def test_search_kernel_releases_the_gil():
     # A GIL-holding kernel starves this thread for its whole run; a nogil one only for a switch.
     assert kernel_seconds > 0.05
     assert longest_gap < kernel_seconds / 2
+
+
+def test_floors_keep_every_loadout_that_reaches_them_exact():
+    offsets, lengths, meta, first, shared = _random_batch(1000, 6)
+    rows = search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, *shared)
+    starts = np.flatnonzero(first >= -1)
+    ends = np.append(starts[1:], len(first))
+    winners = [s + int(np.argmax(rows[s:e, 0])) for s, e in zip(starts, ends)]
+    best = rows[winners, 0]
+    floored = first.copy()
+    floored[starts] = best + np.arange(len(starts)) % 2  # every other loadout one point out of reach
+    got = search._score_fg_response_groups_native_f64(offsets, lengths, meta, floored, *shared)
+    for k, (s, e) in enumerate(zip(starts, ends)):
+        top = s + int(np.argmax(got[s:e, 0]))
+        if k % 2 == 0:
+            np.testing.assert_array_equal(got[top], rows[winners[k]])
+        else:
+            assert got[top, 0] < floored[s]

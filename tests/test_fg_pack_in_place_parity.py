@@ -145,7 +145,7 @@ def _score_cpu_f64(group_meta, packed, *, allow_pp: bool) -> np.ndarray:
             np.ascontiguousarray(group_offsets, dtype=np.int64),
             np.ascontiguousarray(group_lengths, dtype=np.int64),
             np.ascontiguousarray(group_meta, dtype=np.int32),
-            np.ones(len(group_meta), dtype=np.bool_),
+            np.full(len(group_meta), -1, dtype=np.int64),
             np.ascontiguousarray(ids, dtype=np.int32),
             np.ascontiguousarray(words, dtype=np.uint32),
             np.ascontiguousarray(counts, dtype=np.int32),

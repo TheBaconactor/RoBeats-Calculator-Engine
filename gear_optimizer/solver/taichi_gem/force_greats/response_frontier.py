@@ -659,8 +659,10 @@ def build_prepared_force_greats_response_frontier_group_arrays(
 
 def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
     batch: FgResponseFrontierPackedScoringBatch,
+    floors: np.ndarray | None = None,
 ) -> FgResponseFrontierOwnerResult:
-    """Score a finalized batch with the exact native-f64 scorer (CPU cores, no GPU)."""
+    """Score a finalized batch with the exact native-f64 scorer (CPU cores); with `floors` (a score per loadout) a
+    loadout's row is exact only when it reaches its floor."""
     if fg_batch_stage(batch) is not FgBatchStage.SURFACES_PACKED:
         raise RuntimeError(
             "FG response frontier owner score requires a finalized batch "
@@ -679,6 +681,7 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
         surface_pattern_words=batch.scoring_surface_pattern_words,
         surface_counts=batch.scoring_surface_counts,
         surface_pattern_head_coeffs=batch.scoring_surface_pattern_head_coeffs,
+        floors=floors,
     )
     return FgResponseFrontierOwnerResult(batch=batch, inner_rows=inner_rows)
 
@@ -816,28 +819,27 @@ def score_fg_base_components(
     selected_color: str,
     scoring_bundle: FgResponseFrontierScoringBundle,
     total_budget: int = GEM_BUDGET,
+    floors: np.ndarray | None = None,
 ) -> dict[tuple[int, ...], FgFusedOwnerScoreRow]:
     """The FG score row of each distinct 7-vector of pre-gem totals (PP, CM, FM, primary, secondary, FT, FF), keyed by
     it (CPU only). The GA turn scores its selected payload's device base_stats7 this way; the FG materializer looks a
     plan candidate's row up by the same 7-vector and materializes it with the full BaseStats dict. Equal 7-vectors have
     equal FG results, so duplicates are scored once. ``selected_color`` is the song's selected element; every other
-    input is song-level (the scoring bundle prepared before the GA)."""
+    input is song-level (the scoring bundle prepared before the GA). With `floors` (a score per row) a row is exact only
+    when it reaches its floor (the lowest of a 7-vector's floors); below it, its score is only known to be lower."""
     base_components = np.ascontiguousarray(np.asarray(base_components, dtype=np.int32))
     if int(base_components.ndim) != 2 or int(base_components.shape[1]) != 7:
         raise ValueError("fused owner FG score requires a (N,7) base_components array")
     if int(base_components.shape[0]) <= 0:
         return {}
 
-    # Dedup by the exact 7-tuple -> the minimal scoring set. The first occurrence's
-    # tuple keys the result; duplicates resolve to the same row (identical score).
-    unique_rows: list[tuple[int, ...]] = []
-    seen: set[tuple[int, ...]] = set()
-    for row in base_components.tolist():
+    # Equal 7-vectors have equal FG results: score each once, at the lowest floor asked of it.
+    floor_of: dict[tuple[int, ...], int] = {}
+    for idx, row in enumerate(base_components.tolist()):
         key = tuple(int(v) for v in row)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_rows.append(key)
+        floor = -1 if floors is None else int(floors[idx])
+        floor_of[key] = min(floor_of.get(key, floor), floor)
+    unique_rows = list(floor_of)
 
     batch = prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=[
@@ -861,7 +863,9 @@ def score_fg_base_components(
         scoring_bundle=scoring_bundle,
     )
     built = build_prepared_force_greats_response_frontier_group_arrays(batch)
-    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(built)
+    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
+        built, None if floors is None else np.asarray(list(floor_of.values()), dtype=np.int64)
+    )
     score_rows = resolve_fused_owner_score_rows_from_batch(owner.batch, owner.inner_rows)
     if len(score_rows) != len(unique_rows):
         raise ValueError(
