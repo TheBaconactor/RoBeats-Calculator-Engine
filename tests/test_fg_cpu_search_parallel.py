@@ -43,29 +43,31 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
         np.ascontiguousarray(refs["Perfect Points"], dtype=np.float64),
         np.ascontiguousarray(refs["Combo Multiplier"], dtype=np.float64),
         np.ascontiguousarray(refs["Fever Multiplier"], dtype=np.float64),
-        True,
-        160,
     )
-    return offsets, lengths, meta, shared
+    # Loadouts of 1-5 groups: the search prunes across a loadout's groups.
+    starts = np.cumsum(np.concatenate(([0], rng.integers(1, 6, group_count))))
+    first = np.zeros(group_count, dtype=np.bool_)
+    first[starts[starts < group_count]] = True
+    return offsets, lengths, meta, first, shared
 
 
 def test_parallel_search_equals_one_serial_call():
     for group_count, seed in ((1, 1), (7, 2), (33, 3), (257, 4), (1000, 5)):
-        offsets, lengths, meta, shared = _random_batch(group_count, seed)
-        serial = search._score_fg_response_groups_native_f64(offsets, lengths, meta, *shared)
-        parallel = search._score_fg_response_groups_on_cpu_cores(offsets, lengths, meta, shared)
+        offsets, lengths, meta, first, shared = _random_batch(group_count, seed)
+        serial = search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, *shared)
+        parallel = search._score_fg_response_groups_on_cpu_cores(offsets, lengths, meta, first, shared)
         np.testing.assert_array_equal(parallel, serial)
 
 
 def test_search_kernel_releases_the_gil():
-    offsets, lengths, meta, shared = _random_batch(20000, 9)
-    search._score_fg_response_groups_native_f64(offsets[:2], lengths[:2], meta[:2], *shared)  # compile
+    offsets, lengths, meta, first, shared = _random_batch(20000, 9)
+    search._score_fg_response_groups_native_f64(offsets[:2], lengths[:2], meta[:2], first[:2], *shared)  # compile
     done = threading.Event()
     kernel = {}
 
     def run_kernel():
         kernel["start"] = time.perf_counter()
-        search._score_fg_response_groups_native_f64(offsets, lengths, meta, *shared)
+        search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, *shared)
         kernel["stop"] = time.perf_counter()
         done.set()
 

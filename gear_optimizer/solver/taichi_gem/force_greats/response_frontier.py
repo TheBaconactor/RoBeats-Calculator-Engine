@@ -714,6 +714,7 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
         group_meta=batch.group_meta,
         group_offsets=batch.scoring_group_offsets,
         group_lengths=batch.scoring_group_lengths,
+        candidate_slices=batch.candidate_slices,
         primary_color=batch.primary_color,
         secondary_color=batch.secondary_color,
         selected_color=batch.selected_color,

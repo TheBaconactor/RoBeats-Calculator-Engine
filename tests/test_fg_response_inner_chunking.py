@@ -49,6 +49,7 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
         "group_meta": group_meta,
         "group_offsets": np.asarray((0,), dtype=np.int32),
         "group_lengths": np.asarray((3,), dtype=np.int32),
+        "candidate_slices": ((0, 1),),
         "primary_color": "Rush",
         "secondary_color": "Flow",
         "selected_color": "Rush",

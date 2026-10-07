@@ -52,6 +52,7 @@ def _score_single_frontier_domain(
         group_meta=rows,
         group_offsets=group_offsets,
         group_lengths=group_lengths,
+        candidate_slices=tuple((i, 1) for i in range(int(rows.shape[0]))),
         primary_color=str(primary_color or ""),
         secondary_color=str(secondary_color or ""),
         selected_color=str(selected_color or ""),
