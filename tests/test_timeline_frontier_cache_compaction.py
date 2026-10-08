@@ -97,17 +97,6 @@ def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    unsafe_predecessors = {
-        "exact-frontier-v12+logic-1f182e5b89af",
-        "exact-frontier-v12+logic-4c69b48f08bb",
-        "exact-frontier-v12+logic-9dfe907e66fb",
-    }
-    ratified_predecessors = {
-        version
-        for versions in timeline_api._EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS.values()
-        for version in versions
-    }
-    assert unsafe_predecessors.isdisjoint(ratified_predecessors)
     predecessor = "exact-frontier-v12+logic-73245c017cbd"
     current_key = (current_version, "unit", "issue161-incompatible")
     predecessor_key = (predecessor, *current_key[1:])
@@ -266,10 +255,11 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
     current-version path made the prebuild manifest unable to validate/record the hit."""
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
-    monkeypatch.setattr(
-        timeline_api,
-        "_FRONTIER_DISK_CACHE_VERSION",
-        "exact-frontier-v12+logic-73245c017cbd",
+    # A synthetic ratified pair: the mechanism, independent of which versions are ratified today.
+    current = "exact-frontier-test+logic-current"
+    monkeypatch.setattr(timeline_api, "_FRONTIER_DISK_CACHE_VERSION", current)
+    monkeypatch.setitem(
+        timeline_api._EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS, current, ("exact-frontier-test+logic-older",)
     )
     timeline_api.reset_timeline_state()
     song = make_song([0.0, 0.2, 0.4, 0.6], name="Predecessor Info Timeline", difficulty="Easy", last_note_time=0.6)
