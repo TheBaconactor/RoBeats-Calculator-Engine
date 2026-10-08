@@ -179,11 +179,11 @@ def _solve_slot():
         finally:
             _release_solve_slot()
 
-# Canonical persistent frontier caches for official charts. Custom charts override both paths with
-# their disposable per-job workspace; official solves keep the same authority as direct MetaFinder
-# runs and deployment prebuilds.
-_TIMELINE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "timeline_frontier_cache"
-_FG_RESPONSE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "fg_response_frontier_cache"
+# Canonical persistent frontier caches for official charts (settings: TIMELINE_FRONTIER_CACHE_DIR,
+# FG_RESPONSE_FRONTIER_CACHE_DIR). Custom charts override both paths with their disposable per-job
+# workspace; official solves keep the same authority as direct MetaFinder runs and deployment prebuilds.
+_TIMELINE_FRONTIER_CACHE_DIR = paths().timeline_cache
+_FG_RESPONSE_FRONTIER_CACHE_DIR = paths().fg_cache
 _TIMELINE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _FG_RESPONSE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _FRONTIER_DISTRIBUTION = FrontierDistributionState()
