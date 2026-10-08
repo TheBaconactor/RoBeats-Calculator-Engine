@@ -1,4 +1,4 @@
-"""D-bis tail-activation directed tests (FG_TAIL_ACTIVATION_DBIS.md).
+"""D-bis tail-activation directed tests.
 
 Pins the Stage-1 engine verdicts with executable game_sim replays:
 
@@ -10,8 +10,8 @@ Pins the Stage-1 engine verdicts with executable game_sim replays:
 * Gap (b) regression: a tail IS an activation candidate today with its own widened +80 Perfect /
   +200 despawn-capped late-Great window (per-note envelopes); the bounded replay sweep checks the
   directed tail charts for observed regressions without claiming exhaustive schedule coverage.
-* Gap (c): the index-inversion classifier recognizes the designed family's live witness and
-  rejects index-ordered surfaces (guards the oracle gate against silent drift).
+* Gap (c): the designed family's live witness replays only out of chart index order, so the bounded
+  sweep classifies it as the known gap (guards the oracle gate against silent drift).
 * Physicality filter: hold bracketing (press < release, no same-lane press inside a span).
 """
 from __future__ import annotations
@@ -36,7 +36,6 @@ from two_directional_frontier_oracle import (  # noqa: E402
     _schedule_is_physical,
     _surface_key_from_sim,
     _tail_head_pairs,
-    _witness_is_index_inverted,
     check_chart,
 )
 
@@ -235,17 +234,6 @@ def test_bounded_sweep_fails_conservatively_on_unresolved_produced_claim(capsys)
 # ---------------------------------------------------------------------------------------------
 # Gap (c): the designed-family classifier
 # ---------------------------------------------------------------------------------------------
-
-
-def test_known_gap_witness_is_index_inverted():
-    """The live 337.5 witness (fever starts at a note the index-order bar cannot cross on) is
-    classified into the designed family; an index-consistent surface is not."""
-    # From the tail-follower directed chart: F=.11111 G=.1...1, denom=1.665, n=6.
-    fever = 0b111110
-    great = 0b100010
-    assert _witness_is_index_inverted((fever, great), 1.665, 6)
-    # Index-consistent: fever starts exactly at the index-order crossing (idx1 after 1.0+1.0).
-    assert not _witness_is_index_inverted((0b000110, 0), 1.665, 6)
 
 
 # ---------------------------------------------------------------------------------------------

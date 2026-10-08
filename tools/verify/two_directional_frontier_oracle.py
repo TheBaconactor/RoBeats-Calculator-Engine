@@ -16,9 +16,10 @@ bug-discovery and regression tools.
 Classifications:
 
 * OBSERVED UNDER-report: an exactly replayed surface that no production surface structurally
-  dominates and that beats the whole produced set at a checked stat cell. Index-inverted witnesses
-  are the DESIGNED known-gap family from ``FG_TAIL_ACTIVATION_DBIS.md`` section 5; they fail only
-  under ``--strict``. Any other observed winning witness always fails.
+  dominates and that beats the whole produced set at a checked stat cell. The producer adds fever
+  fill in chart index order, so a witness that replays only with notes hit out of that order is the
+  DESIGNED (not implemented) index-inverted family; it fails only under ``--strict``. Any other
+  observed winning witness always fails.
 * PRODUCED BUT NOT OBSERVED: a targeted heuristic realizer probes enriched interior candidates. A
   successful construction is exact replay (``over_realized``), and an observed reachable surface
   may prove a claim score-dominated (``over_dominated``). If neither succeeds, the claim is
@@ -370,38 +371,15 @@ def _realize_surface(
     return False
 
 
-def _witness_is_index_inverted(
-    witness: tuple[int, int], denom: float, n: int
-) -> bool:
-    """Classify an under-report witness as the DESIGNED index-inverted family
-    (FG_TAIL_ACTIVATION_DBIS.md section 5: delay-and-catch / same-timestamp closer choice).
-
-    The production surface model walks fill in CHART INDEX order, so its fever range must start
-    at a note the index-ordered bar can actually cross on, given the witness's own P/G labels.
-    If the index-ordered crossing lands elsewhere, the witness is reachable only by depositing
-    an index-earlier note AFTER an index-later one (hit-order inversion) -- exactly the designed
-    enumeration family, not a producer cap/emission bug. First-section classifier (tiny charts).
-    """
-    fever_mask, great_mask = witness
-    if fever_mask == 0:
-        return False
-    act = (fever_mask & -fever_mask).bit_length() - 1
-    bar = 0.0
-    for i in range(n):
-        bar += 0.5 if (great_mask >> i) & 1 else 1.0
-        if bar >= float(denom) - 1e-9:
-            return i != act
-    return False
-
-
 def enumerate_reachable_surfaces(
     timestamps_ms: list[float],
     lanes: list[int],
     statsdict: dict,
     config: dict,
     note_types: list[int] | None = None,
-) -> tuple[set[tuple[int, int]], float, float]:
-    """Exactly replayed surfaces found by the bounded, physical band-extreme sweep."""
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]], float, float]:
+    """Exactly replayed surfaces found by the bounded, physical band-extreme sweep, and those also replayed with every
+    note hit in chart index order. Returns (reachable, in_order, denom, rt)."""
     n = len(timestamps_ms)
     nts = [1] * n if note_types is None else [int(x) for x in note_types]
     chart = NoteChart(timestamps_ms=list(timestamps_ms), lanes=list(lanes), note_types=nts)
@@ -414,6 +392,7 @@ def enumerate_reachable_surfaces(
     denom = float(baseline.fever_fill_denom)
     rt = float(baseline.fever_time_sec)
     reachable: set[tuple[int, int]] = set()
+    in_order: set[tuple[int, int]] = set()
     candidate_bands = [
         _TAIL_CANDIDATE_DELTAS_MS if nts[i] == 3 else _TAP_CANDIDATE_DELTAS_MS for i in range(n)
     ]
@@ -429,7 +408,10 @@ def enumerate_reachable_surfaces(
         key = _surface_key_from_sim(result, n)
         if key is not None:
             reachable.add(key)
-    return reachable, denom, rt
+            hit_order = [h.note_index for h in result.registered if h.kind == "note"]
+            if hit_order == sorted(hit_order):
+                in_order.add(key)
+    return reachable, in_order, denom, rt
 
 
 def production_surfaces(
@@ -485,7 +467,7 @@ def check_chart(
         "hitObjectsCount": int(hit_objects),
         "lastNoteTimeSec": (max(timestamps_ms) + 2000.0) / 1000.0,
     }
-    reachable, denom, rt = enumerate_reachable_surfaces(
+    reachable, in_order, denom, rt = enumerate_reachable_surfaces(
         timestamps_ms, lanes, stats, config, note_types=nts
     )
     produced = production_surfaces(timestamps_ms, lanes, denom, rt, note_types=nts)
@@ -502,11 +484,11 @@ def check_chart(
         if (margin := _witness_wins_a_cell(r, produced, n)) > 1e-9
     ]
     # Every member of `reachable` came from exact replay, so an observed winning witness is sound.
-    # Index-inverted deposits are the DESIGNED (not implemented) family from
-    # FG_TAIL_ACTIVATION_DBIS.md section 5 -- reported loudly, failed only under --strict. Absence
-    # of a witness says only that this bounded candidate sweep did not find one.
-    under = [(r, m) for (r, m) in scored_under if not _witness_is_index_inverted(r, denom, n)]
-    under_design = [(r, m) for (r, m) in scored_under if _witness_is_index_inverted(r, denom, n)]
+    # One that replays only out of chart index order is the DESIGNED (not implemented) index-inverted
+    # family -- reported loudly, failed only under --strict. Absence of a witness says only that this
+    # bounded candidate sweep did not find one.
+    under = [(r, m) for (r, m) in scored_under if r in in_order]
+    under_design = [(r, m) for (r, m) in scored_under if r not in in_order]
     over_unresolved: list[tuple[int, int]] = []
     over_dominated: list[tuple[int, int]] = []
     over_realized: list[tuple[int, int]] = []
@@ -588,7 +570,7 @@ def _report(res: dict, strict: bool = False) -> bool:
         print(f"    under: F={_mask_str(fever, res['n'])} G={_mask_str(great, res['n'])} wins_by={margin:.1f}")
     for (fever, great), margin in res["under_design"][:6]:
         print(
-            f"    KNOWN-GAP (index-inverted; design FG_TAIL_ACTIVATION_DBIS section 5): "
+            f"    KNOWN-GAP (replays only out of chart order): "
             f"F={_mask_str(fever, res['n'])} G={_mask_str(great, res['n'])} wins_by={margin:.1f}"
         )
     for fever, great in res["over_realized"][:6]:
