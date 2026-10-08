@@ -19,7 +19,7 @@ from .response_types import FgResponseFrontierResult
 # key-derivation input the prebuild manifest sees. A new version reads an older version's files only when
 # response_cache_store._EXACT_COMPATIBLE_PREDECESSOR_VERSIONS lists it, after a byte gate proved them identical. The
 # version history is in git.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v31"
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v32"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
 _CORE_DIR = _SOLVER_DIR.parent / "core"
@@ -56,11 +56,10 @@ _FG_RESPONSE_CACHE_VERSION = (
     f"{_FG_RESPONSE_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_FG_DP_SOURCES)}"
 )
 _BUNDLE_KEY_MARKER = "all-stat-keys"
-_SURFACE_GENERATION_ARRAY_NAME = "surface_generation"
-_SURFACE_BUNDLE_PATH_ARRAY_NAME = "_surface_bundle_path"
-_SCORING_BUNDLE_ARRAY_NAMES = frozenset(
+# The members of a bundle file (response_cache_store).
+_BUNDLE_ARRAY_NAMES = frozenset(
     (
-        _SURFACE_GENERATION_ARRAY_NAME,
+        "version",
         "stat_keys",
         "frontier_ids",
         "raw_fill_by_ff",
@@ -73,8 +72,8 @@ _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
         "frontier_meta",
         "first_offsets",
         "first_counts",
-        "first_surface_row_count",
-        "first_surface_pattern_count",
+        "surface_rows",
+        "surface_patterns",
     )
 )
 
@@ -152,8 +151,10 @@ class FgResponseFrontierScoringBundle:
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool
-    surface_generation: str | None = None
-    bundle_path: Path | None = None
+    # The bundle's whole surface tables as (columns, rows) uint32: rows (4, n), patterns (10, m). The surface_* arrays
+    # above are filled only for an in-memory pool (a session-pruned bundle) and then hold that pool.
+    surface_rows: np.ndarray
+    surface_patterns: np.ndarray
 
     @property
     def frontier_idx_by_key(self) -> _FrontierIdxByStatView:

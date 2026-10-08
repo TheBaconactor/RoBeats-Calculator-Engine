@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 
 import numpy as np
 
@@ -9,18 +8,15 @@ from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier, _surface_rows_from_numba_rows
 from .response_cache_keys import (
-    _surface_from_row_cached,
     _surface_from_values_cached,
     fg_response_frontier_geometry_cache_key,
 )
 from .response_cache_store import (
     _frontier_is_complete,
-    _open_surface_sidecar_memmap,
-    load_first_surface_scoring_rows,
     _memory_get,
     _memory_put,
 )
-from .response_cache_patterns import SURFACE_PATTERN_COLUMNS, SURFACE_ROW_COLUMNS, expand_surface_rows
+from .response_cache_patterns import expand_surface_rows
 from .response_cache_types import (
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
@@ -150,32 +146,13 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
     }
 
 
-def _unpack_frontiers(
-    data: object,
-    *,
-    row_sidecar: Path,
-    pattern_sidecar: Path,
-) -> tuple[FgResponseFrontierResult, ...]:
-    meta = np.asarray(data["frontier_meta"], dtype=np.int32)
-    first_offsets = np.asarray(data["first_offsets"], dtype=np.int32)
-    first_counts = np.asarray(data["first_counts"], dtype=np.int32)
-    surface_row_count = int(np.asarray(data["first_surface_row_count"]).item())
-    surface_pattern_count = int(np.asarray(data["first_surface_pattern_count"]).item())
-    # Materialize the same exact logical rows the scoring path sees. Long-lived surface tuples
-    # never alias either read-only memmap.
-    row_memmap = _open_surface_sidecar_memmap(
-        row_sidecar,
-        columns=SURFACE_ROW_COLUMNS,
-        dtype=np.dtype(np.uint32),
-        row_count=surface_row_count,
-    )
-    pattern_memmap = _open_surface_sidecar_memmap(
-        pattern_sidecar,
-        columns=SURFACE_PATTERN_COLUMNS,
-        dtype=np.dtype(np.uint32),
-        row_count=surface_pattern_count,
-    )
-    first_pool, _first_coeffs = expand_surface_rows(row_memmap, pattern_memmap)
+def _unpack_frontiers(arrays: dict[str, np.ndarray]) -> tuple[FgResponseFrontierResult, ...]:
+    """The frontiers of a bundle file's arrays (store.read_compatible_bundle), as the exact logical rows the scoring
+    path sees."""
+    meta = np.asarray(arrays["frontier_meta"], dtype=np.int32)
+    first_offsets = np.asarray(arrays["first_offsets"], dtype=np.int32)
+    first_counts = np.asarray(arrays["first_counts"], dtype=np.int32)
+    first_pool, _first_coeffs = expand_surface_rows(arrays["surface_rows"].T, arrays["surface_patterns"].T)
 
     out: list[FgResponseFrontierResult] = []
     surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
@@ -213,69 +190,6 @@ def _unpack_frontiers(
     return tuple(out)
 
 
-class _LazyResponseFirstFrontier:
-    __slots__ = (
-        "_bundle_key",
-        "_bundle_path",
-        "_surface_generation",
-        "_first_start",
-        "_first_count",
-        "_materialized",
-        "_surface_cache",
-    )
-
-    def __init__(
-        self,
-        *,
-        bundle_key: tuple,
-        bundle_path: Path | None,
-        surface_generation: str | None,
-        first_start: int,
-        first_count: int,
-    ) -> None:
-        self._bundle_key = bundle_key
-        self._bundle_path = bundle_path
-        self._surface_generation = surface_generation
-        self._first_start = int(first_start)
-        self._first_count = int(first_count)
-        self._materialized: tuple[FgResponseSurface, ...] | None = None
-        self._surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
-
-    def _as_tuple(self) -> tuple[FgResponseSurface, ...]:
-        materialized = self._materialized
-        if materialized is None:
-            first_pool, _coeffs = load_first_surface_scoring_rows(
-                self._bundle_key,
-                ((int(self._first_start), int(self._first_count)),),
-                surface_generation=self._surface_generation,
-                bundle_path=self._bundle_path,
-            )
-            materialized = tuple(
-                _surface_from_row_cached(first_pool[row_idx], self._surface_cache)
-                for row_idx in range(int(first_pool.shape[0]))
-            )
-            self._materialized = materialized
-        return materialized
-
-    def __bool__(self) -> bool:
-        return int(self._first_count) > 0
-
-    def __len__(self) -> int:
-        return int(self._first_count)
-
-    def __iter__(self):
-        return iter(self._as_tuple())
-
-    def __getitem__(self, idx: int) -> FgResponseSurface:
-        return self._as_tuple()[int(idx)]
-
-    def __eq__(self, other: object) -> bool:
-        try:
-            return self._as_tuple() == tuple(other)  # type: ignore[arg-type]
-        except TypeError:
-            return self._as_tuple() == other
-
-
 def frontier_result_from_scoring_bundle(
     scoring_bundle: FgResponseFrontierScoringBundle,
     *,
@@ -286,37 +200,24 @@ def frontier_result_from_scoring_bundle(
     if idx < 0 or idx >= int(meta.shape[0]):
         raise ValueError("FG response scoring bundle frontier index is outside the bundle")
     first_start = int(scoring_bundle.frontier_offsets[idx])
-    first_count = int(scoring_bundle.frontier_lengths[idx])
-    row = meta[idx]
-    pattern_ids = np.asarray(scoring_bundle.surface_pattern_ids)
-    if int(pattern_ids.shape[0]) > 0:
-        # In-memory bundle (e.g. session-box pruned): its offsets index the IN-MEMORY arrays, not
-        # the disk sidecar -- serve the frontier eagerly from them. The disk-lazy path below would
-        # silently read the wrong rows for a compacted bundle.
-        pattern_words = np.asarray(scoring_bundle.surface_pattern_words)
-        counts = np.asarray(scoring_bundle.surface_counts)
-        segment_ids = np.asarray(pattern_ids[first_start : first_start + first_count], dtype=np.int64)
-        if bool(np.any(segment_ids < 0)) or bool(np.any(segment_ids >= int(pattern_words.shape[0]))):
-            raise ValueError("FG response scoring bundle references an invalid head-pattern ID")
-        segment_words = pattern_words[segment_ids]
-        segment_counts = counts[first_start : first_start + first_count]
-        rows7 = np.empty((int(first_count), 7), dtype=np.uint64)
-        rows7[:, 0] = segment_words[:, 0].astype(np.uint64) | (segment_words[:, 1].astype(np.uint64) << np.uint64(32))
-        rows7[:, 1] = segment_words[:, 2].astype(np.uint64) | (segment_words[:, 3].astype(np.uint64) << np.uint64(32))
-        rows7[:, 2] = segment_words[:, 4].astype(np.uint64) | (segment_words[:, 5].astype(np.uint64) << np.uint64(32))
-        rows7[:, 3] = segment_words[:, 6].astype(np.uint64) | (segment_words[:, 7].astype(np.uint64) << np.uint64(32))
-        rows7[:, 4:7] = segment_counts.astype(np.uint64)
-        first_frontier = SurfaceRowsFirstFrontier(rows7)
+    first_end = first_start + int(scoring_bundle.frontier_lengths[idx])
+    if int(scoring_bundle.surface_pattern_ids.shape[0]) > 0:
+        # An in-memory pool (a session-pruned bundle): the offsets index the pool.
+        segment_words = scoring_bundle.surface_pattern_words[scoring_bundle.surface_pattern_ids[first_start:first_end]]
+        segment_counts = scoring_bundle.surface_counts[first_start:first_end]
     else:
-        first_frontier = _LazyResponseFirstFrontier(
-            bundle_key=scoring_bundle.cache_key,
-            bundle_path=scoring_bundle.bundle_path,
-            surface_generation=scoring_bundle.surface_generation,
-            first_start=int(first_start),
-            first_count=int(first_count),
+        rows = scoring_bundle.surface_rows[:, first_start:first_end]
+        segment_words = scoring_bundle.surface_patterns[:8, rows[0]].T
+        segment_counts = rows[1:4].T
+    rows7 = np.empty((first_end - first_start, 7), dtype=np.uint64)
+    for column in range(4):
+        rows7[:, column] = segment_words[:, 2 * column].astype(np.uint64) | (
+            segment_words[:, 2 * column + 1].astype(np.uint64) << np.uint64(32)
         )
+    rows7[:, 4:7] = segment_counts.astype(np.uint64)
+    row = meta[idx]
     return FgResponseFrontierResult(
-        first_frontier=first_frontier,
+        first_frontier=SurfaceRowsFirstFrontier(rows7),
         state_frontiers={},
         states_evaluated=int(row[0]),
         actions=int(row[1]),

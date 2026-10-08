@@ -1,21 +1,11 @@
-"""Issue #34 parity gate: the uncompressed + memmap sidecar surface store must return rows/coeffs
-BIT-IDENTICAL to the legacy 32768-row ZIP_DEFLATED chunked store, over a range sweep.
+"""A bundle's surface tables round-trip exactly: every range of the saved rows expands back to the producer's rows and
+head coefficients, and the compact scoring gather matches an independent np.unique oracle.
 
-The production code now has only the memmap reader/writer, so the legacy chunked writer + reader are
-captured here as local helpers (mirroring the pre-change ``_persisted_packed_frontiers`` /
-``_persisted_surface_head_coeff_chunks`` / chunked ``load_first_surface_scoring_rows``). Parity is
-asserted three ways for the same synthetic surfaces:
-
-1. production memmap read of a ``_save_payload`` bundle  ==  legacy chunked read of a legacy bundle;
-2. both readers agree on a real 32768-row chunk boundary.
-
-CPU-only; no GPU. Synthesizes everything in a temp dir -- never touches bin/fg_response_frontier_cache.
+CPU-only; no GPU. Synthesizes everything in a temp dir -- never touches the production cache.
 """
 
 from __future__ import annotations
 
-import io
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -25,11 +15,9 @@ from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import expand_surface_rows
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
-    _fg_response_disk_cache_path,
     _save_payload,
-    _surface_sidecar_paths,
-    load_first_surface_scoring_patterns,
-    load_first_surface_scoring_rows,
+    gather_surface_patterns,
+    read_compatible_bundle,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
@@ -38,92 +26,18 @@ from tests.fg_response_frontier_oracles import intern_surface_rows
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
-_LEGACY_CHUNK_ROWS = 32768
+
+def _tables(cache_key: tuple) -> tuple[np.ndarray, np.ndarray]:
+    """The saved bundle's (4, n) row and (10, m) pattern columns."""
+    arrays = read_compatible_bundle(cache_key)
+    return arrays["surface_rows"], arrays["surface_patterns"]
 
 
-# --------------------------------------------------------------------------------------------------
-# Legacy chunked writer + reader (snapshot of the pre-change production storage format).
-# --------------------------------------------------------------------------------------------------
-def _legacy_pool_chunk_name(chunk_idx: int) -> str:
-    return f"first_surface_pool_chunk_{int(chunk_idx):05d}"
-
-
-def _legacy_coeff_chunk_name(chunk_idx: int) -> str:
-    return f"first_surface_head_coeffs_chunk_{int(chunk_idx):05d}"
-
-
-def _write_legacy_chunked_bundle(
-    npz_path: Path,
-    *,
-    pool: np.ndarray,
-    coeffs: np.ndarray,
-    chunk_rows: int,
-) -> None:
-    """Write a legacy bundle .npz: fortran-order uint32 pool chunks + C-order uint16 coeff chunks
-    + int32 first_surface_chunk_offsets, exactly as the pre-change writer did."""
-    pool = np.asfortranarray(np.asarray(pool, dtype=np.uint32))
-    coeffs = np.ascontiguousarray(np.asarray(coeffs, dtype=np.uint16))
-    row_count = int(pool.shape[0])
-    chunk_offsets = np.asarray(
-        list(range(0, row_count, int(chunk_rows))) + [row_count], dtype=np.int32
-    )
-    members: dict[str, np.ndarray] = {"first_surface_chunk_offsets": chunk_offsets}
-    for chunk_idx, start in enumerate(range(0, row_count, int(chunk_rows))):
-        end = min(row_count, int(start) + int(chunk_rows))
-        members[_legacy_pool_chunk_name(chunk_idx)] = np.asfortranarray(pool[start:end])
-        members[_legacy_coeff_chunk_name(chunk_idx)] = np.ascontiguousarray(coeffs[start:end])
-    from numpy.lib import format as np_format
-
-    npz_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(npz_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as archive:
-        for name, array in members.items():
-            with archive.open(f"{name}.npy", mode="w", force_zip64=True) as handle:
-                np_format.write_array(handle, np.asanyarray(array), allow_pickle=False)
-
-
-def _read_legacy_chunked_rows(
-    npz_path: Path,
-    ranges: tuple[tuple[int, int], ...],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Pre-change reader: chunk-index resolution + Python range-loop copy. Returns uint32 rows N x 11
-    and int32 coeffs N x 4 (coeffs stored uint16, widened on read)."""
-    with zipfile.ZipFile(npz_path, mode="r") as archive:
-        names = set(archive.namelist())
-
-        def _load(member: str, dtype) -> np.ndarray:
-            with archive.open(f"{member}.npy", mode="r") as handle:
-                return np.asarray(np.load(io.BytesIO(handle.read()), allow_pickle=False), dtype=dtype)
-
-        offsets = np.asarray(_load("first_surface_chunk_offsets", np.int64)).reshape(-1)
-        total_rows = int(offsets[-1])
-        out_rows = sum(int(count) for _start, count in ranges)
-        rows = np.empty((out_rows, 11), dtype=np.uint32)
-        coeffs = np.empty((out_rows, 4), dtype=np.int32)
-        for out_array, name_fn, col, dtype in (
-            (rows, _legacy_pool_chunk_name, 11, np.uint32),
-            (coeffs, _legacy_coeff_chunk_name, 4, np.int32),
-        ):
-            cursor = 0
-            for start, count in ranges:
-                end = int(start) + int(count)
-                if end > total_rows:
-                    raise ValueError("legacy range exceeds cached rows")
-                first_chunk = int(np.searchsorted(offsets, int(start), side="right") - 1)
-                last_chunk = int(np.searchsorted(offsets, end - 1, side="right") - 1)
-                for chunk_idx in range(first_chunk, last_chunk + 1):
-                    chunk_start = int(offsets[chunk_idx])
-                    chunk_end = int(offsets[chunk_idx + 1])
-                    copy_start = max(int(start), chunk_start)
-                    copy_end = min(end, chunk_end)
-                    member = name_fn(chunk_idx)
-                    if f"{member}.npy" not in names:
-                        raise ValueError(f"legacy bundle missing {member}")
-                    chunk = _load(member, dtype)
-                    out_array[cursor : cursor + (copy_end - copy_start)] = chunk[
-                        copy_start - chunk_start : copy_end - chunk_start
-                    ]
-                    cursor += copy_end - copy_start
-    return np.ascontiguousarray(rows, dtype=np.uint32), np.ascontiguousarray(coeffs, dtype=np.int32)
+def _expanded(cache_key: tuple, ranges) -> tuple[np.ndarray, np.ndarray]:
+    """The saved rows of `ranges`, expanded to the scorer's (k, 11) rows and (k, 4) head coefficients."""
+    rows, patterns = _tables(cache_key)
+    row_refs = np.concatenate([rows[:, start : start + count].T for start, count in ranges])
+    return expand_surface_rows(row_refs, patterns.T)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -184,84 +98,39 @@ def _range_sweep(row_count: int) -> tuple[tuple[tuple[int, int], ...], ...]:
 # --------------------------------------------------------------------------------------------------
 # Tests.
 # --------------------------------------------------------------------------------------------------
-def test_memmap_read_matches_legacy_chunked_read(tmp_path: Path, monkeypatch) -> None:
+def test_saved_surfaces_expand_back_to_the_producer_rows_over_a_range_sweep(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache_store.reset_fg_response_frontier_payload_cache()
-
     total_notes = 80
-    row_count = 70  # exercises legacy chunk-boundary logic via a small chunk size below
+    row_count = 70
     pool = _synthetic_pool(row_count)
-    coeffs = _coeffs_for(pool, total_notes=total_notes)
-
-    # New path: production writer + memmap reader.
-    cache_key = ("unit", "memmap-vs-legacy")
+    coeffs = _coeffs_for(pool, total_notes=total_notes).astype(np.int32)
+    cache_key = ("unit", "range-sweep")
     _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
-    new_npz = _fg_response_disk_cache_path(cache_key)
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(new_npz)
-    assert row_sidecar.exists() and pattern_sidecar.exists()
-    row_refs = np.load(row_sidecar, allow_pickle=False)
-    patterns = np.load(pattern_sidecar, allow_pickle=False)
-    expanded_rows, expanded_coeffs = expand_surface_rows(row_refs, patterns)
-    assert np.array_equal(expanded_rows, pool)
-    assert np.array_equal(expanded_coeffs, coeffs.astype(np.int32))
-
-    # Legacy path: chunked bundle with a deliberately tiny chunk size to force many chunks.
-    legacy_npz = tmp_path / "legacy.npz"
-    _write_legacy_chunked_bundle(legacy_npz, pool=pool, coeffs=coeffs, chunk_rows=8)
 
     for ranges in _range_sweep(row_count):
-        legacy_rows, legacy_coeffs = _read_legacy_chunked_rows(legacy_npz, ranges)
-        new_rows, new_coeffs = load_first_surface_scoring_rows(cache_key, ranges)
-        assert new_rows.dtype == np.dtype("uint32")
-        assert new_coeffs.dtype == np.dtype("int32")
-        assert np.array_equal(new_rows, legacy_rows), f"row mismatch for ranges={ranges}"
-        assert np.array_equal(new_coeffs, legacy_coeffs), f"coeff mismatch for ranges={ranges}"
+        rows, row_coeffs = _expanded(cache_key, ranges)
+        want = np.concatenate([np.arange(start, start + count) for start, count in ranges])
+        assert rows.dtype == np.dtype("uint32") and row_coeffs.dtype == np.dtype("int32")
+        assert np.array_equal(rows, pool[want]), f"row mismatch for ranges={ranges}"
+        assert np.array_equal(row_coeffs, coeffs[want]), f"coeff mismatch for ranges={ranges}"
 
 
-def test_memmap_read_matches_legacy_across_real_chunk_boundary(tmp_path: Path, monkeypatch) -> None:
-    """Span a single range across the real 32768-row chunk boundary the legacy reader used."""
+def test_saved_surfaces_roundtrip_a_large_pool(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache_store.reset_fg_response_frontier_payload_cache()
-
     total_notes = 60
-    row_count = _LEGACY_CHUNK_ROWS + 5  # 32773 -> straddles one legacy chunk boundary
+    row_count = 32773
     pool = _synthetic_pool(row_count)
-    coeffs = _coeffs_for(pool, total_notes=total_notes)
-
-    cache_key = ("unit", "real-chunk-boundary")
+    coeffs = _coeffs_for(pool, total_notes=total_notes).astype(np.int32)
+    cache_key = ("unit", "large-pool")
     _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
 
-    legacy_npz = tmp_path / "legacy_big.npz"
-    _write_legacy_chunked_bundle(legacy_npz, pool=pool, coeffs=coeffs, chunk_rows=_LEGACY_CHUNK_ROWS)
-
-    boundary_ranges: tuple[tuple[tuple[int, int], ...], ...] = (
-        ((_LEGACY_CHUNK_ROWS - 3, 6),),  # straddles the boundary
-        ((0, row_count),),  # full span across 2 chunks
-        ((_LEGACY_CHUNK_ROWS, 1),),  # exactly the first row of chunk 1
-    )
-    for ranges in boundary_ranges:
-        legacy_rows, legacy_coeffs = _read_legacy_chunked_rows(legacy_npz, ranges)
-        new_rows, new_coeffs = load_first_surface_scoring_rows(cache_key, ranges)
-        assert np.array_equal(new_rows, legacy_rows), f"row mismatch for ranges={ranges}"
-        assert np.array_equal(new_coeffs, legacy_coeffs), f"coeff mismatch for ranges={ranges}"
-
-
-def test_reader_fails_loud_on_missing_sidecar(tmp_path: Path, monkeypatch) -> None:
-    """A current-version slim .npz whose pool sidecar is gone must fail loud, never silently rebuild."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FgResponseSurfaceSidecarError
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache_store.reset_fg_response_frontier_payload_cache()
-
-    cache_key = ("unit", "missing-sidecar")
-    pool = _synthetic_pool(12)
-    _save_payload(cache_key, _build_payload(pool, total_notes=40))
-    pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
-    pool_sidecar.unlink()
-    response_cache_store.reset_fg_response_frontier_payload_cache()
-
-    with pytest.raises(FgResponseSurfaceSidecarError):
-        load_first_surface_scoring_rows(cache_key, ((0, 1),))
+    for ranges in (((0, row_count),), ((32765, 6),), ((row_count - 1, 1), (0, 1))):
+        rows, row_coeffs = _expanded(cache_key, ranges)
+        want = np.concatenate([np.arange(start, start + count) for start, count in ranges])
+        assert np.array_equal(rows, pool[want]), f"row mismatch for ranges={ranges}"
+        assert np.array_equal(row_coeffs, coeffs[want]), f"coeff mismatch for ranges={ranges}"
 
 
 def test_surface_pattern_interning_preserves_row_order_and_repeated_patterns() -> None:
@@ -318,9 +187,8 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
     assert np.array_equal(precompute_inputs[0], expected_pattern_words)
     assert int(precompute_inputs[0].shape[0]) < int(pool.shape[0])
 
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
-    row_refs = np.load(row_sidecar, allow_pickle=False)
-    patterns = np.load(pattern_sidecar, allow_pickle=False)
+    rows, pattern_columns = _tables(cache_key)
+    row_refs, patterns = rows.T, pattern_columns.T
     expected_row_refs, expected_patterns = intern_surface_rows(pool, expected_coeffs)
     assert np.array_equal(row_refs, expected_row_refs)
     assert np.array_equal(patterns, expected_patterns)
@@ -337,7 +205,7 @@ def test_surface_pattern_expansion_rejects_invalid_pattern_id() -> None:
         expand_surface_rows(row_refs, patterns)
 
 
-def test_compact_scoring_loader_preserves_range_order_and_pattern_sharing(
+def test_compact_scoring_gather_preserves_range_order_and_pattern_sharing(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -350,11 +218,8 @@ def test_compact_scoring_loader_preserves_range_order_and_pattern_sharing(
     _save_payload(cache_key, _build_payload(pool, total_notes=80))
     ranges = ((4, 2), (0, 3))
 
-    pattern_ids, counts, pattern_words, pattern_coeffs = load_first_surface_scoring_patterns(
-        cache_key,
-        ranges,
-    )
-    expanded_rows, expanded_coeffs = load_first_surface_scoring_rows(cache_key, ranges)
+    pattern_ids, counts, pattern_words, pattern_coeffs = gather_surface_patterns(*_tables(cache_key), ranges)
+    expanded_rows, expanded_coeffs = _expanded(cache_key, ranges)
 
     assert pattern_ids.shape == (5,)
     assert counts.shape == (5, 3)
@@ -374,12 +239,11 @@ def _shared_pattern_pool(row_count: int, pattern_count: int) -> np.ndarray:
 
 
 def _retired_unique_compact_load(cache_key: tuple, ranges: tuple[tuple[int, int], ...]):
-    """The retired N-row np.unique remap over the raw sidecars, kept as the loader oracle."""
+    """The retired N-row np.unique remap over the saved tables, kept as the gather oracle."""
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import unpack_surface_patterns
 
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
-    row_refs_all = np.load(row_sidecar, allow_pickle=False)
-    patterns_all = np.load(pattern_sidecar, allow_pickle=False)
+    rows, patterns = _tables(cache_key)
+    row_refs_all, patterns_all = rows.T, patterns.T
     row_refs = np.concatenate([row_refs_all[start : start + count] for start, count in ranges])
     unique_ids, local_ids = np.unique(np.asarray(row_refs[:, 0], dtype=np.uint64), return_inverse=True)
     words, coeffs = unpack_surface_patterns(patterns_all[np.asarray(unique_ids, dtype=np.intp)])
@@ -391,7 +255,7 @@ def _retired_unique_compact_load(cache_key: tuple, ranges: tuple[tuple[int, int]
     )
 
 
-def test_compact_scoring_loader_matches_retired_unique_remap(tmp_path: Path, monkeypatch) -> None:
+def test_compact_scoring_gather_matches_retired_unique_remap(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache_store.reset_fg_response_frontier_payload_cache()
     row_count = 300
@@ -405,7 +269,7 @@ def test_compact_scoring_loader_matches_retired_unique_remap(tmp_path: Path, mon
         ((10, 5), (12, 30), (299, 1)),
         ((7, 1),),
     ):
-        got = load_first_surface_scoring_patterns(cache_key, ranges)
+        got = gather_surface_patterns(*_tables(cache_key), ranges)
         want = _retired_unique_compact_load(cache_key, ranges)
         for got_array, want_array in zip(got, want, strict=True):
             assert got_array.dtype == want_array.dtype
@@ -413,35 +277,24 @@ def test_compact_scoring_loader_matches_retired_unique_remap(tmp_path: Path, mon
             np.testing.assert_array_equal(got_array, want_array)
 
 
-def _replace_row_sidecar(cache_key: tuple, row_refs: np.ndarray) -> None:
-    row_sidecar, _pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
-    staged = row_sidecar.with_name(row_sidecar.name + ".staged")
-    with open(staged, "wb") as handle:
-        np.save(handle, np.ascontiguousarray(row_refs, dtype=np.uint32), allow_pickle=False)
-    staged.replace(row_sidecar)
-
-
-def test_compact_scoring_loader_rejects_invalid_pattern_ids_and_ranges(tmp_path: Path, monkeypatch) -> None:
+def test_compact_scoring_gather_rejects_invalid_pattern_ids_and_ranges(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache_store.reset_fg_response_frontier_payload_cache()
     pool = _shared_pattern_pool(6, 3)
-    cache_key = ("unit", "compact-loader-invalid")
+    cache_key = ("unit", "compact-gather-invalid")
     _save_payload(cache_key, _build_payload(pool, total_notes=80))
+    rows, patterns = _tables(cache_key)
 
-    with pytest.raises(ValueError, match="range exceeds cached rows"):
-        load_first_surface_scoring_patterns(cache_key, ((4, 3),))
+    with pytest.raises(ValueError, match="outside the bundle's rows"):
+        gather_surface_patterns(rows, patterns, ((4, 3),))
 
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
-    clean_rows = np.array(np.load(row_sidecar, allow_pickle=False))
-    pattern_count = int(np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False).shape[0])
-    for bad_id in (pattern_count, 2**31, 2**32 - 1):
-        bad_rows = clean_rows.copy()
-        bad_rows[3, 0] = np.uint32(bad_id)
-        _replace_row_sidecar(cache_key, bad_rows)
+    for bad_id in (int(patterns.shape[1]), 2**31, 2**32 - 1):
+        bad_rows = rows.copy()
+        bad_rows[0, 3] = np.uint32(bad_id)
         with pytest.raises(ValueError, match="invalid head-pattern ID"):
-            load_first_surface_scoring_patterns(cache_key, ((0, 6),))
-        # Ranges that skip the corrupt row still load.
-        ids, _counts, _words, _coeffs = load_first_surface_scoring_patterns(cache_key, ((4, 2), (0, 3)))
+            gather_surface_patterns(bad_rows, patterns, ((0, 6),))
+        # Ranges that skip the corrupt row still gather.
+        ids, _counts, _words, _coeffs = gather_surface_patterns(bad_rows, patterns, ((4, 2), (0, 3)))
         assert ids.shape == (5,)
 
 

@@ -78,7 +78,7 @@ def _iter_scope_files(
         relative = _safe_relative(path, root)
         if scope == "code" and (relative == "config.ini" or relative.startswith("Data/")):
             continue
-        if scope in {"timeline", "fg"} and path.suffix not in {".npz", ".npy"}:
+        if scope in {"timeline", "fg"} and path.suffix != ".npz":
             continue
         if allowlist is not None and relative not in allowlist:
             continue

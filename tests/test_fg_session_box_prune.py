@@ -257,11 +257,38 @@ def test_session_head_dominance_box_reads_luts_and_fails_loud():
         session_head_dominance_box(_span_curves((1.0, 2.7), (4.4, 5.0)))
 
 
-def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_table(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
-        FgResponseFrontierScoringBundle,
+def _bundle_with_tables(pattern_ids, counts, pattern_words, pattern_coeffs, *, offsets, lengths, head_len, cache_key):
+    """A loaded (unpruned) scoring bundle whose surface tables hold these rows and patterns."""
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import pack_surface_patterns
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierScoringBundle
+
+    rows = np.empty((4, int(pattern_ids.shape[0])), dtype=np.uint32)
+    rows[0] = pattern_ids
+    rows[1:4] = counts.T
+    return FgResponseFrontierScoringBundle(
+        cache_key=cache_key,
+        frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),
+        raw_fill_by_ff=np.zeros(1),
+        non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
+        real_time_by_ft=np.zeros(1),
+        frontier_meta=np.zeros((int(offsets.shape[0]), 1), dtype=np.int32),
+        surface_pattern_ids=np.empty((0,), dtype=np.int32),
+        surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
+        surface_counts=np.empty((0, 3), dtype=np.int32),
+        surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
+        frontier_offsets=offsets,
+        frontier_lengths=lengths,
+        surface_row_count=int(pattern_ids.shape[0]),
+        total_notes=head_len,
+        long_notes=0,
+        use_forced_great_timing=True,
+        surface_rows=rows,
+        surface_patterns=np.ascontiguousarray(pack_surface_patterns(pattern_words, pattern_coeffs).T),
     )
+
+
+def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_table():
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
     rng = np.random.default_rng(11)
     head_len = 20
@@ -273,33 +300,15 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     pattern_words = np.ascontiguousarray(pattern_words, dtype=np.uint32)
     pattern_ids = np.ascontiguousarray(pattern_ids, dtype=np.int32)
     pattern_coeffs = rng.integers(0, 100, size=(int(pattern_words.shape[0]), 4)).astype(np.int32)
-
-    def _load_compact(_key, ranges, **_kwargs):
-        assert tuple(ranges) == ((0, 55),)
-        return pattern_ids, counts, pattern_words, pattern_coeffs
-
-    def _expanded_loader_must_not_run(*_args, **_kwargs):
-        raise AssertionError("session prune must not expand V30 logical rows")
-
-    monkeypatch.setattr(response_cache, "load_first_surface_scoring_patterns", _load_compact)
-    monkeypatch.setattr(response_cache, "load_first_surface_scoring_rows", _expanded_loader_must_not_run, raising=False)
-    bundle = FgResponseFrontierScoringBundle(
+    bundle = _bundle_with_tables(
+        pattern_ids,
+        counts,
+        pattern_words,
+        pattern_coeffs,
+        offsets=np.asarray([0, 0, 40], dtype=np.int32),
+        lengths=np.asarray([40, 40, 15], dtype=np.int32),
+        head_len=head_len,
         cache_key=("test",),
-        frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),
-        raw_fill_by_ff=np.zeros(1),
-        non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
-        real_time_by_ft=np.zeros(1),
-        frontier_meta=np.zeros((3, 1), dtype=np.int32),
-        surface_pattern_ids=np.empty((0,), dtype=np.int32),
-        surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
-        surface_counts=np.empty((0, 3), dtype=np.int32),
-        surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
-        frontier_offsets=np.asarray([0, 0, 40], dtype=np.int32),
-        frontier_lengths=np.asarray([40, 40, 15], dtype=np.int32),
-        surface_row_count=55,
-        total_notes=head_len,
-        long_notes=0,
-        use_forced_great_timing=True,
     )
     curves = _span_curves((2.45, 2.72), (4.6, 5.48))
     v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = response_cache.session_head_dominance_box(curves)
@@ -372,11 +381,8 @@ def _retired_session_prune_arrays(pattern_ids, counts, pattern_words, pattern_co
         ((2.45, 2.72), (4.60, 5.48)),
     ],
 )
-def test_session_prune_matches_retired_unique_remap(monkeypatch, combo_box, fever_box):
+def test_session_prune_matches_retired_unique_remap(combo_box, fever_box):
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
-        FgResponseFrontierScoringBundle,
-    )
 
     rng = np.random.default_rng(20260927)
     head_len = 40
@@ -404,28 +410,15 @@ def test_session_prune_matches_retired_unique_remap(monkeypatch, combo_box, feve
     offsets = np.asarray(offsets_list, dtype=np.int32)
     lengths = np.asarray(lengths_list, dtype=np.int32)
 
-    def _load_compact(_key, ranges, **_kwargs):
-        assert tuple(ranges) == ((0, row_count),)
-        return pattern_ids, counts, pattern_words, pattern_coeffs
-
-    monkeypatch.setattr(response_cache, "load_first_surface_scoring_patterns", _load_compact)
-    bundle = FgResponseFrontierScoringBundle(
+    bundle = _bundle_with_tables(
+        pattern_ids,
+        counts,
+        pattern_words,
+        pattern_coeffs,
+        offsets=offsets,
+        lengths=lengths,
+        head_len=head_len,
         cache_key=("test", "prune-parity"),
-        frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),
-        raw_fill_by_ff=np.zeros(1),
-        non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
-        real_time_by_ft=np.zeros(1),
-        frontier_meta=np.zeros((int(offsets.shape[0]), 1), dtype=np.int32),
-        surface_pattern_ids=np.empty((0,), dtype=np.int32),
-        surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
-        surface_counts=np.empty((0, 3), dtype=np.int32),
-        surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
-        frontier_offsets=offsets,
-        frontier_lengths=lengths,
-        surface_row_count=row_count,
-        total_notes=head_len,
-        long_notes=0,
-        use_forced_great_timing=True,
     )
     curves = _span_curves(combo_box, fever_box)
     pattern_ids_before = pattern_ids.copy()
@@ -445,8 +438,8 @@ def test_session_prune_matches_retired_unique_remap(monkeypatch, combo_box, feve
         assert got.dtype == want.dtype, name
         np.testing.assert_array_equal(got, want, err_msg=name)
     assert int(pruned.surface_row_count) == int(np.count_nonzero(keep))
-    # The loader's arrays are read, never rewritten in place.
-    np.testing.assert_array_equal(pattern_ids, pattern_ids_before)
+    # The bundle's tables are read, never rewritten in place.
+    np.testing.assert_array_equal(bundle.surface_rows[0], pattern_ids_before)
 
 
 def test_in_place_kept_prefix_equals_int64_copy_cumsum():

@@ -1,4 +1,4 @@
-"""The FG cache's directory maintenance: only a build or an authorized rotation purges, compresses and cleans."""
+"""The FG cache's directory maintenance: only a build or an authorized rotation purges and cleans."""
 
 from pathlib import Path
 
@@ -21,8 +21,6 @@ def test_maintenance_runs_before_builds_and_authorized_rotations(
     monkeypatch, tmp_path: Path, missing, rotate, build_missing, maintained
 ):
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    compressions: list[str] = []
-    monkeypatch.setattr(prebuild, "compress_cache_dir_sidecars", lambda: compressions.append("compress"))
     interrupted_write = tmp_path / "bundle.123.456.tmp.npz"
     interrupted_write.write_bytes(b"partial")
     chart = str(tmp_path / "Song.txt")
@@ -37,17 +35,6 @@ def test_maintenance_runs_before_builds_and_authorized_rotations(
 
     assert interrupted_write.exists() is not maintained
     assert (tmp_path / ".purged_version").exists() is maintained
-    assert compressions == (["compress"] if maintained else [])
-
-
-@pytest.mark.parametrize("built,compressed", [(0, False), (3, True)])
-def test_sidecars_are_compressed_after_a_build_wrote_some(monkeypatch, built, compressed):
-    compressions: list[str] = []
-    monkeypatch.setattr(prebuild, "compress_cache_dir_sidecars", lambda: compressions.append("compress"))
-
-    prebuild.FG_RESPONSE_FRONTIER_PREBUILD.after_build(built)
-
-    assert compressions == (["compress"] if compressed else [])
 
 
 def test_timeline_maintenance_removes_interrupted_writes_on_every_lock_entry(monkeypatch, tmp_path: Path):

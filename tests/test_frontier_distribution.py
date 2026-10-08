@@ -72,13 +72,11 @@ def test_publication_bundles_only_current_cache_allowlist(tmp_path: Path) -> Non
     current_timeline = timeline / f"{'a' * 32}.npz"
     stale_timeline = timeline / f"{'b' * 32}.npz"
     current_fg = fg / f"{'c' * 32}.npz"
-    current_sidecar = fg / f"{'c' * 32}.{'d' * 32}.surf_rows.npy"
     stale_fg = fg / f"{'e' * 32}.npz"
     for path, body in (
         (current_timeline, b"timeline"),
         (stale_timeline, b"stale"),
         (current_fg, b"fg"),
-        (current_sidecar, b"rows"),
         (stale_fg, b"stale"),
     ):
         path.write_bytes(body)
@@ -94,7 +92,7 @@ def test_publication_bundles_only_current_cache_allowlist(tmp_path: Path) -> Non
         root=publications,
         cache_allowlist={
             "timeline": {current_timeline.name},
-            "fg": {current_fg.name, current_sidecar.name},
+            "fg": {current_fg.name},
         },
     )
     manifest = json.loads((publication / "manifest.json").read_text(encoding="utf-8"))
@@ -110,7 +108,6 @@ def test_publication_bundles_only_current_cache_allowlist(tmp_path: Path) -> Non
     assert ("code", "config.ini") not in published
     assert ("timeline", current_timeline.name) in published
     assert ("fg", current_fg.name) in published
-    assert ("fg", current_sidecar.name) in published
     assert ("timeline", stale_timeline.name) not in published
     assert ("fg", stale_fg.name) not in published
     state = FrontierDistributionState(publications)

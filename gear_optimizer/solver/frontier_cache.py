@@ -634,8 +634,6 @@ class FrontierCachePrebuild:
     build_songs: Callable[[list[str], StatCurves, str], PrebuildTally]
     # Under the build lock, once the manifest plan is known: (plan, build_missing, authorize_destructive_rotation).
     maintain: Callable[[FrontierCacheManifestPlan, bool, bool], None]
-    # After a build's files were recorded in the manifest: the number of files built.
-    after_build: Callable[[int], None] | None = None
 
 
 def prebuild_frontier_cache(
@@ -726,9 +724,6 @@ def _prebuild_timing_mode(
             )
         tally = prebuild.build_songs(list(plan.missing_paths), curves, timing_mode)
         cache.record_manifest(plan, tally.results)
-        elapsed_ms = _elapsed_ms(started)
-        if prebuild.after_build is not None:
-            prebuild.after_build(tally.sources["built"])
         return FrontierCachePrebuildSummary(
             total=plan.total_paths,
             completed=hits + len(tally.results),
@@ -736,7 +731,7 @@ def _prebuild_timing_mode(
             built=tally.sources["built"],
             disk=hits + tally.sources["disk"],
             memory=tally.sources["memory"],
-            elapsed_ms=elapsed_ms,
+            elapsed_ms=_elapsed_ms(started),
         )
 
 

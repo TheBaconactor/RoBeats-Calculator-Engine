@@ -282,10 +282,7 @@ def _prebuild_frontier_caches(
         authorize_destructive_rotation=True,
     )
     from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
-        FG_RESPONSE_FRONTIER_CACHE,
-        _surface_sidecar_paths,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
     def recorded_files(plan, manifest_path: Path, cache_root: Path) -> set[str]:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -308,17 +305,11 @@ def _prebuild_frontier_caches(
         _TIMELINE_FRONTIER_CACHE_DIR,
     )
     fg_plan = FG_RESPONSE_FRONTIER_CACHE.manifest_plan(song_paths, curves, persist_validated_entries=False)
-    fg_bundles = recorded_files(
+    fg_files = recorded_files(
         fg_plan,
         FG_RESPONSE_FRONTIER_CACHE.manifest_path(),
         _FG_RESPONSE_FRONTIER_CACHE_DIR,
     )
-    fg_files = set(fg_bundles)
-    for bundle_name in fg_bundles:
-        for sidecar in _surface_sidecar_paths(_FG_RESPONSE_FRONTIER_CACHE_DIR / bundle_name):
-            if not sidecar.is_file():
-                raise RuntimeError(f"FG frontier bundle is missing a sidecar: {sidecar}")
-            fg_files.add(sidecar.name)
     return {"timeline": timeline_files, "fg": fg_files}
 
 

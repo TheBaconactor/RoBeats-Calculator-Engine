@@ -39,10 +39,6 @@ def _surface_from_values_cached(
     return surface
 
 
-def _surface_from_row_cached(row: np.ndarray, cache: dict[tuple[int, ...], FgResponseSurface]) -> FgResponseSurface:
-    return _surface_from_values_cached(tuple(int(v) for v in row[:11]), cache)
-
-
 def fg_response_frontier_song_cache_key(song: TimedSong) -> tuple:
     song_inputs = song.fg_inputs
     timestamps = np.asarray(song_inputs.timestamps, dtype=np.float32).reshape(-1)

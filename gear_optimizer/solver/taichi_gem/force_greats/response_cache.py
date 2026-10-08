@@ -24,24 +24,19 @@ from .response_cache_store import (
     FG_RESPONSE_FRONTIER_CACHE,
     _dense_rank_pattern_ids_inplace,
     _frontier_is_complete,
-    _invalidate_bundle_array_views,
-    _load_bundle_array_members,
     _load_payload,
     _payload_disk_is_complete,
     _payload_memory,
     _response_bundle_build_slots,
     _save_payload,
     _scoring_bundle_memory,
-    load_first_surface_scoring_patterns,
+    gather_surface_patterns,
+    read_compatible_bundle,
     release_fg_response_song_memory,
 )
 from .response_cache_types import (
-    _SCORING_BUNDLE_ARRAY_NAMES,
-    _SURFACE_BUNDLE_PATH_ARRAY_NAME,
-    _SURFACE_GENERATION_ARRAY_NAME,
     FgResponseFrontierCachePayload,
     FgResponseFrontierScoringBundle,
-    _normalize_stat_key,
     all_response_stat_keys,
     normalize_fg_response_stat_keys,
 )
@@ -166,37 +161,17 @@ def session_prune_scoring_bundle(
     consumers load the full bundle). Re-runs the 16-corner dominance filter with corners at the
     session's realizable stat box: every dropped row is dominated at every cell this inventory can
     evaluate, so scoring winners are identical while the GPU score loop, uploads, and VRAM shrink
-    to the session-relevant rows. Also materializes the surviving compact pattern IDs/counts in
-    memory, which subsumes the sidecar page-cache warm (no per-batch memmap gathers afterwards)."""
+    to the session-relevant rows. The surviving compact pattern IDs/counts form the bundle's in-memory pool, which
+    every later batch scores in place."""
     import dataclasses
 
     row_count = int(bundle.surface_row_count)
     if row_count <= 0:
         return bundle
     v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = session_head_dominance_box(curves)
-    pattern_ids, counts, pattern_words, pattern_coeffs = load_first_surface_scoring_patterns(
-        bundle.cache_key,
-        ((0, row_count),),
-        surface_generation=bundle.surface_generation,
-        bundle_path=bundle.bundle_path,
+    pattern_ids, counts, pattern_words, pattern_coeffs = gather_surface_patterns(
+        bundle.surface_rows, bundle.surface_patterns, ((0, row_count),)
     )
-    pattern_ids = np.ascontiguousarray(pattern_ids, dtype=np.int32)
-    counts = np.ascontiguousarray(counts, dtype=np.int32)
-    pattern_words = np.ascontiguousarray(pattern_words, dtype=np.uint32)
-    pattern_coeffs = np.ascontiguousarray(pattern_coeffs, dtype=np.int32)
-    if (
-        int(pattern_ids.ndim) != 1
-        or int(pattern_ids.shape[0]) != int(row_count)
-        or int(counts.ndim) != 2
-        or tuple(counts.shape) != (int(row_count), 3)
-        or int(pattern_words.ndim) != 2
-        or int(pattern_words.shape[1]) != 8
-        or int(pattern_coeffs.ndim) != 2
-        or tuple(pattern_coeffs.shape) != (int(pattern_words.shape[0]), 4)
-    ):
-        raise ValueError("session-box prune received an invalid compact surface bundle")
-    if bool(np.any(pattern_ids < 0)) or bool(np.any(pattern_ids >= int(pattern_words.shape[0]))):
-        raise ValueError("session-box prune received an invalid head-pattern ID")
     head_len = min(int(bundle.total_notes), 100)
     keep = _numba_session_box_keep_mask(
         pattern_ids,
@@ -331,15 +306,13 @@ def fg_response_frontier_payload_cache_info(
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FrontierCacheInfo:
-    """Whether a payload with `stat_keys` is cached, checked without loading one: a request payload or the song's
-    bundle, in memory or as a complete file."""
+    """Whether a payload with `stat_keys` is cached, checked without loading one: a request payload in memory, or the
+    song's bundle in memory or as a complete file."""
     keys = normalize_fg_response_stat_keys(stat_keys)
     payload_key = fg_response_frontier_payload_cache_key(song, curves, keys)
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
     if _payload_memory.get(payload_key) is not None:
         return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "memory")
-    if _payload_disk_is_complete(payload_key, keys):
-        return FrontierCacheInfo(payload_key, FG_RESPONSE_FRONTIER_CACHE.serving_path(payload_key), "disk")
     bundle = _payload_memory.get(bundle_key)
     if (bundle is not None and _payload_subset(bundle, keys) is not None) or _payload_disk_is_complete(
         bundle_key, keys
@@ -352,46 +325,15 @@ def _stat_key_index_rows(keys: tuple[tuple[int, int], ...]) -> np.ndarray:
     return np.asarray(keys, dtype=np.intp).reshape((-1, 2))
 
 
-def _materialize_scoring_bundle_from_arrays(
-    *,
-    cache_key: tuple,
-    keys: tuple[tuple[int, int], ...],
-    arrays: dict[str, np.ndarray],
-) -> FgResponseFrontierScoringBundle:
-    stat_key_rows = np.clip(np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2)), 0, MAX_STAT)
-    frontier_ids = np.asarray(arrays["frontier_ids"], dtype=np.int32).reshape(-1)
-    if int(frontier_ids.shape[0]) != int(stat_key_rows.shape[0]) or bool(np.any(frontier_ids < 0)):
-        raise ValueError("FG response frontier scoring bundle has invalid frontier ids")
-    present = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
-    present[stat_key_rows[:, 0], stat_key_rows[:, 1]] = frontier_ids
-    requested = _stat_key_index_rows(keys)
-    requested_ids = present[requested[:, 0], requested[:, 1]]
-    if bool(np.any(requested_ids < 0)):
-        # `keys` is sorted, so the first missing positions are the sorted-first missing keys.
-        missing = [keys[int(idx)] for idx in np.flatnonzero(requested_ids < 0)[:5]]
-        raise ValueError(f"FG response frontier scoring bundle is missing stat keys: {missing!r}")
-
-    # Only REQUESTED keys are marked present: a partial bundle must invalidate-and-reload on a
-    # later request for keys it was not materialized with.
+def _scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgResponseFrontierScoringBundle:
+    """A bundle file's arrays (store.read_compatible_bundle) as a scoring bundle over every stat key it holds."""
+    stat_key_rows = np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2))
     frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
-    frontier_idx_by_stat[requested[:, 0], requested[:, 1]] = requested_ids
-    total_notes = int(np.asarray(arrays["total_notes"]).item())
-    expected_head_len = min(int(total_notes), 100)
-    persisted_head_len = arrays.get("first_surface_head_len")
-    if persisted_head_len is None or int(np.asarray(persisted_head_len).item()) != int(expected_head_len):
+    frontier_idx_by_stat[stat_key_rows[:, 0], stat_key_rows[:, 1]] = np.asarray(arrays["frontier_ids"], dtype=np.int32)
+    total_notes = int(arrays["total_notes"].item())
+    if int(arrays["first_surface_head_len"].item()) != min(total_notes, 100):
         raise ValueError("FG response frontier scoring bundle has invalid surface head coefficient metadata")
-    surface_pattern_ids = np.empty((0,), dtype=np.int32)
-    surface_pattern_words = np.empty((0, 8), dtype=np.uint32)
-    surface_counts = np.empty((0, 3), dtype=np.int32)
-    surface_pattern_head_coeffs = np.empty((0, 4), dtype=np.int32)
-    raw_surface_generation = arrays.get(_SURFACE_GENERATION_ARRAY_NAME)
-    surface_generation = None
-    if raw_surface_generation is not None:
-        surface_generation = str(np.asarray(raw_surface_generation).item()) or None
-    raw_bundle_path = arrays.get(_SURFACE_BUNDLE_PATH_ARRAY_NAME)
-    bundle_path = None
-    if raw_bundle_path is not None:
-        bundle_path = Path(str(np.asarray(raw_bundle_path).item()))
+    surface_rows = arrays["surface_rows"]
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_stat=frontier_idx_by_stat,
@@ -399,19 +341,26 @@ def _materialize_scoring_bundle_from_arrays(
         non_fever_base_by_ff=np.asarray(arrays["non_fever_base_by_ff"], dtype=np.int32),
         real_time_by_ft=np.asarray(arrays["real_time_by_ft"], dtype=np.float64),
         frontier_meta=np.asarray(arrays["frontier_meta"], dtype=np.int32),
-        surface_pattern_ids=surface_pattern_ids,
-        surface_pattern_words=surface_pattern_words,
-        surface_counts=surface_counts,
-        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
+        surface_pattern_ids=np.empty((0,), dtype=np.int32),
+        surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
+        surface_counts=np.empty((0, 3), dtype=np.int32),
+        surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
         frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
         frontier_lengths=np.asarray(arrays["first_counts"], dtype=np.int32),
-        surface_row_count=int(np.asarray(arrays["first_surface_row_count"]).item()),
-        total_notes=int(total_notes),
-        long_notes=int(np.asarray(arrays["long_notes"]).item()),
-        use_forced_great_timing=bool(int(np.asarray(arrays["use_forced_great_timing"]).item())),
-        surface_generation=surface_generation,
-        bundle_path=bundle_path,
+        surface_row_count=int(surface_rows.shape[1]),
+        total_notes=total_notes,
+        long_notes=int(arrays["long_notes"].item()),
+        use_forced_great_timing=bool(int(arrays["use_forced_great_timing"].item())),
+        surface_rows=surface_rows,
+        surface_patterns=arrays["surface_patterns"],
     )
+
+
+def _missing_stat_keys(bundle: FgResponseFrontierScoringBundle, keys: tuple[tuple[int, int], ...]) -> list:
+    """The requested keys the bundle does not hold, sorted (`keys` is sorted)."""
+    requested = _stat_key_index_rows(keys)
+    present = bundle.frontier_idx_by_stat[requested[:, 0], requested[:, 1]] >= 0
+    return [keys[int(idx)] for idx in np.flatnonzero(~present)]
 
 
 def load_response_frontier_scoring_bundle(
@@ -420,54 +369,30 @@ def load_response_frontier_scoring_bundle(
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FgResponseFrontierScoringBundle:
+    """The song's scoring bundle (its whole file: every stat key it holds, with its surface tables) covering
+    `stat_keys`. A bundle held in memory that lacks some is read again: another process may have extended the file."""
     keys = normalize_fg_response_stat_keys(stat_keys)
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
-    cached_scoring = _scoring_bundle_memory.get(bundle_key)
-    if cached_scoring is not None:
-        requested = _stat_key_index_rows(keys)
-        if bool(np.all(cached_scoring.frontier_idx_by_stat[requested[:, 0], requested[:, 1]] >= 0)):
-            return cached_scoring
-        # A partial bundle may have been extended by this or another process. Drop the old metadata
-        # view before retrying so all arrays come from the newly published generation.
-        _invalidate_bundle_array_views(bundle_key)
-
-    try:
-        arrays = _load_bundle_array_members(
-            bundle_key,
-            names=(*_SCORING_BUNDLE_ARRAY_NAMES, _SURFACE_BUNDLE_PATH_ARRAY_NAME),
-        )
-    except ValueError as exc:
+    cached = _scoring_bundle_memory.get(bundle_key)
+    if cached is not None and not _missing_stat_keys(cached, keys):
+        return cached
+    arrays = read_compatible_bundle(bundle_key)
+    if arrays is None:
         raise ValueError(
             "FG response frontier scoring bundle is missing. Startup cache prebuild must build "
             "the candidate-independent all-FT/FF bundle before runtime scoring."
-        ) from exc
-    present = {
-        _normalize_stat_key((int(row[0]), int(row[1])))
-        for row in np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
-    }
-    if not set(keys).issubset(present):
-        # The array LRU may hold a complete older generation even when its materialized scoring
-        # view was already evicted. Re-open the atomic metadata pointer once before declaring a
-        # genuine coverage miss so another process's completed extension becomes visible.
-        _invalidate_bundle_array_views(bundle_key)
-        arrays = _load_bundle_array_members(
-            bundle_key,
-            names=(*_SCORING_BUNDLE_ARRAY_NAMES, _SURFACE_BUNDLE_PATH_ARRAY_NAME),
         )
-        present = {
-            _normalize_stat_key((int(row[0]), int(row[1])))
-            for row in np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
-        }
-    if not set(keys).issubset(present):
-        missing = sorted(set(keys) - present)
+    scoring_bundle = _scoring_bundle(bundle_key, arrays)
+    missing = _missing_stat_keys(scoring_bundle, keys)
+    if missing:
         raise ValueError(
             "FG response frontier scoring bundle does not cover requested stat keys. "
             "Startup cache prebuild must build the candidate-independent all-FT/FF bundle before runtime scoring: "
             f"{missing[:5]!r}"
         )
-    scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
     _scoring_bundle_memory.put(bundle_key, scoring_bundle)
     return scoring_bundle
+
 
 def build_or_load_response_frontier_payload(
     song: TimedSong,
@@ -490,58 +415,28 @@ def build_or_load_response_frontier_payload(
             elapsed_ms=float((time.perf_counter() - started) * 1000.0),
         )
     source = "disk"
-    request_payload = _load_payload(cache_key)
-    if _payload_subset(request_payload, keys) is None:
-        request_payload = None
-    payload = request_payload
-    bundle: FgResponseFrontierCachePayload | None = None
+    bundle = _payload_memory.get(bundle_key)
+    if bundle is None:
+        bundle = _load_payload(bundle_key)
+    payload = _payload_subset(bundle, keys)
     if payload is None:
-        bundle = _payload_memory.get(bundle_key)
-        if bundle is None:
-            bundle = _load_payload(bundle_key)
-        payload = _payload_subset(bundle, keys)
-
-    # A request-specific predecessor payload must be migrated into the canonical bundle, and a
-    # partial canonical miss must be extended. Both mutations use disk as the authoritative base
-    # while one cross-process owner holds the complete read-merge-publish transaction.
-    if payload is None or request_payload is not None:
+        # A partial bundle is extended with disk as the authoritative base, while one cross-process owner holds the
+        # read-merge-publish transaction.
         with _response_bundle_build_slots:
             with _response_bundle_build_lock(bundle_key):
-                # Never merge against the process-local payload cache here: another process may
-                # have published a newer generation while this process was waiting for the lock.
+                # Never merge against the process-local payload cache here: another process may have published a
+                # larger bundle while this process was waiting for the lock.
                 bundle = _load_payload(bundle_key)
-                bundle_changed = False
-                if request_payload is not None:
-                    migration_keys = _payload_missing_or_incomplete_keys(
-                        bundle,
-                        request_payload.frontier_by_key,
-                    )
-                    if migration_keys:
-                        migration = _payload_subset(request_payload, migration_keys)
-                        if migration is None:
-                            raise ValueError("FG response frontier request payload was incomplete during migration")
-                        bundle = _merge_payloads(bundle, migration)
-                        bundle_changed = True
                 payload = _payload_subset(bundle, keys)
                 if payload is None:
-                    missing_keys = _payload_missing_or_incomplete_keys(bundle, keys)
                     update, source = _build_response_frontier_cache_payload(
-                        song,
-                        curves,
-                        stat_keys=missing_keys,
+                        song, curves, stat_keys=_payload_missing_or_incomplete_keys(bundle, keys)
                     )
                     bundle = _merge_payloads(bundle, update)
-                    bundle_changed = True
-                else:
-                    source = "disk"
-
-                if bundle_changed:
                     _save_payload(bundle_key, bundle)
-                    _invalidate_bundle_array_views(bundle_key)
+                    _scoring_bundle_memory.pop(bundle_key)
+                    payload = _payload_subset(bundle, keys)
                 _payload_memory.put(bundle_key, bundle)
-                payload = _payload_subset(bundle, keys)
-                if payload is None:
-                    raise ValueError("FG response frontier bundle did not contain requested keys after build")
     _payload_memory.put(cache_key, payload)
     return FrontierCacheLoad(
         payload=payload,
@@ -562,9 +457,9 @@ def ensure_response_frontier_cache_for_song(
     build ms, bundle file).
 
     The candidate-independent bundle is keyed by the song's timing, so a chart-only (non-precise) song has its own
-    bundle, distinct from the precise one. A hit costs a metadata + sidecar-header probe: it skips
-    build_or_load's per-row object materialization (seconds on heavy bundles), which no caller of this needs (scoring
-    reads the slim bundle + sidecars). A miss builds the requested cells, publishes them, then releases the song's
+    bundle, distinct from the precise one. A hit costs a metadata probe: it skips build_or_load's per-row object
+    materialization (seconds on heavy bundles), which no caller of this needs (scoring reads the bundle file itself).
+    A miss builds the requested cells, publishes them, then releases the song's
     memory tiers: build_or_load pins the merged bundle and request payload (~1 GB of frontier rows on heavy charts)
     in the process-wide payload tier, and nothing here reads them; the bundle re-opens from disk where it is needed.
     """

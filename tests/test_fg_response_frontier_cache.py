@@ -26,7 +26,8 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_serde import (
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
     _memory_put,
-    load_first_surface_scoring_rows,
+    gather_surface_patterns,
+    read_compatible_bundle,
     reset_fg_response_frontier_payload_cache,
 )
 
@@ -140,11 +141,8 @@ def _read_fg_bundle_across_publish_worker(cache_dir: str, ready_event, published
         ready_event.set()
         if not published_event.wait(timeout=10.0):
             raise TimeoutError("bundle publication did not finish")
-        rows, _coeffs = load_first_surface_scoring_rows(
-            scoring.cache_key,
-            (surface_range,),
-            surface_generation=scoring.surface_generation,
-            bundle_path=scoring.bundle_path,
+        rows, _counts, _words, _coeffs = gather_surface_patterns(
+            scoring.surface_rows, scoring.surface_patterns, (surface_range,)
         )
         extended = response_cache.load_response_frontier_scoring_bundle(
             _song(),
@@ -256,41 +254,8 @@ def test_fg_response_frontier_payload_roundtrips_disk_cache(tmp_path: Path, monk
     )
 
 
-def test_fg_response_frontier_payload_reads_legacy_fixed_sidecars(tmp_path: Path, monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
-        _SURFACE_GENERATION_ARRAY_NAME,
-    )
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    reset_fg_response_frontier_payload_cache()
-    first = response_cache.build_or_load_response_frontier_payload(
-        _song(),
-        _curves(),
-        stat_keys=((0, 0),),
-    )
-    generated_sidecars = store._surface_sidecar_paths(first.disk_path)
-    legacy_sidecars = store._surface_sidecar_paths(first.disk_path, generation=None)
-    for generated, legacy in zip(generated_sidecars, legacy_sidecars, strict=True):
-        os.replace(generated, legacy)
-    _remove_npz_array(first.disk_path, _SURFACE_GENERATION_ARRAY_NAME)
-    assert store._payload_file_is_complete(Path(first.disk_path), ((0, 0),))
-
-    reset_fg_response_frontier_payload_cache()
-    restored = response_cache.build_or_load_response_frontier_payload(
-        _song(),
-        _curves(),
-        stat_keys=((0, 0),),
-    )
-    assert restored.cache_source == "disk"
-    assert store._surface_sidecar_paths(first.disk_path) == legacy_sidecars
-    assert restored.payload.frontier_for_stats(ft_stat=0, ff_stat=0).first_frontier
-
-
 def test_fg_response_frontier_payload_reuses_old_disk_cache_without_ttl(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import build_or_load_response_frontier_payload
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "1800")
@@ -298,22 +263,19 @@ def test_fg_response_frontier_payload_reuses_old_disk_cache_without_ttl(tmp_path
 
     first = build_or_load_response_frontier_payload(_song(), _curves(), stat_keys=((0, 0),))
     assert first.cache_source == "built"
-    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(first.disk_path)
     stale_ts = time.time() - 3700.0
-    for path in (first.disk_path, pool_sidecar, coeff_sidecar):
-        os.utime(path, (stale_ts, stale_ts))
+    os.utime(first.disk_path, (stale_ts, stale_ts))
 
     reset_fg_response_frontier_payload_cache()
     second = build_or_load_response_frontier_payload(_song(), _curves(), stat_keys=((0, 0),))
     assert second.cache_source == "disk"
     assert second.disk_path.exists()
     assert second.disk_path.stat().st_mtime == stale_ts
-    assert pool_sidecar.stat().st_mtime == stale_ts
-    assert coeff_sidecar.stat().st_mtime == stale_ts
 
 
 def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import _BUNDLE_ARRAY_NAMES
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     reset_fg_response_frontier_payload_cache()
@@ -321,44 +283,17 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
 
     first = response_cache.build_or_load_response_frontier_payload(_song(), _curves(), stat_keys=keys)
     assert first.cache_source == "built"
-    assert first.disk_path.exists()
-    assert len(list(tmp_path.glob("*.npz"))) == 1
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
-
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(first.disk_path)
-    assert row_sidecar.exists()
-    assert pattern_sidecar.exists()
+    assert [path.name for path in tmp_path.iterdir() if path.is_file()] == [first.disk_path.name]
     with np.load(first.disk_path, allow_pickle=False) as data:
-        surface_generation = str(data["surface_generation"].item())
-        assert surface_generation in row_sidecar.name
-        assert surface_generation in pattern_sidecar.name
+        assert set(data.files) == _BUNDLE_ARRAY_NAMES
         assert data["stat_keys"].dtype == np.dtype("uint8")
         assert data["stat_keys"].flags.f_contiguous
         assert data["frontier_meta"].flags.f_contiguous
-        # Surfaces live in the uncompressed sidecars, not the slim .npz.
-        assert "first_surface_pool" not in data.files
-        assert "first_surface_chunk_offsets" not in data.files
-        assert "first_surface_pool_chunk_00000" not in data.files
-        assert "first_surface_head_coeffs_chunk_00000" not in data.files
-        surface_row_count = int(data["first_surface_row_count"])
-        surface_pattern_count = int(data["first_surface_pattern_count"])
-        assert surface_row_count > 0
-        assert surface_pattern_count > 0
-        assert not {
-            "state_offsets",
-            "state_counts",
-            "state_keys",
-            "state_surface_offsets",
-            "state_surface_counts",
-            "state_surface_pool",
-        }.intersection(data.files)
-    row_refs = np.load(row_sidecar, mmap_mode="r", allow_pickle=False)
-    assert row_refs.dtype == np.dtype("uint32")
-    assert row_refs.shape == (surface_row_count, 4)
-    assert row_refs.flags.c_contiguous
-    patterns = np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False)
-    assert patterns.dtype == np.dtype("uint32")
-    assert patterns.shape == (surface_pattern_count, 10)
+        # Each surface table is stored as byte planes: 4 per uint32 column.
+        rows_planes, pattern_planes = data["surface_rows"], data["surface_patterns"]
+    assert rows_planes.dtype == pattern_planes.dtype == np.dtype("uint8")
+    assert rows_planes.shape[0] == 16 and rows_planes.shape[1] > 0
+    assert pattern_planes.shape[0] == 40 and pattern_planes.shape[1] > 0
 
     def _raise_build(*_args, **_kwargs):
         raise AssertionError("warm sparse bundle should load without rebuilding frontiers")
@@ -370,16 +305,43 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert set(second.payload.frontier_by_key) == set(keys)
 
 
+@pytest.mark.parametrize("shape", [(0, 4), (1, 4), (7, 10), (5000, 4)])
+def test_fg_response_surface_tables_roundtrip_through_byte_planes_exactly(shape) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _byte_planes, _columns
+
+    rng = np.random.default_rng(shape[0])
+    table = rng.integers(0, 2**32, size=shape, dtype=np.uint64).astype(np.uint32)
+    if table.size:
+        table.flat[0] = 0xFFFFFFFF
+    decoded = _columns(_byte_planes(table))
+    assert decoded.dtype == np.dtype("uint32")
+    assert np.array_equal(decoded.T, table)
+
+
+def test_a_damaged_fg_response_bundle_is_deleted_and_rebuilt(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    reset_fg_response_frontier_payload_cache()
+    keys = ((0, 0), (3, 0))
+    first = response_cache.build_or_load_response_frontier_payload(_song(), _curves(), stat_keys=keys)
+    data = bytearray(first.disk_path.read_bytes())
+    data[len(data) // 2] ^= 0xFF  # a flipped byte inside the archive: its CRC no longer matches
+    first.disk_path.write_bytes(bytes(data))
+
+    reset_fg_response_frontier_payload_cache()
+    second = response_cache.build_or_load_response_frontier_payload(_song(), _curves(), stat_keys=keys)
+
+    assert second.cache_source == "built"
+    assert second.payload.frontier_for_stats(ft_stat=3, ff_stat=0).first_frontier == (
+        first.payload.frontier_for_stats(ft_stat=3, ff_stat=0).first_frontier
+    )
+
+
 def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_surfaces import SurfaceRowsFirstFrontier
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
-        _fg_response_disk_cache_path,
-        _load_bundle_array_members,
-        _load_payload,
-        _save_payload,
-        _surface_sidecar_paths,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _load_payload, _save_payload
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult
 
@@ -406,30 +368,14 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
 
     _save_payload(cache_key, payload)
 
-    arrays = _load_bundle_array_members(
-        cache_key,
-        names=(
-            "frontier_ids",
-            "frontier_meta",
-            "first_offsets",
-            "first_counts",
-            "first_surface_row_count",
-            "first_surface_pattern_count",
-        ),
-    )
+    arrays = read_compatible_bundle(cache_key)
     assert arrays["frontier_ids"].tolist() == [0, 1]
     assert arrays["frontier_meta"].shape[0] == 2
     assert arrays["first_offsets"].tolist() == [0, 0]
     assert arrays["first_counts"].tolist() == [2, 2]
-    assert int(arrays["first_surface_row_count"]) == 2
-
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
-    row_refs = np.load(row_sidecar, mmap_mode="r", allow_pickle=False)
-    patterns = np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False)
-    assert row_refs.shape == (2, 4)
-    assert row_refs.dtype == np.dtype("uint32")
-    assert patterns.shape[1] == 10
-    assert patterns.dtype == np.dtype("uint32")
+    assert arrays["surface_rows"].shape == (4, 2)
+    assert arrays["surface_rows"].dtype == np.dtype("uint32")
+    assert arrays["surface_patterns"].shape[0] == 10
 
     loaded = _load_payload(cache_key)
     assert loaded is not None
@@ -438,12 +384,9 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
     assert loaded.frontier_by_key[(1, 0)].non_fever_base == 14
 
 
-def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_path: Path, monkeypatch) -> None:
+def test_fg_response_frontier_surface_gather_reads_requested_ranges(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
-        _save_payload,
-        load_first_surface_scoring_rows,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _save_payload
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
 
@@ -466,15 +409,16 @@ def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_pa
     cache_key = ("unit", "surface-chunks")
 
     _save_payload(cache_key, payload)
-    rows, coeffs = load_first_surface_scoring_rows(cache_key, ((1, 2),))
+    arrays = read_compatible_bundle(cache_key)
+    ids, counts, words, coeffs = gather_surface_patterns(arrays["surface_rows"], arrays["surface_patterns"], ((1, 2),))
 
-    assert rows[:, 0].tolist() == [2, 3]
-    assert rows[:, 8:11].tolist() == [[20, 1, 0], [30, 2, 1]]
+    assert words[ids][:, 0].tolist() == [2, 3]
+    assert counts.tolist() == [[20, 1, 0], [30, 2, 1]]
     assert coeffs.shape == (2, 4)
     assert coeffs.dtype == np.dtype("int32")
 
 
-@pytest.mark.parametrize("cache_mutation", ("missing_core_array", "missing_surface_sidecar", "extra_stale_array"))
+@pytest.mark.parametrize("cache_mutation", ("missing_core_array", "missing_surface_table", "extra_stale_array"))
 def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     tmp_path: Path,
     monkeypatch,
@@ -485,7 +429,6 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
         _fg_response_disk_cache_path,
         _payload_disk_is_complete,
         _save_payload,
-        _surface_sidecar_paths,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
@@ -511,9 +454,8 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     cache_path = _fg_response_disk_cache_path(cache_key)
     if cache_mutation == "missing_core_array":
         _remove_npz_array(cache_path, "raw_fill_by_ff")
-    elif cache_mutation == "missing_surface_sidecar":
-        pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(cache_path)
-        pool_sidecar.unlink()
+    elif cache_mutation == "missing_surface_table":
+        _remove_npz_array(cache_path, "surface_rows")
     elif cache_mutation == "extra_stale_array":
         _add_npz_array(cache_path, "obsolete_array", np.asarray([1], dtype=np.int32))
     else:
@@ -564,18 +506,10 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
 
     first = response_cache.build_or_load_response_frontier_payload(_song(), _varying_ref_arrays(), stat_keys=keys)
     assert first.cache_source == "built"
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
-
-    _row_sidecar, pattern_sidecar = _surface_sidecar_paths(first.disk_path)
     with np.load(first.disk_path, allow_pickle=False) as data:
-        assert "first_surface_head_len" in data.files
-        assert "first_surface_head_coeffs" not in data.files
-        assert "first_surface_head_coeffs_chunk_00000" not in data.files
         assert data["first_surface_head_len"].dtype == np.dtype("uint8")
-    # Head coeffs persist losslessly as two packed uint32 columns in each exact pattern row.
-    persisted_patterns = np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False)
-    assert persisted_patterns.dtype == np.dtype("uint32")
-    assert persisted_patterns.shape[1] == 10
+        # Head coeffs persist losslessly as two packed uint32 columns of the pattern table (10 columns).
+        assert data["surface_patterns"].shape[0] == 4 * 10
 
     reset_fg_response_frontier_payload_cache()
 
@@ -593,9 +527,31 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     frontier_idx = int(bundle.frontier_idx_by_stat[0, 0])
     start = int(bundle.frontier_offsets[int(frontier_idx)])
     count = int(bundle.frontier_lengths[int(frontier_idx)])
-    _rows, coeffs = load_first_surface_scoring_rows(bundle.cache_key, ((start, count),))
-    assert coeffs.shape == (count, 4)
+    _ids, _counts, _words, coeffs = gather_surface_patterns(
+        bundle.surface_rows, bundle.surface_patterns, ((start, count),)
+    )
+    assert coeffs.shape[1] == 4
     assert coeffs.dtype == np.dtype("int32")
+
+
+def test_a_loaded_scoring_bundle_maps_every_stat_key_its_file_holds(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    reset_fg_response_frontier_payload_cache()
+    response_cache.build_or_load_response_frontier_payload(
+        _song(), _varying_ref_arrays(), stat_keys=((0, 0), (1, 0), (2, 0))
+    )
+    reset_fg_response_frontier_payload_cache()
+
+    bundle = response_cache.load_response_frontier_scoring_bundle(_song(), _varying_ref_arrays(), stat_keys=((0, 0),))
+
+    assert _loaded_stat_keys(bundle) == {(0, 0), (1, 0), (2, 0)}
+    # A later request for another held key is served by the same bundle, without reading the file again.
+    assert response_cache.load_response_frontier_scoring_bundle(
+        _song(), _varying_ref_arrays(), stat_keys=((2, 0),)
+    ) is bundle
+    assert bundle.frontier_idx_by_key.get((5, 9)) is None
 
 
 def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_probe(
@@ -821,44 +777,20 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
 
 def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
-        SURFACE_PATTERN_COLUMNS,
-        SURFACE_ROW_COLUMNS,
-    )
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
         _FG_RESPONSE_CACHE_VERSION,
     )
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
 
-    def _plant(
-        digest: str,
-        version: str | None,
-        *,
-        sidecars: bool = True,
-        obsolete_sidecars: bool = False,
-    ) -> None:
+    def _plant(digest: str, version: str | None) -> None:
         members = {"payload": np.arange(3)}
         if version is not None:
             members["version"] = np.array(version)
         np.savez(str(tmp_path / f"{digest}.npz"), **members)
-        if sidecars:
-            if obsolete_sidecars:
-                np.save(str(tmp_path / f"{digest}.surf_pool.npy"), np.zeros((2, 11), np.uint32))
-                np.save(str(tmp_path / f"{digest}.surf_coeffs.npy"), np.zeros((2, 4), np.uint16))
-            else:
-                np.save(
-                    str(tmp_path / f"{digest}{store._SURFACE_ROW_SIDECAR_SUFFIX}"),
-                    np.zeros((2, SURFACE_ROW_COLUMNS), np.uint32),
-                )
-                np.save(
-                    str(tmp_path / f"{digest}{store._SURFACE_PATTERN_SIDECAR_SUFFIX}"),
-                    np.zeros((2, SURFACE_PATTERN_COLUMNS), np.uint32),
-                )
 
-    _plant("stale_a", "fg-response-frontier-visible-first-v29", obsolete_sidecars=True)
+    _plant("stale_a", "fg-response-frontier-visible-first-v29")
     _plant("stale_b", "fg-response-frontier-legacy-v2")
-    _plant("stale_c", "fg-response-frontier-legacy-v1", sidecars=False)  # sidecars already evicted
     _plant("current", _FG_RESPONSE_CACHE_VERSION)
     compatible_predecessors = store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()[1:]
     for index, compatible_predecessor in enumerate(compatible_predecessors):
@@ -871,27 +803,10 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
 
     removed = store.purge_stale_version_cache_files(authorize_rotation=True)
 
-    # stale_a + stale_b delete 3 files each; stale_c deletes only its .npz. Its already-absent
-    # sidecars are not failures, so the marker is still written below (purge_complete-flag guard).
-    assert removed == 7
+    assert removed == 2
     # The current entry AND the version-less entry survive (never guess-delete), plus the marker.
-    expected_names = {
-        "current.npz",
-        f"current{store._SURFACE_ROW_SIDECAR_SUFFIX}",
-        f"current{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
-        "noversion.npz",
-        f"noversion{store._SURFACE_ROW_SIDECAR_SUFFIX}",
-        f"noversion{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
-        store._PURGED_VERSION_MARKER,
-    }
-    for index in range(len(compatible_predecessors)):
-        expected_names.update(
-            {
-                f"compatible_{index}.npz",
-                f"compatible_{index}{store._SURFACE_ROW_SIDECAR_SUFFIX}",
-                f"compatible_{index}{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
-            }
-        )
+    expected_names = {"current.npz", "noversion.npz", store._PURGED_VERSION_MARKER}
+    expected_names.update(f"compatible_{index}.npz" for index in range(len(compatible_predecessors)))
     assert {p.name for p in tmp_path.iterdir()} == expected_names
     assert (
         (tmp_path / store._PURGED_VERSION_MARKER).read_text(encoding="utf-8").strip()
@@ -899,160 +814,6 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     )
     # The marker gates the rescan: a second call short-circuits without re-reading bundles.
     assert store.purge_stale_version_cache_files() == 0
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="NTFS WOF compression is Windows-only")
-def test_compress_cache_dir_sidecars_preserves_memmap_bytes(tmp_path: Path, monkeypatch) -> None:
-    import ctypes
-    from ctypes import wintypes
-
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    arr = np.zeros((50000, 4), dtype=np.uint32)
-    arr[:, 0] = np.arange(50000) % 33
-    arr[:, 1] = 452 + (np.arange(50000) % 600)
-    sidecar = tmp_path / f"deadbeefdeadbeef{store._SURFACE_ROW_SIDECAR_SUFFIX}"
-    store._save_surface_sidecar_atomic(sidecar, arr)
-    logical = sidecar.stat().st_size
-
-    store.compress_cache_dir_sidecars()
-
-    # The whole point: NTFS compression must never alter the bytes the scorer memmaps.
-    mm = np.load(sidecar, mmap_mode="r")
-    try:
-        same = bool(np.array_equal(np.asarray(mm), arr))
-    finally:
-        mm._mmap.close()  # release the file handle before tmp_path teardown (Windows WinError 32)
-        del mm
-    assert same, "NTFS compression altered the memmapped bytes"
-    # On NTFS the on-disk footprint shrinks; on a non-NTFS volume compact no-ops (size unchanged).
-    get_compressed = ctypes.windll.kernel32.GetCompressedFileSizeW
-    get_compressed.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
-    get_compressed.restype = wintypes.DWORD
-    high = wintypes.DWORD(0)
-    low = get_compressed(str(sidecar), ctypes.byref(high))
-    on_disk = (high.value << 32) | low
-    assert on_disk <= logical
-
-
-def test_macos_sidecar_compression_copies_in_bounded_batches_and_preserves_bytes(
-    tmp_path: Path, monkeypatch
-) -> None:
-    import shutil
-
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(store.sys, "platform", "darwin")
-    # The cache's sidecars are uncompressed; the staged ditto copies come out compressed.
-    monkeypatch.setattr(
-        store, "_sidecar_needs_filesystem_compression", lambda path: path.parent == tmp_path
-    )
-    row_sidecar = tmp_path / f"deadbeef{store._SURFACE_ROW_SIDECAR_SUFFIX}"
-    pattern_sidecar = tmp_path / f"deadbeef{store._SURFACE_PATTERN_SIDECAR_SUFFIX}"
-    rows = np.arange(20000, dtype=np.uint32).reshape(5000, 4)
-    patterns = np.arange(1000, dtype=np.uint32).reshape(100, 10)
-    store._save_surface_sidecar_atomic(row_sidecar, rows)
-    store._save_surface_sidecar_atomic(pattern_sidecar, patterns)
-    expected = {path.name: path.read_bytes() for path in (row_sidecar, pattern_sidecar)}
-    inodes = {path.name: path.stat().st_ino for path in (row_sidecar, pattern_sidecar)}
-    calls: list[list[str]] = []
-
-    def _fake_ditto(args, **_kwargs):
-        command = [str(value) for value in args]
-        assert command[:3] == ["/usr/bin/ditto", "--hfsCompression", "--nocache"]
-        staging = Path(command[-1])
-        for source_text in command[3:-1]:
-            source = Path(source_text)
-            shutil.copy2(source, staging / source.name)
-        calls.append(command)
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(store.subprocess, "run", _fake_ditto)
-
-    store.compress_cache_dir_sidecars()
-
-    assert len(calls) == 1
-    assert row_sidecar.read_bytes() == expected[row_sidecar.name]
-    assert pattern_sidecar.read_bytes() == expected[pattern_sidecar.name]
-    # Each original was replaced by its compressed copy.
-    assert all(path.stat().st_ino != inodes[path.name] for path in (row_sidecar, pattern_sidecar))
-    assert not (tmp_path / store._MACOS_COMPRESSION_STAGING_DIR).exists()
-
-
-def test_macos_sidecar_compression_leaves_the_cache_alone_when_ditto_writes_plain_copies(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """macOS 27's ditto ignores --hfsCompression: swapping its plain copies in would rewrite every sidecar on each
-    prebuild (20.8 GiB per timing mode on the service). One batch shows it; the pass stops there."""
-    import shutil
-
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(store.sys, "platform", "darwin")
-    monkeypatch.setattr(store, "_sidecar_needs_filesystem_compression", lambda _path: True)
-    sidecars = []
-    for index in range(store._MACOS_COMPRESSION_BATCH_FILES + 8):
-        path = tmp_path / f"{index:08x}{store._SURFACE_ROW_SIDECAR_SUFFIX}"
-        store._save_surface_sidecar_atomic(path, np.arange(100, dtype=np.uint32) + index)
-        sidecars.append(path)
-    inodes = {path.name: path.stat().st_ino for path in sidecars}
-    calls: list[list[str]] = []
-
-    def _plain_ditto(args, **_kwargs):
-        command = [str(value) for value in args]
-        for source_text in command[3:-1]:
-            shutil.copy2(source_text, Path(command[-1]) / Path(source_text).name)
-        calls.append(command)
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(store.subprocess, "run", _plain_ditto)
-
-    store.compress_cache_dir_sidecars()
-
-    assert len(calls) == 1
-    assert all(path.stat().st_ino == inodes[path.name] for path in sidecars)
-    assert not (tmp_path / store._MACOS_COMPRESSION_STAGING_DIR).exists()
-
-
-def test_macos_sidecar_compression_failure_keeps_original_bytes(tmp_path: Path, monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(store.sys, "platform", "darwin")
-    monkeypatch.setattr(store, "_sidecar_needs_filesystem_compression", lambda _path: True)
-    sidecar = tmp_path / f"deadbeef{store._SURFACE_ROW_SIDECAR_SUFFIX}"
-    store._save_surface_sidecar_atomic(sidecar, np.arange(20000, dtype=np.uint32))
-    expected = sidecar.read_bytes()
-    monkeypatch.setattr(
-        store.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
-    )
-
-    store.compress_cache_dir_sidecars()
-
-    assert sidecar.read_bytes() == expected
-    assert not (tmp_path / store._MACOS_COMPRESSION_STAGING_DIR).exists()
-
-
-@pytest.mark.parametrize("destination_platform", ["darwin", "win32"])
-def test_plain_cross_platform_export_needs_filesystem_compression(
-    tmp_path: Path, monkeypatch, destination_platform: str
-) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(store.sys, "platform", destination_platform)
-    sidecar = tmp_path / f"exported{store._SURFACE_ROW_SIDECAR_SUFFIX}"
-    store._save_surface_sidecar_atomic(sidecar, np.arange(20000, dtype=np.uint32))
-    expected = sidecar.read_bytes()
-    monkeypatch.setattr(store, "_file_allocated_bytes", lambda path: int(path.stat().st_size))
-
-    assert store._sidecar_needs_filesystem_compression(sidecar)
-    assert sidecar.read_bytes() == expected
 
 
 def test_fg_response_frontier_uint8_persistence_bounds_fail_loud() -> None:
@@ -1194,12 +955,7 @@ def test_fg_response_frontier_reader_keeps_one_generation_during_publish(tmp_pat
     assert result_kinds == {"reader_ok", "writer_ok"}, results
 
 
-@pytest.mark.parametrize("fail_after_sidecar", (1, 2))
-def test_fg_response_frontier_failed_publish_keeps_previous_generation_readable(
-    tmp_path: Path,
-    monkeypatch,
-    fail_after_sidecar: int,
-) -> None:
+def test_fg_response_frontier_failed_publish_keeps_previous_bundle_readable(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
 
@@ -1216,8 +972,6 @@ def test_fg_response_frontier_failed_publish_keeps_previous_generation_readable(
         stat_keys=((0, 0),),
     )
     bundle_key = fg_response_frontier_bundle_cache_key(_song(), _varying_ref_arrays())
-    bundle_path = store.FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)
-    previous_sidecars = store._surface_sidecar_paths(bundle_path)
     previous_bundle = store._load_payload(bundle_key)
     assert previous_bundle is not None
     update, _source = response_cache._build_response_frontier_cache_payload(
@@ -1226,23 +980,18 @@ def test_fg_response_frontier_failed_publish_keeps_previous_generation_readable(
         stat_keys=((1, 0),),
     )
     merged = response_cache._merge_payloads(previous_bundle, update)
+    real_save = store._save_npz_fast_compressed
 
-    real_save = store._save_surface_sidecar_atomic
-    writes = 0
+    def _stop_after_writing(path: Path, arrays) -> None:
+        real_save(path, arrays)
+        raise _InjectedPublicationStop
 
-    def _stop_after_write(path: Path, array: np.ndarray) -> None:
-        nonlocal writes
-        real_save(path, array)
-        writes += 1
-        if writes == int(fail_after_sidecar):
-            raise _InjectedPublicationStop
-
-    monkeypatch.setattr(store, "_save_surface_sidecar_atomic", _stop_after_write)
+    monkeypatch.setattr(store, "_save_npz_fast_compressed", _stop_after_writing)
     with pytest.raises(_InjectedPublicationStop):
         store._save_payload(bundle_key, merged)
 
     reset_fg_response_frontier_payload_cache()
-    assert store._surface_sidecar_paths(bundle_path) == previous_sidecars
+    assert [path.suffix for path in tmp_path.iterdir() if path.is_file()] == [".npz"]  # no temporary file left
     restored = store._load_payload(bundle_key)
     assert restored is not None
     assert set(restored.frontier_by_key) == {(0, 0)}
@@ -1888,7 +1637,7 @@ def test_packed_scoring_batch_rejects_frontier_outside_in_memory_pool() -> None:
 
 def test_release_fg_response_song_memory_evicts_only_target_song():
     """`release_fg_response_song_memory` must drop every memory tier for the target song's
-    surfaces (scoring bundle, slim metadata, frontier, payload) while leaving other songs'
+    surfaces (scoring bundle, frontier, payload) while leaving other songs'
     entries resident. This is the per-song release that keeps a standalone optimizer run from
     accumulating one ~0.5-1.5 GB surface pool per scored song until the memory guard restarts it."""
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
@@ -1917,17 +1666,15 @@ def test_release_fg_response_song_memory_evicts_only_target_song():
         # Values are placeholders: release() evicts purely by tuple-prefix, not value type.
         store._scoring_bundle_memory.put(a_bundle, object())
         store._scoring_bundle_memory.put(b_bundle, object())
-        store._bundle_array_memory.put(a_bundle, {})
         store._geometry_frontier_memory.put(a_geo, object())
         store._geometry_frontier_memory.put(b_geo, object())
         store._payload_memory.put(a_payload, object())
 
         removed = store.release_fg_response_song_memory(a_bundle)
 
-        # Song A: scoring bundle + slim metadata + frontier + payload = 4 entries.
-        assert removed == 4
+        # Song A: scoring bundle + frontier + payload = 3 entries.
+        assert removed == 3
         assert a_bundle not in store._scoring_bundle_memory
-        assert a_bundle not in store._bundle_array_memory
         assert a_geo not in store._geometry_frontier_memory
         assert a_payload not in store._payload_memory
         # Song B is a different prefix and must survive untouched.
@@ -1935,117 +1682,6 @@ def test_release_fg_response_song_memory_evicts_only_target_song():
         assert b_geo in store._geometry_frontier_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
-
-
-def _synthetic_scoring_arrays(stat_keys, frontier_ids) -> dict[str, np.ndarray]:
-    frontier_count = int(np.max(frontier_ids)) + 1 if len(frontier_ids) else 1
-    return {
-        "stat_keys": np.asfortranarray(np.asarray(stat_keys, dtype=np.uint8).reshape((-1, 2))),
-        "frontier_ids": np.asarray(frontier_ids, dtype=np.int32),
-        "total_notes": np.asarray(150, dtype=np.int32),
-        "long_notes": np.asarray(0, dtype=np.int32),
-        "first_surface_head_len": np.asarray(100, dtype=np.uint8),
-        "use_forced_great_timing": np.asarray(1, dtype=np.int8),
-        "raw_fill_by_ff": np.zeros((161,), dtype=np.float64),
-        "non_fever_base_by_ff": np.zeros((161,), dtype=np.int32),
-        "real_time_by_ft": np.zeros((161,), dtype=np.float64),
-        "frontier_meta": np.zeros((frontier_count, 7), dtype=np.int32),
-        "first_offsets": np.zeros((frontier_count,), dtype=np.int32),
-        "first_counts": np.ones((frontier_count,), dtype=np.int32),
-        "first_surface_row_count": np.asarray(1, dtype=np.int32),
-    }
-
-
-def _retired_per_key_dict_grid(stat_keys, frontier_ids, keys) -> np.ndarray:
-    """The retired per-key dict materialization (and its missing-key error), kept as the oracle."""
-    from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import _normalize_stat_key
-
-    frontier_idx_by_key: dict[tuple[int, int], int] = {}
-    requested = set(keys)
-    for idx, row in enumerate(np.asarray(stat_keys, dtype=np.int32).reshape((-1, 2))):
-        key = _normalize_stat_key((int(row[0]), int(row[1])))
-        if key in requested:
-            frontier_idx_by_key[key] = int(frontier_ids[int(idx)])
-    if len(frontier_idx_by_key) != len(keys):
-        missing = sorted(set(keys) - set(frontier_idx_by_key))
-        raise ValueError(f"FG response frontier scoring bundle is missing stat keys: {missing[:5]!r}")
-    grid = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
-    for key, frontier_idx in frontier_idx_by_key.items():
-        grid[int(key[0]), int(key[1])] = int(frontier_idx)
-    return grid
-
-
-def test_scoring_bundle_grid_matches_retired_per_key_dict_build() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
-        all_response_stat_keys,
-        normalize_fg_response_stat_keys,
-    )
-
-    rng = np.random.default_rng(20260927)
-    all_keys = all_response_stat_keys()
-    stat_keys = np.asarray(all_keys, dtype=np.int32)
-    frontier_ids = rng.integers(0, 4000, size=len(all_keys), dtype=np.int32)
-    arrays = _synthetic_scoring_arrays(stat_keys, frontier_ids)
-    subsets = [all_keys]
-    for size in (1, 7, 300, 9000):
-        picked = rng.choice(len(all_keys), size=size, replace=False)
-        subsets.append(normalize_fg_response_stat_keys([all_keys[int(i)] for i in picked]))
-    for keys in subsets:
-        bundle = response_cache._materialize_scoring_bundle_from_arrays(
-            cache_key=("unit", "grid-parity"),
-            keys=keys,
-            arrays=arrays,
-        )
-        expected = _retired_per_key_dict_grid(stat_keys, frontier_ids, keys)
-        assert bundle.frontier_idx_by_stat.dtype == np.dtype(np.int32)
-        np.testing.assert_array_equal(bundle.frontier_idx_by_stat, expected)
-        requested = set(keys)
-        for key in list(keys)[:50] + [(0, 0), (160, 160), (5, 9)]:
-            want = int(expected[key]) if key in requested else None
-            assert bundle.frontier_idx_by_key.get(key) == want
-        assert bundle.frontier_idx_by_key.get((161, 0)) is None
-        assert bundle.frontier_idx_by_key.get((-1, 0)) is None
-
-
-def test_scoring_bundle_missing_stat_keys_error_matches_retired_dict_build() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
-
-    rng = np.random.default_rng(7)
-    all_keys = all_response_stat_keys()
-    dropped = set(int(i) for i in rng.choice(len(all_keys), size=9, replace=False))
-    kept_keys = [key for idx, key in enumerate(all_keys) if idx not in dropped]
-    stat_keys = np.asarray(kept_keys, dtype=np.int32)
-    frontier_ids = rng.integers(0, 50, size=len(kept_keys), dtype=np.int32)
-    arrays = _synthetic_scoring_arrays(stat_keys, frontier_ids)
-
-    with pytest.raises(ValueError) as expected:
-        _retired_per_key_dict_grid(stat_keys, frontier_ids, all_keys)
-    with pytest.raises(ValueError) as actual:
-        response_cache._materialize_scoring_bundle_from_arrays(
-            cache_key=("unit", "missing"),
-            keys=all_keys,
-            arrays=arrays,
-        )
-    assert str(actual.value) == str(expected.value)
-
-
-def test_scoring_bundle_rejects_invalid_frontier_ids() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-
-    keys = ((0, 0), (0, 1))
-    with pytest.raises(ValueError, match="invalid frontier ids"):
-        response_cache._materialize_scoring_bundle_from_arrays(
-            cache_key=("unit", "negative"),
-            keys=keys,
-            arrays=_synthetic_scoring_arrays(np.asarray(keys), np.asarray([0, -1], dtype=np.int32)),
-        )
-    short = _synthetic_scoring_arrays(np.asarray(keys), np.asarray([0, 1], dtype=np.int32))
-    short["frontier_ids"] = np.asarray([0], dtype=np.int32)
-    with pytest.raises(ValueError, match="invalid frontier ids"):
-        response_cache._materialize_scoring_bundle_from_arrays(cache_key=("unit", "short"), keys=keys, arrays=short)
 
 
 def _other_song():
@@ -2163,7 +1799,6 @@ def _seed_fixed_timing_song_memos(store, song, refs, other_song) -> tuple[list[t
     a_bundle = fg_response_frontier_bundle_cache_key(song, refs)
     seeded = [
         (store._scoring_bundle_memory, a_bundle),
-        (store._bundle_array_memory, a_bundle),
         (store._geometry_frontier_memory, fg_response_frontier_geometry_cache_key(song, refs, ft_stat=3, ff_stat=5)),
         (store._payload_memory, fg_response_frontier_payload_cache_key(song, refs, [(3, 5)])),
     ]
@@ -2201,7 +1836,7 @@ def test_fixed_timing_fg_replays_release_song_memory_on_failure(monkeypatch) -> 
                 curves=refs,
                 selected_color="Rush",
             )
-        assert len(seeded) == 4
+        assert len(seeded) == 3
         for cache, key in seeded:
             assert key not in cache
         assert other[0] in store._scoring_bundle_memory

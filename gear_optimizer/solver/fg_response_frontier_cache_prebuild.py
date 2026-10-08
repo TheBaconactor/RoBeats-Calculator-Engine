@@ -1,5 +1,5 @@
 """The FG response-frontier cache's startup prebuild: duplicate charts build once, heaviest first, admitted by their
-estimated memory weight under a RAM guard; maintenance purges superseded versions and compresses sidecars.
+estimated memory weight under a RAM guard; maintenance purges superseded versions.
 
 The driver (manifest, build lock, recording) is frontier_cache.prebuild_frontier_cache.
 """
@@ -33,7 +33,6 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache import ensure_
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
     FG_RESPONSE_FRONTIER_CACHE,
-    compress_cache_dir_sidecars,
     purge_stale_version_cache_files,
 )
 from gear_optimizer.solver.timing_envelope import time_song
@@ -443,26 +442,17 @@ def _build_admitted_by_weight(
 def _maintain_fg_cache(
     plan: FrontierCacheManifestPlan, build_missing: bool, authorize_destructive_rotation: bool
 ) -> None:
-    # Hits only read or repair manifest metadata. Purging and compression belong to builders and to an authorized
-    # rotation: incompressible sidecars must not trigger them on every solve.
+    # Hits only read or repair manifest metadata. Purging belongs to builders and to an authorized rotation.
     if not (build_missing and (plan.missing_paths or authorize_destructive_rotation)):
         return
     FG_RESPONSE_FRONTIER_CACHE.remove_temp_files()
     removed = purge_stale_version_cache_files(authorize_rotation=authorize_destructive_rotation)
     if removed:
         logger.info("[FGResponseCache] Purged %s file(s) from superseded cache versions.", removed)
-    compress_cache_dir_sidecars()
-
-
-def _compress_built_sidecars(built: int) -> None:
-    # Newly written sidecars are compressed once, with the platform's transparent filesystem codec.
-    if built:
-        compress_cache_dir_sidecars()
 
 
 FG_RESPONSE_FRONTIER_PREBUILD = FrontierCachePrebuild(
     cache=FG_RESPONSE_FRONTIER_CACHE,
     build_songs=_build_fg_songs,
     maintain=_maintain_fg_cache,
-    after_build=_compress_built_sidecars,
 )

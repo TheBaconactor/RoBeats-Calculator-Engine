@@ -46,7 +46,6 @@ class _Run:
             cache=self.cache,
             build_songs=self._build_songs,
             maintain=lambda _plan, build_missing, rotate: self.calls.append(f"maintain:{build_missing}:{rotate}"),
-            after_build=lambda built: self.calls.append(f"after_build:{built}"),
         )
 
         @contextmanager
@@ -129,7 +128,7 @@ def test_without_a_current_manifest_the_locked_plan_records_the_hits(tmp_path: P
     assert run.cache.manifest_records_current_version()
 
 
-def test_missing_charts_are_built_recorded_then_followed_by_the_after_build_step(tmp_path: Path, monkeypatch) -> None:
+def test_missing_charts_are_built_and_recorded(tmp_path: Path, monkeypatch) -> None:
     run = _Run(tmp_path, monkeypatch)
     hit = _chart(tmp_path / "charts" / "A.txt", "A")
     missing = _chart(tmp_path / "charts" / "B.txt", "B")
@@ -137,7 +136,7 @@ def test_missing_charts_are_built_recorded_then_followed_by_the_after_build_step
 
     summary = run.run([hit, missing])
 
-    assert run.calls == ["lock", "maintain:True:False", "build:1", "after_build:1"]
+    assert run.calls == ["lock", "maintain:True:False", "build:1"]
     assert (summary.total, summary.completed, summary.disk, summary.built, summary.failures) == (2, 2, 1, 1, 0)
     assert run.cache.manifest_plan([str(missing)], CURVES).validated_entry_count == 0  # recorded by the build
 
