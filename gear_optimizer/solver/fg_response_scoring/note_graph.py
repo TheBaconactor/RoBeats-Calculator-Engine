@@ -95,11 +95,10 @@ class UnplayableTrace(ValueError):
     """A trace whose judgments no legal hit timing realizes in the exact input order."""
 
 
-def _normalize_timing_mode(timing_mode: str) -> str:
-    mode = str(timing_mode or "non-precise").strip().lower()
-    if mode not in TIMING_MODES:
+def _require_timing_mode(timing_mode: str) -> str:
+    if timing_mode not in TIMING_MODES:
         raise ValueError(f"note_graph: unknown timing_mode {timing_mode!r}")
-    return mode
+    return timing_mode
 
 
 def _strictly_before_cutoff_ms(cutoff_ms: float) -> float:
@@ -1388,7 +1387,7 @@ def timeline_frontier_note_graph(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "non-precise",
+    timing_mode: str,
 ) -> list[dict[str, Any]]:
     """BASE note-graph from the selected timeline-frontier witness trace.
 
@@ -1398,7 +1397,7 @@ def timeline_frontier_note_graph(
     """
 
     n = int(total_notes)
-    mode = _normalize_timing_mode(timing_mode)
+    mode = _require_timing_mode(timing_mode)
     apply_guidance = mode != "non-precise"
     has_exact_schedule = bool(
         frontier_trace
@@ -1485,7 +1484,7 @@ def base_note_graph(
     frontier_trace: Sequence[Mapping[str, Any]] | None = None,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "non-precise",
+    timing_mode: str,
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
 
@@ -1524,7 +1523,7 @@ def force_greats_note_graph(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
-    timing_mode: str = "non-precise",
+    timing_mode: str,
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
 
@@ -1543,7 +1542,7 @@ def force_greats_note_graph(
     All other notes are Perfect (delta 0). A note may be both fever and Great.
     """
     n = int(total_notes)
-    mode = _normalize_timing_mode(timing_mode)
+    mode = _require_timing_mode(timing_mode)
     apply_guidance = mode != "non-precise"
     with _building(mode):
         if apply_guidance:

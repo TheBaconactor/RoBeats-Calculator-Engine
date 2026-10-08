@@ -284,13 +284,18 @@ def _prebuild_frontier_caches(
     from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
-    def recorded_files(plan, manifest_path: Path, cache_root: Path) -> set[str]:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    def recorded_files(cache, cache_root: Path) -> set[str]:
+        """The files of every chart in every timing mode (the prebuild built them all)."""
+        plans = [
+            cache.manifest_plan(song_paths, curves, timing_mode=mode, persist_validated_entries=False)
+            for mode in TIMING_MODES
+        ]
+        payload = json.loads(cache.manifest_path().read_text(encoding="utf-8"))
         entries = payload.get("entries") if isinstance(payload, dict) else None
-        if not isinstance(entries, dict) or plan.missing_paths:
+        if not isinstance(entries, dict) or any(plan.missing_paths for plan in plans):
             raise RuntimeError("frontier prebuild did not produce a complete publication manifest")
         files: set[str] = set()
-        for key in set(plan.key_by_norm_path.values()):
+        for key in {key for plan in plans for key in plan.key_by_norm_path.values()}:
             entry = entries.get(key)
             cache_file = Path(str(entry.get("cache_file") or "")) if isinstance(entry, dict) else Path()
             if cache_file.parent.resolve() != cache_root.resolve() or not cache_file.is_file():
@@ -298,19 +303,10 @@ def _prebuild_frontier_caches(
             files.add(cache_file.name)
         return files
 
-    timeline_plan = TIMELINE_FRONTIER_CACHE.manifest_plan(song_paths, curves, persist_validated_entries=False)
-    timeline_files = recorded_files(
-        timeline_plan,
-        TIMELINE_FRONTIER_CACHE.manifest_path(),
-        _TIMELINE_FRONTIER_CACHE_DIR,
-    )
-    fg_plan = FG_RESPONSE_FRONTIER_CACHE.manifest_plan(song_paths, curves, persist_validated_entries=False)
-    fg_files = recorded_files(
-        fg_plan,
-        FG_RESPONSE_FRONTIER_CACHE.manifest_path(),
-        _FG_RESPONSE_FRONTIER_CACHE_DIR,
-    )
-    return {"timeline": timeline_files, "fg": fg_files}
+    return {
+        "timeline": recorded_files(TIMELINE_FRONTIER_CACHE, _TIMELINE_FRONTIER_CACHE_DIR),
+        "fg": recorded_files(FG_RESPONSE_FRONTIER_CACHE, _FG_RESPONSE_FRONTIER_CACHE_DIR),
+    }
 
 
 def _prebuild_frontier_caches_isolated(

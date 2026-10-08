@@ -33,10 +33,6 @@ PERFECT_LOWER_MS, PERFECT_UPPER_MS = -20, 40
 GREAT_LOWER_EXTRA_MS, GREAT_UPPER_EXTRA_MS = -75, 150
 HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
 FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
-# Bump the revision when Precise frontier payloads change.
-CACHE_REVISIONS = {"precise": 2}
-# The frontier caches keep the names they were built under, so renaming a mode rebuilds nothing.
-CACHE_NAMES = {"non-precise": "zero_ms", "precise": "perfect_window"}
 
 
 class Band(NamedTuple):
@@ -211,7 +207,7 @@ class TimedSong:
         chart = self.chart
         ts_sig = array_sig16(np.ascontiguousarray(chart.timestamps))
         if self.mode == "non-precise":
-            nt_sig = lane_sig = self.cache_mode.encode()
+            nt_sig = lane_sig = b""
         else:
             nt_sig = array_sig16(np.ascontiguousarray(chart.note_types))
             lane_sig = array_sig16(np.ascontiguousarray(chart.lanes))
@@ -225,16 +221,10 @@ class TimedSong:
             bytes(nt_sig),
             bytes(lane_sig),
             "TIMING_ENVELOPE",
-            self.cache_mode,
+            self.mode,
             self.baseline_hash,
             0,
         )
-
-    @property
-    def cache_mode(self) -> str:
-        """The timing mode as the frontier cache keys name it, with its revision (CACHE_REVISIONS)."""
-        name, revision = CACHE_NAMES[self.mode], CACHE_REVISIONS.get(self.mode)
-        return name if revision is None else f"{name}@{revision}"
 
 
 _TIMED_SONG_CACHE: LRUCache = LRUCache(maxsize=128)

@@ -34,7 +34,7 @@ from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.settings import DIFFICULTIES, paths
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
-from gear_optimizer.solver.timing_envelope import CACHE_NAMES, TIMING_MODES, TimedSong, time_song
+from gear_optimizer.solver.timing_envelope import TIMING_MODES, TimedSong, time_song
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ class FrontierCache:
         song_paths: Iterable[str],
         curves: StatCurves,
         *,
-        timing_mode: str = "non-precise",
+        timing_mode: str,
         persist_validated_entries: bool = True,
     ) -> FrontierCacheManifestPlan:
         """Split the charts into hits (a complete file serves them) and misses.
@@ -345,10 +345,10 @@ def _manifest_key(
     timing_mode: str,
     chart_digest: str,
 ) -> str:
-    parts = [str(cache_version), CACHE_NAMES[str(timing_mode or "non-precise").strip().lower()], str(ref_sig_hex)]
+    parts = [cache_version, timing_mode, ref_sig_hex]
     if stat_sig_hex is not None:
-        parts.append(str(stat_sig_hex))
-    parts.append(str(chart_digest))
+        parts.append(stat_sig_hex)
+    parts.append(chart_digest)
     return hashlib.blake2b("|".join(parts).encode("utf-8"), digest_size=16).hexdigest()
 
 

@@ -93,7 +93,7 @@ def test_recorded_hits_return_without_the_build_lock(tmp_path: Path, monkeypatch
     run = _Run(tmp_path, monkeypatch)
     chart = _chart(tmp_path / "charts" / "A.txt", "A")
     run.write(chart)
-    run.cache.manifest_plan([str(chart)], CURVES)
+    run.cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise")
 
     summary = run.run([chart])
 
@@ -106,14 +106,14 @@ def test_unrecorded_complete_files_are_recorded_under_the_lock_without_a_build(t
     recorded = _chart(tmp_path / "charts" / "A.txt", "A")
     unrecorded = _chart(tmp_path / "charts" / "B.txt", "B")
     run.write(recorded)
-    run.cache.manifest_plan([str(recorded)], CURVES)
+    run.cache.manifest_plan([str(recorded)], CURVES, timing_mode="non-precise")
     run.write(unrecorded)
 
     summary = run.run([recorded, unrecorded])
 
     assert run.calls == ["lock", "maintain:True:False"]
     assert (summary.completed, summary.disk, summary.built) == (2, 2, 0)
-    assert run.cache.manifest_plan([str(unrecorded)], CURVES).validated_entry_count == 0
+    assert run.cache.manifest_plan([str(unrecorded)], CURVES, timing_mode="non-precise").validated_entry_count == 0
 
 
 def test_without_a_current_manifest_the_locked_plan_records_the_hits(tmp_path: Path, monkeypatch) -> None:
@@ -138,7 +138,9 @@ def test_missing_charts_are_built_and_recorded(tmp_path: Path, monkeypatch) -> N
 
     assert run.calls == ["lock", "maintain:True:False", "build:1"]
     assert (summary.total, summary.completed, summary.disk, summary.built, summary.failures) == (2, 2, 1, 1, 0)
-    assert run.cache.manifest_plan([str(missing)], CURVES).validated_entry_count == 0  # recorded by the build
+    assert (
+        run.cache.manifest_plan([str(missing)], CURVES, timing_mode="non-precise").validated_entry_count == 0
+    )  # recorded by the build
 
 
 def test_without_build_missing_a_missing_chart_is_a_failure(tmp_path: Path, monkeypatch) -> None:
@@ -155,7 +157,7 @@ def test_an_authorized_rotation_goes_through_the_lock_and_maintenance(tmp_path: 
     run = _Run(tmp_path, monkeypatch)
     chart = _chart(tmp_path / "charts" / "A.txt", "A")
     run.write(chart)
-    run.cache.manifest_plan([str(chart)], CURVES)
+    run.cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise")
 
     summary = run.run([chart], authorize_destructive_rotation=True)
 

@@ -264,6 +264,7 @@ def main(argv=None) -> int:
         lanes=lanes,
         raw_fever_fill=float(fd["ForceGreats"]["raw_fever_fill"]),
         real_fever_time=float(fd["ForceGreats"]["real_fever_time"]),
+        timing_mode="precise",
     )
     events = _events_from_note_graph(note_graph, nt)
 

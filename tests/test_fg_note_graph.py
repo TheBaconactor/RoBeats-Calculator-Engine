@@ -1828,7 +1828,7 @@ def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
         frontier_trace=trace_with_tight_fever_end,
         total_notes=n,
         timestamps=ts,
-        note_types=nt,
+        note_types=nt, timing_mode="non-precise"
     )
     assert all(note["delta_ms"] in (0.0, None) for note in fg_graph)
     assert fg_graph[0]["is_activation_witness"] is False
@@ -1849,7 +1849,7 @@ def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
         timestamps=ts,
         is_fever_mask=np.zeros(n, bool),
         frontier_trace=trace_with_tight_fever_end,
-        note_types=nt,
+        note_types=nt, timing_mode="non-precise"
     )
     assert all(note["delta_ms"] in (0.0, None) for note in base_graph)
     assert base_graph[0]["is_activation_witness"] is False

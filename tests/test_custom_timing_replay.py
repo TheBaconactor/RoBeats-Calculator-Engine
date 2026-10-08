@@ -179,10 +179,7 @@ def test_baseline_offset_rejected_for_precise():
 
 
 def test_cache_context_is_inert_at_zero_t_lossless():
-    """LOSSLESS GUARD: the per-note ``T`` hash lives in the timing-context reserved slots, so at
-    ``T == 0`` the timing cache keys are byte-identical to their pre-feature values. These frozen
-    tuples lock that existing non-precise cache keys (and therefore cached scores) are unchanged and that
-    precise carries only its cache revision -- if a future edit leaks a non-empty hash at
-    ``T == 0``, this fails."""
-    assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "zero_ms", "", 0)
-    assert _song(mode="precise").timeline_key[-4:] == ("TIMING_ENVELOPE", "perfect_window@2", "", 0)
+    """The per-note ``T`` hash lives in the timing-context reserved slots: at ``T == 0`` they are empty, so the key
+    names only the timing mode -- if a future edit leaks a non-empty hash at ``T == 0``, this fails."""
+    assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "non-precise", "", 0)
+    assert _song(mode="precise").timeline_key[-4:] == ("TIMING_ENVELOPE", "precise", "", 0)
