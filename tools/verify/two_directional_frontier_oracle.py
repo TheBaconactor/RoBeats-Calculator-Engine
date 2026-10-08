@@ -1,7 +1,7 @@
 """Bounded FG frontier replay sweep on tiny charts.
 
 Enumerates a finite set of PHYSICAL press schedules (per-note band-extreme press times) on
-synthetic tiny charts, replays every candidate through the faithful engine simulator
+tiny charts cut from the official charts (plus curated directed shapes), replays every candidate through the faithful engine simulator
 (``tools/verify/game_sim.py`` -- earliest-hittable-first matching, +200ms despawn,
 frame-integrated fever, exact-time judging), and compares the observed full-combo P/G surfaces
 against the production FG response frontier for the SAME chart and SIM-DERIVED fever geometry.
@@ -10,8 +10,8 @@ This sweep is sound-positive, not complete: every surface it reports as reachabl
 replay, so an observed winning under-report is authoritative. Band extremes do not enumerate every
 interior cross-note breakpoint, so the absence of an under-report is regression evidence, not a
 completeness proof. The explicit replay witnesses in ``tests/test_fg_tail_activation_dbis.py`` are
-authoritative for their directed claims; random/directed ``check_chart`` sweeps are bug-discovery
-and regression tools.
+authoritative for their directed claims; official-slice/directed ``check_chart`` sweeps are
+bug-discovery and regression tools.
 
 Classifications:
 
@@ -46,7 +46,6 @@ windows (+80 Perfect, +200 despawn-capped late Great, -39/-189 floors).
 Usage:
     python tools/verify/two_directional_frontier_oracle.py --charts 20 --max-notes 6 --seed 42
     python tools/verify/two_directional_frontier_oracle.py --directed   # curated witness shapes
-    python tools/verify/two_directional_frontier_oracle.py --hold-charts 12   # extra hold sweeps
 """
 
 from __future__ import annotations
@@ -67,6 +66,8 @@ if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
 from game_sim import NoteChart, Press, simulate  # noqa: E402
+
+from gear_optimizer.chart import read_chart  # noqa: E402
 
 # Per-note press-time candidates (ms relative to chart time), tap bands from _JUDGE_EDGES_TAP
 # (430, 190, 40, -20, -95, -235), strict-> comparators (late edge inclusive, early exclusive):
@@ -600,72 +601,32 @@ def _report(res: dict, strict: bool = False) -> bool:
     return ok
 
 
-def _random_chart(rng: random.Random, max_notes: int) -> tuple[list[float], list[int], list[int] | None, str]:
-    n = rng.randint(4, max_notes)
-    lane_count = rng.choice((1, 2, 4))
-    ts: list[float] = [0.0]
-    for _ in range(n - 1):
-        # step 0 = a chord slot (only meaningful with >1 lane; capped by free lanes below)
-        step = rng.choice((0.0, 120.0, 240.0, 300.0, 450.0) if lane_count > 1 else (120.0, 240.0, 300.0, 450.0))
-        ts.append(round(ts[-1] + step, 1))
-    lanes: list[int] = []
-    used_at_time: dict[float, set[int]] = {}
-    for time in ts:
-        taken = used_at_time.setdefault(time, set())
-        free = [lane for lane in range(lane_count) if lane not in taken]
-        if not free:
-            # chord exhausted the lanes: nudge the note off the chord instead
-            time = round(time + 60.0, 1)
-            taken = used_at_time.setdefault(time, set())
-            free = [lane for lane in range(lane_count) if lane not in taken] or [0]
-        lane = rng.choice(free)
-        taken.add(lane)
-        lanes.append(lane)
-    ts_sorted, lanes_sorted = zip(*sorted(zip(ts, lanes)))
-    return list(ts_sorted), list(lanes_sorted), None, f"rand(n={n},lanes={lane_count})"
-
-
-def _random_hold_chart(rng: random.Random, max_notes: int) -> tuple[list[float], list[int], list[int], str]:
-    """Random tap+hold chart. Holds bracket their lane (no same-lane note inside a span, like
-    real charts -- the lane's key is down). Tap-at-tail same-time cross-lane chords are seeded
-    deliberately: that is the D-bis gap-(c) shape."""
-    n = rng.randint(4, max_notes)
-    lane_count = rng.choice((2, 4))
-    events: list[tuple[float, int, int]] = []  # (time, lane, note_type)
-    lane_free_at = {lane: 0.0 for lane in range(lane_count)}
-    t = 0.0
-    remaining = n
-    while remaining > 0:
-        free = [lane for lane in range(lane_count) if lane_free_at[lane] <= t]
-        if not free:
-            t = round(min(lane_free_at.values()), 1)
+def _official_chart_slice(
+    rng: random.Random, paths: list[Path], max_notes: int
+) -> tuple[list[float], list[int], list[int], str]:
+    """4..max_notes consecutive notes of a random official chart, shifted to start at 0 ms: real lanes, chords and
+    holds. Half the draws start just before a random hold head (a random window mostly cuts a hold); a window that
+    would cut a hold is drawn again."""
+    while True:
+        path = rng.choice(paths)
+        chart = read_chart(path)
+        n = rng.randint(4, max_notes)
+        if chart.total_notes < n:
             continue
-        lane = rng.choice(free)
-        if remaining >= 2 and rng.random() < 0.45:
-            span = rng.choice((240.0, 360.0, 480.0))
-            events.append((t, lane, 2))
-            events.append((round(t + span, 1), lane, 3))
-            lane_free_at[lane] = round(t + span, 1) + 1.0
-            remaining -= 2
-            # gap-(c) seed: a same-time cross-lane tap at the tail instant
-            if remaining > 0 and rng.random() < 0.5:
-                others = [ln for ln in range(lane_count) if ln != lane and lane_free_at[ln] <= t + span]
-                if others:
-                    events.append((round(t + span, 1), rng.choice(others), 1))
-                    remaining -= 1
+        heads = np.flatnonzero(chart.note_types == 2)
+        if len(heads) and rng.random() < 0.5:
+            start = min(max(0, int(rng.choice(heads)) - rng.randint(0, 2)), chart.total_notes - n)
         else:
-            events.append((t, lane, 1))
-            remaining -= 1
-        t = round(t + rng.choice((120.0, 240.0, 300.0)), 1)
-    # Stable sort by time ONLY: intra-group (same-timestamp) index order is a real chart degree
-    # of freedom the checker must see in both orders (gap-(c)); the generator's emit order
-    # already varies it.
-    events.sort(key=lambda e: e[0])
-    ts = [e[0] for e in events]
-    lanes = [e[1] for e in events]
-    nts = [e[2] for e in events]
-    holds = sum(1 for x in nts if x == 2)
-    return ts, lanes, nts, f"rand-hold(n={len(ts)},lanes={lane_count},holds={holds})"
+            start = rng.randrange(chart.total_notes - n + 1)
+        nts = [int(x) for x in chart.note_types[start : start + n]]
+        lanes = [int(x) for x in chart.lanes[start : start + n]]
+        try:
+            _tail_head_pairs(nts, lanes)
+        except ValueError:
+            continue
+        t0 = float(chart.timestamps[start])
+        ts = [round((float(x) - t0) * 1000.0, 3) for x in chart.timestamps[start : start + n]]
+        return ts, lanes, nts, f"official({path.stem[:32]}@{start},n={n})"
 
 
 def _directed_charts() -> list[tuple[list[float], list[int], list[int] | None, str]]:
@@ -716,9 +677,8 @@ def _directed_tail_charts() -> list[tuple[list[float], list[int], list[int], str
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--charts", type=int, default=10, help="random tap charts to sweep")
-    ap.add_argument("--hold-charts", type=int, default=6, help="random tap+hold charts to sweep")
-    ap.add_argument("--max-notes", type=int, default=6, help="max notes per random chart (>=4)")
+    ap.add_argument("--charts", type=int, default=16, help="official chart slices to sweep")
+    ap.add_argument("--max-notes", type=int, default=6, help="max notes per slice (>=4)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
         "--directed",
@@ -746,8 +706,8 @@ def main(argv=None) -> int:
         charts = _directed_charts() + _directed_tail_charts()
     else:
         rng = random.Random(int(args.seed))
-        charts = [_random_chart(rng, max(4, int(args.max_notes))) for _ in range(int(args.charts))]
-        charts.extend(_random_hold_chart(rng, max(4, int(args.max_notes))) for _ in range(int(args.hold_charts)))
+        paths = sorted(p for level in ("Easy", "Normal", "Hard") for p in (_REPO / "Data" / level).glob("*.txt"))
+        charts = [_official_chart_slice(rng, paths, max(4, int(args.max_notes))) for _ in range(int(args.charts))]
         charts.extend(_directed_charts())
         charts.extend(_directed_tail_charts())
 
