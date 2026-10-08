@@ -1,7 +1,9 @@
 import queue
+from types import SimpleNamespace
 
 import pytest
 
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.pipeline import post_processor
 from gear_optimizer.store import db, schema
 from tests.store_support import result
@@ -11,7 +13,7 @@ class _Solve:
     """Stands in for a SongSolve (the canonicalization is replaced)."""
 
     def __init__(self, song="Song A"):
-        self.song, self.tier = song, "T5"
+        self.song, self.tier, self.timed = song, "T5", SimpleNamespace(mode=PRECISE)
 
 
 def _patch(monkeypatch, rows_by_song):
@@ -23,7 +25,7 @@ def test_a_solve_is_stored_and_the_stored_bests_are_printed(tmp_path, monkeypatc
     _patch(monkeypatch, {"Song A": [result("a", 100, 150), result("b", 120)]})
     conn = schema.connect(tmp_path / "results.db", write=True)
     post_processor.store_solve(conn, _Solve(), {}, {})
-    boards = db.load_boards(conn, "Song A", "T5")
+    boards = db.load_boards(conn, PRECISE, "Song A", "T5")
     assert [x.loadout_hash for x in boards.meta] == ["b", "a"] and [x.loadout_hash for x in boards.fg] == ["a"]
     out = capsys.readouterr().out
     assert "FINAL CONFIGURATION FOR: Song A" in out
@@ -48,7 +50,7 @@ def test_the_loop_stores_solves_counts_failures_and_stops_at_the_sentinel(tmp_pa
         post_processor.run_post_processor(items, total_tasks=3)
     assert exited.value.code == 1
     conn = schema.connect(tmp_path / "results.db")
-    assert [x.loadout_hash for x in db.load_boards(conn, "Song A", "T5").meta] == ["a"]
+    assert [x.loadout_hash for x in db.load_boards(conn, PRECISE, "Song A", "T5").meta] == ["a"]
     conn.close()
     captured = capsys.readouterr()
     assert "[POST] FAILED: Song X - Error: boom" in captured.err

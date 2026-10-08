@@ -101,6 +101,7 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
     primary_color, secondary_color) at rank N. The color pair (`details_json` `pc`/`sc`) is
     needed so the oracle gets BOTH chart colors -- feeding only the Selected Element manufactures a
     single-color colorPointBonus and a spurious delta on two-color loadouts."""
+    from gear_optimizer.core.timing_modes import PRECISE
     from gear_optimizer.store import schema
     from gear_optimizer.store.db import load_boards, load_traces, song_names
     from gear_optimizer.store.legacy import fg_payload
@@ -108,8 +109,8 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
     conn = schema.connect(db)
     try:
         # Resolve the exact stored song name (the DB stores the full "Name (Diff) by Artist").
-        names = [n for n in song_names(conn) if n == song_name_or_prefix or n.startswith(song_name_or_prefix)]
-        board = load_boards(conn, names[0], "T5").fg if len(names) == 1 else []
+        names = [n for n in song_names(conn, PRECISE) if n == song_name_or_prefix or n.startswith(song_name_or_prefix)]
+        board = load_boards(conn, PRECISE, names[0], "T5").fg if len(names) == 1 else []
         if len(names) > 1:
             raise SystemExit(f"song {song_name_or_prefix!r} matches multiple stored songs: {sorted(names)}")
         if not board:
@@ -117,7 +118,7 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
         if rank < 0 or rank >= len(board):
             raise SystemExit(f"rank {rank} out of range (only {len(board)} loadouts for {names[0]!r})")
         best = board[rank]
-        trace = load_traces(conn, best.song, "T5", [best.loadout_hash])[best.loadout_hash].fg
+        trace = load_traces(conn, PRECISE, best.song, "T5", [best.loadout_hash])[best.loadout_hash].fg
     finally:
         conn.close()
     return fg_payload(best, trace), best.song, int(best.fg_score), int(best.score), best.primary, best.secondary

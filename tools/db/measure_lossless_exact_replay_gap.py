@@ -428,11 +428,11 @@ def _compare_entry_mode(
     )
 
 
-def _distinct_song_names(*, db_path: str, team_buff: str) -> list[str]:
-    """Songs with a meta board at the tier, by name."""
+def _distinct_song_names(*, db_path: str, mode: str, team_buff: str) -> list[str]:
+    """Songs with a meta board in `mode` at the tier, by name."""
     conn = schema.connect(db_path)
     try:
-        sizes = board_sizes(conn)
+        sizes = board_sizes(conn, mode)
     finally:
         conn.close()
     return sorted(song for (song, tier), (meta, _fg) in sizes.items() if tier == str(team_buff).upper() and meta)
@@ -497,14 +497,16 @@ def main() -> int:
     if requested_songs:
         song_names = requested_songs
     else:
-        song_names = _distinct_song_names(db_path=str(db_path), team_buff=str(baseline_team_buff))
+        song_names = _distinct_song_names(db_path=str(db_path), mode=args.timing_mode, team_buff=str(baseline_team_buff))
         rng = random.Random(int(args.seed))
         rng.shuffle(song_names)
 
     rows: list[ReplayGapRow] = []
     mode_list = ["meta", "fg"] if str(args.mode) == "both" else [str(args.mode)]
     for song_name in song_names:
-        entries = read_best_loadouts(db_path, song_name, str(baseline_team_buff), limit=max(1, int(args.per_song_limit)))
+        entries = read_best_loadouts(
+            db_path, args.timing_mode, song_name, str(baseline_team_buff), limit=max(1, int(args.per_song_limit))
+        )
         if not entries:
             continue
 

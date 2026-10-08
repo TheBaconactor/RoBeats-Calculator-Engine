@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_db_key(found_song_name: str) -> str:
-    """A song's DB key: its name (timing models share one namespace)."""
+    """A song's DB key: its name (the timing mode is a key of its own)."""
     return str(found_song_name or "").strip()
 
 
@@ -28,7 +28,9 @@ class SongDbBaseline:
     valid: bool
 
 
-def load_song_db_baseline(found_song_name: str, *, team_buff: str = OPTIMIZER_BASELINE_TEAM_BUFF) -> SongDbBaseline:
+def load_song_db_baseline(
+    found_song_name: str, mode: str, *, team_buff: str = OPTIMIZER_BASELINE_TEAM_BUFF
+) -> SongDbBaseline:
     key = build_db_key(found_song_name)
     path = paths().database
     try:
@@ -37,7 +39,7 @@ def load_song_db_baseline(found_song_name: str, *, team_buff: str = OPTIMIZER_BA
         logger.warning("[DB] cannot read %s", path, exc_info=True)
         return SongDbBaseline(key, 0, 0, False)
     try:
-        boards = load_boards(conn, key, team_buff)
+        boards = load_boards(conn, mode, key, team_buff)
     except sqlite3.Error:
         logger.warning("[DB] cannot read %s for %s", path, key, exc_info=True)
         return SongDbBaseline(key, 0, 0, False)

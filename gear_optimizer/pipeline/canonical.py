@@ -98,6 +98,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
                 seq=0,
             )
         record = Loadout(
+            mode=solve.timed.mode,
             song=solve.song,
             tier=solve.tier,
             loadout_hash=ident.loadout_hash,

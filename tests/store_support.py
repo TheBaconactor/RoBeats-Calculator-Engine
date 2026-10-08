@@ -7,6 +7,7 @@ import json
 import sqlite3
 from collections.abc import Iterable
 
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.gamedata import MINI_ASCENSION_VERSION
 from gear_optimizer.store.boards import Row
 from gear_optimizer.store.records import FgResult, Loadout, MetaResult, encode_trace
@@ -32,10 +33,12 @@ def loadout(
     fg: FgResult | None = None,
     song: str = "Song A",
     tier: str = "T5",
+    mode: str = PRECISE,
     ascension: str | None = MINI_ASCENSION_VERSION,
 ) -> Loadout:
     """A stored loadout on the boards of its results (merges rank the boards again)."""
     return Loadout(
+        mode=mode,
         song=song,
         tier=tier,
         loadout_hash=loadout_hash,
@@ -75,11 +78,20 @@ def fg_row(loadout_hash: str, score: int, fg_score: int, *, meta: bool = True, u
     )
 
 
-def result(loadout_hash: str, score: int, fg_score: int | None = None, *, meta: bool = True, song: str = "Song A") -> Row:
+def result(
+    loadout_hash: str,
+    score: int,
+    fg_score: int | None = None,
+    *,
+    meta: bool = True,
+    song: str = "Song A",
+    mode: str = PRECISE,
+) -> Row:
     """A solve's result row: a meta result (unless meta=False) and an FG result when fg_score is given."""
     value = loadout(
         loadout_hash,
         song=song,
+        mode=mode,
         score=score,
         fg_score=fg_score,
         meta=meta_result(updated=0, seq=0) if meta else None,

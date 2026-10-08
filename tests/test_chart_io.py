@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 
 from gear_optimizer.chart import load_chart, read_chart, read_header
-from gear_optimizer.solver.song_preparation import prepare_song
 
 
 def _write_song(path):
@@ -27,18 +26,15 @@ def _write_song(path):
     )
 
 
-def test_prepared_song_is_the_shared_chart_timed_in_its_default_mode(tmp_path):
+def test_load_chart_shares_one_parse_of_a_chart(tmp_path):
     song_path = tmp_path / "shared_io_song.txt"
     _write_song(song_path)
 
-    song = prepare_song(str(song_path))
+    chart = load_chart(song_path)
 
-    assert song.chart is load_chart(song_path)
-    assert song.chart.name == "Shared IO Song"
-    assert song.mode == "non-precise"
-    assert np.array_equal(song.chart.note_types, np.asarray([1, 3, 1], dtype=np.int16))
-    assert np.array_equal(song.hit_timestamps, song.chart.timestamps)
-    assert song.perfect_candidates is None and song.great_floor is None
+    assert chart is load_chart(song_path)
+    assert chart.name == "Shared IO Song"
+    assert np.array_equal(chart.note_types, np.asarray([1, 3, 1], dtype=np.int16))
 
 
 def test_read_header_reads_the_fields_without_the_notes(tmp_path):
@@ -105,7 +101,7 @@ def test_non_time_sorted_export_is_canonicalized_to_nondecreasing_time(tmp_path)
     # The invariant the FG builder validates: nondecreasing timestamps.
     assert bool(np.all(ts[1:] >= ts[:-1]))
 
-    # Same canonical order flows through the production song preparation.
-    song = prepare_song(str(song_path))
-    assert np.array_equal(song.chart.timestamps, ts)
-    assert np.array_equal(song.chart.note_types, nt)
+    # Same canonical order in the shared parse the solver times.
+    shared = load_chart(song_path)
+    assert np.array_equal(shared.timestamps, ts)
+    assert np.array_equal(shared.note_types, nt)

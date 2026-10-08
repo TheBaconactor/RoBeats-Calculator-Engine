@@ -741,11 +741,12 @@ def _custom_pool_for_request(request: dict[str, Any]) -> dict[str, list[Any]]:
     return pool
 
 
-def _promotion_target(request: dict[str, Any], *, timing_mode: str, custom_pool: dict[str, list[Any]]) -> str | None:
-    """The catalog database a clean official solve merges its results into (None: the results are the caller's)."""
+def _promotion_target(request: dict[str, Any], *, custom_pool: dict[str, list[Any]]) -> str | None:
+    """The catalog database a clean official solve merges its results into, under its timing mode (None: the
+    results are the caller's)."""
     if str(request.get("chartText") or "").strip() or not str(request.get("targetSongId") or "").strip():
         return None
-    if timing_mode != "non-precise" or any(custom_pool.values()):
+    if any(custom_pool.values()):
         return None
     return str(paths().database)
 
@@ -1065,7 +1066,9 @@ def _solve_isolated(
         data_dir = work / "Data"
         (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
         _copy_gear(data_dir / "Gear", custom_pool)
-        (data_dir / "Hard" / f"{job}.txt").write_text(chart, encoding="utf-8")
+        chart_path = data_dir / "Hard" / f"{job}.txt"
+        chart_path.write_text(chart, encoding="utf-8")
+        mode = read_header(chart_path)["Timing Mode"]  # _normalize_chart wrote the request's
         # Reasoning effort scales the GA search knobs; "default" writes none (the run settings' defaults apply).
         reasoning_lines = ""
         if reasoning != "default":
@@ -1120,11 +1123,11 @@ def _solve_isolated(
             if proc.returncode != 0:
                 tail = " | ".join((err or out or "").strip().splitlines()[-20:])
                 raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
-            entries = legacy.read_best_loadouts(db_path, result_song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
+            entries = legacy.read_best_loadouts(db_path, mode, result_song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
             if not entries:
                 raise RuntimeError("optimizer produced no T5 loadout")
             if promote_to:
-                db.promote(db_path, promote_to, result_song_name, "T5")
+                db.promote(db_path, promote_to, mode, result_song_name, "T5")
             return entries
 
 
@@ -1157,7 +1160,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         return state.wait()
     try:
         custom_chart = bool(str(request.get("chartText") or "").strip())
-        promote_to = _promotion_target(request, timing_mode=timing_mode, custom_pool=custom_pool)
+        promote_to = _promotion_target(request, custom_pool=custom_pool)
         chart = _normalize_chart(chart_text, result_song_name, timing_mode)
         # An uploaded chart keeps the isolated path (its frontier caches must stay out of the shared ones); a
         # custom item pool on an official chart is solved warm.
@@ -1196,16 +1199,17 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
 # for, one at a time, through the same path as a user's request. Waiting for the game data is
 # deliberate: its mini ascension targets change a new song's scores.
 
-def unbuilt_catalog_song_ids() -> list[str]:
-    """Official charts the active game data describes that evolution.db has no build for."""
+def unbuilt_catalog_song_ids() -> list[tuple[str, str]]:
+    """(song id, timing mode) of each official chart the active game data describes that evolution.db has no build
+    for in that mode."""
     payload = json.loads((DATA_ROOT / "exported_game_data.json").read_text(encoding="utf-8"))
     candidates = exported_song_names(payload).intersection(_official_song_catalog().paths_by_song_id)
     catalog = paths().database
     if not catalog.exists():
-        return sorted(candidates)
+        return sorted((song, mode) for song in candidates for mode in TIMING_MODES)
     conn = schema.connect(catalog)
     try:
-        return sorted(candidates - present_songs(conn, candidates))
+        return sorted((song, mode) for mode in TIMING_MODES for song in candidates - present_songs(conn, mode, candidates))
     finally:
         conn.close()
 
@@ -1214,19 +1218,22 @@ def build_missing_catalog_songs() -> None:
     missing = unbuilt_catalog_song_ids()
     if missing:
         print(f"[robeatsmeta-service] building {len(missing)} official chart(s) missing from the catalog", flush=True)
-    for song_id in missing:
+    for song_id, mode in missing:
         if not _AUTHORITATIVE_PUBLICATION_READY.is_set():
             return  # a code update is draining; the next activation starts a fresh pass
-        digest = hashlib.sha256(song_id.encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(f"{song_id}|{mode}".encode("utf-8")).hexdigest()[:16]
         try:
-            solve({"jobId": f"catalog-{digest}", "targetSongId": song_id})
+            solve({"jobId": f"catalog-{digest}", "targetSongId": song_id, "timingMode": mode})
         except ServiceNotReady:
             return
         except Exception:  # noqa: BLE001 - one bad chart must not stop the rest of the catalog
-            logger.exception("catalog build failed for %s", song_id)
-            print(f"[robeatsmeta-service] catalog build FAILED for {song_id}; retried on the next publication", flush=True)
+            logger.exception("catalog build failed for %s (%s)", song_id, mode)
+            print(
+                f"[robeatsmeta-service] catalog build FAILED for {song_id} ({mode}); retried on the next publication",
+                flush=True,
+            )
             continue
-        print(f"[robeatsmeta-service] built catalog entry for {song_id}", flush=True)
+        print(f"[robeatsmeta-service] built catalog entry for {song_id} ({mode})", flush=True)
 
 
 class _CatalogBuilder:

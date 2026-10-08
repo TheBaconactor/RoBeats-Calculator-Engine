@@ -29,6 +29,7 @@ _GC_KEYS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Element")
 
 def best_loadouts(
     conn: sqlite3.Connection,
+    mode: str,
     song: str,
     tier: str = "T5",
     *,
@@ -36,12 +37,12 @@ def best_loadouts(
     gears: Mapping[str, Gear] | None = None,
     minis: Mapping[str, Mini] | None = None,
 ) -> list[dict[str, Any]]:
-    boards = load_boards(conn, song, tier)
+    boards = load_boards(conn, mode, song, tier)
     # The version 18 reader's orders (its query plans'): meta by score, then FG score, then entry; FG by FG
     # score, then loadout hash.
     meta = sorted(boards.meta, key=lambda x: (-x.score, -(x.fg_score or 0), x.meta.seq))[:limit]
     fg = sorted(boards.fg, key=lambda x: (-x.fg_score, x.loadout_hash))[:limit]
-    traces = load_traces(conn, song, tier, {x.loadout_hash for x in meta + fg})
+    traces = load_traces(conn, mode, song, tier, {x.loadout_hash for x in meta + fg})
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for x in meta:
@@ -64,6 +65,7 @@ def best_loadouts(
 
 def read_best_loadouts(
     path: str | os.PathLike[str],
+    mode: str,
     song: str,
     tier: str = "T5",
     *,
@@ -76,20 +78,26 @@ def read_best_loadouts(
         return []
     conn = connect(path)
     try:
-        return best_loadouts(conn, song, tier, limit=limit, gears=gears, minis=minis)
+        return best_loadouts(conn, mode, song, tier, limit=limit, gears=gears, minis=minis)
     finally:
         conn.close()
 
 
 def promote_entries(
-    conn: sqlite3.Connection, song: str, tier: str, entries: Sequence[Mapping[str, Any]], *, now: float | None = None
+    conn: sqlite3.Connection,
+    mode: str,
+    song: str,
+    tier: str,
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    now: float | None = None,
 ) -> None:
     """Merge a solve's leaderboard (best_loadouts entries of its result database) into this database."""
-    rows = rows_from_entries(song, tier, entries)
-    store_results(conn, song, tier, rows, now=now)
+    rows = rows_from_entries(mode, song, tier, entries)
+    store_results(conn, mode, song, tier, rows, now=now)
 
 
-def rows_from_entries(song: str, tier: str, entries: Sequence[Mapping[str, Any]]) -> list[Row]:
+def rows_from_entries(mode: str, song: str, tier: str, entries: Sequence[Mapping[str, Any]]) -> list[Row]:
     """The rows best_loadouts read the entries from (entry numbers and write times are not carried: 0)."""
     rows: list[Row] = []
     for entry in entries:
@@ -117,6 +125,7 @@ def rows_from_entries(song: str, tier: str, entries: Sequence[Mapping[str, Any]]
             )
             fg_trace = encode_trace({k: v for k, v in force["ForceGreats"].items() if k != "final_score"})
         loadout = Loadout(
+            mode=mode,
             song=song,
             tier=tier,
             loadout_hash=entry["loadout_hash"],

@@ -150,7 +150,9 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     from gear_optimizer.solver.taichi_gem.fields import GA_INIT_HEURISTIC_K
 
     context = task.context
-    core = build_prepared_song_core(fp=task.file_path, found_song_name=task.song_name, minis=context.minis)
+    core = build_prepared_song_core(
+        fp=task.file_path, found_song_name=task.song_name, mode=task.mode, minis=context.minis
+    )
     timed_song = core.song
     primary, secondary = timed_song.chart.primary, timed_song.chart.secondary
     registry, gpu_data, init_heuristic_topk = _ga_registry(context.gears, core.minis, primary, secondary)

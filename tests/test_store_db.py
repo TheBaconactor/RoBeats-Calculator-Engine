@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.store import db, schema, tables
 from tests.store_support import boards, fg_row, meta_row, result
 
@@ -28,30 +29,30 @@ def test_a_writer_creates_the_current_schema_and_a_reader_requires_it(tmp_path):
 
 
 def test_stored_results_read_back_in_board_order_with_their_traces(conn):
-    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 100)], now=1000.5)
-    got = db.load_boards(conn, "Song A", "T5")
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 100)], now=1000.5)
+    got = db.load_boards(conn, PRECISE, "Song A", "T5")
     assert [x.loadout_hash for x in got.meta] == ["b", "a", "c"]
     assert [x.loadout_hash for x in got.fg] == ["a"]
-    rows = db.load_rows(conn, "Song A", "T5")
+    rows = db.load_rows(conn, PRECISE, "Song A", "T5")
     assert (got.meta, got.fg) == boards(rows)
-    traces = db.load_traces(conn, "Song A", "T5", ["a", "b"])
+    traces = db.load_traces(conn, PRECISE, "Song A", "T5", ["a", "b"])
     assert traces["a"].meta == {"frontier_trace": [{"hash": "a"}]}
     assert traces["a"].fg == {"frontier_trace": [{"fg": "a"}]}
     assert traces["b"].fg is None
-    assert db.last_updated(conn) == {"Song A": 1000.5}
-    assert db.board_sizes(conn) == {("Song A", "T5"): (3, 1)}
+    assert db.last_updated(conn, PRECISE) == {"Song A": 1000.5}
+    assert db.board_sizes(conn, PRECISE) == {("Song A", "T5"): (3, 1)}
 
 
 def test_catalog_streams_walk_songs_by_name_in_board_order(conn):
-    db.store_results(conn, "B song", "T5", [result("x", 5, song="B song")], now=1)
-    db.store_results(conn, "A song", "T5", [result("y", 7, song="A song"), result("z", 9, 12, song="A song")], now=2)
-    assert [(x.song, x.loadout_hash) for x in db.iter_board(conn, "meta", tier="T5")] == [
+    db.store_results(conn, PRECISE, "B song", "T5", [result("x", 5, song="B song")], now=1)
+    db.store_results(conn, PRECISE, "A song", "T5", [result("y", 7, song="A song"), result("z", 9, 12, song="A song")], now=2)
+    assert [(x.song, x.loadout_hash) for x in db.iter_board(conn, "meta", mode=PRECISE, tier="T5")] == [
         ("A song", "z"),
         ("A song", "y"),
         ("B song", "x"),
     ]
-    assert [x.loadout_hash for x in db.iter_board(conn, "fg", tier="T5", songs=["A song"])] == ["z"]
-    assert db.song_names(conn) == ["B song", "A song"]
+    assert [x.loadout_hash for x in db.iter_board(conn, "fg", mode=PRECISE, tier="T5", songs=["A song"])] == ["z"]
+    assert db.song_names(conn, PRECISE) == ["B song", "A song"]
 
 
 def test_sql_board_order_matches_the_python_order_on_ties(conn):
@@ -63,82 +64,62 @@ def test_sql_board_order_matches_the_python_order_on_ties(conn):
         fg_row("f1", 90, 200, updated=5, seq=6),
         fg_row("f2", 95, 200, updated=5, seq=5),
     ]
-    conn.execute("INSERT INTO songs VALUES ('Song A', 1)")
+    conn.execute("INSERT INTO songs VALUES ('precise', 'Song A', 1)")
     tables.insert_rows(conn, rows)
     conn.commit()
-    got = db.load_boards(conn, "Song A", "T5")
+    got = db.load_boards(conn, PRECISE, "Song A", "T5")
     assert (got.meta, got.fg) == boards(rows)
     assert [x.loadout_hash for x in got.fg] == ["f2", "f1"]
 
 
 def test_a_song_digest_changes_exactly_when_its_rows_change(conn):
-    db.store_results(conn, "Song A", "T5", [result("a", 100)], now=10)
-    db.store_results(conn, "Song B", "T5", [result("b", 100, song="Song B")], now=10)
-    first = db.song_digest(conn, "Song A")
-    db.store_results(conn, "Song B", "T5", [result("c", 200, song="Song B")], now=11)
-    assert db.song_digest(conn, "Song A") == first
-    db.store_results(conn, "Song A", "T5", [result("a", 90)], now=12)
-    assert db.song_digest(conn, "Song A") != first
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 100)], now=10)
+    db.store_results(conn, PRECISE, "Song B", "T5", [result("b", 100, song="Song B")], now=10)
+    first = db.song_digest(conn, PRECISE, "Song A")
+    db.store_results(conn, PRECISE, "Song B", "T5", [result("c", 200, song="Song B")], now=11)
+    assert db.song_digest(conn, PRECISE, "Song A") == first
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 90)], now=12)
+    assert db.song_digest(conn, PRECISE, "Song A") != first
 
 
 def test_a_processed_run_without_results_only_marks_the_song(conn):
-    db.store_results(conn, "Song A", "T5", [], now=42.0)
-    assert db.song_names(conn) == ["Song A"] and db.board_sizes(conn) == {}
+    db.store_results(conn, PRECISE, "Song A", "T5", [], now=42.0)
+    assert db.song_names(conn, PRECISE) == ["Song A"] and db.board_sizes(conn, PRECISE) == {}
 
 
 def test_results_of_another_song_are_refused(conn):
     with pytest.raises(ValueError, match="cannot be stored"):
-        db.store_results(conn, "Song B", "T5", [result("a", 1)], now=1)
-    assert db.song_names(conn) == []
+        db.store_results(conn, PRECISE, "Song B", "T5", [result("a", 1)], now=1)
+    assert db.song_names(conn, PRECISE) == []
 
 
 def test_entry_numbers_count_across_songs_like_insertion_order(conn):
-    db.store_results(conn, "Song A", "T5", [result("a1", 10, 20, song="Song A"), result("a2", 5, song="Song A")], now=1)
-    db.store_results(conn, "Song B", "T5", [result("b1", 7, 9, song="Song B")], now=2)
-    db.store_results(conn, "Song A", "T5", [result("a3", 1, song="Song A")], now=3)
-    seqs = {x.loadout_hash: x.meta.seq for song in ("Song A", "Song B") for x in db.load_boards(conn, song, "T5").meta}
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a1", 10, 20, song="Song A"), result("a2", 5, song="Song A")], now=1)
+    db.store_results(conn, PRECISE, "Song B", "T5", [result("b1", 7, 9, song="Song B")], now=2)
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a3", 1, song="Song A")], now=3)
+    seqs = {x.loadout_hash: x.meta.seq for song in ("Song A", "Song B") for x in db.load_boards(conn, PRECISE, song, "T5").meta}
     assert seqs == {"a1": 1, "a2": 2, "b1": 3, "a3": 4}
-    assert [x.fg.seq for x in db.load_boards(conn, "Song B", "T5").fg] == [2]
+    assert [x.fg.seq for x in db.load_boards(conn, PRECISE, "Song B", "T5").fg] == [2]
 
 
 def test_promotion_merges_every_attached_result_in_the_sources_board_order(tmp_path):
     source, target = tmp_path / "result.db", tmp_path / "catalog.db"
     conn = schema.connect(source, write=True)
     # c's FG result does not beat its score: attached, off the FG board (a version 18 view would drop it).
-    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 90, 80)])
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 90, 80)])
     conn.close()
 
-    db.promote(source, target, "Song A", "T5")
+    db.promote(source, target, PRECISE, "Song A", "T5")
 
     conn = schema.connect(target)
-    boards = db.load_boards(conn, "Song A", "T5")
-    rows = {r.loadout.loadout_hash: r.loadout for r in db.load_rows(conn, "Song A", "T5")}
+    boards = db.load_boards(conn, PRECISE, "Song A", "T5")
+    rows = {r.loadout.loadout_hash: r.loadout for r in db.load_rows(conn, PRECISE, "Song A", "T5")}
     conn.close()
     assert [x.loadout_hash for x in boards.meta] == ["b", "a", "c"]
     assert [x.loadout_hash for x in boards.fg] == ["a"]
     assert (rows["c"].fg_score, rows["c"].fg is not None, rows["c"].on_fg) == (80, True, False)
     # New loadouts are numbered in the source's meta board order.
     assert [rows[h].meta.seq for h in ("b", "a", "c")] == [1, 2, 3]
-
-
-def test_writers_add_the_entry_number_indexes_to_an_older_version_19_database(tmp_path):
-    path = tmp_path / "older.db"
-    conn = schema.connect(path, write=True)
-    conn.execute("DROP INDEX loadouts_meta_seq")
-    conn.execute("DROP INDEX loadouts_fg_seq")
-    db.store_results(conn, "Song A", "T5", [result("a", 100, 150)])
-    conn.close()
-
-    def indexes():
-        c = sqlite3.connect(path)
-        names = {row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
-        c.close()
-        return names
-
-    schema.connect(path).close()  # a reader leaves the file alone
-    assert "loadouts_meta_seq" not in indexes()
-    schema.connect(path, write=True).close()
-    assert {"loadouts_meta_seq", "loadouts_fg_seq"} <= indexes()
 
 
 def test_the_next_entry_numbers_come_from_the_indexes(conn):
@@ -150,7 +131,7 @@ def test_the_next_entry_numbers_come_from_the_indexes(conn):
 def test_a_write_session_leaves_an_empty_write_ahead_log(tmp_path):
     path = tmp_path / "results.db"
     conn = schema.connect(path, write=True)
-    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120)])
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 100, 150), result("b", 120)])
     assert (tmp_path / "results.db-wal").stat().st_size == 0
     conn.close()
 
@@ -160,17 +141,17 @@ def test_a_reader_on_the_log_delays_the_truncation_only_briefly(tmp_path):
 
     path = tmp_path / "results.db"
     conn = schema.connect(path, write=True)
-    db.store_results(conn, "Song A", "T5", [result("a", 100)])
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 100)])
     reader = sqlite3.connect(path)
     reader.execute("BEGIN")
     reader.execute("SELECT COUNT(*) FROM loadouts").fetchone()  # holds a read snapshot
     t0 = time.monotonic()
-    db.store_results(conn, "Song A", "T5", [result("b", 120)])
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("b", 120)])
     assert time.monotonic() - t0 < tables.TRUNCATE_WAIT_MS / 1000 + 10.0  # bounded, not a hang
     assert (tmp_path / "results.db-wal").stat().st_size > 0  # the reader kept the log
     reader.rollback()
     reader.close()
-    db.store_results(conn, "Song A", "T5", [result("c", 90)])
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("c", 90)])
     assert (tmp_path / "results.db-wal").stat().st_size == 0
-    assert {x.loadout_hash for x in db.load_boards(conn, "Song A", "T5").meta} == {"a", "b", "c"}
+    assert {x.loadout_hash for x in db.load_boards(conn, PRECISE, "Song A", "T5").meta} == {"a", "b", "c"}
     conn.close()

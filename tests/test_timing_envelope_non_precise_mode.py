@@ -36,9 +36,9 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _chart(header=None):
+def _chart():
     timestamps = np.round(np.arange(250, dtype=np.float32) * np.float32(0.1), 3).astype(np.float32)
-    return make_chart(timestamps, primary="Rush", secondary="Flow", header=header)
+    return make_chart(timestamps, primary="Rush", secondary="Flow")
 
 
 def _song(mode: str = "non-precise"):
@@ -61,17 +61,10 @@ def _stats() -> dict[str, int]:
 
 
 def test_non_precise_song_is_chart_only():
-    song = time_song(_chart())
+    song = _song()
 
     assert song.mode == "non-precise"
     assert song.hit_timestamps is song.chart.timestamps
-    assert song.perfect_candidates is None and song.great_floor is None
-
-
-def test_chart_metadata_selects_non_precise_when_mode_is_omitted():
-    song = time_song(_chart({"Timing Mode": "non-precise"}))
-
-    assert song.mode == "non-precise"
     # No Perfect-window envelope streams: the FG build uses the chart timeline.
     for stream in (song.perfect_candidates, song.perfect_floor, song.great_floor, song.great_candidates):
         assert stream is None

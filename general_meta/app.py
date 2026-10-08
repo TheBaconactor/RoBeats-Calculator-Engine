@@ -104,11 +104,13 @@ def _song_rows(song_name: str) -> list[dict]:
     host application re-solves a tier's gems on demand when a user opens it. Real per-tier gems at build time would
     need the timeline + FG response frontier caches and ``build_team_buff_tier_db_batches`` per tier.
     """
+    from gear_optimizer.core.timing_modes import PRECISE
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import _flat_item_names
     from gear_optimizer.store.legacy import read_best_loadouts
 
     rows: list[dict] = []
-    for entry in read_best_loadouts(paths().database, song_name, OPTIMIZER_BASELINE_TEAM_BUFF):
+    # General Meta is built from the Precise boards.
+    for entry in read_best_loadouts(paths().database, PRECISE, song_name, OPTIMIZER_BASELINE_TEAM_BUFF):
         mini_names = _flat_item_names(entry.get("minis") or [])
         details = entry.get("details")
         rows.append(

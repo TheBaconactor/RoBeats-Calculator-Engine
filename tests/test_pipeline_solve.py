@@ -3,13 +3,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.domain.jobs import SharedRunContext, SongTask
 from gear_optimizer.pipeline import solve as solve_module
 from gear_optimizer.pipeline import prepare as prepare_module
 
 
 def _task(name: str) -> SongTask:
-    return SongTask(f"{name}.txt", name, SharedRunContext(multi_start=3, curves={}, gears={}, minis={}, ga_depth=1))
+    return SongTask(
+        f"{name}.txt", name, PRECISE, SharedRunContext(multi_start=3, curves={}, gears={}, minis={}, ga_depth=1)
+    )
 
 
 def _song(task: SongTask) -> SimpleNamespace:
@@ -26,12 +29,17 @@ def _stages(monkeypatch, *, prepare=_song, run_ga=None, finish=None) -> None:
     monkeypatch.setattr(solve_module, "finish_song", finish or (lambda song, _ga, _tracker: song.config.task_key))
 
 
+def _key(name: str) -> str:
+    """A task's queue key: its label (a song solves each mode as a task of its own)."""
+    return f"{name} ({PRECISE})"
+
+
 def _run(names, *, executor=None, stop_requested=None) -> tuple[list, set]:
     posted: list = []
-    completed: set[str] = {"Done Before"}
+    completed: set[str] = {_key("Done Before")}
     solve_module.run_queue([_task(n) for n in names], executor, post=posted.append, completed_songs=completed,
                            stop_requested=stop_requested)
-    return posted, completed - {"Done Before"}
+    return posted, completed - {_key("Done Before")}
 
 
 def _labels(posted: list) -> list:
@@ -41,8 +49,8 @@ def _labels(posted: list) -> list:
 def test_the_queue_is_solved_and_posted_in_order_and_each_task_completes(monkeypatch):
     _stages(monkeypatch)
     posted, completed = _run(["A", "Done Before", "B", "C"])
-    assert posted == ["A", "B", "C"]
-    assert completed == {"A", "B", "C"}
+    assert posted == [_key("A"), _key("B"), _key("C")]
+    assert completed == {_key("A"), _key("B"), _key("C")}
 
 
 def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(monkeypatch):
@@ -63,9 +71,9 @@ def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(m
 
     _stages(monkeypatch, prepare=prepare, run_ga=run_ga, finish=finish)
     posted, completed = _run(["A", "Prep Fails", "GA Fails", "Finish Fails", "B"])
-    assert _labels(posted) == ["A", ("Prep Fails", "bad chart"), ("GA Fails", "gpu boom"),
-                               ("Finish Fails", "fg boom"), "B"]
-    assert completed == {"A", "Prep Fails", "GA Fails", "Finish Fails", "B"}
+    assert _labels(posted) == [_key("A"), ("Prep Fails", "bad chart"), ("GA Fails", "gpu boom"),
+                               ("Finish Fails", "fg boom"), _key("B")]
+    assert completed == {_key(n) for n in ("A", "Prep Fails", "GA Fails", "Finish Fails", "B")}
 
 
 def test_each_song_is_judged_against_the_runs_bests_starting_from_the_stored_ones(monkeypatch):
@@ -101,7 +109,7 @@ def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(mon
         return song.config.task_key
 
     _stages(monkeypatch, prepare=prepare, run_ga=run_ga, finish=finish)
-    assert _run(["A", "B", "C"])[0] == ["A", "B", "C"]
+    assert _run(["A", "B", "C"])[0] == [_key("A"), _key("B"), _key("C")]
 
 
 def test_a_stop_request_leaves_the_rest_of_the_queue_pending(monkeypatch):
@@ -114,7 +122,7 @@ def test_a_stop_request_leaves_the_rest_of_the_queue_pending(monkeypatch):
     _stages(monkeypatch, finish=finish)
     posted, completed = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: None),
                              stop_requested=stop.is_set)
-    assert posted[0] == "A" and set(posted) <= {"A", "B"} and completed == set(posted)
+    assert posted[0] == _key("A") and set(posted) <= {_key("A"), _key("B")} and completed == set(posted)
 
 
 def test_a_stop_request_aborts_the_ga_in_progress_and_its_song_stays_pending(monkeypatch):
@@ -131,7 +139,7 @@ def test_a_stop_request_aborts_the_ga_in_progress_and_its_song_stays_pending(mon
     _stages(monkeypatch, run_ga=run_ga)
     posted, completed = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: aborted.set()),
                              stop_requested=stop.is_set)
-    assert posted == ["A"] and completed == {"A"}
+    assert posted == [_key("A")] and completed == {_key("A")}
 
 
 def test_a_fatal_gpu_error_ends_the_run_after_the_songs_past_their_ga_finish(monkeypatch):
@@ -146,7 +154,7 @@ def test_a_fatal_gpu_error_ends_the_run_after_the_songs_past_their_ga_finish(mon
     posted: list = []
     with pytest.raises(GpuServiceTimeoutError):
         solve_module.run_queue([_task("A"), _task("B"), _task("C")], None, post=posted.append, completed_songs=set())
-    assert posted == ["A"]
+    assert posted == [_key("A")]
 
 
 def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(monkeypatch):

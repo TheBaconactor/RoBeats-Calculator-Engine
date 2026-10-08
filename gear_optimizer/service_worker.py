@@ -112,11 +112,14 @@ class PersistentOptimizerSession:
         tasks = self._app._prepare_tasks([(str(self._chart_path), song_name, "Hard")], run, self._curves, gears, minis)
         try:
             self._solve_direct(tasks, gears, minis)
-            entries = legacy.read_best_loadouts(self._result_db, song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
+            mode = tasks[0].mode  # the chart's Timing Mode header: a request solves one mode
+            entries = legacy.read_best_loadouts(
+                self._result_db, mode, song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT
+            )
             if not entries:
                 raise RuntimeError("optimizer produced no T5 loadout")
             if promote_to:
-                db.promote(self._result_db, promote_to, song_name, "T5")
+                db.promote(self._result_db, promote_to, mode, song_name, "T5")
             return entries
         finally:
             self._remove_result_db()

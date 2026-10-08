@@ -26,18 +26,14 @@ class PreparedSongCore:
     db_load_sec: float
 
 
-def prepare_song(fp: str) -> TimedSong:
-    """The chart at ``fp`` in its default timing model (its Timing Mode header, else non-precise)."""
-    return time_song(load_chart(Path(fp)))
-
-
 def build_prepared_song_core(
     *,
     fp: str,
     found_song_name: str,
+    mode: str,
     minis: Mapping[str, Mini],
 ) -> PreparedSongCore:
-    song = prepare_song(fp)
+    song = time_song(load_chart(Path(fp)), mode)
     minis_in_song = song_minis(minis.values(), found_song_name, song.chart.primary, song.chart.secondary)
 
     t_setup0 = time.perf_counter()
@@ -45,7 +41,7 @@ def build_prepared_song_core(
     setup_sec = time.perf_counter() - t_setup0
 
     t_db0 = time.perf_counter()
-    db_context = load_song_db_baseline(found_song_name)
+    db_context = load_song_db_baseline(found_song_name, mode)
     db_load_sec = time.perf_counter() - t_db0
 
     return PreparedSongCore(

@@ -22,6 +22,7 @@ from gear_optimizer.core.memory import (
     build_memory_guard_resume_context,
     load_memory_guard_resume_state,
 )
+from gear_optimizer.core.timing_modes import NON_PRECISE, PRECISE, TIMING_MODES
 from gear_optimizer.store import schema
 from gear_optimizer.store.db import present_songs
 from gear_optimizer.domain.jobs import SharedRunContext, SongTask
@@ -162,8 +163,10 @@ class QueueTaskCoordinator:
         return finalized.queue
 
     def prepare_tasks(self, song_queue, run: RunSettings, curves, gears, minis) -> list[SongTask]:
-        """A task per song and run (SongRepeats, at most 100), each with a GA seed of its own: with GA_SEED set the
-        seed is stable per song and run, else random; no two tasks of the queue share one."""
+        """A task per song, timing mode and run (SongRepeats, at most 100), each with a GA seed of its own: with
+        GA_SEED set the seed is stable per song, mode and run (so a mode solves the same alone or beside the other),
+        else random; no two tasks of the queue share one. A chart is solved in its Timing Mode header's mode, else in
+        both."""
         context = SharedRunContext(
             multi_start=run.multi_start, curves=curves, gears=gears, minis=minis, ga_depth=run.search_depth
         )
@@ -172,30 +175,38 @@ class QueueTaskCoordinator:
         used_seeds: set[int] = set()
         tasks = []
         for fp, song_name, _difficulty in song_queue:
-            for repeat_index in range(1, song_repeats + 1):
-                if seed_base is not None:
-                    name_crc = zlib.crc32(song_name.encode("utf-8", errors="replace"))
-                    seed = ((seed_base & 0xFFFFFFFF) + name_crc + repeat_index * 0x9E3779B1) & 0xFFFFFFFF
-                    while seed in used_seeds:
-                        seed = (seed + 1) & 0xFFFFFFFF
-                else:
-                    seed = secrets.randbits(32)
-                    while seed in used_seeds:
+            for mode in _chart_modes(fp):
+                for repeat_index in range(1, song_repeats + 1):
+                    if seed_base is not None:
+                        name_crc = zlib.crc32(f"{song_name}\0{mode}".encode("utf-8", errors="replace"))
+                        seed = ((seed_base & 0xFFFFFFFF) + name_crc + repeat_index * 0x9E3779B1) & 0xFFFFFFFF
+                        while seed in used_seeds:
+                            seed = (seed + 1) & 0xFFFFFFFF
+                    else:
                         seed = secrets.randbits(32)
-                used_seeds.add(seed)
-                task = SongTask(fp, song_name, context, seed, repeat_index, song_repeats)
-                logger.info(f"[QUEUE] {task.label}")
-                tasks.append(task)
+                        while seed in used_seeds:
+                            seed = secrets.randbits(32)
+                    used_seeds.add(seed)
+                    task = SongTask(fp, song_name, mode, context, seed, repeat_index, song_repeats)
+                    logger.info(f"[QUEUE] {task.label}")
+                    tasks.append(task)
         return tasks
 
 
+def _chart_modes(fp: str) -> tuple[str, ...]:
+    """The timing modes a chart is solved in: its Timing Mode header's (a custom solve's), else both, Precise first."""
+    mode = (read_header(fp).get("Timing Mode") or "").strip().lower()
+    return (mode,) if mode else (PRECISE, NON_PRECISE)
+
+
 def _songs_in_database(names: typing.Iterable[str]) -> set[str]:
-    """The given songs the results database has processed; none when it does not exist yet."""
+    """The given songs the results database has processed in every timing mode; none when it does not exist yet."""
     path = settings.paths().database
     if not path.exists():
         return set()
+    names = set(names)
     conn = schema.connect(path)
     try:
-        return present_songs(conn, names)
+        return set.intersection(*(present_songs(conn, mode, names) for mode in TIMING_MODES))
     finally:
         conn.close()

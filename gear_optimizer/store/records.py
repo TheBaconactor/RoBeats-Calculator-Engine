@@ -1,4 +1,4 @@
-"""Leaderboard records: one Loadout per loadout of a song and TeamBuff tier.
+"""Leaderboard records: one Loadout per loadout of a song, timing mode and TeamBuff tier.
 
 A loadout keeps its results for as long as it is stored: its meta result (the best gem allocation without Force
 Greats, scored `score`) and its Force Greats result (scored `fg_score`). Two boards list loadouts by those
@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.team_buff import CANONICAL_TEAM_BUFF_TIERS
+from ..core.timing_modes import TIMING_MODES
 from ..gamedata import ELEMENTS, STATS
 from ..stats import GEM_KINDS
 
@@ -55,6 +56,7 @@ class FgResult:
 
 @dataclass(frozen=True, slots=True)
 class Loadout:
+    mode: str  # the timing mode the song was solved in (core.timing_modes)
     song: str
     tier: str
     loadout_hash: str
@@ -71,6 +73,8 @@ class Loadout:
     on_fg: bool = False  # on the Force Greats board
 
     def __post_init__(self) -> None:
+        if self.mode not in TIMING_MODES:
+            raise ValueError(f"timing mode must be one of {TIMING_MODES}, got {self.mode!r}")
         if self.tier not in CANONICAL_TEAM_BUFF_TIERS:
             raise ValueError(f"TeamBuff tier must be one of {sorted(CANONICAL_TEAM_BUFF_TIERS)}, got {self.tier!r}")
         if self.primary not in ELEMENTS or self.secondary not in ELEMENTS:

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from gear_optimizer.core.timing_modes import PRECISE
 
 
 def _exact_force_greats_note_graph(
@@ -1951,10 +1952,10 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     except Exception:
         pytest.skip("evolution DB unavailable")
     try:
-        board = {x.loadout_hash: x for x in db.load_boards(conn, song, "T5").fg}
+        board = {x.loadout_hash: x for x in db.load_boards(conn, PRECISE, song, "T5").fg}
         if loadout_hash not in board:
             pytest.skip("Decoy FG loadout not in local DB")
-        trace = db.load_traces(conn, song, "T5", [loadout_hash])[loadout_hash].fg
+        trace = db.load_traces(conn, PRECISE, song, "T5", [loadout_hash])[loadout_hash].fg
     finally:
         conn.close()
     fd = fg_payload(board[loadout_hash], trace)

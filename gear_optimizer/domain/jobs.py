@@ -1,4 +1,4 @@
-"""A queued solve: one run of one song (each SongRepeats run is a task of its own)."""
+"""A queued solve: one run of one song in one timing mode (each SongRepeats run is a task of its own)."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ class SharedRunContext:
 class SongTask:
     file_path: str
     song_name: str
+    mode: str  # the timing mode it is solved in (core.timing_modes)
     context: SharedRunContext
     ga_seed: int | None = None
     repeat_index: int = 0  # the run number (1-based) of a song solved repeat_total times
@@ -31,9 +32,9 @@ class SongTask:
 
     @property
     def label(self) -> str:
-        """The task's queue label: the song name, with its run number when the song repeats."""
+        """The task's queue label: the song name and timing mode, with its run number when the song repeats."""
         if not self.song_name:
             return "Unknown"
         if self.repeat_index > 0 and self.repeat_total > 1:
-            return f"{self.song_name} (Run {self.repeat_index}/{self.repeat_total})"
-        return self.song_name
+            return f"{self.song_name} ({self.mode}, Run {self.repeat_index}/{self.repeat_total})"
+        return f"{self.song_name} ({self.mode})"

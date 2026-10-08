@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from gear_optimizer import robeatsmeta_service as service
+from gear_optimizer.core.timing_modes import PRECISE
 
 
 def _write_chart(root: Path, difficulty: str, song_name: str, filename: str = "song.txt") -> None:
@@ -403,7 +404,8 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
         def communicate(self, timeout=None):
             return ("", "")
 
-    def fake_loadouts(path, song_name, tier, *, limit):
+    def fake_loadouts(path, mode, song_name, tier, *, limit):
+        assert mode == "non-precise"  # read back in the mode the request solved
         assert song_name == "Feeding [Hard]"
         assert tier == "T5"
         assert limit == 51  # full leaderboard, not a single rank #1
@@ -480,14 +482,14 @@ def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
     monkeypatch.setattr(
         service.db,
         "promote",
-        lambda source, target, song, tier: promoted.append((Path(source).name, target, song, tier)),
+        lambda source, target, mode, song, tier: promoted.append((Path(source).name, target, mode, song, tier)),
     )
 
-    result = service.solve({"jobId": "job_promote", "targetSongId": "Feeding [Hard]"})
+    result = service.solve({"jobId": "job_promote", "targetSongId": "Feeding [Hard]", "timingMode": "precise"})
 
     assert result == [entry]
-    # Merged from the solve's own result database while the isolated workspace still exists.
-    assert promoted == [("result.db", str(service.paths().database), "Feeding [Hard]", "T5")]
+    # Merged from the solve's own result database while the isolated workspace still exists, under its mode.
+    assert promoted == [("result.db", str(service.paths().database), "precise", "Feeding [Hard]", "T5")]
 
 
 def test_a_persistent_solve_asks_the_worker_to_promote(monkeypatch):
@@ -507,16 +509,16 @@ def test_a_persistent_solve_asks_the_worker_to_promote(monkeypatch):
     assert "promoteTo" not in payloads[1]
 
 
-def test_only_clean_non_precise_official_solves_are_promoted(tmp_path, monkeypatch):
+def test_only_clean_official_solves_are_promoted(tmp_path, monkeypatch):
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "evolution.db"))
     clean = {"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []}
     custom = {**clean, "gear": [{"name": "Custom"}]}
 
-    def target(request, timing_mode="non-precise", pool=clean):
-        return service._promotion_target(request, timing_mode=timing_mode, custom_pool=pool)
+    def target(request, pool=clean):
+        return service._promotion_target(request, custom_pool=pool)
 
+    # Either timing mode: the catalog keeps both, keyed by mode.
     assert target({"targetSongId": "Official"}) == str(tmp_path / "evolution.db")
-    assert target({"targetSongId": "Official"}, timing_mode="precise") is None
     assert target({"targetSongId": "Official"}, pool=custom) is None
     assert target({"chartText": "Song Data\n"}) is None
     assert target({"targetSongId": "Official", "chartText": "Song Data\n"}) is None
@@ -1110,7 +1112,8 @@ def test_catalog_build_solves_described_official_charts_missing_from_the_catalog
     db_path = data_root / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     conn = schema.connect(db_path, write=True)
-    db.store_results(conn, "Built by Artist", "T5", [])  # a processed song
+    for mode in ("non-precise", "precise"):
+        db.store_results(conn, mode, "Built by Artist", "T5", [])  # a song processed in both modes
     conn.close()
     solved: list[dict[str, object]] = []
     monkeypatch.setattr(service, "solve", lambda request: solved.append(request) or [])
@@ -1118,9 +1121,14 @@ def test_catalog_build_solves_described_official_charts_missing_from_the_catalog
 
     service.build_missing_catalog_songs()
 
-    # Only the chart the game data describes and the catalog lacks, as a clean official request
-    # (default non-precise timing, no custom pool) so its result is promoted into the catalog.
-    assert solved == [{"jobId": solved[0]["jobId"], "targetSongId": "New (Hard) by Artist"}]
+    # Only the chart the game data describes and the catalog lacks, once per timing mode, as clean official
+    # requests (no custom pool) so their results are promoted into the catalog.
+    assert [(r["targetSongId"], r["timingMode"]) for r in solved] == [
+        ("New (Hard) by Artist", "non-precise"),
+        ("New (Hard) by Artist", "precise"),
+    ]
+    assert all(set(r) == {"jobId", "targetSongId", "timingMode"} for r in solved)
+    assert len({r["jobId"] for r in solved}) == 2
 
 
 def test_catalog_build_continues_past_a_failed_chart_and_yields_to_a_code_update(data_root, monkeypatch):
@@ -1128,10 +1136,10 @@ def test_catalog_build_continues_past_a_failed_chart_and_yields_to_a_code_update
         _write_chart(data_root, "Normal", name, f"{name}.txt")
     _write_export(data_root, (1, "A", "Artist"), (2, "B", "Artist"), (3, "C", "Artist"))
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(data_root / "missing.db"))
-    attempted: list[str] = []
+    attempted: list[tuple[str, str]] = []
 
     def solve(request):
-        attempted.append(request["targetSongId"])
+        attempted.append((request["targetSongId"], request["timingMode"]))
         if request["targetSongId"] == "A by Artist":
             raise RuntimeError("optimizer exited 1")
         service._AUTHORITATIVE_PUBLICATION_READY.clear()  # a code update starts draining
@@ -1142,7 +1150,8 @@ def test_catalog_build_continues_past_a_failed_chart_and_yields_to_a_code_update
 
     service.build_missing_catalog_songs()
 
-    assert attempted == ["A by Artist", "B by Artist"]
+    # A fails in both modes and the pass goes on; B's first solve starts a code update's drain, so the pass stops.
+    assert attempted == [("A by Artist", "non-precise"), ("A by Artist", "precise"), ("B by Artist", "non-precise")]
 
 
 def test_persistent_worker_restarts_when_a_new_catalog_activates(data_root, monkeypatch):

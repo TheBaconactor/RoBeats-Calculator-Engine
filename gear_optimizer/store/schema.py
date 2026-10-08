@@ -1,5 +1,5 @@
-"""Connections to the results database: a writer creates its tables (store.tables) or migrates version 18 (two
-leaderboard tables + name-id tables: store.v18); a reader requires the current version.
+"""Connections to the results database: a writer creates its tables (store.tables) or migrates version 19 (one
+timing mode per file: store.v19); a reader requires the current version.
 """
 
 from __future__ import annotations
@@ -8,8 +8,8 @@ import os
 import sqlite3
 from pathlib import Path
 
-from .tables import INDEXES_DDL, TABLES, VERSION, create_tables, truncate_wal, user_version
-from .v18 import migrate
+from . import v19
+from .tables import TABLES, VERSION, create_tables, user_version
 
 JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024
 
@@ -50,7 +50,6 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         missing = set(TABLES) - _tables(conn)
         if missing:
             raise StoreVersionError(f"results database version {VERSION} is missing tables {sorted(missing)}")
-        _ensure_indexes(conn)
         return
     if found == 0 and not _tables(conn):
         conn.execute("BEGIN IMMEDIATE")
@@ -58,22 +57,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA user_version = {VERSION}")
         conn.commit()
         return
-    if found == 18:
-        migrate(conn)
+    if found == 19:
+        v19.migrate(conn)
         return
     raise StoreVersionError(f"results database version {found} is not supported (this engine uses {VERSION})")
-
-
-def _ensure_indexes(conn: sqlite3.Connection) -> None:
-    """Add the indexes a version 19 database created before the entry-number indexes lacks (data unchanged)."""
-    present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
-    if {"loadouts_meta_seq", "loadouts_fg_seq"} <= present:
-        return
-    conn.execute("BEGIN IMMEDIATE")
-    for ddl in INDEXES_DDL:
-        conn.execute(ddl)
-    conn.commit()
-    truncate_wal(conn)
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:

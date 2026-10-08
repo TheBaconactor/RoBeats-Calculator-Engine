@@ -81,9 +81,10 @@ def store_solve(conn, solve: SongSolve, gears: dict[str, Gear], minis: dict[str,
     if not isinstance(solve, SongSolve):
         raise TypeError(f"the post-processor takes SongSolve results, got {type(solve).__name__}")
     rows = canonical_rows(solve, gears, minis)
-    before = _best_overall(load_boards(conn, solve.song, solve.tier))
-    store_results(conn, solve.song, solve.tier, rows)
-    _print_stored(solve, load_boards(conn, solve.song, solve.tier), before, gears)
+    mode = solve.timed.mode
+    before = _best_overall(load_boards(conn, mode, solve.song, solve.tier))
+    store_results(conn, mode, solve.song, solve.tier, rows)
+    _print_stored(solve, load_boards(conn, mode, solve.song, solve.tier), before, gears)
 
 
 def _best_overall(boards: Boards) -> int:

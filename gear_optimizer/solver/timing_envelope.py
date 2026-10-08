@@ -18,6 +18,7 @@ from typing import NamedTuple
 import numpy as np
 from cachetools import LRUCache
 
+from ..core.timing_modes import TIMING_MODES
 from ..chart import Chart
 from ..core.array_signature import array_sig16
 from ..core.time_quantize import quantize_to_int_ms
@@ -28,7 +29,6 @@ from ..rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECON
 # classification edge reaches +380, but an input scheduled past +200 races the per-frame sweep and lands only if no
 # frame ticks inside the gap, which no frame rate guarantees: no hit is ever planned later than this.
 NOTE_REMOVE_LATE_CAP_MS = 200
-TIMING_MODES = ("non-precise", "precise")
 PERFECT_LOWER_MS, PERFECT_UPPER_MS = -20, 40
 GREAT_LOWER_EXTRA_MS, GREAT_UPPER_EXTRA_MS = -75, 150
 HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
@@ -241,37 +241,36 @@ _TIMED_SONG_CACHE: LRUCache = LRUCache(maxsize=128)
 _TIMED_SONG_CACHE_LOCK = threading.Lock()
 
 
-def time_song(chart: Chart, mode: str | None = None, baseline_offset: np.ndarray | None = None) -> TimedSong:
-    """Prepare a chart for a timing model (default: the chart's Timing Mode header, else non-precise).
+def time_song(chart: Chart, mode: str, baseline_offset: np.ndarray | None = None) -> TimedSong:
+    """Prepare a chart for a timing mode (core.timing_modes).
 
     ``baseline_offset`` (seconds per note) is a custom played timeline and is only valid for non-precise; an
     absent or all-zero offset is the canonical chart-time preset.
     """
-    timing_mode = str(mode if mode is not None else chart.header.get("Timing Mode") or "non-precise").strip().lower()
-    if timing_mode not in TIMING_MODES:
-        raise ValueError(f"time_song: unknown timing mode {timing_mode!r}")
+    if mode not in TIMING_MODES:
+        raise ValueError(f"time_song: unknown timing mode {mode!r}")
     custom = baseline_offset is not None and bool(np.any(np.asarray(baseline_offset)))
-    if custom and timing_mode != "non-precise":
+    if custom and mode != "non-precise":
         raise ValueError(
             "time_song: baseline_offset (custom per-note timing) is only valid for fixed timing "
-            f"(mode='non-precise'), not {timing_mode!r}"
+            f"(mode='non-precise'), not {mode!r}"
         )
     if custom:
         hit_ts, baseline_hash = baseline_hit_timeline(chart.timestamps, baseline_offset)
         return TimedSong(chart=chart, mode="non-precise", baseline_hash=baseline_hash, hit_timestamps=hit_ts)
 
-    cache_key = (id(chart), timing_mode)
+    cache_key = (id(chart), mode)
     with _TIMED_SONG_CACHE_LOCK:
         cached = _TIMED_SONG_CACHE.get(cache_key)
         if cached is not None and cached.chart is chart:
             return cached
     chart_ts = chart.timestamps
-    if timing_mode == "non-precise":
+    if mode == "non-precise":
         song = TimedSong(chart=chart, mode="non-precise", baseline_hash="", hit_timestamps=chart_ts)
     else:
         song = TimedSong(
             chart=chart,
-            mode=timing_mode,
+            mode=mode,
             baseline_hash="",
             hit_timestamps=chart_ts,
             **precise_envelopes(chart_ts, chart.note_types)._asdict(),

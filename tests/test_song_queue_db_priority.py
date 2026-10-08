@@ -1,5 +1,6 @@
 import json
 
+from gear_optimizer.core.timing_modes import PRECISE, TIMING_MODES
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.settings import RunSettings
 from gear_optimizer.core.memory import MemoryGuardResumeTracker, build_memory_guard_resume_context
@@ -74,7 +75,7 @@ def test_present_songs_are_the_processed_ones(tmp_path):
     _mark_processed(tmp_path / "presence.db", song_empty_run)
     conn = schema.connect(tmp_path / "presence.db")
     try:
-        assert db.present_songs(conn, [song_in_db, song_empty_run, "Not In DB Yet (Hard)"]) == {song_in_db, song_empty_run}
+        assert db.present_songs(conn, PRECISE, [song_in_db, song_empty_run, "Not In DB Yet (Hard)"]) == {song_in_db, song_empty_run}
     finally:
         conn.close()
 
@@ -337,9 +338,12 @@ def test_build_song_queue_completed_journal_crash_window_admits_new_path(monkeyp
 
 
 def _mark_processed(db_path, song: str, *, with_loadouts: bool = False) -> None:
-    """The song as the results database records it after a run (with a stored result, or none)."""
+    """The song as the results database records it after a run in every timing mode (with a stored result, or none):
+    a run solves both modes, and a song is processed only once both are stored."""
     conn = schema.connect(db_path, write=True)
     try:
-        db.store_results(conn, song, "T5", [result("h1", 999, song=song)] if with_loadouts else [])
+        for mode in TIMING_MODES:
+            rows = [result("h1", 999, song=song, mode=mode)] if with_loadouts else []
+            db.store_results(conn, mode, song, "T5", rows)
     finally:
         conn.close()

@@ -22,6 +22,7 @@ The score oracle comes from the game source, not the optimizer scorer:
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
 import os
 import sqlite3
@@ -48,6 +49,7 @@ from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import time_song
+from gear_optimizer.core.timing_modes import TIMING_MODES
 from gear_optimizer.store import schema
 from gear_optimizer.store.db import load_boards, load_traces
 from gear_optimizer.store.legacy import fg_details, fg_payload
@@ -450,18 +452,18 @@ def measured_legality_checks(
     }
 
 
-def fetch_best_fg(conn: sqlite3.Connection, song_name: str) -> tuple[Loadout, dict, dict]:
-    """The song's top FG board loadout (T5) with its FG details and FG payload (version 18 shaped)."""
-    board = load_boards(conn, song_name, "T5").fg
+def fetch_best_fg(conn: sqlite3.Connection, mode: str, song_name: str) -> tuple[Loadout, dict, dict]:
+    """The song's top FG board loadout (T5) in `mode` with its FG details and FG payload (version 18 shaped)."""
+    board = load_boards(conn, mode, song_name, "T5").fg
     if not board:
-        raise ValueError(f"no persisted FG row found for {song_name}")
+        raise ValueError(f"no persisted {mode} FG row found for {song_name}")
     best = board[0]
-    trace = load_traces(conn, song_name, "T5", [best.loadout_hash])[best.loadout_hash].fg
+    trace = load_traces(conn, mode, song_name, "T5", [best.loadout_hash])[best.loadout_hash].fg
     return best, fg_details(best), fg_payload(best, trace)
 
 
-def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> dict[str, object]:
-    best, details, force_details = fetch_best_fg(conn, song_name)
+def verify_song(conn: sqlite3.Connection, mode: str, song_name: str, chart_path: Path) -> dict[str, object]:
+    best, details, force_details = fetch_best_fg(conn, mode, song_name)
     fg_meta = force_details.get("ForceGreats")
     if not isinstance(fg_meta, dict):
         raise ValueError("FG row force_details_json requires a ForceGreats payload")
@@ -469,7 +471,7 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
     if not trace:
         raise ValueError("FG row ForceGreats.frontier_trace is empty")
 
-    song = time_song(load_chart(chart_path))
+    song = time_song(load_chart(chart_path), mode)
     chart_ms = quantize_to_int_ms(song.chart.timestamps).astype(np.int32)
     note_types = song.chart.note_types
     total_notes = int(chart_ms.shape[0])
@@ -546,10 +548,10 @@ def main(argv: list[str] | None = None) -> int:
     conn = schema.connect(db_path)
     try:
         had_mismatch = False
-        for song_name, chart_path, _difficulty in resolved:
-            result = verify_song(conn, song_name, chart_path)
+        for (song_name, chart_path, _difficulty), mode in itertools.product(resolved, TIMING_MODES):
+            result = verify_song(conn, mode, song_name, chart_path)
             print("=" * 78)
-            print(f"SONG: {result['song_name']}")
+            print(f"SONG: {result['song_name']} ({mode})")
             print(
                 f"  optimizer_fg = {int(result['optimizer_fg']):,}   oracle_fg = {int(result['oracle_fg']):,}   "
                 f"delta = {int(result['delta']):,}   status = {result['status']}"

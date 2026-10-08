@@ -1,6 +1,7 @@
 import sqlite3
 
 import gear_optimizer.helpers.song_helpers.database_context as database_context
+from gear_optimizer.core.timing_modes import NON_PRECISE, PRECISE
 from gear_optimizer.helpers.song_helpers.database_context import SongDbBaseline
 from gear_optimizer.pipeline.progress import run_record_info
 from gear_optimizer.store import db, schema
@@ -12,17 +13,19 @@ def test_the_baseline_is_invalid_when_the_database_cannot_be_read(monkeypatch):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(database_context.schema, "connect", _raise_locked)
-    assert database_context.load_song_db_baseline("Song A") == SongDbBaseline("Song A", 0, 0, False)
+    assert database_context.load_song_db_baseline("Song A", PRECISE) == SongDbBaseline("Song A", 0, 0, False)
 
 
 def test_the_baseline_is_the_songs_stored_best_meta_and_fg_scores(tmp_path, monkeypatch):
     path = tmp_path / "results.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(path))
     conn = schema.connect(path, write=True)
-    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 90, 160)])
+    db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 90, 160)])
     conn.close()
-    assert database_context.load_song_db_baseline(" Song A ") == SongDbBaseline("Song A", 120, 160, True)
-    assert database_context.load_song_db_baseline("Song B") == SongDbBaseline("Song B", 0, 0, True)
+    assert database_context.load_song_db_baseline(" Song A ", PRECISE) == SongDbBaseline("Song A", 120, 160, True)
+    assert database_context.load_song_db_baseline("Song B", PRECISE) == SongDbBaseline("Song B", 0, 0, True)
+    # Each mode's GA starts from that mode's bests.
+    assert database_context.load_song_db_baseline("Song A", NON_PRECISE) == SongDbBaseline("Song A", 0, 0, True)
 
 
 def test_no_record_is_reported_without_a_readable_baseline():
