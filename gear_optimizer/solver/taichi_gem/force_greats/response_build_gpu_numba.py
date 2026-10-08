@@ -4,9 +4,6 @@ import numpy as np
 from numba import njit, types
 from numba.typed import List
 
-# Packet-point arena rows: (body_fever, shifted normal-great, fever_great) int64 triples in a
-# cursor-managed flat (cap, 3) array, one arena per packet family (grow-doubling).
-_NUMBA_PACKET_ARENA_TYPE = types.int64[:, ::1]
 _NUMBA_HEAD_BASIS_TYPE = types.Tuple((
     types.uint64,
     types.uint64,
@@ -45,10 +42,6 @@ RegionTables = namedtuple(
     ],
 )
 # One packet queue's back-segment arrays (alpha, packet offsets, Great-activation bounds, lengths, arenas).
-PacketQueue = namedtuple(
-    "PacketQueue",
-    ["back_alpha", "back_pk_off", "back_ag_start", "back_ag_end", "back_len", "back_pk_arenas", "back_ag_arenas"],
-)
 # The Perfect / Great floor and candidate hit times of every note and its earliest planned late-Great hit (the
 # reachability and region-core checks).
 
@@ -2017,7 +2010,36 @@ def _numba_session_box_keep_mask(
     return keep
 
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, inline="always")
+def _numba_skyline_hull_push(stack, count: int, group_base: int, group_ng: int, bf: int, ng: int, fg: int, tag: int,
+                             fen_values, fen_stamps, fen_stamp: int):
+    """One candidate of a skyline with per-normal-Great upper hulls, fed in (normal Greats asc, fever Greats asc) order
+    with one candidate per pair: kept iff its body fever beats every earlier candidate with fever Greats <= (stamped
+    Fenwick prefix maxima), which includes the kept rows of its own normal-Great group, so a group's kept rows have
+    strictly increasing body fever and its upper hull of (body fever, -fever Greats) runs incrementally on the `stack`
+    rows (body fever, normal Greats, fever Greats, tag). Returns (count, group_base, group_ng)."""
+    if bf > _numba_prefix_max_query_stamped(fen_values, fen_stamps, int(fen_stamp), int(fg)):
+        if ng != group_ng:
+            group_ng = ng
+            group_base = count
+        while count - group_base >= 2:
+            cross = (stack[count - 1, 0] - stack[count - 2, 0]) * (stack[count - 2, 2] - fg) - (
+                stack[count - 2, 2] - stack[count - 1, 2]
+            ) * (bf - stack[count - 2, 0])
+            if cross >= 0:
+                count -= 1
+            else:
+                break
+        stack[count, 0] = bf
+        stack[count, 1] = ng
+        stack[count, 2] = fg
+        stack[count, 3] = tag
+        count += 1
+    _numba_prefix_max_update_stamped(fen_values, fen_stamps, int(fen_stamp), int(fg), int(bf))
+    return count, group_base, group_ng
+
+
+@njit(cache=True, nogil=True, inline="always")
 def _numba_reduce_touched_body_pairs(
     pair_mod: int,
     touched_pair,
@@ -2026,12 +2048,12 @@ def _numba_reduce_touched_body_pairs(
     bit_values,
     bit_stamps,
     bit_stamp: int,
-    frontier_values,
+    stack,
 ):
     """Fused Pareto reduce + body-tail hull filter, allocation-free.
 
-    Emits the surviving (body_fever, body_great, body_fever_great) rows into the reusable grow-doubling (cap, 3)
-    uint64 `frontier_values` buffer and returns (buffer, count). One pass is exact because:
+    Emits the surviving (body_fever, normal_great, fever_great, 0) rows into the reusable grow-doubling (cap, 4)
+    int64 `stack` and returns (stack, count). One pass is exact because:
 
     - `touched_pair[:touched_count]` holds DISTINCT pair indices (`_numba_touch_body_candidate` appends a pair_idx
       only on its first stamp-set; every touch batch bumps the stamp and resets touched_count), and nothing reads
@@ -2040,10 +2062,11 @@ def _numba_reduce_touched_body_pairs(
       fever_great asc). A kept entry's body_fever strictly exceeds the stamped-Fenwick prefix max over everything
       already processed with fever_great' <= fever_great, which includes every earlier kept entry of the same
       normal_great group, so within a group kept rows have strictly increasing body_fever and the per-group upper
-      hull of (body_fever, -fever_great) runs incrementally over the kept stream (the finished-groups prefix of
-      `frontier_values` doubles as the current group's stack); a group of one or two rows passes through as is.
+      hull of (body_fever, -fever_great) runs incrementally over the kept stream (_numba_skyline_hull_push; the
+      finished-groups prefix of `stack` doubles as the current group's stack).
     - The Fenwick gets one update per distinct pair, in pair order (hull pops never touch it), so the carried
-      bit_values/bit_stamps workspace does not depend on what the hull removes.
+      bit_values/bit_stamps workspace does not depend on what the hull removes. It spans the batch's fever-Great
+      range only.
 
     For a fixed (PP/combo/fever/color) cell the body score is LINEAR in the three body counts:
     `A*body_fever - pnp*normal_great - pfp*fever_great` with A,pnp,pfp >= 0. The early-Great
@@ -2051,70 +2074,25 @@ def _numba_reduce_touched_body_pairs(
     set is the 2-D upper hull in (body_fever, -fever_great); pruning to it is bit-exact for every
     cone direction, shift-invariant, and composition-safe as the DP adds section counts."""
     if int(touched_count) <= 0:
-        return frontier_values, 0
+        return stack, 0
     touched_pair[: int(touched_count)].sort()
-    frontier_values = _numba_u64_rows_ensure(frontier_values, 0, int(touched_count))
-    out_count = 0
+    stack = _numba_i64_rows_ensure(stack, 0, int(touched_count))
+    max_fever_great = 0
+    for idx in range(int(touched_count)):
+        max_fever_great = max(max_fever_great, int(touched_pair[idx]) % int(pair_mod))
+    bit_values = bit_values[: max_fever_great + 2]
+    bit_stamps = bit_stamps[: max_fever_great + 2]
+    count = 0
     group_base = 0
     group_ng = -1
     for idx in range(int(touched_count)):
         pair_idx = int(touched_pair[idx])
-        normal_great = int(pair_idx) // int(pair_mod)
-        fever_great = int(pair_idx) - int(normal_great) * int(pair_mod)
-        best_fever = int(best_fever_by_pair[pair_idx])
-        if best_fever > _numba_prefix_max_query_stamped(bit_values, bit_stamps, int(bit_stamp), int(fever_great)):
-            if int(normal_great) != int(group_ng):
-                group_ng = int(normal_great)
-                group_base = int(out_count)
-            # Upper hull of (body_fever, -fever_great): keep right turns (cross < 0).
-            x = np.int64(best_fever)
-            y = np.int64(-fever_great)
-            while int(out_count) - int(group_base) >= 2:
-                i1_bf = np.int64(frontier_values[int(out_count) - 2, 0])
-                i1_bfg = np.int64(frontier_values[int(out_count) - 2, 2])
-                i2_bf = np.int64(frontier_values[int(out_count) - 1, 0])
-                i2_bfg = np.int64(frontier_values[int(out_count) - 1, 2])
-                cross = (i2_bf - i1_bf) * (y + i1_bfg) - ((-i2_bfg) + i1_bfg) * (x - i1_bf)
-                if cross >= 0:
-                    out_count -= 1
-                else:
-                    break
-            frontier_values[int(out_count), 0] = np.uint64(best_fever)
-            frontier_values[int(out_count), 1] = np.uint64(normal_great + fever_great)
-            frontier_values[int(out_count), 2] = np.uint64(fever_great)
-            out_count += 1
-        _numba_prefix_max_update_stamped(bit_values, bit_stamps, int(bit_stamp), int(fever_great), int(best_fever))
-    return frontier_values, int(out_count)
-
-
-@njit(cache=True, nogil=True)
-def _numba_packet_arena_ensure(arenas, family_idx: int, used: int, extra: int):
-    """Grow-doubling reservation on one family's flat packet-point arena. Rows [0, used) are
-    live and preserved verbatim on growth (ranges are offsets, so every stored (start, end)
-    stays valid); returns the (possibly replaced) arena with >= used + extra row capacity."""
-    arena = arenas[int(family_idx)]
-    need = int(used) + int(extra)
-    cap = int(arena.shape[0])
-    if need <= cap:
-        return arena
-    new_cap = int(cap)
-    while new_cap < need:
-        new_cap *= 2
-    grown = np.empty((int(new_cap), 3), dtype=np.int64)
-    grown[: int(used)] = arena[: int(used)]
-    arenas[int(family_idx)] = grown
-    return grown
-
-
-@njit(cache=True, nogil=True)
-def _numba_packet_points_copy(src, src_start: int, src_end: int, dst, dst_cursor: int) -> int:
-    write = int(dst_cursor)
-    for idx in range(int(src_start), int(src_end)):
-        dst[int(write), 0] = src[int(idx), 0]
-        dst[int(write), 1] = src[int(idx), 1]
-        dst[int(write), 2] = src[int(idx), 2]
-        write += 1
-    return int(write)
+        normal_great = pair_idx // int(pair_mod)
+        count, group_base, group_ng = _numba_skyline_hull_push(
+            stack, count, group_base, group_ng, np.int64(best_fever_by_pair[pair_idx]), np.int64(normal_great),
+            np.int64(pair_idx - normal_great * int(pair_mod)), 0, bit_values, bit_stamps, int(bit_stamp),
+        )
+    return stack, int(count)
 
 
 @njit(cache=True, nogil=True)
@@ -2155,92 +2133,6 @@ def _numba_packet_points_skyline(buf, start: int, end: int) -> int:
         cq = buf[int(idx), 2]
         kept = _numba_packet_points_append(buf, int(start), int(kept), int(cf), int(cn), int(cq))
     return int(kept)
-
-
-@njit(cache=True, nogil=True)
-def _numba_packet_union(
-    left_buf,
-    left_start: int,
-    left_end: int,
-    right_buf,
-    right_start: int,
-    right_end: int,
-    out_buf,
-    out_cursor: int,
-):
-    """Union of two packet ranges. Returns (code, start, end): code 1 = the left range verbatim, code 2 = the right
-    range, code 0 = a fresh union written into ``out_buf`` at [out_cursor, end). The caller must
-    reserve (left_len + right_len) rows at ``out_cursor`` and guarantee [out_cursor, ...)
-    does not overlap either input range (arena writes only ever land at the cursor, past
-    every live range, so this holds by construction)."""
-    left_len = int(left_end) - int(left_start)
-    right_len = int(right_end) - int(right_start)
-    if left_len <= 0:
-        return 2, int(right_start), int(right_end)
-    if right_len <= 0:
-        return 1, int(left_start), int(left_end)
-    if left_len == 1:
-        cf = left_buf[int(left_start), 0]
-        cn = left_buf[int(left_start), 1]
-        cq = left_buf[int(left_start), 2]
-        for idx in range(int(right_start), int(right_end)):
-            if right_buf[int(idx), 0] >= cf and right_buf[int(idx), 1] <= cn and right_buf[int(idx), 2] <= cq:
-                return 2, int(right_start), int(right_end)
-
-        write = int(out_cursor)
-        out_buf[int(write), 0] = cf
-        out_buf[int(write), 1] = cn
-        out_buf[int(write), 2] = cq
-        write += 1
-        for idx in range(int(right_start), int(right_end)):
-            kf = right_buf[int(idx), 0]
-            kn = right_buf[int(idx), 1]
-            kq = right_buf[int(idx), 2]
-            if not (cf >= kf and cn <= kn and cq <= kq):
-                out_buf[int(write), 0] = kf
-                out_buf[int(write), 1] = kn
-                out_buf[int(write), 2] = kq
-                write += 1
-        return 0, int(out_cursor), int(write)
-    if right_len == 1:
-        cf = right_buf[int(right_start), 0]
-        cn = right_buf[int(right_start), 1]
-        cq = right_buf[int(right_start), 2]
-        for idx in range(int(left_start), int(left_end)):
-            if left_buf[int(idx), 0] >= cf and left_buf[int(idx), 1] <= cn and left_buf[int(idx), 2] <= cq:
-                return 1, int(left_start), int(left_end)
-
-        write = int(out_cursor)
-        for idx in range(int(left_start), int(left_end)):
-            kf = left_buf[int(idx), 0]
-            kn = left_buf[int(idx), 1]
-            kq = left_buf[int(idx), 2]
-            if not (cf >= kf and cn <= kn and cq <= kq):
-                out_buf[int(write), 0] = kf
-                out_buf[int(write), 1] = kn
-                out_buf[int(write), 2] = kq
-                write += 1
-        out_buf[int(write), 0] = cf
-        out_buf[int(write), 1] = cn
-        out_buf[int(write), 2] = cq
-        write += 1
-        return 0, int(out_cursor), int(write)
-    write = int(out_cursor)
-    for idx in range(int(left_start), int(left_end)):
-        out_buf[int(write), 0] = left_buf[int(idx), 0]
-        out_buf[int(write), 1] = left_buf[int(idx), 1]
-        out_buf[int(write), 2] = left_buf[int(idx), 2]
-        write += 1
-    for idx in range(int(right_start), int(right_end)):
-        write = _numba_packet_points_append(
-            out_buf,
-            int(out_cursor),
-            int(write),
-            int(right_buf[int(idx), 0]),
-            int(right_buf[int(idx), 1]),
-            int(right_buf[int(idx), 2]),
-        )
-    return 0, int(out_cursor), int(write)
 
 
 @njit(cache=True, nogil=True)
@@ -2326,172 +2218,6 @@ def _numba_build_region2_packet_families(action_count: int, raw_fever_fill: floa
 
 
 @njit(cache=True, nogil=True)
-def _numba_packet_queue_transfer(
-    family_idx: int,
-    seg_base: int,
-    front_alpha,
-    front_ag_start,
-    front_ag_end,
-    front_len,
-    back_alpha,
-    back_pk_off,
-    back_len,
-    back_pk_arenas,
-    front_ag_arenas,
-) -> None:
-    """Back->front transfer: pop back entries newest first, fold each packet into the running union
-    (``union(packet, aggregate)``) and append (alpha, aggregate range) to the front stack. A union that returns the
-    aggregate shares its range with the new front entry; one that returns the packet copies its points into the
-    front arena. Front aggregate ends are non-decreasing along the
-    stack, so the arena cursor is always the top entry's end and pops rewind losslessly."""
-    f = int(family_idx)
-    base = int(seg_base)
-    pk_buf = back_pk_arenas[f]
-    front_count = int(front_len[f])
-    front_cursor = int(front_ag_end[base + front_count - 1]) if front_count > 0 else 0
-    run_start = 0
-    run_end = 0
-    back_count = int(back_len[f])
-    while back_count > 0:
-        entry = int(back_count) - 1
-        alpha = int(back_alpha[base + entry])
-        pk_start = int(back_pk_off[base + entry])
-        pk_end = int(back_pk_off[base + entry + 1])
-        back_count = int(entry)
-        pk_len = int(pk_end) - int(pk_start)
-        if int(run_end) - int(run_start) <= 0:
-            front_arena = _numba_packet_arena_ensure(front_ag_arenas, f, int(front_cursor), int(pk_len))
-            run_start = int(front_cursor)
-            run_end = _numba_packet_points_copy(pk_buf, int(pk_start), int(pk_end), front_arena, int(front_cursor))
-            front_cursor = int(run_end)
-        else:
-            front_arena = _numba_packet_arena_ensure(
-                front_ag_arenas, f, int(front_cursor), int(pk_len) + (int(run_end) - int(run_start))
-            )
-            code, out_start, out_end = _numba_packet_union(
-                pk_buf,
-                int(pk_start),
-                int(pk_end),
-                front_arena,
-                int(run_start),
-                int(run_end),
-                front_arena,
-                int(front_cursor),
-            )
-            if int(code) == 1:
-                # The union is the packet alone: copy its points into the front arena.
-                run_start = int(front_cursor)
-                run_end = _numba_packet_points_copy(
-                    pk_buf, int(pk_start), int(pk_end), front_arena, int(front_cursor)
-                )
-                front_cursor = int(run_end)
-            elif int(code) == 0:
-                run_start = int(out_start)
-                run_end = int(out_end)
-                front_cursor = int(run_end)
-            # code 2: union kept the running aggregate -> share the previous entry's range.
-        front_alpha[base + front_count] = np.int64(alpha)
-        front_ag_start[base + front_count] = np.int64(run_start)
-        front_ag_end[base + front_count] = np.int64(run_end)
-        front_count += 1
-    front_len[f] = np.int64(front_count)
-    back_len[f] = np.int64(0)
-
-
-@njit(cache=True, nogil=True)
-def _numba_packet_queue_pop_expired_after(
-    high_alpha: int,
-    family_idx: int,
-    seg_base: int,
-    front_alpha,
-    front_ag_start,
-    front_ag_end,
-    front_len,
-    back_alpha,
-    back_pk_off,
-    back_len,
-    back_pk_arenas,
-    front_ag_arenas,
-) -> None:
-    f = int(family_idx)
-    base = int(seg_base)
-    while True:
-        if int(front_len[f]) <= 0:
-            _numba_packet_queue_transfer(
-                f,
-                base,
-                front_alpha,
-                front_ag_start,
-                front_ag_end,
-                front_len,
-                back_alpha,
-                back_pk_off,
-                back_len,
-                back_pk_arenas,
-                front_ag_arenas,
-            )
-        if int(front_len[f]) <= 0:
-            return
-        if int(front_alpha[base + int(front_len[f]) - 1]) <= int(high_alpha):
-            return
-        front_len[f] = np.int64(int(front_len[f]) - 1)
-
-
-@njit(cache=True, nogil=True)
-def _numba_packet_queue_push_back(
-    alpha: int,
-    pk_start: int,
-    pk_end: int,
-    family_idx: int,
-    seg_base: int,
-    seg_limit: int,
-    packet_queue,
-) -> None:
-    """Push a packet on the back stack. The packet occupies back-packet-arena rows [pk_start, pk_end), already
-    written at the arena cursor by the caller (callers skip empty packets). The new top aggregate is
-    ``union(old_top, packet)``: a fresh union lands at the aggregate-arena cursor, an old-top alias shares the old
-    range, and a packet alias (or the empty-back seed) is materialized with identical content."""
-    back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
-    f = int(family_idx)
-    base = int(seg_base)
-    count = int(back_len[f])
-    if base + count + 1 >= int(seg_limit):
-        raise ValueError("FG packet queue exceeded its family window bound")
-    pk_len = int(pk_end) - int(pk_start)
-    pk_buf = back_pk_arenas[f]
-    if count > 0:
-        top_start = int(back_ag_start[base + count - 1])
-        top_end = int(back_ag_end[base + count - 1])
-        ag_cursor = int(top_end)
-        ag_buf = _numba_packet_arena_ensure(
-            back_ag_arenas, f, int(ag_cursor), (int(top_end) - int(top_start)) + int(pk_len)
-        )
-        code, out_start, out_end = _numba_packet_union(
-            ag_buf,
-            int(top_start),
-            int(top_end),
-            pk_buf,
-            int(pk_start),
-            int(pk_end),
-            ag_buf,
-            int(ag_cursor),
-        )
-        if int(code) == 2:
-            # Union kept the packet alone: materialize into the aggregate arena.
-            out_start = int(ag_cursor)
-            out_end = _numba_packet_points_copy(pk_buf, int(pk_start), int(pk_end), ag_buf, int(ag_cursor))
-    else:
-        ag_buf = _numba_packet_arena_ensure(back_ag_arenas, f, 0, int(pk_len))
-        out_start = 0
-        out_end = _numba_packet_points_copy(pk_buf, int(pk_start), int(pk_end), ag_buf, 0)
-    back_alpha[base + count] = np.int64(alpha)
-    back_ag_start[base + count] = np.int64(out_start)
-    back_ag_end[base + count] = np.int64(out_end)
-    back_pk_off[base + count + 1] = np.int64(pk_end)
-    back_len[f] = np.int64(count + 1)
-
-
-@njit(cache=True, nogil=True)
 def _numba_clamped_end_idx(n: int, activation_idx: int, raw_end_idx: int) -> int:
     edge_e = int(raw_end_idx)
     if int(edge_e) <= int(activation_idx):
@@ -2501,8 +2227,8 @@ def _numba_clamped_end_idx(n: int, activation_idx: int, raw_end_idx: int) -> int
     return int(edge_e)
 
 
-@njit(cache=True, nogil=True)
-def _numba_packet_queue_push_activation(
+@njit(cache=True, nogil=True, inline="always")
+def _numba_activation_packet(
     n: int,
     mode: int,
     defect: int,
@@ -2512,31 +2238,31 @@ def _numba_packet_queue_push_activation(
     body_counts,
     use_forced_great_timing_i: int,
     ends,
-    family_idx: int,
-    seg_base: int,
-    seg_limit: int,
-    packet_queue,
+    pk_buf,
 ):
-    back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
+    """One section activation's packet: its edge (Perfect activation, or late-Great when `mode` != 0) at every end in
+    [exit, early-Great reach] joined with that end's body tail, as rows (body fever, normal Greats + 2 x activation +
+    defect, fever Greats) in pk_buf [0, count). The rows do not depend on the state: state s reads normal Greats as the
+    second column - 2s. Returns (pk_buf, count); count 0 when the activation is invalid or no end has a tail."""
     if int(activation) < 100 or int(activation) >= int(n):
-        return
+        return pk_buf, 0
     if int(ends.perfect_valid[int(activation)]) == 0:
-        return
+        return pk_buf, 0
     perfect_e = int(ends.perfect_e[int(activation)])
     edge_e = int(perfect_e)
     edge_eg_e = int(ends.eg_perfect_e[int(activation)])
     fever_great_delta = 0
     if int(mode) != 0:
         if int(use_forced_great_timing_i) == 0:
-            return
+            return pk_buf, 0
         if int(ends.late_valid[int(activation)]) == 0:
-            return
+            return pk_buf, 0
         late_e = int(ends.late_e[int(activation)])
         late_eg_e = int(ends.eg_late_e[int(activation)])
         if not _numba_late_edge_extends(
             int(perfect_e), int(late_e), int(late_eg_e), int(edge_eg_e)
         ):
-            return
+            return pk_buf, 0
         edge_e = int(late_e)
         edge_eg_e = int(late_eg_e)
         fever_great_delta = 1
@@ -2554,10 +2280,9 @@ def _numba_packet_queue_push_activation(
     for end_e in range(int(lo_e), int(eg_e) + 1):
         total_points += int(body_counts[int(end_e)])
     if int(total_points) <= 0:
-        return
-    pk_cursor = int(back_pk_off[int(seg_base) + int(back_len[int(family_idx)])])
-    pk_buf = _numba_packet_arena_ensure(back_pk_arenas, int(family_idx), int(pk_cursor), int(total_points))
-    write = int(pk_cursor)
+        return pk_buf, 0
+    pk_buf = _numba_i64_rows_ensure(pk_buf, 0, int(total_points))
+    write = 0
     for end_e in range(int(lo_e), int(eg_e) + 1):
         tail_count = int(body_counts[int(end_e)])
         if int(tail_count) <= 0:
@@ -2578,20 +2303,12 @@ def _numba_packet_queue_push_activation(
             pk_buf[int(write), 2] = np.int64(int(packet_fever_great))
             write += 1
     if int(lo_e) < int(eg_e):
-        write = _numba_packet_points_skyline(pk_buf, int(pk_cursor), int(write))
-    _numba_packet_queue_push_back(
-        int(activation),
-        int(pk_cursor),
-        int(write),
-        int(family_idx),
-        int(seg_base),
-        int(seg_limit),
-        packet_queue,
-    )
+        write = _numba_packet_points_skyline(pk_buf, 0, int(write))
+    return pk_buf, int(write)
 
 
-@njit(cache=True, nogil=True)
-def _numba_region2_packet_queue_push_activation(
+@njit(cache=True, nogil=True, inline="always")
+def _numba_region2_activation_packet(
     n: int,
     activation_offset: int,
     defect: int,
@@ -2609,23 +2326,22 @@ def _numba_region2_packet_queue_push_activation(
     lanes,
     region,
     late_exit_e,
-    family_idx: int,
-    seg_base: int,
-    seg_limit: int,
-    packet_queue,
+    pk_buf,
 ):
-    back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len, back_pk_arenas, back_ag_arenas = packet_queue
+    """One region-2 activation's packet (a forced-Great run moves the activation; the run's core comes from the
+    shared region table, or live when the table skipped it), rows as in _numba_activation_packet. Returns (pk_buf,
+    count)."""
     region_starts, region_offsets, region_activations, region_great_ends, region_is_greats, region_act_hit_ids, region_perfect_hit_ids, region_perfect_valids, region_perfect_end_by_hit, region_great_end_by_hit = region
     if int(activation) < 100 or int(activation) >= int(n):
-        return
+        return pk_buf, 0
     k = (2 * int(activation_offset)) + int(defect) + 1
     region_offset = int(activation_offset) - int(k)
     if int(k) <= 0 or int(region_offset) < 1:
-        return
+        return pk_buf, 0
     state_i = int(activation) - int(activation_offset)
     section_start = int(state_i) + 1
     if int(section_start) < 0 or int(section_start) >= int(n):
-        return
+        return pk_buf, 0
 
     # Shared-core lookup: the great-branch region-run core (great_end, capped hits) is a pure
     # function of (section_start, run_start, activation) -- k participates only via the
@@ -2700,7 +2416,7 @@ def _numba_region2_packet_queue_push_activation(
             )
         )
     if int(valid) == 0 or int(activation_great_idx) < 0 or int(activation_i) != int(activation):
-        return
+        return pk_buf, 0
 
     # The activation can also end its fever early, at every end in [late_exit_e, edge_e).
     lo_e = min(int(late_exit_e[int(activation)]), int(edge_e))
@@ -2708,10 +2424,9 @@ def _numba_region2_packet_queue_push_activation(
     for end_e in range(int(lo_e), int(eg_e) + 1):
         total_points += int(body_counts[int(end_e)])
     if int(total_points) <= 0:
-        return
-    pk_cursor = int(back_pk_off[int(seg_base) + int(back_len[int(family_idx)])])
-    pk_buf = _numba_packet_arena_ensure(back_pk_arenas, int(family_idx), int(pk_cursor), int(total_points))
-    write = int(pk_cursor)
+        return pk_buf, 0
+    pk_buf = _numba_i64_rows_ensure(pk_buf, 0, int(total_points))
+    write = 0
     for end_e in range(int(lo_e), int(eg_e) + 1):
         tail_count = int(body_counts[int(end_e)])
         if int(tail_count) <= 0:
@@ -2754,19 +2469,11 @@ def _numba_region2_packet_queue_push_activation(
             pk_buf[int(write), 2] = np.int64(int(tail_fever_great) + int(edge_fever_great))
             write += 1
     if int(lo_e) < int(eg_e):
-        write = _numba_packet_points_skyline(pk_buf, int(pk_cursor), int(write))
-    _numba_packet_queue_push_back(
-        int(activation),
-        int(pk_cursor),
-        int(write),
-        int(family_idx),
-        int(seg_base),
-        int(seg_limit),
-        packet_queue,
-    )
+        write = _numba_packet_points_skyline(pk_buf, 0, int(write))
+    return pk_buf, int(write)
 
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, inline="always")
 def _numba_touch_packet_points_for_state(
     points,
     point_start: int,
@@ -2826,7 +2533,7 @@ def _numba_u64_rows_ensure(values, used: int, extra: int):
     return grown
 
 
-@njit(cache=True, nogil=True)
+@njit(cache=True, nogil=True, inline="always")
 def _numba_store_body_tail_frontier(
     body_values, body_starts, body_counts, state: int, cursor: int, frontier_values, frontier_count: int
 ):
@@ -2835,10 +2542,55 @@ def _numba_store_body_tail_frontier(
     body_starts[int(state)] = int(cursor)
     body_counts[int(state)] = int(count)
     for idx in range(count):
-        grown[int(cursor) + int(idx), 0] = frontier_values[int(idx), 0]
-        grown[int(cursor) + int(idx), 1] = frontier_values[int(idx), 1]
-        grown[int(cursor) + int(idx), 2] = frontier_values[int(idx), 2]
+        grown[int(cursor) + int(idx), 0] = np.uint64(frontier_values[int(idx), 0])
+        grown[int(cursor) + int(idx), 1] = np.uint64(frontier_values[int(idx), 1] + frontier_values[int(idx), 2])
+        grown[int(cursor) + int(idx), 2] = np.uint64(frontier_values[int(idx), 2])
     return grown, int(cursor) + int(count)
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _numba_skyline_queue_push(queue, heads, tails, family_idx: int, activation: int, pk_buf, count: int):
+    """Append one activation's packet rows (pk_buf [0, count)) to its family's skyline queue: rows (body fever, shifted
+    normal Greats, fever Greats, activation) in push order, so activations descend from head to tail and expired ones
+    leave at the head. A queued row a new row dominates is dropped: the new activation is smaller, so it stays in every
+    later window the old one is in. The queue keeps every point of its window's Pareto set (in practice exactly that
+    set). Returns the (possibly grown) queue array."""
+    f = int(family_idx)
+    head = int(heads[f])
+    write = head
+    for row in range(head, int(tails[f])):
+        dominated = False
+        for p in range(int(count)):
+            if pk_buf[p, 0] >= queue[f, row, 0] and pk_buf[p, 1] <= queue[f, row, 1] and pk_buf[p, 2] <= queue[f, row, 2]:
+                dominated = True
+                break
+        if not dominated:
+            if write != row:
+                for col in range(4):
+                    queue[f, write, col] = queue[f, row, col]
+            write += 1
+    if write + int(count) > int(queue.shape[1]):
+        for row in range(head, write):
+            for col in range(4):
+                queue[f, row - head, col] = queue[f, row, col]
+        write -= head
+        head = 0
+        if write + int(count) > int(queue.shape[1]):
+            cap = int(queue.shape[1])
+            while cap < write + int(count):
+                cap *= 2
+            grown = np.empty((int(queue.shape[0]), cap, 4), dtype=np.int64)
+            grown[:, : int(queue.shape[1])] = queue
+            queue = grown
+    for p in range(int(count)):
+        queue[f, write, 0] = pk_buf[p, 0]
+        queue[f, write, 1] = pk_buf[p, 1]
+        queue[f, write, 2] = pk_buf[p, 2]
+        queue[f, write, 3] = int(activation)
+        write += 1
+    heads[f] = head
+    tails[f] = write
+    return queue
 
 
 @njit(cache=True, nogil=True)
@@ -2881,7 +2633,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     body_cursor = 1
     # Reusable output buffer for the fused per-state reduce+hull (grow-doubling, rewritten from
     # row 0 each state; survivors are copied into body_values before the next state runs).
-    reduce_values = np.empty((1024, 3), dtype=np.uint64)
+    reduce_values = np.empty((1024, 4), dtype=np.int64)
 
     family_count, family_mode, family_defect, family_start, family_end = _numba_build_packet_families(
         int(action_count),
@@ -2889,77 +2641,21 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
         later_forced,
         later_activation_forced,
     )
-    # Cursor-managed flat packet queues (one two-stack sliding-window queue per family).
-    # Stacks live in CSR segments of shared 1D arrays: family f owns slots
-    # [seg_off[f], seg_off[f + 1]) sized to its window width plus slack -- the queue holds at
-    # most (family_end - family_start + 1) live entries (each alpha is pushed once, expired
-    # entries are popped before pushes, and at touch time every entry is window-live).
-    # Packet points and aggregates live in per-family grow-doubling (cap, 3) int64 arenas;
-    # entries hold (start, end) ranges, and a union that returns one of its inputs shares that range
-    # (see _numba_packet_queue_transfer / push_back).
-    seg_off = np.zeros(int(family_count) + 1, dtype=np.int64)
-    for family_idx in range(int(family_count)):
-        width = int(family_end[int(family_idx)]) - int(family_start[int(family_idx)]) + 1
-        seg_off[int(family_idx) + 1] = int(seg_off[int(family_idx)]) + int(width) + 3
-    total_slots = max(1, int(seg_off[int(family_count)]))
-    front_alpha = np.zeros(int(total_slots), dtype=np.int64)
-    front_ag_start = np.zeros(int(total_slots), dtype=np.int64)
-    front_ag_end = np.zeros(int(total_slots), dtype=np.int64)
-    front_len = np.zeros(max(1, int(family_count)), dtype=np.int64)
-    back_alpha = np.zeros(int(total_slots), dtype=np.int64)
-    back_pk_off = np.zeros(int(total_slots), dtype=np.int64)
-    back_ag_start = np.zeros(int(total_slots), dtype=np.int64)
-    back_ag_end = np.zeros(int(total_slots), dtype=np.int64)
-    back_len = np.zeros(max(1, int(family_count)), dtype=np.int64)
-    back_pk_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
-    back_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
-    packet_queue = PacketQueue(
-        back_alpha, back_pk_off, back_ag_start, back_ag_end, back_len,
-        back_pk_arenas, back_ag_arenas,
-    )
-    front_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
-    for _family_idx in range(int(family_count)):
-        back_pk_arenas.append(np.empty((64, 3), dtype=np.int64))
-        back_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
-        front_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
-    next_push_state_by_family = np.empty(int(family_count), dtype=np.int32)
-    for family_idx in range(int(family_count)):
-        next_push_state_by_family[int(family_idx)] = int(n) - 1
-
     region_family_count, region_family_defect, region_family_start, region_family_end = _numba_build_region2_packet_families(
         int(region_action_count),
         float(raw_fever_fill),
         action_k,
         int(n),
     )
-    region_seg_off = np.zeros(int(region_family_count) + 1, dtype=np.int64)
-    for family_idx in range(int(region_family_count)):
-        width = int(region_family_end[int(family_idx)]) - int(region_family_start[int(family_idx)]) + 1
-        region_seg_off[int(family_idx) + 1] = int(region_seg_off[int(family_idx)]) + int(width) + 3
-    region_total_slots = max(1, int(region_seg_off[int(region_family_count)]))
-    region_front_alpha = np.zeros(int(region_total_slots), dtype=np.int64)
-    region_front_ag_start = np.zeros(int(region_total_slots), dtype=np.int64)
-    region_front_ag_end = np.zeros(int(region_total_slots), dtype=np.int64)
-    region_front_len = np.zeros(max(1, int(region_family_count)), dtype=np.int64)
-    region_back_alpha = np.zeros(int(region_total_slots), dtype=np.int64)
-    region_back_pk_off = np.zeros(int(region_total_slots), dtype=np.int64)
-    region_back_ag_start = np.zeros(int(region_total_slots), dtype=np.int64)
-    region_back_ag_end = np.zeros(int(region_total_slots), dtype=np.int64)
-    region_back_len = np.zeros(max(1, int(region_family_count)), dtype=np.int64)
-    region_back_pk_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
-    region_back_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
-    region_packet_queue = PacketQueue(
-        region_back_alpha, region_back_pk_off, region_back_ag_start, region_back_ag_end, region_back_len,
-        region_back_pk_arenas, region_back_ag_arenas,
-    )
-    region_front_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
-    for _family_idx in range(int(region_family_count)):
-        region_back_pk_arenas.append(np.empty((64, 3), dtype=np.int64))
-        region_back_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
-        region_front_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
-    next_push_state_by_region_family = np.empty(max(1, int(region_family_count)), dtype=np.int32)
-    for family_idx in range(int(region_family_count)):
-        next_push_state_by_region_family[int(family_idx)] = int(n) - 1
+    # One skyline queue per packet family (the section families, then the region-2 families) holding the packets of
+    # its live activation window [state + start, state + end] (_numba_skyline_queue_push); each activation is built
+    # once, when its window first reaches it.
+    families = int(family_count) + (int(region_family_count) if int(use_forced_great_timing_i) != 0 else 0)
+    queue = np.empty((max(1, families), 16, 4), dtype=np.int64)
+    queue_heads = np.zeros(max(1, families), dtype=np.int64)
+    queue_tails = np.zeros(max(1, families), dtype=np.int64)
+    next_push_state = np.full(max(1, families), int(n) - 1, dtype=np.int64)
+    pk_buf = np.empty((64, 3), dtype=np.int64)
 
     states_evaluated = 0
     retained_total = 1
@@ -2969,75 +2665,23 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     for state_i in range(int(n) - 1, 99, -1):
         if not reachable[int(state_i)]:
             continue
-
-        for family_idx in range(int(family_count)):
-            high_alpha = int(state_i) + int(family_end[int(family_idx)])
-            _numba_packet_queue_pop_expired_after(
-                int(high_alpha),
-                int(family_idx),
-                int(seg_off[int(family_idx)]),
-                front_alpha,
-                front_ag_start,
-                front_ag_end,
-                front_len,
-                back_alpha,
-                back_pk_off,
-                back_len,
-                back_pk_arenas,
-                front_ag_arenas,
+        for q in range(families):
+            region_family = q >= int(family_count)
+            start = int(region_family_start[q - int(family_count)]) if region_family else int(family_start[q])
+            high_alpha = int(state_i) + (
+                int(region_family_end[q - int(family_count)]) if region_family else int(family_end[q])
             )
-            push_state = int(next_push_state_by_family[int(family_idx)])
-            max_live_push_state = int(high_alpha) - int(family_start[int(family_idx)])
-            if int(push_state) > int(max_live_push_state):
-                push_state = int(max_live_push_state)
-            while int(push_state) >= int(state_i):
-                activation = int(push_state) + int(family_start[int(family_idx)])
-                _numba_packet_queue_push_activation(
-                    int(n),
-                    int(family_mode[int(family_idx)]),
-                    int(family_defect[int(family_idx)]),
-                    int(activation),
-                    body_values,
-                    body_starts,
-                    body_counts,
-                    int(use_forced_great_timing_i),
-                    ends,
-                    int(family_idx),
-                    int(seg_off[int(family_idx)]),
-                    int(seg_off[int(family_idx) + 1]),
-                    packet_queue,
-                )
-                push_state -= 1
-            next_push_state_by_family[int(family_idx)] = int(state_i) - 1
-
-        if int(use_forced_great_timing_i) != 0:
-            for family_idx in range(int(region_family_count)):
-                high_alpha = int(state_i) + int(region_family_end[int(family_idx)])
-                _numba_packet_queue_pop_expired_after(
-                    int(high_alpha),
-                    int(family_idx),
-                    int(region_seg_off[int(family_idx)]),
-                    region_front_alpha,
-                    region_front_ag_start,
-                    region_front_ag_end,
-                    region_front_len,
-                    region_back_alpha,
-                    region_back_pk_off,
-                    region_back_len,
-                    region_back_pk_arenas,
-                    region_front_ag_arenas,
-                )
-                push_state = int(next_push_state_by_region_family[int(family_idx)])
-                max_live_push_state = int(high_alpha) - int(region_family_start[int(family_idx)])
-                if int(push_state) > int(max_live_push_state):
-                    push_state = int(max_live_push_state)
-                while int(push_state) >= int(state_i):
-                    activation = int(push_state) + int(region_family_start[int(family_idx)])
-                    _numba_region2_packet_queue_push_activation(
+            while queue_heads[q] < queue_tails[q] and queue[q, int(queue_heads[q]), 3] > high_alpha:
+                queue_heads[q] += 1
+            push_state = min(int(next_push_state[q]), high_alpha - start)
+            while push_state >= int(state_i):
+                activation = push_state + start
+                if region_family:
+                    pk_buf, count = _numba_region2_activation_packet(
                         int(n),
-                        int(region_family_start[int(family_idx)]),
-                        int(region_family_defect[int(family_idx)]),
-                        int(activation),
+                        start,
+                        int(region_family_defect[q - int(family_count)]),
+                        activation,
                         float(raw_fever_fill),
                         body_values,
                         body_starts,
@@ -3051,25 +2695,35 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         lanes,
                         region,
                         ends.late_exit_e,
-                        int(family_idx),
-                        int(region_seg_off[int(family_idx)]),
-                        int(region_seg_off[int(family_idx) + 1]),
-                        region_packet_queue,
+                        pk_buf,
                     )
-                    push_state -= 1
-                next_push_state_by_region_family[int(family_idx)] = int(state_i) - 1
+                else:
+                    pk_buf, count = _numba_activation_packet(
+                        int(n),
+                        int(family_mode[q]),
+                        int(family_defect[q]),
+                        activation,
+                        body_values,
+                        body_starts,
+                        body_counts,
+                        int(use_forced_great_timing_i),
+                        ends,
+                        pk_buf,
+                    )
+                if count > 0:
+                    queue = _numba_skyline_queue_push(queue, queue_heads, queue_tails, q, activation, pk_buf, count)
+                push_state -= 1
+            next_push_state[q] = int(state_i) - 1
 
         states_evaluated += 1
         touched_count = 0
         pair_stamp_value += 1
-        for family_idx in range(int(family_count)):
-            base = int(seg_off[int(family_idx)])
-            fcount = int(front_len[int(family_idx)])
-            if fcount > 0:
+        for q in range(families):
+            if queue_tails[q] > queue_heads[q]:
                 touched_count, generated_count = _numba_touch_packet_points_for_state(
-                    front_ag_arenas[int(family_idx)],
-                    int(front_ag_start[base + fcount - 1]),
-                    int(front_ag_end[base + fcount - 1]),
+                    queue[q],
+                    int(queue_heads[q]),
+                    int(queue_tails[q]),
                     int(state_i),
                     int(pair_mod),
                     int(pair_stamp_value),
@@ -3079,55 +2733,6 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                     int(touched_count),
                 )
                 generated_surfaces += int(generated_count)
-            bcount = int(back_len[int(family_idx)])
-            if bcount > 0:
-                touched_count, generated_count = _numba_touch_packet_points_for_state(
-                    back_ag_arenas[int(family_idx)],
-                    int(back_ag_start[base + bcount - 1]),
-                    int(back_ag_end[base + bcount - 1]),
-                    int(state_i),
-                    int(pair_mod),
-                    int(pair_stamp_value),
-                    pair_stamp,
-                    best_fever_by_pair,
-                    touched_pair,
-                    int(touched_count),
-                )
-                generated_surfaces += int(generated_count)
-
-        if int(use_forced_great_timing_i) != 0:
-            for family_idx in range(int(region_family_count)):
-                base = int(region_seg_off[int(family_idx)])
-                fcount = int(region_front_len[int(family_idx)])
-                if fcount > 0:
-                    touched_count, generated_count = _numba_touch_packet_points_for_state(
-                        region_front_ag_arenas[int(family_idx)],
-                        int(region_front_ag_start[base + fcount - 1]),
-                        int(region_front_ag_end[base + fcount - 1]),
-                        int(state_i),
-                        int(pair_mod),
-                        int(pair_stamp_value),
-                        pair_stamp,
-                        best_fever_by_pair,
-                        touched_pair,
-                        int(touched_count),
-                    )
-                    generated_surfaces += int(generated_count)
-                bcount = int(region_back_len[int(family_idx)])
-                if bcount > 0:
-                    touched_count, generated_count = _numba_touch_packet_points_for_state(
-                        region_back_ag_arenas[int(family_idx)],
-                        int(region_back_ag_start[base + bcount - 1]),
-                        int(region_back_ag_end[base + bcount - 1]),
-                        int(state_i),
-                        int(pair_mod),
-                        int(pair_stamp_value),
-                        pair_stamp,
-                        best_fever_by_pair,
-                        touched_pair,
-                        int(touched_count),
-                    )
-                    generated_surfaces += int(generated_count)
 
         if int(touched_count) == 0:
             _numba_store_shared_empty_body_tail(body_starts, body_counts, int(state_i))
@@ -3576,9 +3181,9 @@ def _numba_points_frontier(points, m: int, masks, patterns: int, n: int, lo_pos:
 
     1. Each pattern's skyline (exact): a pattern's points in (normal Greats, fever Greats, body fever desc) order; a
        point is kept iff its body fever beats every earlier point with fever Greats <= (stamped Fenwick prefix
-       maxima), then each normal-Great level is pruned to its upper hull of (body fever, -fever Great) exactly like
-       `_numba_reduce_touched_body_pairs` (same-pattern points share their head score and the body score is linear
-       in the three counts). The Fenwick spans the state's fever-Great range only.
+       maxima), then each normal-Great level is pruned to its upper hull of (body fever, -fever Great) by
+       `_numba_skyline_hull_push`, the body DP's pair reduce (same-pattern points share their head score and the
+       body score is linear in the three counts). The Fenwick spans the state's fever-Great range only.
     2. The head envelope (cone) filter across patterns (`_numba_head_envelope_filter`, lossless by its 16-corner
        proof): it compares surfaces of different head patterns, which structural dominance cannot.
     3. The exact structural Pareto set of what remains: rows visited by body fever desc, normal Greats asc, fever
@@ -3602,11 +3207,11 @@ def _numba_points_frontier(points, m: int, masks, patterns: int, n: int, lo_pos:
     order = np.argsort(keys)
     fen_values = fen_values[: max_fg + 2]
     fen_stamps = fen_stamps[: max_fg + 2]
-    sky = np.empty(int(m), dtype=np.int64)
-    sky_count = 0
-    pid = -1
+    stack = np.empty((int(m), 4), dtype=np.int64)
+    count = 0
     group_base = 0
     group_ng = -1
+    pid = -1
     prev_pair = -1
     for pos in range(int(m)):
         idx = int(order[pos])
@@ -3620,32 +3225,17 @@ def _numba_points_frontier(points, m: int, masks, patterns: int, n: int, lo_pos:
         if pair == prev_pair:
             continue
         prev_pair = pair
-        if bf > _numba_prefix_max_query_stamped(fen_values, fen_stamps, int(fen_stamp), int(fg)):
-            if ng != group_ng:
-                group_ng = ng
-                group_base = sky_count
-            while sky_count - group_base >= 2:
-                i1 = int(sky[sky_count - 2])
-                i2 = int(sky[sky_count - 1])
-                cross = (points[i2, 0] - points[i1, 0]) * (points[i1, 2] - fg) - (points[i1, 2] - points[i2, 2]) * (
-                    bf - points[i1, 0]
-                )
-                if cross >= 0:
-                    sky_count -= 1
-                else:
-                    break
-            sky[sky_count] = idx
-            sky_count += 1
-        _numba_prefix_max_update_stamped(fen_values, fen_stamps, int(fen_stamp), int(fg), int(bf))
-    frontier = np.empty((sky_count, 7), dtype=np.uint64)
-    for k in range(sky_count):
-        idx = int(sky[k])
-        p = int(points[idx, 3])
+        count, group_base, group_ng = _numba_skyline_hull_push(
+            stack, count, group_base, group_ng, bf, ng, fg, pid, fen_values, fen_stamps, int(fen_stamp)
+        )
+    frontier = np.empty((count, 7), dtype=np.uint64)
+    for k in range(count):
+        p = int(stack[k, 3])
         for col in range(4):
             frontier[k, col] = masks[p, col]
-        frontier[k, 4] = np.uint64(points[idx, 0])
-        frontier[k, 6] = np.uint64(points[idx, 2])
-        frontier[k, 5] = np.uint64(points[idx, 1]) + frontier[k, 6]
+        frontier[k, 4] = np.uint64(stack[k, 0])
+        frontier[k, 6] = np.uint64(stack[k, 2])
+        frontier[k, 5] = np.uint64(stack[k, 1]) + frontier[k, 6]
     frontier = _numba_head_envelope_filter(frontier, int(lo_pos), int(hi_pos), int(min_surfaces))
     rows = int(frontier.shape[0])
     rank_keys = np.empty(rows, dtype=np.int64)

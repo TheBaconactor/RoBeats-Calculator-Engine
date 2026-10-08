@@ -436,9 +436,9 @@ def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) ->
 
     monkeypatch.setattr(rb, "_numba_region_run_edge_for_offset", edge)
     ts = np.arange(n, dtype=np.float32)
-    rb._numba_region2_packet_queue_push_activation.py_func(
+    rb._numba_region2_activation_packet.py_func(
         n, 20, -31, 110, 4.0, empty, empty, empty, ts, ts, ts, ts, ts, ts,
-        np.arange(n), region, limits, 0, 0, 1, (empty,) * 7,
+        np.arange(n), region, limits, np.empty((1, 3), dtype=np.int64),
     )
     assert len(calls) == 1
 
@@ -2239,7 +2239,7 @@ class _BodyReducerDifferentialHarness:
         self.touched_pair = np.empty((pair_size,), dtype=np.int32)
         self.bit_values = np.zeros((int(pair_mod) + 1,), dtype=np.int32)
         self.bit_stamps = np.zeros((int(pair_mod) + 1,), dtype=np.int32)
-        self.frontier_values = np.empty((1, 3), dtype=np.uint64)
+        self.stack = np.empty((1, 4), dtype=np.int64)
         self.stamp = 0
 
     def reduce(self, rows) -> tuple[list[tuple[int, int, int]], list[tuple[int, int, int]]]:
@@ -2274,7 +2274,7 @@ class _BodyReducerDifferentialHarness:
             rows,
             pair_mod=int(self.pair_mod),
         )
-        self.frontier_values, count = self._reduce(
+        self.stack, count = self._reduce(
             int(self.pair_mod),
             self.touched_pair,
             int(touched_count),
@@ -2282,11 +2282,12 @@ class _BodyReducerDifferentialHarness:
             self.bit_values,
             self.bit_stamps,
             int(self.stamp),
-            self.frontier_values,
+            self.stack,
         )
+        # Stack rows are (body fever, normal Greats, fever Greats, tag); the reference keeps body Greats.
         actual = [
-            tuple(int(value) for value in row)
-            for row in self.frontier_values[: int(count)]
+            (int(row[0]), int(row[1]) + int(row[2]), int(row[2]))
+            for row in self.stack[: int(count)]
         ]
         return actual, reference
 
@@ -2321,8 +2322,8 @@ def test_fg_response_fused_body_reduce_matches_retired_edge_case_matrix() -> Non
     assert harness.touched_pair.dtype == np.dtype(np.int32)
     assert harness.bit_values.dtype == np.dtype(np.int32)
     assert harness.bit_stamps.dtype == np.dtype(np.int32)
-    assert harness.frontier_values.dtype == np.dtype(np.uint64)
-    assert harness.frontier_values.shape == (32, 3)
+    assert harness.stack.dtype == np.dtype(np.int64)
+    assert harness.stack.shape == (32, 4)
     assert _ordered_rows_digest(ordered_outputs) == "caf27bad32e81f377f7f4536b82218fd"
 
 
