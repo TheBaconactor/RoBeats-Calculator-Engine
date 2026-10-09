@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 from numba import njit
 
+from ...score import HEAD_NOTES
 from ..taichi_gem.force_greats.response_types import FgResponseSurface
 from .note_graph import (
     UnplayableTrace,
@@ -241,6 +242,7 @@ _REPLAY_ERR_FEVER_MEMBERSHIP = 4
 _REPLAY_ERR_BACKWARD_TIME = 5
 _REPLAY_ERR_FILL_DENOM = 6
 _REPLAY_ERR_FEVER_DURATION = 7
+_REPLAY_ERR_COMBO_ORDER = 8
 
 
 @njit(cache=True, nogil=True)
@@ -282,7 +284,7 @@ def _force_greats_replay_kernel(
     event_order,
     replay_fever,
 ):
-    """One GIL-free pass: judge, order, lane-check, and fever-replay a persisted witness.
+    """One GIL-free pass: judge, order, lane-check, fever-replay and combo-order-check a persisted witness.
 
     Returns ``(status, arg_a, arg_b)``. On error the Python wrapper reconstructs the exact
     dynamic ValueError message from the status code and the two integer arguments; on success it
@@ -374,6 +376,13 @@ def _force_greats_replay_kernel(
     for i in range(n):
         if replay_fever[i] != expected_fever[i]:
             return _REPLAY_ERR_FEVER_MEMBERSHIP, i, -1
+
+    # The k-th judged input scores at combo k; through the combo ramp it must carry the judgment and fever the
+    # surface scores there (note k's).
+    for pos in range(min(n, HEAD_NOTES)):
+        idx = event_order[pos]
+        if expected_result_code[idx] != expected_result_code[pos] or expected_fever[idx] != expected_fever[pos]:
+            return _REPLAY_ERR_COMBO_ORDER, idx, pos
 
     return _REPLAY_OK, -1, -1
 
@@ -479,6 +488,13 @@ def validate_force_greats_physical_replay(
         raise UnplayableTrace(
             "FG physical replay fever membership disagrees with the response surface at note "
             f"{mismatch}: replay={bool(replay_fever_arr[mismatch])}, surface={bool(expected_fever[mismatch])}"
+        )
+    if status == _REPLAY_ERR_COMBO_ORDER:
+        # The plan scores a note at a combo where the surface scores another judgment or fever: not playable as scored.
+        raise UnplayableTrace(
+            f"FG physical replay judges note {int(arg_a)} at combo {int(arg_b) + 1}, where the surface scores note "
+            f"{int(arg_b)}: {judgments[int(arg_a)]}/{'fever' if expected_fever[int(arg_a)] else 'no fever'} instead of "
+            f"{judgments[int(arg_b)]}/{'fever' if expected_fever[int(arg_b)] else 'no fever'}"
         )
     if status != _REPLAY_OK:
         raise AssertionError(f"FG physical replay kernel returned unknown status {status}")

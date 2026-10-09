@@ -20,6 +20,7 @@ from gear_optimizer.solver.fg_response_scoring.physical_replay import (
     _HELD_TAIL_TYPE,
     _JUDGMENT_NAME,
     _REPLAY_ERR_BACKWARD_TIME,
+    _REPLAY_ERR_COMBO_ORDER,
     _REPLAY_ERR_FEVER_DURATION,
     _REPLAY_ERR_FEVER_MEMBERSHIP,
     _REPLAY_ERR_FILL_DENOM,
@@ -34,6 +35,7 @@ from gear_optimizer.solver.fg_response_scoring.physical_replay import (
     _judgment_code,
     validate_force_greats_physical_replay,
 )
+from gear_optimizer.score import HEAD_NOTES
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
 
@@ -96,6 +98,10 @@ def _reference(
     for i in range(n):
         if bool(replay[i]) != bool(int(expected_fever[i])):
             return (_REPLAY_ERR_FEVER_MEMBERSHIP, i, -1, event_order, tuple(bool(x) for x in replay))
+    scored = [(int(expected_code[i]), int(expected_fever[i])) for i in range(n)]
+    for pos, idx in enumerate(event_order[:HEAD_NOTES]):
+        if scored[idx] != scored[pos]:
+            return (_REPLAY_ERR_COMBO_ORDER, idx, pos, event_order, tuple(bool(x) for x in replay))
     return (_REPLAY_OK, -1, -1, event_order, tuple(bool(x) for x in replay))
 
 
@@ -309,6 +315,30 @@ def test_wrapper_lane_order_is_an_unplayable_plan(monkeypatch):
     _install_graph(monkeypatch, graph)
     with pytest.raises(pr.UnplayableTrace, match=r"FG physical replay lane 0 matched note 0, not intended note 1"):
         _call(graph, note_types=[1, 1, 1], lanes=[0, 0, 0])
+
+
+def test_wrapper_combo_order_is_an_unplayable_plan(monkeypatch):
+    # Note 0 is a Great judged after note 1, a Perfect: combo 1 gets a Perfect where the surface scores a Great.
+    graph = [
+        {"delta_ms": 81.0, "note_result": "Great", "hit_time_ms": 0.0, "input_order": 1, "fever": False},
+        {"delta_ms": 0.0, "note_result": "Perfect", "hit_time_ms": 50.0, "input_order": 0, "fever": False},
+        {"delta_ms": 0.0, "note_result": "Perfect", "hit_time_ms": 200.0, "input_order": 2, "fever": False},
+    ]
+    _install_graph(monkeypatch, graph)
+    with pytest.raises(
+        pr.UnplayableTrace,
+        match=r"judges note 1 at combo 1, where the surface scores note 0: Perfect/no fever instead of Great/no fever",
+    ):
+        _call(graph, note_types=[1, 1, 1], lanes=[0, 1, 2], denom=100.0)
+
+
+def test_wrapper_same_judgment_inputs_may_swap_in_the_combo_ramp(monkeypatch):
+    graph = [
+        {"delta_ms": 30.0, "note_result": "Perfect", "hit_time_ms": 0.0, "input_order": 1, "fever": False},
+        {"delta_ms": 0.0, "note_result": "Perfect", "hit_time_ms": 10.0, "input_order": 0, "fever": False},
+    ]
+    _install_graph(monkeypatch, graph)
+    assert _call(graph, note_types=[1, 1], lanes=[0, 1], denom=100.0).event_order == (1, 0)
 
 
 def test_wrapper_fill_denominator_message(monkeypatch):
