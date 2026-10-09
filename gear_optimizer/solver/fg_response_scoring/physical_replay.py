@@ -474,8 +474,9 @@ def validate_force_greats_physical_replay(
     if status == _REPLAY_ERR_BACKWARD_TIME:
         raise ValueError("FG physical replay event order moved backward in time")
     if status == _REPLAY_ERR_FEVER_MEMBERSHIP:
+        # The plan's inputs fill and drain fever otherwise than the surface it scored: it is not playable as scored.
         mismatch = int(arg_a)
-        raise ValueError(
+        raise UnplayableTrace(
             "FG physical replay fever membership disagrees with the response surface at note "
             f"{mismatch}: replay={bool(replay_fever_arr[mismatch])}, surface={bool(expected_fever[mismatch])}"
         )

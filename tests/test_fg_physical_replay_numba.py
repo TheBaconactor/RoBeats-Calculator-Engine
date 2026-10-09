@@ -336,7 +336,7 @@ def test_wrapper_backward_time_message(monkeypatch):
         _call(graph, note_types=[1, 1], lanes=[0, 1], denom=1.0, duration=10.0)
 
 
-def test_wrapper_fever_membership_message(monkeypatch):
+def test_wrapper_fever_membership_mismatch_is_an_unplayable_plan(monkeypatch):
     # Replay makes note 0 fevered (denom=1.0); surface says False => mismatch at note 0.
     graph = [
         {"delta_ms": 0.0, "note_result": "Perfect", "hit_time_ms": 0.0, "input_order": 0, "fever": False},
@@ -344,7 +344,7 @@ def test_wrapper_fever_membership_message(monkeypatch):
     ]
     _install_graph(monkeypatch, graph)
     with pytest.raises(
-        ValueError,
+        pr.UnplayableTrace,
         match=r"FG physical replay fever membership disagrees with the response surface at note 0: replay=True, surface=False",
     ):
         _call(graph, note_types=[1, 1], lanes=[0, 1], denom=1.0, duration=10.0)
