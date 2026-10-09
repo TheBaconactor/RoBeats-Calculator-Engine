@@ -108,15 +108,17 @@ class SongMini:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class StatCurves:
-    """Stats.txt: the multiplier each curve stat value 0..MAX_STAT maps to.
+    """The multiplier each curve stat value 0..MAX_STAT maps to.
 
-    f64 holds the values as read; exact scores use it (the game computes in float64). f32 holds the
+    f64 holds the game's values; exact scores use it (the game computes in float64). f32 holds the
     same values rounded to float32, which is what the GPU search, the frontier builders and the
-    frontier cache keys use.
+    frontier cache keys use. combo_ramp[v] holds the combo multiplier at combos 1..COMBO_RAMP_NOTES for
+    Combo Multiplier value v; after them a note gets f64["Combo Multiplier"].
     """
 
     f64: Mapping[str, np.ndarray]
     f32: Mapping[str, np.ndarray]
+    combo_ramp: np.ndarray
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]) -> StatCurves:
@@ -127,10 +129,98 @@ class StatCurves:
             if column.shape != (MAX_STAT + 1,):
                 raise ValueError(f"{stat} curve needs {MAX_STAT + 1} values, got {column.shape[0]}")
             f64[stat] = column
-        return cls(f64=f64, f32={stat: column.astype(np.float32) for stat, column in f64.items()})
+        return cls._of(f64, f64["Combo Multiplier"] - 1.0)
+
+    @classmethod
+    def _of(cls, f64: dict[str, np.ndarray], combo_gains: np.ndarray) -> StatCurves:
+        return cls(
+            f64=f64,
+            f32={stat: column.astype(np.float32) for stat, column in f64.items()},
+            combo_ramp=_combo_ramp(combo_gains),
+        )
 
     def factor(self, stat: str, value: int) -> float:
         return float(self.f64[stat][max(0, min(MAX_STAT, int(value)))])
+
+    def ramp(self, combo_multiplier: int) -> np.ndarray:
+        return self.combo_ramp[max(0, min(MAX_STAT, int(combo_multiplier)))]
+
+
+# The game's stat curve: GearStats.lua stat_eased_curve_extended (with ExtendedGearStatCap160) over BezierDist.lua and
+# CurveUtil.lua, in float64 and in the Lua's operation order, so exact scores floor the game's own products.
+def _line(x1: float, y1: float, x2: float, y2: float, x: float) -> float:
+    slope = (y1 - y2) / (x1 - x2)
+    return slope * x + (y1 - slope * x1)
+
+
+def _bezier(a: float, b: float, c: float, d: float, t: float) -> float:
+    return (1 - t) * (1 - t) * (1 - t) * a + 3 * t * (1 - t) * (1 - t) * b + 3 * t * t * (1 - t) * c + t * t * t * d
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return (b - a) * t + a
+
+
+class _Ease:
+    """A cubic Bezier from (0, 0) to (1, 1) read at a fraction of its arc length (10 chords, as BezierDist)."""
+
+    def __init__(self, x2: float, y2: float, x3: float, y3: float):
+        self.y = (0.0, y2, y3, 1.0)
+        self.ts, self.lengths = [0.0], [0.0]
+        x, y, t, length = 0.0, 0.0, 0.0, 0.0
+        for _ in range(10):
+            t = t + 1 / 10
+            nx, ny = _bezier(0.0, x2, x3, 1.0, t), _bezier(*self.y, t)
+            # SPVector.magnitude: math.sqrt(math.pow(x, 2) + math.pow(y, 2)), each square correctly rounded.
+            length = length + math.sqrt((nx - x) * (nx - x) + (ny - y) * (ny - y))
+            self.ts.append(t)
+            self.lengths.append(length)
+            x, y = nx, ny
+
+    def __call__(self, fraction: float) -> float:
+        target = min(max(self.lengths[-1] * fraction, 0.0), self.lengths[-1])
+        if target == self.lengths[-1]:
+            return _bezier(*self.y, 1.0)
+        lo, hi = 0, len(self.lengths) - 1
+        while hi - lo > 1:
+            mid = math.floor(_lerp(lo, hi, 0.5))
+            lo, hi = (mid, hi) if self.lengths[mid] < target else (lo, mid)
+        t = _lerp(self.ts[lo], self.ts[lo + 1], (target - self.lengths[lo]) / (self.lengths[lo + 1] - self.lengths[lo]))
+        return _bezier(*self.y, t)
+
+
+_EASE_0_40 = _Ease(0.0, 0.4, 0.7, 0.9)
+_EASE_40_80 = _Ease(0.2, 0.1, 0.4, 1.0)
+_EASE_80_160 = _Ease(0.0, 0.5, 0.6, 1.0)
+
+
+def _stat_curve(a0: float, a40: float, a80: float, stat: int) -> float:
+    """The curve through a0 at stat 0, a40 at 40 and a80 at 80 (it keeps rising to 160), at a stat value 0..MAX_STAT."""
+    if stat == 0:
+        return a0
+    if stat < 40:
+        return _lerp(a0, a40, _EASE_0_40(_line(0, 0, 40, 1, stat)))
+    if stat <= 80:
+        return _lerp(a40, a80, _EASE_40_80(_line(40, 0, 80, 1, stat)))
+    return _lerp(a80, a80 + (a80 - a40) * 0.35, _EASE_80_160(_line(80, 0, 160, 1, stat)))
+
+
+# The combo multiplier ramps to its full value over the first combos through the game's thresholds (get_combo_thresholds
+# at Combo Threshold 0; no gear or mini raises it) and gains (get_combo_multiplier: 1 + gain / 4, 1 + gain / 2,
+# 1 + gain); get_continuous_combo_multiplier_for_combo reads the line through them.
+_COMBO_THRESHOLDS = (25, 50, 100)
+COMBO_RAMP_NOTES = _COMBO_THRESHOLDS[-1]
+
+
+def _combo_ramp(gains: np.ndarray) -> np.ndarray:
+    """The combo multiplier at combos 1..COMBO_RAMP_NOTES (columns) per gain (rows), as _line computes it."""
+    points = [(0, np.ones_like(gains))] + [(t, 1 + gains * share) for t, share in zip(_COMBO_THRESHOLDS, (0.25, 0.5, 1))]
+    combos = np.arange(1, COMBO_RAMP_NOTES + 1, dtype=np.float64)
+    ramp = np.empty((gains.shape[0], COMBO_RAMP_NOTES))
+    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+        slope = (y1 - y2) / (x1 - x2)
+        ramp[:, x1:x2] = slope[:, None] * combos[x1:x2] + (y1 - slope * x1)[:, None]
+    return ramp
 
 
 def _int_cell(value: str, *, column: str, item: str) -> int:
@@ -215,13 +305,29 @@ def read_minis(path: Path) -> dict[str, Mini]:
 
 
 def read_curves(path: Path) -> StatCurves:
-    """Stats.txt lists rows from stat value MAX_STAT down to 0 after one header line."""
+    """Stats.txt lists rows from stat value MAX_STAT down to 0 after one header line.
+
+    It prints the combo and fever multipliers to about 10 significant digits; the curves hold the game's exact values,
+    and a Stats.txt value further than its printed precision from the game's curve is an error.
+    """
     lines = path.read_text(encoding="utf-8-sig").splitlines()
     table = [[float(cell) for cell in line.split()] for line in lines[1:] if line.split()]
     if len(table) != MAX_STAT + 1 or any(len(row) != len(CURVE_STATS) for row in table):
         raise ValueError(f"{path}: expected {MAX_STAT + 1} rows of {len(CURVE_STATS)} values")
     columns = np.asarray(table, dtype=np.float64)[::-1]
-    return StatCurves.from_mapping({stat: columns[:, i] for i, stat in enumerate(CURVE_STATS)})
+    f64 = {stat: columns[:, i] for i, stat in enumerate(CURVE_STATS)}
+    gains = np.array([_stat_curve(1, 1.4, 1.6, value) for value in range(MAX_STAT + 1)])
+    exact = {
+        "Combo Multiplier": 1 + gains,
+        "Fever Multiplier": np.array([_stat_curve(3, 4.75, 5.25, value) for value in range(MAX_STAT + 1)]),
+    }
+    for stat, values in exact.items():
+        off = np.flatnonzero(np.abs(f64[stat] - values) > 1e-9 * values)
+        if off.size:
+            value = int(off[0])
+            raise ValueError(f"{path}: {stat} {value} is {f64[stat][value]}, the game's curve gives {values[value]}")
+        f64[stat] = values
+    return StatCurves._of(f64, gains)
 
 
 _FILE_CACHE: dict[tuple[str, Path], tuple[tuple[int, int], object]] = {}

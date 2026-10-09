@@ -34,16 +34,17 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
     counts = np.column_stack(
         [rng.integers(0, 121, surface_rows), rng.integers(0, 60, surface_rows), rng.integers(0, 40, surface_rows)]
     ).astype(np.int32)
-    refs = load_stat_curves(paths().stats_txt).f64
+    curves = load_stat_curves(paths().stats_txt)
     shared = (
         rng.integers(0, patterns, surface_rows).astype(np.int32),
         words,
         counts,
         surface_head_coeffs(words, head_len=100),
         np.array(search.color_flags(*colors), dtype=np.int32),
-        np.ascontiguousarray(refs["Perfect Points"], dtype=np.float64),
-        np.ascontiguousarray(refs["Combo Multiplier"], dtype=np.float64),
-        np.ascontiguousarray(refs["Fever Multiplier"], dtype=np.float64),
+        np.ascontiguousarray(curves.f64["Perfect Points"], dtype=np.float64),
+        np.ascontiguousarray(curves.f64["Combo Multiplier"], dtype=np.float64),
+        np.ascontiguousarray(curves.combo_ramp, dtype=np.float64),
+        np.ascontiguousarray(curves.f64["Fever Multiplier"], dtype=np.float64),
     )
     # Loadouts of 1-5 groups: the search prunes across a loadout's groups.
     starts = np.cumsum(np.concatenate(([0], rng.integers(1, 6, group_count))))

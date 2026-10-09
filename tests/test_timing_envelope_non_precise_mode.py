@@ -119,6 +119,7 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     factors = score.Factors(
         base=base_value,
         combo=float(combo),
+        ramp=ref.ramp(stats["Combo Multiplier"]),
         fever=float(fever),
         great_base=0,
         fever_time_row=int(stats["Fever Time"]),

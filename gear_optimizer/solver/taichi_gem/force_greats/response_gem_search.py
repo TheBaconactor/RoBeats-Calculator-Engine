@@ -257,11 +257,13 @@ def _fg_response_surface_score_native_f64(
     secondary_val,
     pp_factor,
     combo_mul,
+    combo_ramp,
     fever_mul,
     single_color,
 ):
     """Exact score of one surface at a gem-allocated stat line: the game's per-note values with their per-term floor
-    order; a Great note scores the lower of its Perfect and Great value."""
+    order (combo_ramp: the combo multiplier at head notes 1..100); a Great note scores the lower of its Perfect and
+    Great value."""
     base_value = float((primary_val * 2) + secondary_val) + pp_factor
     combo_val = int(np.floor(base_value * combo_mul))
     fever_val = int(np.floor(base_value * combo_mul * fever_mul))
@@ -269,7 +271,6 @@ def _fg_response_surface_score_native_f64(
     if body_normal < 0:
         body_normal = 0
     score = body_fever * fever_val + body_normal * combo_val
-    combo_slope = (combo_mul - 1.0) / 100.0
 
     great_or = (
         int(surface_words[sr, 4])
@@ -302,7 +303,7 @@ def _fg_response_surface_score_native_f64(
         wi = i >> 5
         b = i & 31
         is_fever = (int(surface_words[sr, wi]) >> b) & 1
-        scaling = combo_slope * float(i + 1) + 1.0
+        scaling = combo_ramp[i]
         if is_fever != 0:
             perfect_val = int(np.floor(base_value * scaling * fever_mul))
         else:
@@ -331,6 +332,7 @@ def _score_fg_response_groups_native_f64(
     color_flags,
     ref_pp,
     ref_cm,
+    ref_ramp,
     ref_fm,
 ):
     """Each group's best gem allocation over its surfaces (the residual budget's CM / FM / PP / element split).
@@ -493,6 +495,7 @@ def _score_fg_response_groups_native_f64(
                         leftover_after_cm = residual_budget - g_cm
                         cm_stat = cur_cm + g_cm * STAT_GEM_GAIN_NORMAL
                         cm_mul = cm_ref_cache[g_cm]
+                        cm_ramp = ref_ramp[_stat_row(cm_stat)]
                         for g_fm in range(fm0, min(fm1, max_fm_gems, leftover_after_cm) + 1):
                             leftover_after_fm = leftover_after_cm - g_fm
                             fm_stat = cur_fm + g_fm * STAT_GEM_GAIN_FEVER
@@ -539,7 +542,7 @@ def _score_fg_response_groups_native_f64(
                                     score = _fg_response_surface_score_native_f64(
                                         surface_pattern_words, pattern_row, body_fever, body_great, body_fever_great,
                                         head_len, body_total, primary_val, secondary_val, pp_ref_cache[g_pp], cm_mul,
-                                        fm_mul, single_color,
+                                        cm_ramp, fm_mul, single_color,
                                     )
                                     if score > best_score or (
                                         score == best_score
@@ -564,8 +567,8 @@ def _score_fg_response_groups_native_f64(
                             else:
                                 score = _fg_response_surface_score_native_f64(
                                     surface_pattern_words, pattern_row, body_fever, body_great, body_fever_great,
-                                    head_len, body_total, primary_base, secondary_base, pp_ref_base, cm_mul, fm_mul,
-                                    single_color,
+                                    head_len, body_total, primary_base, secondary_base, pp_ref_base, cm_mul, cm_ramp,
+                                    fm_mul, single_color,
                                 )
                                 if score > best_score or (
                                     score == best_score
@@ -646,6 +649,7 @@ def _score_response_group_meta_cpu(
         np.asarray(color_flags(primary_color, secondary_color, selected_color), dtype=np.int32),
         np.ascontiguousarray(curves.f64["Perfect Points"], dtype=np.float64),
         np.ascontiguousarray(curves.f64["Combo Multiplier"], dtype=np.float64),
+        np.ascontiguousarray(curves.combo_ramp, dtype=np.float64),
         np.ascontiguousarray(curves.f64["Fever Multiplier"], dtype=np.float64),
     )
     rows = _score_fg_response_groups_on_cpu_cores(

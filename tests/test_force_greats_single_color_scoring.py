@@ -19,7 +19,7 @@ def test_great_rounding_uses_chart_colors(secondary, expected, colors) -> None:
     from tools.verify.loadout_oracle_replay import _statsdict_for_oracle
 
     assert _fg_response_surface_score_native_f64(
-        np.zeros((1, 8), dtype=np.uint32), 0, 0, 1, 0, 0, 1, 812, 812, 0.0, 1.0, 1.0,
+        np.zeros((1, 8), dtype=np.uint32), 0, 0, 1, 0, 0, 1, 812, 812, 0.0, 1.0, np.ones(100), 1.0,
         color_flags("Chill", secondary, "Chill")[8],
     ) == expected
     assert _statsdict_for_oracle({"Chill": 812, "Flow": 812}, "Chill", secondary)[1] == colors

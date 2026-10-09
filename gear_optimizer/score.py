@@ -1,9 +1,10 @@
 """Exact scores: the game's per-note integer scoring, computed in float64 like the game's numbers.
 
 A Perfect is worth base = 2 x primary element + secondary element + the Perfect Points bonus. The combo
-multiplier ramps in over the first HEAD_NOTES notes and applies in full after them; notes inside a
-fever window are also multiplied by the fever multiplier. Every note's value is floored on its own, so the
-operation order below is part of the result.
+multiplier ramps in over the first HEAD_NOTES notes (the game's line through its combo thresholds,
+gamedata.StatCurves.combo_ramp) and applies in full after them; notes inside a fever window are also
+multiplied by the fever multiplier. Every note's value is floored on its own, so the operation order
+below is part of the result.
 """
 
 from __future__ import annotations
@@ -14,19 +15,20 @@ from typing import Any
 
 import numpy as np
 
-from .gamedata import StatCurves
+from .gamedata import COMBO_RAMP_NOTES, StatCurves
 
-HEAD_NOTES = 100
+HEAD_NOTES = COMBO_RAMP_NOTES
 # A Great is worth 4/3 x primary + 2/3 x secondary + GREAT_POINTS before multipliers.
 GREAT_POINTS = 150
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class Factors:
     """What a stat row contributes to scoring on one song."""
 
     base: float
-    combo: float
+    combo: float  # the combo multiplier after the head notes
+    ramp: np.ndarray  # the combo multiplier at head notes 1..HEAD_NOTES
     fever: float
     great_base: int
     fever_time_row: int
@@ -43,17 +45,12 @@ def factors(stats: dict[str, int], curves: StatCurves, primary: str, secondary: 
     return Factors(
         base=float(primary_value * 2 + secondary_value) + curves.factor("Perfect Points", stats["Perfect Points"]),
         combo=curves.factor("Combo Multiplier", stats["Combo Multiplier"]),
+        ramp=curves.ramp(stats["Combo Multiplier"]),
         fever=curves.factor("Fever Multiplier", stats["Fever Multiplier"]),
         great_base=(primary_value * 2 if primary == secondary else floor(float(primary_value) * (4.0 / 3.0)) + floor(float(secondary_value) * (2.0 / 3.0))) + GREAT_POINTS,
         fever_time_row=stats["Fever Time"],
         fever_fill_row=stats["Fever Fill Rate"],
     )
-
-
-def _head_scaling(f: Factors, head_len: int) -> np.ndarray:
-    """Per-position combo ramp of the head notes: 1 + (combo - 1) / 100 x position."""
-    positions = np.arange(1, head_len + 1, dtype=np.float64)
-    return ((f.combo - 1.0) / 100.0) * positions + 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +108,7 @@ def best_timeline_score(f: Factors, cell: TimelineCell, total_notes: int) -> tup
     scores = cell.body_fever * fever_value + cell.body_normal * combo_value
 
     head_len = min(total_notes, HEAD_NOTES)
-    perfect = f.base * _head_scaling(f, head_len)
+    perfect = f.base * f.ramp[:head_len]
     normal = np.floor(perfect).astype(np.int64)
     fever = np.floor(perfect * f.fever).astype(np.int64)
     notes = np.arange(head_len)
@@ -144,11 +141,11 @@ def fg_surface_score(f: Factors, surface: Any, total_notes: int) -> int:
 
     fever_words = (surface.fever0, surface.fever1, surface.fever2, surface.fever3)
     great_words = (surface.great0, surface.great1, surface.great2, surface.great3)
-    slope = (f.combo - 1.0) / 100.0
+    ramp = f.ramp.tolist()
     for note in range(head_len):
         in_fever = (fever_words[note // 32] >> (note % 32)) & 1
         is_great = (great_words[note // 32] >> (note % 32)) & 1
-        scaling = slope * float(note + 1) + 1.0
+        scaling = ramp[note]
         perfect = f.base * scaling
         value = floor(perfect * f.fever) if in_fever else floor(perfect)
         if is_great:

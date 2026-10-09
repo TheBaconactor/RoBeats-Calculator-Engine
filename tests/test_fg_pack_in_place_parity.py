@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 
 _HEAD_LEN = 40
@@ -135,6 +136,10 @@ def _score_cpu_f64(group_meta, packed, *, allow_pp: bool) -> np.ndarray:
 
     ids, words, counts, coeffs, group_offsets, group_lengths = packed[:6]
     idx = np.arange(MAX_STAT + 1, dtype=np.float64)
+    curves = StatCurves.from_mapping({
+        "Perfect Points": idx * 0.5 + 0.3, "Combo Multiplier": 1.0 + idx * 0.011, "Fever Multiplier": 1.0 + idx * 0.017,
+        "Fever Time": np.ones(MAX_STAT + 1), "Fever Fill Rate": np.ones(MAX_STAT + 1),
+    })
     color_flags = (
         np.asarray([1, 0, 0, 0, 0, 0, 1, 0, 0], dtype=np.int32)
         if allow_pp
@@ -151,9 +156,10 @@ def _score_cpu_f64(group_meta, packed, *, allow_pp: bool) -> np.ndarray:
             np.ascontiguousarray(counts, dtype=np.int32),
             np.ascontiguousarray(coeffs, dtype=np.int32),
             color_flags,
-            np.ascontiguousarray(idx * 0.5 + 0.3),
-            np.ascontiguousarray(1.0 + idx * 0.011),
-            np.ascontiguousarray(1.0 + idx * 0.017),
+            curves.f64["Perfect Points"],
+            curves.f64["Combo Multiplier"],
+            curves.combo_ramp,
+            curves.f64["Fever Multiplier"],
         ),
         dtype=np.int32,
     )
