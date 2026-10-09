@@ -40,7 +40,8 @@ Two graphs per loadout, matching the intended software behavior:
     guidance, and fever-end safe-target guidance.
   * ``"non-precise"``: Perfects stay on time. Leading Greats in a tie are early to precede its
     first Perfect, at the latest offset every frame timing still judges an early Great; other
-    Greats use their canonical late hit.
+    Greats use their canonical late hit, or that early offset when the late hit would come within
+    a frame margin of an input that must follow it (_plan_blocked_late_greats_early).
 
 Both are reconstructable losslessly from already-persisted data (FG: `frontier_trace`
 + `response_surface`; BASE: the packed stats, replayed through the fever timeline),
@@ -77,6 +78,11 @@ __all__ = [
 ]
 
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
+# The combo ramp: the score surface keeps the judgment and fever of each of these first notes.
+_HEAD_NOTES = 100
+# Wider than any planned hit offset (a held tail's late Great ends at 182 ms): notes further apart in chart time never
+# swap inputs.
+_PLANNED_OFFSET_SPAN_MS = 200.0
 _BOUNDS = {
     scale: tuple((float(band.earliest), float(band.latest)) for band in judgment_bounds(scale))
     for scale in (1, HELD_TAIL_WINDOW_SCALE)
@@ -134,6 +140,12 @@ def _early_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, fl
 
 def _late_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
     return _bounds_at(note_types, j)[2]
+
+
+def _guaranteed_early_great_ms(note_types: np.ndarray, j: int) -> float:
+    """The latest planned offset every frame timing judges an early Great: the game judges a press up to one frame
+    margin after it is planned (any rate >= 60 fps)."""
+    return float(np.floor(_early_great_bounds_ms_at(note_types, j)[1] - FRAME_MARGIN_MS))
 
 
 def _selector_default_delta_ms(note_types: np.ndarray, j: int, result: str, delta: Any) -> float:
@@ -511,10 +523,9 @@ def _mark_same_time_selector_order_deltas(
             nt = np.asarray(note_types).reshape(-1)
 
         if _BUILD.get() == "non-precise":
-            # The game judges a press up to one frame margin after it is planned (any rate >= 60 fps).
             stop = min((j for j in cluster if notes[j]["note_result"] == "Perfect"), default=cluster[0])
             for j in range(cluster[0], stop):
-                notes[j]["delta_ms"] = float(np.floor(_early_great_bounds_ms_at(nt, j)[1] - FRAME_MARGIN_MS))
+                notes[j]["delta_ms"] = _guaranteed_early_great_ms(nt, j)
             continue
 
         latest_deltas = [np.inf] * len(cluster)
@@ -925,6 +936,86 @@ def _materialize_remaining_selector_deltas(
                 f"note_graph: only a Great selector may omit its timing witness (note {index})"
             )
         note["delta_ms"] = float(_selector_default_delta_ms(nt, index, result, None))
+
+
+def _plan_blocked_late_greats_early(
+    notes: list[dict[str, Any]],
+    *,
+    note_types: np.ndarray,
+    lanes: np.ndarray,
+    frontier_trace: Sequence[Mapping[str, Any]],
+) -> None:
+    """Non-Precise: a late Great whose input is not one frame margin before an input that must follow it is planned
+    early (_guaranteed_early_great_ms), with the late Greats that must then precede it, when every input that must
+    precede a moved one stays one margin earlier, every input that must follow it one margin later, and no fever window
+    ends within a margin of its move. An input must precede another one of a later note in its lane, or of a later note
+    scored in another order: a different judgment or fever in the combo ramp, an activation or a wasted note. Inputs
+    a move passes are scored in either order, so the plan keeps its score and fever. A plan with an input it cannot
+    move stays as it is (the physical replay rejects an order no player can play)."""
+    n = len(notes)
+    times = [float(note["hit_time_ms"]) for note in notes]
+    events = [time + float(note["delta_ms"]) for time, note in zip(times, notes)]
+    scored = [(note["note_result"], bool(note["fever"])) for note in notes]
+    special = {int(sec[key]) for sec in frontier_trace for key in ("activation_index", "fever_end_index")}
+    fever_ends = [float(sec["fever_window_end_ms"]) for sec in frontier_trace]
+    lane = lanes.tolist()
+
+    def ordered(a: int, b: int) -> bool:
+        """Whether note a's input must precede note b's (a < b)."""
+        return lane[a] == lane[b] or a in special or b in special or (a < _HEAD_NOTES and scored[a] != scored[b])
+
+    def late_great(i: int) -> bool:
+        return notes[i]["note_result"] == "Great" and events[i] > times[i]
+
+    def too_close_after(i: int, at: float, planned: Mapping[int, float]) -> list[int]:
+        """The later notes whose input must follow i's input at `at` but is not one margin after it."""
+        out, b = [], i + 1
+        while b < n and times[b] < at + _PLANNED_OFFSET_SPAN_MS:
+            if ordered(i, b) and planned.get(b, events[b]) < at + FRAME_MARGIN_MS:
+                out.append(b)
+            b += 1
+        return out
+
+    def too_close_before(i: int, at: float, planned: Mapping[int, float]) -> list[int]:
+        """The earlier notes whose input must precede i's input at `at` but is not one margin before it."""
+        out, a = [], i - 1
+        while a >= 0 and times[a] > at - _PLANNED_OFFSET_SPAN_MS:
+            if ordered(a, i) and planned.get(a, events[a]) > at - FRAME_MARGIN_MS:
+                out.append(a)
+            a -= 1
+        return out
+
+    def early_group(k: int) -> dict[int, float] | None:
+        """k and the late Greats that must move with it, at their early inputs; None when they cannot move."""
+        planned = {k: times[k] + _guaranteed_early_great_ms(note_types, k)}
+        pending = [k]
+        while pending:
+            i = pending.pop()
+            for a in too_close_before(i, planned[i], planned):
+                if a in planned or not late_great(a):
+                    return None
+                planned[a] = times[a] + _guaranteed_early_great_ms(note_types, a)
+                pending.append(a)
+        for i, at in planned.items():
+            if too_close_after(i, at, planned) or any(
+                at - FRAME_MARGIN_MS <= end <= events[i] + FRAME_MARGIN_MS for end in fever_ends
+            ):
+                return None
+        return planned
+
+    moved = True
+    while moved:
+        moved = False
+        for k in range(n - 1, -1, -1):
+            if not late_great(k) or not too_close_after(k, events[k], {}):
+                continue
+            group = early_group(k)
+            if group is None:
+                continue
+            for i, at in group.items():
+                notes[i]["delta_ms"] = _guaranteed_early_great_ms(note_types, i)
+                events[i] = at
+            moved = True
 
 
 def _assign_exact_input_order(
@@ -1524,15 +1615,14 @@ def force_greats_note_graph(
     frontier_trace: Sequence[Mapping[str, Any]],
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
-    note_types: Sequence[int] | np.ndarray | None = None,
-    lanes: Sequence[int] | np.ndarray | None = None,
+    note_types: Sequence[int] | np.ndarray,
+    lanes: Sequence[int] | np.ndarray,
     timing_mode: str,
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
 
-    ``note_types`` is runtime song data (like ``timestamps``) needed to show a clawed-in
-    endpoint-early note's held-tail-aware LEGAL early hit; required (fails loud) only when a note
-    is actually clawed in -- never guessed.
+    ``note_types`` and ``lanes`` are the chart's (like ``timestamps``): a hit is planned inside its note's
+    held-tail-aware judgment bands and after its lane's previous input.
 
     `frontier_trace` is the per-loadout `ForceGreats.frontier_trace` (list of section
     dicts emitted by `reconstruct_force_greats_response_trace`). Each section carries a
@@ -1547,16 +1637,11 @@ def force_greats_note_graph(
     n = int(total_notes)
     mode = _require_timing_mode(timing_mode)
     apply_guidance = mode != "non-precise"
+    nt = np.asarray(note_types).reshape(-1)
+    lane_arr = np.asarray(lanes).reshape(-1)
+    if int(nt.shape[0]) != n or int(lane_arr.shape[0]) != n:
+        raise ValueError("note_graph: note_types and lanes must match total_notes")
     with _building(mode):
-        if apply_guidance:
-            if note_types is None or lanes is None:
-                raise ValueError(
-                    "note_graph: perfect-window FG replay requires chart note_types and lanes"
-                )
-            if int(np.asarray(note_types).reshape(-1).shape[0]) != n or int(
-                np.asarray(lanes).reshape(-1).shape[0]
-            ) != n:
-                raise ValueError("note_graph: note_types and lanes must match total_notes")
         notes = _perfect_note_graph(n, timestamps)
 
         # Score-bearing labels are global inputs to every activation cap. Materialize the complete map
@@ -1694,6 +1779,8 @@ def force_greats_note_graph(
                 require_exact_schedule=True,
             )
         _materialize_remaining_selector_deltas(notes, note_types=note_types)
+        if not apply_guidance:
+            _plan_blocked_late_greats_early(notes, note_types=nt, lanes=lane_arr, frontier_trace=frontier_trace)
         _assign_exact_input_order(notes, input_order_constraints if apply_guidance else ())
         if apply_guidance:
             _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)

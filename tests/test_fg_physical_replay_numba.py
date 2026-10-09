@@ -299,7 +299,7 @@ def test_wrapper_input_order_not_permutation_message(monkeypatch):
         _call(graph, note_types=[1, 1], lanes=[0, 1])
 
 
-def test_wrapper_lane_order_message(monkeypatch):
+def test_wrapper_lane_order_is_an_unplayable_plan(monkeypatch):
     # Shared lane 0; input_order = [1, 0, 2] => event_order = [1, 0, 2], violating ascending index.
     graph = [
         {"delta_ms": 0.0, "note_result": "Perfect", "hit_time_ms": 0.0, "input_order": 1, "fever": False},
@@ -307,7 +307,7 @@ def test_wrapper_lane_order_message(monkeypatch):
         {"delta_ms": 0.0, "note_result": "Perfect", "hit_time_ms": 200.0, "input_order": 2, "fever": False},
     ]
     _install_graph(monkeypatch, graph)
-    with pytest.raises(ValueError, match=r"FG physical replay lane 0 matched note 0, not intended note 1"):
+    with pytest.raises(pr.UnplayableTrace, match=r"FG physical replay lane 0 matched note 0, not intended note 1"):
         _call(graph, note_types=[1, 1, 1], lanes=[0, 0, 0])
 
 

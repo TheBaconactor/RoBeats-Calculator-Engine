@@ -10,6 +10,7 @@ from numba import njit
 
 from ..taichi_gem.force_greats.response_types import FgResponseSurface
 from .note_graph import (
+    UnplayableTrace,
     force_greats_note_graph,
     reconcile_base_note_graph,
     reconcile_force_greats_note_graph,
@@ -461,7 +462,8 @@ def validate_force_greats_physical_replay(
     if status == _REPLAY_ERR_INPUT_ORDER:
         raise ValueError("FG physical replay graph does not contain one exact input order")
     if status == _REPLAY_ERR_LANE:
-        raise ValueError(
+        # The plan presses or releases a lane before that lane's earlier note is done: no player can play it.
+        raise UnplayableTrace(
             f"FG physical replay lane {int(lane_arr[int(arg_a)])} matched note {int(arg_b)}, "
             f"not intended note {int(arg_a)}"
         )

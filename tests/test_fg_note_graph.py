@@ -1806,6 +1806,41 @@ def test_non_precise_early_great_only_precedes_first_perfect_in_tie(start, great
     assert all(note["delta_ms"] == 0.0 for note in graph if note["note_result"] == "Perfect")
 
 
+def _non_precise_forced_graph(ts_ms, lanes, note_types, forced):
+    n = len(ts_ms)
+    trace = [{"section": 1, "activation_index": n - 1, "fever_end_index": n,
+              "forced_start_index": 0, "forced_run_start_index": forced[0], "forced_run_count": len(forced),
+              "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0}]
+    return _exact_force_greats_note_graph(
+        frontier_trace=trace, total_notes=n, timestamps=np.asarray(ts_ms, dtype=np.float64) / 1000.0,
+        note_types=np.asarray(note_types, dtype=np.int16), lanes=np.asarray(lanes, dtype=np.int32),
+        timing_mode="non-precise",
+    )
+
+
+@pytest.mark.parametrize("ts_ms,lanes,note_types,forced,early", [
+    # A held tail's late release (+81) would follow its lane's next press, a tie's leading Great at -38 (Back Out (Hard)).
+    ([0, 300, 395, 395, 1000, 1500], [1, 1, 1, 2, 3, 4], [2, 3, 1, 1, 1, 1], range(3), {1: -58.0, 2: -38.0}),
+    # A held tail's late release (+81) would follow the next note's Perfect in the combo ramp (Devotion (Hard)).
+    ([0, 198, 273, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(2), {1: -58.0}),
+    # The same with the hold's head too close to move the tail alone: the head moves with it.
+    ([150, 198, 273, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(2), {0: -38.0, 1: -58.0}),
+])
+def test_non_precise_late_great_that_must_precede_an_input_is_planned_early(ts_ms, lanes, note_types, forced, early):
+    graph = _non_precise_forced_graph(ts_ms, lanes, note_types, forced)
+    for index in forced:
+        assert graph[index]["delta_ms"] == early.get(index, 81.0 if note_types[index] == 3 else 41.0)
+    inputs = [note["hit_time_ms"] + note["delta_ms"] for note in graph]
+    assert sorted(range(len(graph)), key=lambda i: (inputs[i], i)) == list(range(len(graph)))
+
+
+def test_non_precise_late_great_stays_when_an_earlier_input_cannot_move():
+    # The held tail's Great must precede the Perfect at 130 ms, but its head is a Perfect 60 ms before it: an early
+    # release would come within a frame margin of that press. The plan stays (its score order is not playable).
+    graph = _non_precise_forced_graph([0, 60, 130, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(1, 2))
+    assert [note["delta_ms"] for note in graph] == [0.0, 81.0, 0.0, 0.0, 0.0]
+
+
 def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
     """non-precise mode must not inherit Perfect-window guidance deltas (issue #66)."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
@@ -1828,7 +1863,7 @@ def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
         frontier_trace=trace_with_tight_fever_end,
         total_notes=n,
         timestamps=ts,
-        note_types=nt, timing_mode="non-precise"
+        note_types=nt, lanes=np.arange(n, dtype=np.int32), timing_mode="non-precise"
     )
     assert all(note["delta_ms"] in (0.0, None) for note in fg_graph)
     assert fg_graph[0]["is_activation_witness"] is False
