@@ -47,7 +47,6 @@ _FG_SHARED_FRONTIER_PRODUCER_SOURCES = (
 # build/search/pack path, add it here (the base version stays the human backstop).
 _FG_DP_SOURCES = (
     *_FG_SHARED_FRONTIER_PRODUCER_SOURCES,
-    _SOLVER_DIR / "fg_response_scoring" / "note_graph.py",
     _HERE / "response_cache_keys.py",
     _HERE / "response_cache_patterns.py",
     _HERE / "response_cache_serde.py",

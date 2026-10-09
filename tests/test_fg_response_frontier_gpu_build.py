@@ -497,11 +497,11 @@ def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
         source.relative_to(response_cache_types._SOLVER_DIR.parent).as_posix()
         for source in response_cache_types._FG_DP_SOURCES
     }
-    # The game-engine inputs (timing, input order, lane reachability, fever, witnesses) must rotate the FG cache.
+    # The game-engine inputs of the bundle build (timing, input order, lane reachability, fever) must rotate the FG
+    # cache. Witnesses are reconstructed from a result after a bundle is read, so the note graph is not one of them.
     assert {
         "core/time_quantize.py",
         "rules.py",
-        "solver/fg_response_scoring/note_graph.py",
         "solver/input_engine_breakpoints.py",
         "solver/scoring/fg_policy.py",
         "solver/timing_envelope.py",
