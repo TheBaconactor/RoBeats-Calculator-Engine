@@ -1787,7 +1787,7 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
 
 
 @pytest.mark.parametrize("start,great,kind,tied,count,delta", [
-    (0, 0, 1, True, 1, -20.0), (101, 101, 3, True, 1, -40.0),
+    (0, 0, 1, True, 1, -38.0), (101, 101, 3, True, 1, -58.0),
     (0, 1, 1, True, 1, 41.0), (0, 0, 1, False, 1, 41.0), (0, 0, 1, True, 2, 41.0),
 ])
 def test_non_precise_early_great_only_precedes_first_perfect_in_tie(start, great, kind, tied, count, delta):

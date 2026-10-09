@@ -38,8 +38,9 @@ Two graphs per loadout, matching the intended software behavior:
 ``timing_mode`` selects the timing semantic (issue #66):
   * ``"precise"``: apply activation witness offsets, endpoint-early
     guidance, and fever-end safe-target guidance.
-  * ``"non-precise"`` (default): Perfects stay on time. Leading Greats in a tie can be early to
-    precede its first Perfect; other Greats use their canonical late hit.
+  * ``"non-precise"``: Perfects stay on time. Leading Greats in a tie are early to precede its
+    first Perfect, at the latest offset every frame timing still judges an early Great; other
+    Greats use their canonical late hit.
 
 Both are reconstructable losslessly from already-persisted data (FG: `frontier_trace`
 + `response_surface`; BASE: the packed stats, replayed through the fever timeline),
@@ -59,6 +60,7 @@ from gear_optimizer.core.time_quantize import snap_near_int_ms
 
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
 from gear_optimizer.solver.timing_envelope import (
+    FRAME_MARGIN_MS,
     HELD_TAIL_TYPE,
     HELD_TAIL_WINDOW_SCALE,
     PERFECT_UPPER_MS,
@@ -509,9 +511,10 @@ def _mark_same_time_selector_order_deltas(
             nt = np.asarray(note_types).reshape(-1)
 
         if _BUILD.get() == "non-precise":
+            # The game judges a press up to one frame margin after it is planned (any rate >= 60 fps).
             stop = min((j for j in cluster if notes[j]["note_result"] == "Perfect"), default=cluster[0])
             for j in range(cluster[0], stop):
-                notes[j]["delta_ms"] = _early_great_bounds_ms_at(nt, j)[1]
+                notes[j]["delta_ms"] = float(np.floor(_early_great_bounds_ms_at(nt, j)[1] - FRAME_MARGIN_MS))
             continue
 
         latest_deltas = [np.inf] * len(cluster)
