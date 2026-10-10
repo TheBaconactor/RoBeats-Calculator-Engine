@@ -162,37 +162,26 @@ def _selector_default_delta_ms(note_types: np.ndarray, j: int, result: str, delt
 def _activation_materialized_delta_ms(
     sec: Mapping[str, Any],
     *,
-    notes: Sequence[Mapping[str, Any]] | None = None,
-    total_notes: int | None = None,
-    note_types: Sequence[int] | np.ndarray | None,
-    lanes: Sequence[int] | np.ndarray | None = None,
+    notes: Sequence[Mapping[str, Any]],
+    total_notes: int,
+    note_types: np.ndarray,
+    lanes: np.ndarray,
     note_index: int,
     judgment: str,
 ) -> float:
-    """Return the max-margin activation hit that preserves the scored input order."""
-    nt = None if note_types is None else np.asarray(note_types).reshape(-1)
-    lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
+    """The max-margin hit of a late-Great or Perfect activation witness that preserves the scored input order."""
+    nt = np.asarray(note_types).reshape(-1)
+    lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
     a = int(note_index)
     raw_center = float(sec["activation_hit_offset_ms"])
-    if nt is None:
-        return float(raw_center)
     if judgment == "late_great":
         judge_lo, judge_hi = _late_great_bounds_ms_at(nt, a)
-    elif judgment == "perfect":
+    else:
         judge_lo, judge_hi = _perfect_bounds_ms_at(nt, a)
-    else:
-        return float(raw_center)
 
-    if notes is not None and 0 <= a < len(notes):
-        chart_ms = float(notes[a]["hit_time_ms"])
-    else:
-        chart_ms = float(sec.get("activation_ms", 0.0) or 0.0)
+    chart_ms = float(notes[a]["hit_time_ms"])
     absolute_center = sec.get("activation_hit_ms")
-    center = (
-        float(absolute_center) - float(chart_ms)
-        if absolute_center is not None
-        else float(raw_center)
-    )
+    center = float(absolute_center) - float(chart_ms) if absolute_center is not None else float(raw_center)
 
     def _offset_field(name: str, fallback: float) -> float:
         window_key = f"activation_hit_window_{name}_ms"
@@ -215,13 +204,9 @@ def _activation_materialized_delta_ms(
     lo = max(float(judge_lo), float(window_lo))
     hi = min(float(judge_hi), float(window_hi))
     if lo > hi:
-        if float(window_lo) > float(judge_hi) and _snap_engine_time_ms(window_lo) == float(
-            judge_hi
-        ):
+        if float(window_lo) > float(judge_hi) and _snap_engine_time_ms(window_lo) == float(judge_hi):
             lo = hi = float(judge_hi)
-        elif float(window_hi) < float(judge_lo) and _snap_engine_time_ms(window_hi) == float(
-            judge_lo
-        ):
+        elif float(window_hi) < float(judge_lo) and _snap_engine_time_ms(window_hi) == float(judge_lo):
             lo = hi = float(judge_lo)
         else:
             raise ValueError(
@@ -236,13 +221,7 @@ def _activation_materialized_delta_ms(
     duration_ms = _trace_fever_duration_ms(sec, activation_chart_ms=float(chart_ms))
     early_great_start = int(sec.get("early_great_start", -1))
     early_great_end = int(sec.get("early_great_end", -1))
-    if (
-        duration_ms is not None
-        and notes is not None
-        and total_notes is not None
-        and early_great_start >= 0
-        and early_great_end > early_great_start
-    ):
+    if duration_ms is not None and early_great_start >= 0 and early_great_end > early_great_start:
         graph_end = min(int(total_notes), len(notes), int(nt.shape[0]))
         for j in range(max(0, int(early_great_start)), min(int(early_great_end), graph_end)):
             early_lo, _early_hi = _early_great_bounds_ms_at(nt, j)
@@ -260,60 +239,10 @@ def _activation_materialized_delta_ms(
                 f"fever-end note at activation {a} ({lo:.3f}ms > {hi:.3f}ms)"
             )
 
-    label_high_ms: np.ndarray | None = None
-    if notes is not None and total_notes is not None:
-        n = min(int(total_notes), len(notes), int(nt.shape[0]))
-        if lane_arr is not None:
-            n = min(n, int(lane_arr.shape[0]))
-        chart_timestamps_ms = np.empty((n,), dtype=np.float64)
-        label_high_ms = np.empty((n,), dtype=np.float64)
-        for j in range(n):
-            note = notes[j]
-            chart_timestamps_ms[j] = float(note["hit_time_ms"])
-            result = str(note.get("note_result", "Perfect"))
-            if result == "Perfect":
-                _label_lo, label_hi = _perfect_bounds_ms_at(nt, j)
-            elif result == "Great":
-                _early_lo, early_hi = _early_great_bounds_ms_at(nt, j)
-                _late_lo, late_hi = _late_great_bounds_ms_at(nt, j)
-                label_hi = max(float(early_hi), float(late_hi))
-            else:
-                raise ValueError(f"note_graph: cannot order unsupported result {result!r} at note {j}")
-            label_high_ms[j] = float(note["hit_time_ms"]) + float(label_hi)
-        schedule_version = int(sec.get("activation_schedule_schema_version", 0) or 0)
-        if schedule_version == 1:
-            exact_order_raw = sec.get("preactivation_order")
-            if not isinstance(exact_order_raw, (list, tuple)):
-                raise ValueError("note_graph: exact activation schedule requires preactivation order")
-            selected_preactivation = frozenset(int(index) for index in exact_order_raw)
-            hit_ms = float(chart_ms) + float(hi)
-            hit_lo_ms = float(chart_ms) + float(lo)
-            for j in range(a + 1, n):
-                if int(j) in selected_preactivation:
-                    continue
-                if float(chart_timestamps_ms[j]) >= float(hit_ms):
-                    break
-                # The exact schedule adds activation -> follower to canonical input_order below.
-                # Equal event times are therefore legal and need no synthetic separation.
-                latest_ms = float(label_high_ms[j])
-                hit_ms = min(float(hit_ms), latest_ms)
-                if float(hit_ms) < float(hit_lo_ms):
-                    hit_ms = None
-                    break
-        else:
-            hit_ms = latest_activation_hit_from_label_highs(
-                activation_index=a,
-                hit_lo=float(chart_ms) + float(lo),
-                hit_hi=float(chart_ms) + float(hi),
-                chart_timestamps=chart_timestamps_ms,
-                label_high_timestamps=label_high_ms,
-                section_end=n,
-                lanes=lane_arr,
-                epsilon=0.001,
-            )
-    else:
-        hit_ms = float(chart_ms) + float(hi)
-
+    hit_ms = _latest_order_preserving_activation_hit_ms(
+        sec, notes, nt, lane_arr, total_notes=total_notes, activation=a,
+        hit_lo_ms=float(chart_ms) + float(lo), hit_hi_ms=float(chart_ms) + float(hi),
+    )
     if hit_ms is None:
         raise UnplayableTrace(
             "note_graph: activation witness cannot preserve following note order without "
@@ -331,6 +260,65 @@ def _activation_materialized_delta_ms(
     # the minimum distance to either remaining boundary, i.e. the most input error in both
     # directions without changing the score-bearing judgment, order, or fever extent.
     return float(_center_safe_delta(low_ms=float(lo), high_ms=float(feasible_hi)))
+
+
+def _latest_order_preserving_activation_hit_ms(
+    sec: Mapping[str, Any],
+    notes: Sequence[Mapping[str, Any]],
+    nt: np.ndarray,
+    lane_arr: np.ndarray,
+    *,
+    total_notes: int,
+    activation: int,
+    hit_lo_ms: float,
+    hit_hi_ms: float,
+) -> float | None:
+    """The latest activation hit in [hit_lo_ms, hit_hi_ms] that no following note's latest legal hit has to precede;
+    None when none is left. An exact (v1) schedule exempts the notes it plans before the activation."""
+    a = int(activation)
+    n = min(int(total_notes), len(notes), int(nt.shape[0]), int(lane_arr.shape[0]))
+    chart_timestamps_ms = np.empty((n,), dtype=np.float64)
+    label_high_ms = np.empty((n,), dtype=np.float64)
+    for j in range(n):
+        note = notes[j]
+        chart_timestamps_ms[j] = float(note["hit_time_ms"])
+        result = str(note.get("note_result", "Perfect"))
+        if result == "Perfect":
+            _label_lo, label_hi = _perfect_bounds_ms_at(nt, j)
+        elif result == "Great":
+            _early_lo, early_hi = _early_great_bounds_ms_at(nt, j)
+            _late_lo, late_hi = _late_great_bounds_ms_at(nt, j)
+            label_hi = max(float(early_hi), float(late_hi))
+        else:
+            raise ValueError(f"note_graph: cannot order unsupported result {result!r} at note {j}")
+        label_high_ms[j] = float(note["hit_time_ms"]) + float(label_hi)
+    if int(sec.get("activation_schedule_schema_version", 0) or 0) != 1:
+        return latest_activation_hit_from_label_highs(
+            activation_index=a,
+            hit_lo=float(hit_lo_ms),
+            hit_hi=float(hit_hi_ms),
+            chart_timestamps=chart_timestamps_ms,
+            label_high_timestamps=label_high_ms,
+            section_end=n,
+            lanes=lane_arr,
+            epsilon=0.001,
+        )
+    exact_order_raw = sec.get("preactivation_order")
+    if not isinstance(exact_order_raw, (list, tuple)):
+        raise ValueError("note_graph: exact activation schedule requires preactivation order")
+    selected_preactivation = frozenset(int(index) for index in exact_order_raw)
+    hit_ms = float(hit_hi_ms)
+    for j in range(a + 1, n):
+        if int(j) in selected_preactivation:
+            continue
+        if float(chart_timestamps_ms[j]) >= float(hit_ms):
+            break
+        # The exact schedule adds activation -> follower to canonical input_order below.
+        # Equal event times are therefore legal and need no synthetic separation.
+        hit_ms = min(float(hit_ms), float(label_high_ms[j]))
+        if float(hit_ms) < float(hit_lo_ms):
+            return None
+    return hit_ms
 
 
 def _trace_fever_duration_ms(
@@ -672,6 +660,102 @@ def _materialize_preactivation_schedule(
         required_press = float(note["hit_time_ms"]) + float(chosen_delta)
 
 
+def _materialize_exact_activation_schedule(
+    notes: list[dict[str, Any]],
+    sec: Mapping[str, Any],
+    *,
+    activation_index: int,
+    total_notes: int,
+    nt: np.ndarray,
+    lane_arr: np.ndarray,
+) -> tuple[set[int], list[tuple[int, int]]]:
+    """Check a section's persisted v1 activation schedule against the graph's labels and the chart's lanes (``nt`` the
+    note types), plan its pre-activation hits, and return those notes with the input-order constraints of the
+    schedule."""
+    a = int(activation_index)
+    n = int(total_notes)
+    activation_lane = int(lane_arr[a])
+    schedule_version = sec.get("activation_schedule_schema_version")
+    exact_order_raw = sec.get("preactivation_order")
+    if schedule_version != 1 or not isinstance(exact_order_raw, (list, tuple)):
+        raise ValueError("note_graph: exact activation schedule schema v1 is required")
+    exact_order = tuple(int(index) for index in exact_order_raw)
+    if len(exact_order) != int(sec.get("preactivation_event_count", -1)):
+        raise ValueError("note_graph: preactivation order length does not match its signature")
+    if len(set(exact_order)) != len(exact_order) or any(
+        index < 0 or index >= n or index == a for index in exact_order
+    ):
+        raise ValueError("note_graph: preactivation order contains an invalid note identity")
+    section_start = int(sec.get("forced_start_index", -1))
+    if not (0 <= int(section_start) <= int(a) < n):
+        raise ValueError("note_graph: activation schedule has invalid section bounds")
+    great_count = sum(
+        1
+        for index in exact_order
+        if str(notes[int(index)].get("note_result", "Perfect")) == "Great"
+    )
+    if great_count != int(sec.get("preactivation_great_count", -1)) or (
+        2 * len(exact_order) - int(great_count)
+        != int(sec.get("preactivation_fill_half_units", -1))
+    ):
+        raise ValueError("note_graph: preactivation fill signature does not match note labels")
+    lane_prefixes_raw = sec.get("preactivation_lane_prefixes")
+    if not isinstance(lane_prefixes_raw, (list, tuple)):
+        raise ValueError("note_graph: per-lane prefixes are required by activation schedule v1")
+    lane_notes: dict[int, list[int]] = {}
+    lane_order: list[int] = []
+    for index in range(int(section_start), n):
+        lane_id = int(lane_arr[int(index)])
+        if lane_id not in lane_notes:
+            lane_notes[lane_id] = []
+            lane_order.append(lane_id)
+        lane_notes[lane_id].append(int(index))
+    if any(not isinstance(row, Mapping) for row in lane_prefixes_raw):
+        raise ValueError("note_graph: per-lane prefix rows must be mappings")
+    persisted_lane_counts = tuple(
+        (int(row["lane"]), int(row["count"])) for row in lane_prefixes_raw
+    )
+    if tuple(lane for lane, _count in persisted_lane_counts) != tuple(lane_order):
+        raise ValueError("note_graph: persisted per-lane prefix identities are not canonical")
+    selected_rows: list[int] = []
+    for lane_id, prefix_count in persisted_lane_counts:
+        rows = lane_notes[int(lane_id)]
+        if not (0 <= int(prefix_count) <= len(rows)):
+            raise ValueError("note_graph: persisted per-lane prefix count is out of range")
+        if int(lane_id) == int(activation_lane):
+            activation_position = rows.index(int(a))
+            if int(prefix_count) != int(activation_position):
+                raise ValueError(
+                    "note_graph: activation-lane prefix must end immediately before activation"
+                )
+        selected_rows.extend(rows[: int(prefix_count)])
+    selected_preactivation = set(int(index) for index in selected_rows)
+    if set(exact_order) != selected_preactivation:
+        raise ValueError("note_graph: preactivation order does not match its per-lane prefixes")
+    for lane_id, prefix_count in persisted_lane_counts:
+        expected_lane_order = tuple(lane_notes[int(lane_id)][: int(prefix_count)])
+        actual_lane_order = tuple(
+            index for index in exact_order if int(lane_arr[int(index)]) == int(lane_id)
+        )
+        if actual_lane_order != expected_lane_order:
+            raise ValueError("note_graph: preactivation order violates lane-local matcher order")
+    exact_sequence = (*exact_order, int(a))
+    boundary_index = int(section_start) - 1 if int(section_start) > 0 else None
+    _materialize_preactivation_schedule(
+        notes,
+        note_types=nt,
+        exact_order=exact_order,
+        activation_index=int(a),
+        boundary_index=boundary_index,
+    )
+    constraints = [] if boundary_index is None else [(boundary_index, int(exact_sequence[0]))]
+    constraints.extend(
+        (int(before), int(after))
+        for before, after in zip(exact_sequence, exact_sequence[1:])
+    )
+    return selected_preactivation, constraints
+
+
 def _mark_activation_preemptor_order_deltas(
     notes: list[dict[str, Any]],
     *,
@@ -704,8 +788,6 @@ def _mark_activation_preemptor_order_deltas(
         or int(lane_arr.shape[0]) != n
     ):
         raise ValueError("note_graph: note_types and lanes must match total_notes")
-    if lane_arr is not None and not require_exact_schedule:
-        n = min(n, int(lane_arr.shape[0]))
 
     for sec in frontier_trace:
         a = int(sec.get("activation_index", -1))
@@ -720,90 +802,12 @@ def _mark_activation_preemptor_order_deltas(
             continue
 
         activation_press = float(notes[a]["hit_time_ms"]) + float(activation_delta)
-        activation_lane = None if lane_arr is None else int(lane_arr[a])
         selected_preactivation: set[int] = set()
         if require_exact_schedule:
-            schedule_version = sec.get("activation_schedule_schema_version")
-            exact_order_raw = sec.get("preactivation_order")
-            if schedule_version != 1 or not isinstance(exact_order_raw, (list, tuple)):
-                raise ValueError("note_graph: exact activation schedule schema v1 is required")
-            exact_order = tuple(int(index) for index in exact_order_raw)
-            if len(exact_order) != int(sec.get("preactivation_event_count", -1)):
-                raise ValueError("note_graph: preactivation order length does not match its signature")
-            if len(set(exact_order)) != len(exact_order) or any(
-                index < 0 or index >= n or index == a for index in exact_order
-            ):
-                raise ValueError("note_graph: preactivation order contains an invalid note identity")
-            section_start = int(sec.get("forced_start_index", -1))
-            if not (0 <= int(section_start) <= int(a) < n):
-                raise ValueError("note_graph: activation schedule has invalid section bounds")
-            great_count = sum(
-                1
-                for index in exact_order
-                if str(notes[int(index)].get("note_result", "Perfect")) == "Great"
+            selected_preactivation, schedule_constraints = _materialize_exact_activation_schedule(
+                notes, sec, activation_index=a, total_notes=n, nt=nt, lane_arr=lane_arr,
             )
-            if great_count != int(sec.get("preactivation_great_count", -1)) or (
-                2 * len(exact_order) - int(great_count)
-                != int(sec.get("preactivation_fill_half_units", -1))
-            ):
-                raise ValueError("note_graph: preactivation fill signature does not match note labels")
-            lane_prefixes_raw = sec.get("preactivation_lane_prefixes")
-            if not isinstance(lane_prefixes_raw, (list, tuple)):
-                raise ValueError("note_graph: per-lane prefixes are required by activation schedule v1")
-            lane_notes: dict[int, list[int]] = {}
-            lane_order: list[int] = []
-            for index in range(int(section_start), n):
-                lane_id = int(lane_arr[int(index)])
-                if lane_id not in lane_notes:
-                    lane_notes[lane_id] = []
-                    lane_order.append(lane_id)
-                lane_notes[lane_id].append(int(index))
-            if any(not isinstance(row, Mapping) for row in lane_prefixes_raw):
-                raise ValueError("note_graph: per-lane prefix rows must be mappings")
-            persisted_lane_counts = tuple(
-                (int(row["lane"]), int(row["count"])) for row in lane_prefixes_raw
-            )
-            if tuple(lane for lane, _count in persisted_lane_counts) != tuple(lane_order):
-                raise ValueError("note_graph: persisted per-lane prefix identities are not canonical")
-            selected_rows: list[int] = []
-            for lane_id, prefix_count in persisted_lane_counts:
-                rows = lane_notes[int(lane_id)]
-                if not (0 <= int(prefix_count) <= len(rows)):
-                    raise ValueError("note_graph: persisted per-lane prefix count is out of range")
-                if int(lane_id) == int(activation_lane):
-                    activation_position = rows.index(int(a))
-                    if int(prefix_count) != int(activation_position):
-                        raise ValueError(
-                            "note_graph: activation-lane prefix must end immediately before activation"
-                        )
-                selected_rows.extend(rows[: int(prefix_count)])
-            selected_preactivation = set(int(index) for index in selected_rows)
-            if set(exact_order) != selected_preactivation:
-                raise ValueError("note_graph: preactivation order does not match its per-lane prefixes")
-            for lane_id, prefix_count in persisted_lane_counts:
-                expected_lane_order = tuple(lane_notes[int(lane_id)][: int(prefix_count)])
-                actual_lane_order = tuple(
-                    index for index in exact_order if int(lane_arr[int(index)]) == int(lane_id)
-                )
-                if actual_lane_order != expected_lane_order:
-                    raise ValueError("note_graph: preactivation order violates lane-local matcher order")
-            exact_sequence = (*exact_order, int(a))
-            boundary_index = int(section_start) - 1 if int(section_start) > 0 else None
-            _materialize_preactivation_schedule(
-                notes,
-                note_types=nt,
-                exact_order=exact_order,
-                activation_index=int(a),
-                boundary_index=boundary_index,
-            )
-            if boundary_index is not None:
-                input_order_constraints.append(
-                    (boundary_index, int(exact_sequence[0]))
-                )
-            input_order_constraints.extend(
-                (int(before), int(after))
-                for before, after in zip(exact_sequence, exact_sequence[1:])
-            )
+            input_order_constraints.extend(schedule_constraints)
         required_press_by_lane: dict[int, float] = {}
         previous_order_index_by_lane: dict[int, int] = {}
         global_required_press = float(activation_press)
@@ -826,12 +830,6 @@ def _mark_activation_preemptor_order_deltas(
             # activation's fill (the Aurora 47,502,676 witness shape).
             if int(j) > int(a) and chart_j - 200.0 > global_required_press:
                 break
-            if (
-                not require_exact_schedule
-                and activation_lane is not None
-                and int(lane_arr[j]) != activation_lane
-            ):
-                continue
             result = str(note.get("note_result", "Perfect"))
             raw_delta = note.get("delta_ms")
             if raw_delta is not None:
@@ -1474,6 +1472,46 @@ def _mark_fever_exit_push_delta(
         j += 1
 
 
+def _mark_fever_end(
+    notes: list[dict[str, Any]],
+    sec: Mapping[str, Any],
+    *,
+    total_notes: int,
+    fever_window_end_ms: float | None,
+    note_types: Sequence[int] | np.ndarray | None,
+    guidance: bool,
+    early_great_range: tuple[int, int] | None = None,
+) -> None:
+    """A section's fever-end witness; with guidance, the endpoint hits that keep its last fever notes inside the
+    cutoff (early-Great tail notes in their Great band) and push the first note past it out."""
+    a = int(sec["activation_index"])
+    e = int(sec["fever_end_index"])
+    _mark_fever_end_witness(
+        notes, activation_index=a, fever_end_index=e, total_notes=total_notes,
+        fever_window_end_ms=fever_window_end_ms, section=int(sec.get("section", 0)),
+    )
+    if not guidance:
+        return
+    _mark_endpoint_early_hits(
+        notes, activation_index=a, fever_end_index=e, total_notes=total_notes,
+        fever_window_end_ms=fever_window_end_ms, note_types=note_types, skip_range=early_great_range,
+    )
+    _mark_endpoint_early_great_hits(
+        notes, activation_index=a, total_notes=total_notes, fever_window_end_ms=fever_window_end_ms,
+        note_types=note_types, early_great_range=early_great_range,
+    )
+    _mark_fever_end_cluster_safe_delta(
+        notes, activation_index=a, fever_end_index=e, total_notes=total_notes,
+        fever_window_end_ms=fever_window_end_ms, note_types=note_types,
+    )
+    # The mirror of the claw-in: the first non-fever note is pushed past the cutoff, so the replay's drain excludes it
+    # as the served surface does.
+    _mark_fever_exit_push_delta(
+        notes, fever_end_index=e, total_notes=total_notes, fever_window_end_ms=fever_window_end_ms,
+        note_types=note_types,
+    )
+
+
 def timeline_frontier_note_graph(
     *,
     frontier_trace: Sequence[Mapping[str, Any]],
@@ -1519,32 +1557,12 @@ def timeline_frontier_note_graph(
                 notes[w]["delta_ms"] = float(sec["activation_hit_offset_ms"])
                 notes[w]["is_activation_witness"] = True
                 notes[w]["section"] = section
-            # The last note of the fever run is the fever-end witness (largest-cushion cutoff);
-            # any fever note at/after that cutoff is shown with its LARGEST-CUSHION legal early hit --
-            # the center of its legal in-fever range, the timing with the most error margin (issue #42).
-            # Display-only: the per-note timing keeps the scored fever set unchanged.
-            fever_end_ms = sec.get("fever_window_end_ms")
-            _mark_fever_end_witness(
-                notes, activation_index=a, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, section=section,
+            # The last note of the fever run is the fever-end witness; any fever note at/after the cutoff is shown with
+            # its largest-cushion legal early hit (display only: the scored fever set is unchanged).
+            _mark_fever_end(
+                notes, sec, total_notes=n, fever_window_end_ms=sec.get("fever_window_end_ms"),
+                note_types=note_types, guidance=apply_guidance,
             )
-            if apply_guidance:
-                guidance_start = int(a)
-                _mark_endpoint_early_hits(
-                    notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
-                    fever_window_end_ms=fever_end_ms, note_types=note_types,
-                )
-                _mark_fever_end_cluster_safe_delta(
-                    notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
-                    fever_window_end_ms=fever_end_ms, note_types=note_types,
-                )
-                # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
-                # drain excludes it exactly as the served surface does (keeps replay == card).
-                _mark_fever_exit_push_delta(
-                    notes, fever_end_index=e, total_notes=n,
-                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms),
-                    note_types=note_types,
-                )
 
         if apply_guidance:
             # The base frontier prices a delayed activation clock, but the replay wire is a stream of
@@ -1680,30 +1698,20 @@ def force_greats_note_graph(
 
             if apply_guidance:
                 activation_judgment = str(sec.get("activation_judgment", ""))
-                if activation_judgment == "late_great" and 0 <= a < n:
-                    materialized_activation_delta_ms = _activation_materialized_delta_ms(
-                        sec,
-                        notes=notes,
-                        total_notes=n,
-                        note_types=note_types,
-                        lanes=lanes,
-                        note_index=a,
-                        judgment=activation_judgment,
+                # A late-Great activation, or a Perfect one hit off its chart time, is a timing witness.
+                if 0 <= a < n and (
+                    activation_judgment == "late_great"
+                    or (
+                        activation_judgment == "perfect"
+                        and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
                     )
-                    notes[a]["delta_ms"] = float(materialized_activation_delta_ms)
-                    notes[a]["is_activation_witness"] = True
-                    notes[a]["section"] = section
-                elif (
-                    activation_judgment == "perfect"
-                    and 0 <= a < n
-                    and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
                 ):
                     materialized_activation_delta_ms = _activation_materialized_delta_ms(
                         sec,
                         notes=notes,
                         total_notes=n,
-                        note_types=note_types,
-                        lanes=lanes,
+                        note_types=nt,
+                        lanes=lane_arr,
                         note_index=a,
                         judgment=activation_judgment,
                     )
@@ -1717,52 +1725,19 @@ def force_greats_note_graph(
                     activation_chart_ms=float(notes[a]["hit_time_ms"]) if 0 <= a < n else None,
                 )
 
-            _mark_fever_end_witness(
-                notes, activation_index=a, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, section=section,
+            # The section's early-Great tail notes [early_great_start, early_great_end) inside its fever window.
+            early_great_range = None
+            early_great_start = int(sec.get("early_great_start", -1))
+            early_great_end = int(sec.get("early_great_end", -1))
+            if early_great_start >= 0 and early_great_end >= 0:
+                start = max(int(a), int(early_great_start), 0)
+                end = min(int(early_great_end), int(e), int(n))
+                if end > start:
+                    early_great_range = (start, end)
+            _mark_fever_end(
+                notes, sec, total_notes=n, fever_window_end_ms=fever_end_ms, note_types=note_types,
+                guidance=apply_guidance, early_great_range=early_great_range,
             )
-
-            if apply_guidance:
-                # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
-                # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
-                # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
-                # None) are skipped.
-                early_great_start = int(sec.get("early_great_start", -1))
-                early_great_end = int(sec.get("early_great_end", -1))
-                early_great_range = None
-                if early_great_start >= 0 and early_great_end >= 0:
-                    start = max(int(a), int(early_great_start), 0)
-                    end = min(int(early_great_end), int(e), int(n))
-                    if end > start:
-                        early_great_range = (start, end)
-                _mark_endpoint_early_hits(
-                    notes,
-                    activation_index=a,
-                    fever_end_index=e,
-                    total_notes=n,
-                    fever_window_end_ms=fever_end_ms,
-                    note_types=note_types,
-                    skip_range=early_great_range,
-                )
-                _mark_endpoint_early_great_hits(
-                    notes,
-                    activation_index=a,
-                    total_notes=n,
-                    fever_window_end_ms=fever_end_ms,
-                    note_types=note_types,
-                    early_great_range=early_great_range,
-                )
-                _mark_fever_end_cluster_safe_delta(
-                    notes, activation_index=a, fever_end_index=e, total_notes=n,
-                    fever_window_end_ms=fever_end_ms, note_types=note_types,
-                )
-                # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
-                # drain excludes it exactly as the served surface does (keeps replay == card).
-                _mark_fever_exit_push_delta(
-                    notes, fever_end_index=e, total_notes=n,
-                    fever_window_end_ms=None if fever_end_ms is None else float(fever_end_ms),
-                    note_types=note_types,
-                )
 
         _mark_same_time_selector_order_deltas(
             notes,
