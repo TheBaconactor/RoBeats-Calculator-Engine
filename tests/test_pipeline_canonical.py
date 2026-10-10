@@ -11,6 +11,7 @@ from gear_optimizer.pipeline.canonical import canonical_rows, loadout_identity, 
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, SongSolve
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.fever_solver import GemSolve
+from gear_optimizer.solver.taichi_gem.force_greats.response_builder import UnplayableTrace
 from gear_optimizer.stats import GEM_KINDS, gems, named_loadout_stats
 from gear_optimizer.store.records import decode_trace
 from tests.items_support import make_gear, make_mini
@@ -144,6 +145,22 @@ def test_rows_follow_the_store_order_and_a_repeated_loadout_fails_loudly(scored)
     twin = SolvedLoadout(("Helmet", "Vest"), ("Chroma Twin", "Marie"))
     with pytest.raises(ValueError, match="holds loadout"):
         canonical_rows(_solve([a, twin]), GEARS, MINIS)
+
+
+def test_a_loadout_whose_base_play_no_hit_timing_plays_keeps_no_row(scored, monkeypatch):
+    a = SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))
+    b = SolvedLoadout(("Cap", "Vest"), ("Chroma", "Marie"))
+    outcomes = [UnplayableTrace("no float32 hit of note 594 in [102.944999695, 102.984991981] s ends its fever"), 800]
+
+    def meta_score(stats, song, curves):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, UnplayableTrace):
+            raise outcome
+        return outcome, {"trace": 1}
+
+    monkeypatch.setattr(canonical, "_meta_score", meta_score)
+    rows = canonical_rows(_solve([a, b], [(0, _fg(1500))]), GEARS, MINIS)
+    assert [r.loadout.loadout_hash for r in rows] == [loadout_identity(b, VIEW, "Flow", "Vibe").loadout_hash]
 
 
 def test_an_fg_result_without_a_replay_trace_is_rejected():

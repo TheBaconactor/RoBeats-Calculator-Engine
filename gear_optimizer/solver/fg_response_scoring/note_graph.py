@@ -60,6 +60,7 @@ import numpy as np
 from gear_optimizer.core.time_quantize import snap_near_int_ms
 
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
+from gear_optimizer.solver.taichi_gem.force_greats.response_builder import UnplayableTrace
 from gear_optimizer.solver.timing_envelope import (
     FRAME_MARGIN_MS,
     HELD_TAIL_TYPE,
@@ -97,10 +98,6 @@ def _building(mode: str) -> Iterator[None]:
         yield
     finally:
         _BUILD.reset(token)
-
-
-class UnplayableTrace(ValueError):
-    """A trace whose judgments no legal hit timing realizes in the exact input order."""
 
 
 def _require_timing_mode(timing_mode: str) -> str:

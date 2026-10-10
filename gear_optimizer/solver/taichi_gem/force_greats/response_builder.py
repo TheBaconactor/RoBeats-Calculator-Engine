@@ -19,6 +19,10 @@ _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS = 8192
 _TRACE_EDGE_OPTIONS_CACHE_MAX_STATES = 256
 
 
+class UnplayableTrace(ValueError):
+    """A trace whose judgments no legal hit timing realizes in the exact input order."""
+
+
 @dataclass(slots=True)
 class FgTraceEdgeOptionsCache:
     """One-song ordered edge cache with enforced owner identity and bounded option count."""
@@ -383,13 +387,13 @@ def _centered_hit_window_for_exit(
 
     min_order = _float32_order(_ceil_hit(lo))
     max_order = _float32_order(_floor_hit(hi))
-    if min_order > max_order:
-        raise ValueError("could not choose a centered FG trace witness without changing the response surface")
-
     first_order = _first_order_with_exit_at_least(min_order, max_order, int(target))
     last_order = _last_order_with_exit_at_most(min_order, max_order, int(target))
     if first_order is None or last_order is None or int(first_order) > int(last_order):
-        raise ValueError("could not choose a centered FG trace witness without changing the response surface")
+        # The producer prices a section's end at its latest hit in float64, which can lie between two float32 hits.
+        raise UnplayableTrace(
+            f"no float32 hit of note {int(activation_idx)} in [{lo:.9f}, {hi:.9f}] s ends its fever at note {target}"
+        )
 
     first_hit = _hit_from_order(int(first_order))
     last_hit = _hit_from_order(int(last_order))
@@ -1210,6 +1214,7 @@ def reconstruct_force_greats_response_trace(
     )
 
     memo: set[tuple[int, bool, tuple[int, ...]]] = set()
+    unplayable: list[UnplayableTrace] = []
 
     def _accepted_section(option: dict[str, Any], edge: FgResponseSurface) -> dict[str, Any]:
         # The centered witness is computed only here — for sections accepted
@@ -1245,15 +1250,19 @@ def reconstruct_force_greats_response_trace(
             if next_remaining is None:
                 return False
             if _empty(next_remaining):
-                found = (_accepted_section(option, edge),)
-                return True
-            if int(option["next_state"]) >= int(n):
+                tail = ()
+            elif int(option["next_state"]) >= int(n):
                 return False
-            tail = _search(int(option["next_state"]), False, next_remaining)
-            if tail is not None:
+            else:
+                tail = _search(int(option["next_state"]), False, next_remaining)
+                if tail is None:
+                    return False
+            try:
                 found = (_accepted_section(option, edge),) + tail
-                return True
-            return False
+            except UnplayableTrace as exc:  # no hit plays this section: the next option may price the same surface
+                unplayable.append(exc)
+                return False
+            return True
 
         edge_cache_key = (*edge_cache_prefix, int(state), bool(first))
         options = shared_edge_options.get(edge_cache_key)
@@ -1280,6 +1289,8 @@ def reconstruct_force_greats_response_trace(
         return None
 
     trace = _search(0, True, target_words)
+    if trace is None and unplayable:
+        raise unplayable[0]
     if trace is None:
         raise ValueError("could not reconstruct FG response surface trace")
     return tuple({**dict(row), "section": idx + 1} for idx, row in enumerate(trace))

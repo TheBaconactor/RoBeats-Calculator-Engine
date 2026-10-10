@@ -7,7 +7,7 @@ import pytest
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.pipeline.fg import best_fg_results
-from gear_optimizer.solver.fg_response_scoring.note_graph import UnplayableTrace
+from gear_optimizer.solver.taichi_gem.force_greats.response_builder import UnplayableTrace
 
 
 def _jobs(scores):

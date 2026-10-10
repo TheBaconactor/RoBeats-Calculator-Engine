@@ -21,7 +21,6 @@ from gear_optimizer.pipeline.results import SolvedLoadout, SongSolve, solved_fg
 from gear_optimizer.pipeline.song import NativeSong
 from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX, build_stats_dict
 from gear_optimizer.solver.fg_search import search_fg_loadouts
-from gear_optimizer.solver.fg_response_scoring.note_graph import UnplayableTrace
 from gear_optimizer.solver.fg_response_scoring.reducer import (
     FgTraceMaterializationCache,
     materialize_force_payload_from_response_frontier,
@@ -29,6 +28,7 @@ from gear_optimizer.solver.fg_response_scoring.reducer import (
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
+from gear_optimizer.solver.taichi_gem.force_greats.response_builder import UnplayableTrace
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
     load_response_frontier_scoring_bundle,
     session_prune_scoring_bundle,

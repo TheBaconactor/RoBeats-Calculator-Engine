@@ -9,9 +9,9 @@ import numpy as np
 from numba import njit
 
 from ...score import HEAD_NOTES
+from ..taichi_gem.force_greats.response_builder import UnplayableTrace
 from ..taichi_gem.force_greats.response_types import FgResponseSurface
 from .note_graph import (
-    UnplayableTrace,
     force_greats_note_graph,
     reconcile_base_note_graph,
     reconcile_force_greats_note_graph,
