@@ -164,7 +164,7 @@ def stored_stats(
 def _meta_resolve(
     fixed: Mapping[str, int], items: list[list[Any]], song: TimedSong, curves: StatCurves, primary: str
 ) -> list[GemSolve]:
-    """Each loadout's exhaustive base gem allocation (one GPU dispatch for all)."""
+    """Each loadout's exact base gem allocation."""
     from ..solver.scoring.fever_solver import solve_best_fever_combination_batch  # loads Taichi
 
     rows = [total(fixed, *(item.stats for item in row)) for row in items]

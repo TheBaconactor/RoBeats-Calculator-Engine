@@ -110,27 +110,13 @@ ga_exact_eval_rep_idx = None  # (MAX_GENOMES,) i32 - representative genome index
 ga_exact_eval_unique_count = None  # (1,) i32 - number of uncached unique genome rows
 ga_warmstart_lane_best_key = None  # (MAX_GENOMES, GA_FTFF_REDUCE_BLOCK_DIM) u64
 ga_warmstart_lane_best_results = None  # (MAX_GENOMES, GA_FTFF_REDUCE_BLOCK_DIM, 4) i32 [pp, cm, fm, ov]
-skyline_initial_populations = None
-skyline_init_heuristic_topk = None
-skyline_scores = None
-skyline_rng_state = None
-skyline_parent_a = None
-skyline_parent_b = None
-skyline_exact_eval_hash_used = None
-skyline_exact_eval_hash_keys = None
-skyline_exact_eval_hash_sort_keys = None
-skyline_exact_eval_hash_sort_indices = None
-skyline_exact_eval_unique_count = None
 slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
 slot_count = None  # (MAX_SLOTS,) per-slot item count
 
 # Genome results
-genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
 chunk_best_key = None  # u64 packed key per genome for safe reduction
 ga_eval_incumbent_score = None  # (MAX_GENOMES,) i32 shared exact-score incumbent for UB combo culling
-chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome
-chunk_best_idx = None  # (MAX_GENOMES,) i32 winning combo index
 ftff_combo_ft = None  # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None  # (MAX_FTFF_COMBOS,) i32
 chunk_best_results = None  # (MAX_GENOMES, 4) i32 - cached [pp, cm, fm, ov] from winning combo
@@ -163,28 +149,6 @@ ga_fg_selected_coords = None  # (MAX_SELECTED, 2) i32
 ga_fg_selected_payload_staging_256 = None  # (257, 26) i32 - row0 header + up to 256 candidates
 ga_fg_selected_payload_staging_1024 = None  # (1025, 26) i32 - row0 header + up to 1024 candidates
 ga_fg_selected_payload_staging_5000 = None  # (5001, 26) i32 - row0 header + up to 5000 candidates
-skyline_global_best_score = None
-skyline_global_best_genome = None
-skyline_global_best_results = None
-skyline_global_best_scan_key = None
-skyline_global_best_packed = None
-skyline_runs_payload_packed = None
-skyline_fg_candidates_packed = None
-skyline_fg_gear_name_rank = None
-skyline_fg_mini_sig_id = None
-skyline_fg_select_hash_used = None
-skyline_fg_select_hash_keys = None
-skyline_fg_select_stub_count = None
-skyline_fg_select_stub_run = None
-skyline_fg_select_stub_row = None
-skyline_fg_select_stub_score = None
-skyline_fg_select_stub_ids = None
-skyline_fg_select_selected_mask = None
-skyline_fg_selected_count = None
-skyline_fg_selected_coords = None
-skyline_fg_selected_payload_staging_256 = None
-skyline_fg_selected_payload_staging_1024 = None
-skyline_fg_selected_payload_staging_5000 = None
 
 # GPU-side island elitism (avoids per-generation score downloads)
 island_boundaries = None  # (MAX_ISLANDS+1,) i32 - island start/end indices

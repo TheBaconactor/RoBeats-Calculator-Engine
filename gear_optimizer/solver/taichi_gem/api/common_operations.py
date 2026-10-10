@@ -1,4 +1,4 @@
-"""Shared host-side helpers for GA and skyline operations."""
+"""Shared host-side helpers for GA operations."""
 
 from __future__ import annotations
 

@@ -478,7 +478,7 @@ def test_response_frontier_best_position_prune_matches_sort_reference_randomized
 def test_response_frontier_group_builder_matches_prune_reference():
     from gear_optimizer.rules import MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
     from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-    from gear_optimizer.solver.taichi_gem.force_greats.response_gem_search import build_response_group_rows
+    from gear_optimizer.solver.gem_search import build_response_group_rows
     from tests.fg_group_build_reference import build_response_group_rows_reference
 
     ft_values, ff_values, residual_values = ftff_combo_arrays(3)

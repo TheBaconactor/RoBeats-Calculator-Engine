@@ -275,10 +275,10 @@ def resolve_tier_base_batch(
     primary_color: str,
     selected_color: str,
 ) -> list:
-    """Lossless BASE re-solve of N loadouts (their items) in ONE GPU dispatch (n_genomes=N): the exhaustive gem
-    search from the shared tier-shifted song fixed stats, scored exactly at the song's timing (non-precise: fixed chart
-    timing; precise: the timing frontier). Returns N ``(payload, score)`` in order, the payload holding the
-    served base fields (Stats, GemCounts, FT, FF). Each loadout's search is independent of the batch."""
+    """Exact BASE re-solve of N loadouts (their items): the exact gem search from the shared tier-shifted song fixed
+    stats at the song's timing (non-precise: fixed chart timing; precise: the timing frontier). Returns N
+    ``(payload, score)`` in order, the payload holding the served base fields (Stats, GemCounts, FT, FF). Each
+    loadout's search is independent of the batch."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
 
     rows = list(loadouts or [])

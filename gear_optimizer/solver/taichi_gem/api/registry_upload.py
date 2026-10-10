@@ -1,4 +1,4 @@
-"""One upload/cache owner for the registry fields shared by GA and skyline."""
+"""One upload/cache owner for the GA's registry fields (item stats, slot pools, base fixed stats)."""
 
 import numpy as np
 

@@ -1,4 +1,4 @@
-"""Shared Taichi helpers for GA and skyline warmstart kernels."""
+"""Shared Taichi helpers for GA warmstart kernels."""
 
 import taichi as ti
 

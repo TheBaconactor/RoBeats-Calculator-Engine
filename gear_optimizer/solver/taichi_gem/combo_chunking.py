@@ -1,4 +1,4 @@
-"""FT/FF combo chunking for the gem-solver dispatches (GA evaluation and the registry re-solve)."""
+"""FT/FF combo chunking for the GA evaluation dispatches."""
 
 from __future__ import annotations
 

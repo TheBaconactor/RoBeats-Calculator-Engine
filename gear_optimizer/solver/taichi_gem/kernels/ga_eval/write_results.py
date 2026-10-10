@@ -78,7 +78,6 @@ def refresh_scores_and_update_runs_best(
     Lightweight live-score refresh:
     - keep `ga_scores` exact from the reduction state
     - refresh per-run row 0 with exact materialization only when improved
-    - avoid full-pop `genome_result_stats` writes
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     n_total = n_runs * n_genomes_per_run

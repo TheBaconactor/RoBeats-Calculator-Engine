@@ -134,68 +134,15 @@ island_elite_indices: ti.Field = None  # (MAX_GENOMES,) i32 - output: elite geno
 island_elite_count: ti.Field = None  # (1,) i32 - output: total elites found
 slot_start: ti.Field = None  # (MAX_SLOTS,) int32 - first valid item_id for slot
 slot_count: ti.Field = None  # (MAX_SLOTS,) int32 - number of items in slot pool
-genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
-genome_result_stats_download_staging_256: ti.Field = None  # (256,) vec7 i32
-genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 ga_eval_incumbent_score: ti.Field = None  # (MAX_GENOMES,) i32 shared exact-score incumbent for UB combo culling
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
-chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome
-chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 winning combo index
 chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
-MAX_SKYLINE_RUNS = MAX_GA_RUNS
-MAX_SKYLINE_RUN_GENOMES = MAX_GA_RUN_GENOMES
-
-skyline_initial_populations: ti.Field = None
-skyline_init_heuristic_topk: ti.Field = None
-skyline_scores: ti.Field = None
-skyline_rng_state: ti.Field = None
-skyline_parent_a: ti.Field = None
-skyline_parent_b: ti.Field = None
-skyline_exact_eval_hash_used: ti.Field = None
-skyline_exact_eval_hash_keys: ti.Field = None
-skyline_exact_eval_hash_sort_keys: ti.Field = None
-skyline_exact_eval_hash_sort_indices: ti.Field = None
-skyline_exact_eval_unique_count: ti.Field = None
-skyline_global_best_score: ti.Field = None
-skyline_global_best_genome: ti.Field = None
-skyline_global_best_results: ti.Field = None
-skyline_global_best_scan_key: ti.Field = None
-skyline_global_best_packed: ti.Field = None
-skyline_runs_payload_packed: ti.Field = None
-skyline_fg_candidates_packed: ti.Field = None
-skyline_fg_gear_name_rank: ti.Field = None
-skyline_fg_mini_sig_id: ti.Field = None
-skyline_fg_select_hash_used: ti.Field = None
-skyline_fg_select_hash_keys: ti.Field = None
-skyline_fg_select_stub_count: ti.Field = None
-skyline_fg_select_stub_run: ti.Field = None
-skyline_fg_select_stub_row: ti.Field = None
-skyline_fg_select_stub_score: ti.Field = None
-skyline_fg_select_stub_ids: ti.Field = None
-skyline_fg_select_selected_mask: ti.Field = None
-skyline_fg_selected_count: ti.Field = None
-skyline_fg_selected_coords: ti.Field = None
-skyline_fg_selected_payload_staging_256: ti.Field = None
-skyline_fg_selected_payload_staging_1024: ti.Field = None
-skyline_fg_selected_payload_staging_5000: ti.Field = None
-# The field registry: every module global annotated `ti.Field` above (reset, skyline aliasing and bind_fields
-# walk it).
+# The field registry: every module global annotated `ti.Field` above (reset and bind_fields walk it).
 FIELD_NAMES = tuple(name for name, kind in __annotations__.items() if kind is ti.Field)
 _fields_allocated = False
 _grid_fields_allocated = False
-
-
-def _sync_skyline_aliases() -> None:
-    """The skyline solver runs on the GA's buffers: every skyline_<x> field is ga_<x>."""
-    global MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES
-    MAX_SKYLINE_RUNS = int(MAX_GA_RUNS)
-    MAX_SKYLINE_RUN_GENOMES = int(MAX_GA_RUN_GENOMES)
-    module = globals()
-    for name in FIELD_NAMES:
-        if name.startswith("skyline_"):
-            module[name] = module["ga_" + name[len("skyline_"):]]
 
 
 def is_fields_allocated() -> bool:
@@ -224,7 +171,6 @@ def reset_fields_state() -> None:
     # padded-transfer cost WITHOUT breaking the restore-defaults contract.
     _REQUESTED_MAX_GA_RUNS = None
     _REQUESTED_MAX_GA_RUN_GENOMES = None
-    _sync_skyline_aliases()
     _fields_allocated = False
     _grid_fields_allocated = False
 def _clamp_ga_runs(n: int) -> int:
@@ -260,7 +206,6 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
         MAX_GA_RUNS = _clamp_ga_runs(int(max_runs))
     if max_genomes is not None:
         MAX_GA_RUN_GENOMES = _clamp_ga_genomes(int(max_genomes))
-    _sync_skyline_aliases()
 
 
 def _apply_requested_ga_run_buffers() -> None:
@@ -304,9 +249,7 @@ def allocate_fields():
     global ga_eval_cache_stats, ga_eval_cache_key, ga_eval_cache_results, ga_eval_cache_owner
     global ga_warmstart_lane_best_key, ga_warmstart_lane_best_results
     global slot_start, slot_count
-    global genome_result_stats
-    global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
-    global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
+    global chunk_best_key, chunk_best_results
     global ga_eval_incumbent_score
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
@@ -363,13 +306,8 @@ def allocate_fields():
     )
     slot_start = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     slot_count = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
-    genome_result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
-    genome_result_stats_download_staging_256 = ti.Vector.field(n=7, dtype=ti.i32, shape=256)
-    genome_result_stats_download_staging_1024 = ti.Vector.field(n=7, dtype=ti.i32, shape=1024)
     chunk_best_key = ti.field(dtype=ti.u64, shape=MAX_GENOMES)
     ga_eval_incumbent_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    chunk_best_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     chunk_best_results = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 4))
@@ -414,7 +352,6 @@ def allocate_fields():
     island_boundaries = ti.field(dtype=ti.i32, shape=MAX_ISLANDS + 1)  # [start0, start1, ..., end_last]
     island_elite_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)  # Output: elite genome indices
     island_elite_count = ti.field(dtype=ti.i32, shape=1)  # Output: total elites found
-    _sync_skyline_aliases()
     _fields_allocated = True
     logger.debug("[Taichi] Allocated GPU fields: %s genomes", MAX_GENOMES)
 def allocate_grid_fields():

@@ -1,14 +1,16 @@
-"""The exact FG gem search: for each loadout, the best gem allocation over its response surfaces, in CPU f64 numba.
+"""The exact gem search: for each loadout, the best gem allocation over the surfaces of the frontiers it reaches, in
+CPU f64 numba (FG response surfaces; the Base timing surfaces are the same without Greats).
 
 A loadout's candidate groups are its FT/FF gem splits that reach distinct frontiers (build_response_group_rows); every
 consumer reads only each loadout's argmax group (first occurrence), so groups that cannot beat the loadout's best so
-far, or a floor the caller gives it, are pruned. Per surface, (CM, FM) gem pairs are visited in TILE x TILE blocks: the score bound is monotone in
-CM and FM gems and base is linear in them, so a block's corner bounds every pair in it.
-Cost per loadout: Theta(G S K2) bound checks before (G groups, S surfaces per group, K2 (CM, FM) pairs), now
-O(G S + sum over surviving surfaces of K2 / TILE^2 + pairs in surviving blocks) (COMPLEXITY.md, section 3).
+far, or a floor the caller gives it, are pruned. Per surface, (CM, FM) gem pairs are visited in TILE x TILE blocks: the
+score bound is monotone in CM and FM gems and base is linear in them, so a block's corner bounds every pair in it.
+Cost per loadout: O(G S + sum over surviving surfaces of K2 / TILE^2 + pairs in surviving blocks) (G groups, S surfaces
+per group, K2 (CM, FM) pairs; COMPLEXITY.md, section 3).
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import os
 import threading
 from typing import Any
@@ -24,6 +26,7 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
+from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 
 # (CM, FM) gem pairs per bound block side.
 _TILE = 8
@@ -34,6 +37,46 @@ _FG_CPU_SEARCH_CHUNKS_PER_WORKER = 4
 _FG_CPU_SEARCH_MIN_GROUPS_PER_CHUNK = 4
 _fg_cpu_search_pool: ThreadPoolExecutor | None = None
 _fg_cpu_search_pool_lock = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class SurfacePool:
+    """The surfaces a gem search scores. Frontier f holds rows frontier_offsets[f] .. frontier_offsets[f] +
+    frontier_lengths[f]; row r is head pattern pattern_ids[r] (pattern_words: its 4 fever and 4 Great words over the
+    head notes; head_coeffs: its surface_head_coeffs) with body counts counts[r] (fever notes, Great notes, both)."""
+
+    frontier_offsets: np.ndarray
+    frontier_lengths: np.ndarray
+    pattern_ids: np.ndarray
+    pattern_words: np.ndarray
+    counts: np.ndarray
+    head_coeffs: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class GemGroups:
+    """A batch's gem-search groups (build_response_group_rows) and the frontier each scores."""
+
+    meta: np.ndarray
+    ft: np.ndarray
+    ff: np.ndarray
+    ft_stat: np.ndarray
+    ff_stat: np.ndarray
+    frontiers: np.ndarray
+    candidate_slices: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class GemWinner:
+    """A loadout's gem-search winner: its FT/FF gems and stat keys, the 11-int row (best score, surface index in its
+    frontier, PP/CM/FM/element gems, final PP/CM/FM/primary/secondary) and the winning surface (11 ints)."""
+
+    ft: int
+    ff: int
+    ft_stat: int
+    ff_stat: int
+    inner_row: tuple[int, ...]
+    surface: tuple[int, ...]
 
 
 def color_flags(primary_color: str, secondary_color: str, selected_color: str) -> tuple[int, ...]:
@@ -208,6 +251,83 @@ def build_response_group_rows(
         np.clip(base[:, 6] + group_ff * STAT_GEM_GAIN_FEVER, 0, MAX_STAT).astype(np.int32),
         candidate_slices,
     )
+
+
+def gem_groups(
+    base_components: np.ndarray,
+    *,
+    primary_color: str,
+    secondary_color: str,
+    frontier_idx_by_stat: np.ndarray,
+    total_notes: int,
+    total_budget: int,
+) -> GemGroups:
+    """The gem-search groups of a batch of loadouts (base_components rows: PP, CM, FM, primary, secondary, FT, FF) over
+    every FT/FF split of total_budget (FT gems raise Beat, FF gems Vibe)."""
+    ft_values, ff_values, residual_values = ftff_combo_arrays(int(total_budget))
+    primary_delta, secondary_delta = (
+        np.asarray(
+            (ft_values * int(color == "Beat") + ff_values * int(color == "Vibe")) * STAT_GEM_ELEMENT_GAIN, dtype=np.int32
+        )
+        for color in (primary_color, secondary_color)
+    )
+    meta, ft, ff, ft_stat, ff_stat, candidate_slices = build_response_group_rows(
+        base_components,
+        ft_values,
+        ff_values,
+        residual_values,
+        frontier_idx_by_stat,
+        primary_delta,
+        secondary_delta,
+        not {primary_color, secondary_color} & {"Beat", "Vibe"},
+        min(int(total_notes), 100),
+        max(0, int(total_notes) - 100),
+    )
+    return GemGroups(meta, ft, ff, ft_stat, ff_stat, frontier_idx_by_stat[ft_stat, ff_stat], candidate_slices)
+
+
+def gem_winners(
+    groups: GemGroups,
+    pool: SurfacePool,
+    *,
+    colors: tuple[str, str, str],
+    curves: StatCurves,
+    floors: np.ndarray | None = None,
+) -> list[GemWinner]:
+    """Each loadout's winner (its first group with the highest score) over `pool`'s surfaces of its groups' frontiers,
+    in batch order; colors = (primary, secondary, selected). With `floors` (a score per loadout) a winner is exact only
+    when it reaches its floor."""
+    offsets = pool.frontier_offsets[groups.frontiers]
+    rows = _score_response_group_meta_cpu(
+        group_meta=groups.meta,
+        group_offsets=offsets,
+        group_lengths=pool.frontier_lengths[groups.frontiers],
+        candidate_slices=groups.candidate_slices,
+        primary_color=colors[0],
+        secondary_color=colors[1],
+        selected_color=colors[2],
+        curves=curves,
+        surface_pattern_ids=pool.pattern_ids,
+        surface_pattern_words=pool.pattern_words,
+        surface_counts=pool.counts,
+        surface_pattern_head_coeffs=pool.head_coeffs,
+        floors=floors,
+    )
+    winners = []
+    for start, count in groups.candidate_slices.tolist():
+        g = start + int(np.argmax(rows[start : start + count, 0]))
+        surface = int(offsets[g]) + int(rows[g, 1])
+        winners.append(
+            GemWinner(
+                ft=int(groups.ft[g]),
+                ff=int(groups.ff[g]),
+                ft_stat=int(groups.ft_stat[g]),
+                ff_stat=int(groups.ff_stat[g]),
+                inner_row=tuple(int(v) for v in rows[g]),
+                surface=(*(int(v) for v in pool.pattern_words[pool.pattern_ids[surface]]), *(int(v) for v in pool.counts[surface])),
+            )
+        )
+    return winners
 
 
 @jit(nopython=True, cache=True)
@@ -637,8 +757,6 @@ def _score_response_group_meta_cpu(
     loadout's argmax row (candidate_slices: its (first group, group count)) is exact, and with `floors` (one score per
     loadout) only when it reaches the loadout's floor."""
     group_meta = np.ascontiguousarray(group_meta, dtype=np.int32)
-    if int(np.unique(group_meta[:, 6]).shape[0]) != 1:
-        raise ValueError("response frontier CPU group metadata has inconsistent head length")
     candidate_floor = np.full(int(group_meta.shape[0]), -2, dtype=np.int64)
     candidate_floor[[int(start) for start, _count in candidate_slices]] = -1 if floors is None else floors
     shared = (

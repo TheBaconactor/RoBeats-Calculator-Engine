@@ -8,7 +8,7 @@ import numpy as np
 
 from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.settings import paths
-from gear_optimizer.solver.taichi_gem.force_greats import response_gem_search as search
+from gear_optimizer.solver import gem_search as search
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
 
 

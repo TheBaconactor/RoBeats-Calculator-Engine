@@ -1,4 +1,4 @@
-"""Shared Taichi helpers for GA and skyline result materialization."""
+"""Shared Taichi helpers for GA result materialization."""
 
 import taichi as ti
 

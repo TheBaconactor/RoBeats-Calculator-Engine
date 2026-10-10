@@ -13,7 +13,7 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_gem_search import _score_response_group_meta_cpu
+from gear_optimizer.solver.gem_search import _score_response_group_meta_cpu
 
 @dataclass(frozen=True, slots=True)
 class ChampionAtom:

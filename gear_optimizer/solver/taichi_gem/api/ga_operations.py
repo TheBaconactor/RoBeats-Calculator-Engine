@@ -529,9 +529,7 @@ def ga_refresh_scores_and_update_runs_best(
     """
     Lightweight live-score refresh for packed multi-run GA execution.
     This keeps `ga_scores` exact from the reduction state and updates each run's row 0 best
-    with exact materialization only when that run improves. It avoids the full-pop
-    `genome_result_stats` write pass that the final FG packing path no longer needs every
-    generation.
+    with exact materialization only when that run improves.
     """
     ensure_ready()
     run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_ga_runs_batch(

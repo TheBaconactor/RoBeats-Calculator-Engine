@@ -36,7 +36,7 @@ def test_response_surface_head_coeffs_match_bruteforce():
 def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
-    from gear_optimizer.solver.taichi_gem.force_greats.response_gem_search import _score_response_group_meta_cpu
+    from gear_optimizer.solver.gem_search import _score_response_group_meta_cpu
 
     pattern_a = np.zeros((8,), dtype=np.uint32)
     pattern_b = np.zeros((8,), dtype=np.uint32)

@@ -8,7 +8,7 @@ solve_song: one song on the calling thread (the persistent worker).
 
 run_queue: a queue with the GPU going from one GA to the next: while a song's GA runs, a helper thread prepares the
 next songs and another finishes the previous ones (on the M4 one GA at a time beats twelve songs in flight:
-bench/BASELINE.md). Finished songs go to the run's post-processor, whose own GPU context canonicalizes and stores them.
+bench/BASELINE.md). Finished songs go to the run's post-processor, which canonicalizes and stores them on the CPU.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import Any
 from gear_optimizer.domain.jobs import SongTask
 from gear_optimizer.pipeline.results import SongSolve
 
-# Slot 0 is the registry solves' (the meta gem re-solve); GA runs use 1..N-1 (song_slot_pool).
+# The GPU song slot of a song's GA runs.
 _GA_SLOT = 1
 # run_queue: songs prepared ahead of the GA and finishing behind it. Under a GA a song's preparation or finish takes
 # about one GA (they share the GIL with the GA's kernel launches; bench/ga_timeline.py), so 2 keeps the GPU on GAs.

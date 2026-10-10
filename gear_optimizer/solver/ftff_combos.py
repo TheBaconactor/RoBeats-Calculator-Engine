@@ -1,9 +1,8 @@
 """
 Shared FT/FF gem-pair enumeration.
 
-skyline owns the GPU-resident FT/FF combo table, and FG should use the same
-triangular order when it needs host-visible pair windows. Keeping this contract
-small and central prevents skyline/FG search surfaces from drifting.
+The GA's GPU-resident FT/FF combo table and the CPU gem search (FG and Base) enumerate
+the splits in this one triangular order.
 """
 
 from __future__ import annotations
@@ -59,7 +58,7 @@ def ftff_combo_arrays(
     max_ff_gems: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Return FT, FF, and remaining-budget arrays in skyline combo-table order.
+    Return FT, FF, and remaining-budget arrays in combo-table order.
 
     Order:
       ft=0,ff=0..B ; ft=1,ff=0..B-1 ; ... ; ft=B,ff=0

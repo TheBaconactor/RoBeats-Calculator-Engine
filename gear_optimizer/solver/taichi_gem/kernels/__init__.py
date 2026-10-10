@@ -5,8 +5,7 @@ This package splits the monolithic kernels.py (1,757 lines) into focused modules
 1. kernels_helpers.py - Field placeholders & lookup functions
 2. kernels_ga.py - 8 GA kernels (selection, crossover, mutation, etc.)
 3. kernels_scoring.py - Score calculation & exact-bound gem optimizer
-4. kernels_solvers_batch.py - Result staging kernels
-5. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
+4. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
 
 This module re-exports kernel entry points used by the Taichi gem solver runtime.
 """
@@ -40,7 +39,6 @@ from .kernels_helpers import (
     ga_exact_eval_unique_count,
     slot_start,
     slot_count,
-    genome_result_stats,
     chunk_best_key,
     ftff_combo_ft,
     ftff_combo_ff,
@@ -74,11 +72,6 @@ from .kernels_ga import (
 # Import scoring functions
 from .kernels_scoring import (
     calc_score_cached_device,
-)
-
-# Import batch solver kernels
-from .kernels_solvers_batch import (
-    copy_genome_result_stats_to_download_staging_kernel,
 )
 
 # Import GA evaluation & reduction kernels
@@ -130,7 +123,6 @@ __all__ = [
     "ga_exact_eval_unique_count",
     "slot_start",
     "slot_count",
-    "genome_result_stats",
     "chunk_best_key",
     "ftff_combo_ft",
     "ftff_combo_ff",
@@ -154,8 +146,6 @@ __all__ = [
     "_calc_head_score_bits",
     "calc_score_with_grid_bits",
     "calc_score_cached_device",
-    # Batch solver kernels
-    "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "ga_refresh_scores_and_update_runs_best_kernel",
     "ga_pack_fg_candidates_table_segmented_kernel",
@@ -172,18 +162,6 @@ __all__ = [
     "ga_build_unique_slot_table_kernel",
     "ga_scatter_dup_results_kernel",
     "skyline_upload_item_stats_and_slots_kernel",
-    "skyline_copy_population_indices_from_ndarray_kernel",
-    "skyline_aggregate_and_init_best_kernel",
-    "skyline_find_best_combo_warmstart_kernel",
-    "skyline_write_best_results_from_key_kernel",
 ]
 
-from .kernels_skyline import (
-    skyline_upload_item_stats_and_slots_kernel,
-    skyline_copy_population_indices_from_ndarray_kernel,
-    skyline_aggregate_and_init_best_kernel,
-)
-from .skyline_eval import (
-    skyline_find_best_combo_warmstart_kernel,
-    skyline_write_best_results_from_key_kernel,
-)
+from .kernels_skyline import skyline_upload_item_stats_and_slots_kernel
