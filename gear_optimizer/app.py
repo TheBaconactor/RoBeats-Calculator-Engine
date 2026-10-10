@@ -1,8 +1,6 @@
 import gc
 import logging
 import multiprocessing
-import os
-import re
 import sys
 import threading
 import time
@@ -13,11 +11,9 @@ from gear_optimizer.core.memory import (
     compute_memory_guard_limit,
     set_memory_watchdog_limit,
     memory_release_requested,
-    build_memory_guard_resume_context,
-    MemoryGuardResumeTracker,
     restart_process_for_memory_guard,
-    MEMORY_GUARD_RESUME_FILE,
 )
+from gear_optimizer.domain.jobs import SharedRunContext
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
 from gear_optimizer.client_update import update_and_restart_client
@@ -29,7 +25,7 @@ from gear_optimizer.ui.progress import (
     _progress_ui_enabled_default,
     _stream_is_tty,
 )
-from gear_optimizer.pipeline.queue_task_coordinator import QueueTaskCoordinator
+from gear_optimizer.pipeline.queue import build_queue
 from gear_optimizer import settings
 from gear_optimizer.settings import RunSettings, paths
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
@@ -72,6 +68,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         # The last run's completed and total tasks (_execute_tasks), for the throughput line.
         self._last_completed_tasks = 0
         self._last_total_tasks = 0
+        self._passes_begun = 0
 
     def setup_logging(self) -> None:
         from gear_optimizer.core.logging_config import configure_default_logging
@@ -209,8 +206,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _run_single_iteration(self):
         memory_guard_restart = False
-        memory_resume_tracker = None
         start_time = time.time()
+        # A run relaunched after a memory-guard restart continues its pass; every other iteration begins one.
+        relaunched_pass = settings.pass_started() if not self._passes_begun else None
+        self._passes_begun += 1
+        pass_started = relaunched_pass if relaunched_pass is not None else start_time
+        tasks = []
         loop_forever = False  # Default, updated from config.ini
         graceful_stop = False
         fatal = False
@@ -235,29 +236,24 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             curves = stat_curves()
             gears = load_gears(paths().gears_csv)
             minis = load_minis(paths().minis_csv)
-            song_queue = self._build_song_queue(run)
-            queued_songs = len(song_queue)
-            logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
+            context = SharedRunContext(
+                multi_start=run.multi_start, curves=curves, gears=gears, minis=minis, ga_depth=run.search_depth
+            )
+            tasks = build_queue(run, context, solved_before=relaunched_pass)
+            queued_songs = len({task.song_name for task in tasks})
+            charts_by_mode: dict[str, list[str]] = {}
+            for task in tasks:
+                charts_by_mode.setdefault(task.mode, []).append(task.file_path)
             run_startup_cpu_work(
-                song_queue=song_queue,
+                charts_by_mode=charts_by_mode,
                 curves=curves,
-                data_root=str(paths().data_dir),
                 announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
                 build_missing=not frontier_sync.enabled,
             )
             self._configure_execution_and_prewarm(run.multi_start)
-            memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
-            memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(run)))
-            tasks = self._prepare_tasks(
-                song_queue,
-                run,
-                curves,
-                gears,
-                minis,
-            )
             self._start_progress(len(tasks))
-            self._execute_tasks(tasks, memory_resume_tracker)
-            memory_guard_restart = self._memory_guard_restart_needed(memory_resume_tracker)
+            self._execute_tasks(tasks)
+            memory_guard_restart = memory_release_requested() and self._last_completed_tasks < len(tasks)
         except KeyboardInterrupt:
             graceful_stop = True
             loop_forever = False
@@ -294,58 +290,19 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if fatal:
             return False
         if memory_guard_restart:
-            restart_process_for_memory_guard()
+            restart_process_for_memory_guard(pass_started)
             return False  # Process replaced
         elif loop_forever:
-            self._handle_loop_restart()
+            logger.info("Restarting song scan immediately...")
             return True
         else:
             logger.info("LoopForever=FALSE; exiting after completing queue.")
             return False
 
-    def _queue_task_coordinator(self) -> QueueTaskCoordinator:
-        """Queue/task logic lives in QueueTaskCoordinator; app state reaches it
-        only through these two callables (unit-testable without GPU/DB/app)."""
-        return QueueTaskCoordinator(stop_requested_fn=self._stop_requested_now)
-
-    def _get_filter_params(self, run: RunSettings):
-        return self._queue_task_coordinator().get_filter_params(run)
-
-    def _build_song_queue(self, run: RunSettings):
-        return self._queue_task_coordinator().build_song_queue(run)
-
-    def _normalize_song_label(self, label: str) -> str:
-        """The song of a queue label (without its run number)."""
-        return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", label.strip()).strip()
-
-    def _prepare_tasks(
-        self,
-        song_queue,
-        run: RunSettings,
-        curves,
-        gears,
-        minis,
-    ):
-        return self._queue_task_coordinator().prepare_tasks(song_queue, run, curves, gears, minis)
-
     def _fatal_gpu_errors_enabled(self) -> bool:
         return settings.service_mode()
-
-    def _memory_guard_restart_needed(self, memory_resume_tracker) -> bool:
-        if not memory_release_requested():
-            return False
-        return memory_resume_tracker is not None and memory_resume_tracker.pending_count() > 0
 
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
         from gear_optimizer.solver.gpu_executor import is_fatal_gpu_error
 
         return self._fatal_gpu_errors_enabled() and is_fatal_gpu_error(exc)
-
-    def _handle_loop_restart(self):
-        logger.info("Restarting song scan immediately...")
-        try:
-            if os.path.exists(MEMORY_GUARD_RESUME_FILE):
-                os.remove(MEMORY_GUARD_RESUME_FILE)
-                logger.info("[LoopForever] Cleared resume file")
-        except OSError as e:
-            logger.warning(f"Failed to delete resume file: {e}")

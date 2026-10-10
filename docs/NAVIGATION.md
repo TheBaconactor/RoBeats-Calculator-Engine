@@ -16,17 +16,16 @@ Use this page to find the current owner of a behavior. The
 ## Runtime flow
 
 - Application lifecycle and mode routing: `gear_optimizer/app.py`
-- Song selection and queue construction: `gear_optimizer/song_queue.py`
+- The queue (the solves of the run's charts, unsolved and least recently solved first):
+  `gear_optimizer/pipeline/queue.py`
 - Task dispatch: `gear_optimizer/task_execution.py`
-- Queue coordination: `gear_optimizer/pipeline/queue_task_coordinator.py`
-- Result post-processing: `gear_optimizer/pipeline/post_processor.py`
 - Songs end to end (the queue, one GA at a time): `gear_optimizer/pipeline/solve.py`
 - A song being solved and its preparation: `gear_optimizer/pipeline/song.py`,
   `gear_optimizer/pipeline/prepare.py`
 - GA request: `gear_optimizer/pipeline/ga.py`
 - Force Great stage (scoring bundle, the payload's FG scores, the stored surface and its FG results):
   `gear_optimizer/pipeline/fg.py`
-- Records, progress and completion: `gear_optimizer/pipeline/progress.py`
+- Records and progress: `gear_optimizer/pipeline/progress.py`
 - Post-processor process: `gear_optimizer/pipeline/post_processor.py`
 - A solved song's results: `gear_optimizer/pipeline/results.py`
 - Canonicalization (results -> store rows): `gear_optimizer/pipeline/canonical.py`

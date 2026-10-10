@@ -275,9 +275,8 @@ def _prebuild_frontier_caches(
     if not song_paths:
         raise RuntimeError(f"frontier server Data revision has no song charts: {data_root}")
     run_startup_cpu_work(
-        song_queue=tuple((path,) for path in song_paths),  # queue entries are (chart path, ...) tuples
+        charts_by_mode={mode: song_paths for mode in TIMING_MODES},
         curves=curves,
-        data_root=data_root,
         build_missing=True,
         authorize_destructive_rotation=True,
     )
@@ -1061,15 +1060,13 @@ def _solve_isolated(
         if reasoning != "default":
             depth, multi_start = reasoning_search(reasoning)
             reasoning_lines = f"GA_SearchDepth = {depth}\nGA_MultiStart = {multi_start}\n"
-        # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
-        # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
+        # The isolated Data dir holds exactly this one chart (in its request's timing mode), so the queue (empty
+        # Song_Name, LoopForever off) is its runs.
         (work / "config.ini").write_text(
             "[CalculateSong]\n"
             "LoopForever = false\n\n"
             "[IterationEngine]\n"
-            "IgnoreResumeQueue = true\n"
             f"SongRepeats = {repeats}\n"
-            "SongQueueLimit = 1\n"
             f"{reasoning_lines}",
             encoding="utf-8",
         )

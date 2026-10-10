@@ -1,5 +1,5 @@
-"""A run's progress: each finished song's records judged against the run's bests, the progress events, and each
-task's completion (the completed set and the resume journal) or error payload."""
+"""A run's progress: each finished song's records judged against the run's bests, the progress events and each failed
+task's error payload."""
 
 from __future__ import annotations
 
@@ -127,19 +127,6 @@ def evaluate_fg_progress_record_update(
             mark_valid=baseline_valid,
         )
     return record_info
-
-
-def mark_song_completed(
-    *,
-    completed_songs: set[str],
-    task_key: str,
-    song_name: str,
-    song_path: str | None = None,
-    memory_resume_tracker=None,
-) -> None:
-    completed_songs.add(task_key)
-    if memory_resume_tracker:
-        memory_resume_tracker.mark_completed(song_path=song_path, song_name=song_name)
 
 
 def song_error_payload(song: NativeSong, *, exc: Exception, trace: str) -> dict[str, Any]:

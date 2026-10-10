@@ -1,112 +1,44 @@
+"""The startup frontier caches: before scoring, each queued chart's timeline and FG response frontier caches in each
+timing mode it is solved in are verified and the missing ones built (timeline first: the FG build reads it)."""
+
 from __future__ import annotations
 
-import logging
+import os
 import sys
-import time
+from collections.abc import Iterable, Mapping
 from typing import TextIO
 
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FG_RESPONSE_FRONTIER_PREBUILD
 from gear_optimizer.solver.frontier_cache import prebuild_frontier_cache
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import TIMELINE_FRONTIER_PREBUILD
-from gear_optimizer.solver.timing_envelope import TIMING_MODES
-
-logger = logging.getLogger(__name__)
-
-
-def _emit_summary(*, label: str, summary, elapsed_ms: float) -> None:
-    logger.info(
-        "[Startup][CPU] %s ready: total=%s built=%s disk=%s memory=%s failures=%s elapsed=%.1fs",
-        label,
-        int(summary.total),
-        int(summary.built),
-        int(summary.disk),
-        int(summary.memory),
-        int(summary.failures),
-        elapsed_ms / 1000.0,
-    )
-
-
-def _cache_summary_line(*, label: str, summary, elapsed_ms: float) -> str:
-    return (
-        f"[Startup][Cache] {label} ready: total={int(summary.total)} "
-        f"built={int(summary.built)} disk={int(summary.disk)} memory={int(summary.memory)} "
-        f"failures={int(summary.failures)} elapsed={elapsed_ms / 1000.0:.1f}s"
-    )
-
-
-def _announce_cache_summary(stream: TextIO, *, label: str, summary, elapsed_ms: float) -> None:
-    stream.write(f"{_cache_summary_line(label=label, summary=summary, elapsed_ms=elapsed_ms)}\n")
-    stream.flush()
 
 
 def run_startup_cpu_work(
     *,
-    song_queue,
+    charts_by_mode: Mapping[str, Iterable[str]],
     curves: StatCurves,
-    data_root,
     announce_stream: TextIO | None = None,
     build_missing: bool = True,
     authorize_destructive_rotation: bool = False,
 ) -> None:
-    message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers before scoring..."
+    """Verify (and with `build_missing`, build) both caches of every chart in each of its modes; the summary lines go to
+    `announce_stream` (default stdout). Raises when a cache could not be verified or built."""
     stream = announce_stream or sys.stdout
-    queue_items = list(song_queue or [])
-    if queue_items:
-        verify_message = (
-            f"[Startup][Cache] Verifying exact timeline + FG response frontier caches for "
-            f"{len(queue_items)} queued song(s) before scoring..."
+    charts_by_mode = {mode: list(charts) for mode, charts in charts_by_mode.items()}
+    songs = len({os.path.abspath(chart).casefold() for charts in charts_by_mode.values() for chart in charts})
+    stream.write(f"[Startup][Cache] Verifying exact timeline + FG response frontier caches for {songs} queued song(s)\n")
+    failures = {}
+    for label, prebuild in (("Timeline frontier cache", TIMELINE_FRONTIER_PREBUILD),
+                            ("FG response-frontier cache", FG_RESPONSE_FRONTIER_PREBUILD)):
+        summary = prebuild_frontier_cache(prebuild, charts_by_mode=charts_by_mode, curves=curves,
+                                          build_missing=build_missing,
+                                          authorize_destructive_rotation=authorize_destructive_rotation)
+        stream.write(
+            f"[Startup][Cache] {label} ready: total={summary.total} built={summary.built} disk={summary.disk} "
+            f"memory={summary.memory} failures={summary.failures} elapsed={summary.elapsed_ms / 1000.0:.1f}s\n"
         )
-        stream.write(f"{verify_message}\n")
         stream.flush()
-        logger.info(verify_message)
-    timeline_t0 = time.perf_counter()
-    timeline_summary = prebuild_frontier_cache(
-        TIMELINE_FRONTIER_PREBUILD,
-        song_queue=queue_items,
-        curves=curves,
-        data_root=data_root,
-        build_missing=build_missing,
-        timing_modes=TIMING_MODES,
-    )
-    timeline_elapsed_ms = float((time.perf_counter() - timeline_t0) * 1000.0)
-    _announce_cache_summary(stream, label="Timeline frontier cache", summary=timeline_summary, elapsed_ms=timeline_elapsed_ms)
-    fg_t0 = time.perf_counter()
-    fg_summary = prebuild_frontier_cache(
-        FG_RESPONSE_FRONTIER_PREBUILD,
-        song_queue=queue_items,
-        curves=curves,
-        data_root=data_root,
-        build_missing=build_missing,
-        authorize_destructive_rotation=authorize_destructive_rotation,
-        timing_modes=TIMING_MODES,
-    )
-    fg_elapsed_ms = float((time.perf_counter() - fg_t0) * 1000.0)
-    _announce_cache_summary(stream, label="FG response-frontier cache", summary=fg_summary, elapsed_ms=fg_elapsed_ms)
-    timeline_failures = int(timeline_summary.failures)
-    fg_failures = int(fg_summary.failures)
-    should_announce = bool(
-        int(timeline_summary.built) > 0
-        or int(fg_summary.built) > 0
-        or timeline_failures > 0
-        or fg_failures > 0
-    )
-    if should_announce:
-        stream.write(f"{message}\n")
-        stream.flush()
-        logger.info(message)
-    _emit_summary(
-        label="Timeline frontier cache",
-        summary=timeline_summary,
-        elapsed_ms=timeline_elapsed_ms,
-    )
-    _emit_summary(
-        label="FG response-frontier cache",
-        summary=fg_summary,
-        elapsed_ms=fg_elapsed_ms,
-    )
-    if timeline_failures or fg_failures:
-        raise RuntimeError(
-            "Startup frontier cache prebuild failed: "
-            f"timeline_failures={timeline_failures} fg_response_failures={fg_failures}"
-        )
+        failures[label] = summary.failures
+    if any(failures.values()):
+        raise RuntimeError(f"Startup frontier cache prebuild failed: {failures}")

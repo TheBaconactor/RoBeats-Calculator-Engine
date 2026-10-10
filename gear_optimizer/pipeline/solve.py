@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures
-import os
 import threading
 import traceback
 from collections.abc import Callable
@@ -82,25 +81,17 @@ def run_queue(
     executor: Any,
     *,
     post: Callable[[Any], None],
-    completed_songs: set[str],
-    memory_resume_tracker=None,
     stop_requested: Callable[[], bool] | None = None,
     progress_cb=None,
 ) -> None:
     """Solve `tasks` (queue tasks; SongRepeats are separate tasks); post each SongSolve or error payload in queue order.
 
-    A task is marked completed once finished (also when it failed: its error went to `post`); a stop request or a
-    memory release leaves the unfinished tasks pending (the resume journal keeps them). A stop request also aborts the
-    GA in progress (its song stays pending); songs past their GA still finish. A GpuFatalError (GPU init failed, a GA
-    past its watchdog) ends the run: the process cannot use its GPU any more. Any other error fails that song only."""
+    A stop request or a memory release takes no further task (the next run's queue begins with them); a stop request
+    also aborts the GA in progress. Songs past their GA still finish. A GpuFatalError (GPU init failed, a GA past its
+    watchdog) ends the run: the process cannot use its GPU any more. Any other error fails that song only."""
     from gear_optimizer.core.memory import memory_release_requested
     from gear_optimizer.pipeline.prepare import prepare_native_song
-    from gear_optimizer.pipeline.progress import (
-        ProgressTracker,
-        mark_song_completed,
-        song_error_payload,
-        task_error_payload,
-    )
+    from gear_optimizer.pipeline.progress import ProgressTracker, song_error_payload, task_error_payload
     from gear_optimizer.solver.gpu_executor import GpuFatalError, is_stop_abort_exception
 
     progress = ProgressTracker()
@@ -114,26 +105,20 @@ def run_queue(
                 executor.request_abort("stop requested")
                 return
 
-    # The finisher thread posts and completes every task, so both happen in queue order.
-    def complete(task: SongTask) -> None:
-        mark_song_completed(completed_songs=completed_songs, task_key=task.label, song_name=task.song_name,
-                            song_path=os.path.abspath(task.file_path), memory_resume_tracker=memory_resume_tracker)
-
-    def fail(task: SongTask, item: dict) -> None:
+    # The finisher thread posts every task, so they are posted in queue order.
+    def fail(item: dict) -> None:
         post(item)
         progress.emit_error_item_progress(progress_cb, item)
-        complete(task)
 
-    def finish(task: SongTask, song: Any, ga_result: Any) -> None:
+    def finish(song: Any, ga_result: Any) -> None:
         try:
             post(finish_song(song, ga_result, progress))
         except Exception as exc:
-            fail(task, song_error_payload(song, exc=exc, trace=traceback.format_exc()))
+            fail(song_error_payload(song, exc=exc, trace=traceback.format_exc()))
             return
         progress.emit_done_song_progress(progress_cb, song)
-        complete(task)
 
-    queue = [task for task in tasks if task.label not in completed_songs]
+    queue = tasks
     done = threading.Event()
     if stop_requested is not None:
         threading.Thread(target=abort_on_stop, args=(done,), name="StopWatch", daemon=True).start()
@@ -153,7 +138,7 @@ def run_queue(
                 try:
                     song = prepared.result()
                 except Exception as exc:
-                    finisher.submit(fail, task, task_error_payload(
+                    finisher.submit(fail, task_error_payload(
                         song_name=task.song_name, queue_key=task.label, exc=exc, trace=traceback.format_exc()))
                     continue
                 # A song's records are judged against the run's bests: the stored ones and the earlier songs'.
@@ -167,11 +152,11 @@ def run_queue(
                 except Exception as exc:
                     if stop_requested is not None and stop_requested() and is_stop_abort_exception(exc):
                         break
-                    finisher.submit(fail, task, song_error_payload(song, exc=exc, trace=traceback.format_exc()))
+                    finisher.submit(fail, song_error_payload(song, exc=exc, trace=traceback.format_exc()))
                     continue
                 while len(finishing) >= _FINISH_BEHIND:  # bounded: finishing songs hold their surfaces
                     finishing.popleft().result()
-                finishing.append(finisher.submit(finish, task, song, ga_result))
+                finishing.append(finisher.submit(finish, song, ga_result))
             for future in preparing:
                 future.cancel()
     finally:

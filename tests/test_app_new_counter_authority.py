@@ -42,13 +42,13 @@ def _record(song: str, *, prev_overall: int, best_overall: int, record_update: b
 
 def test_new_counter_counts_authoritative_song_once_for_duplicate_progress_events():
     app = _make_minimal_app()
-    info = _record("Alpha Song (Run 1/2)", prev_overall=1000, best_overall=1400)
+    info = _record("Alpha Song (precise, Run 1/2)", prev_overall=1000, best_overall=1400)
 
     app._progress_event(completed_delta=0, record_info=info)
     app._progress_event(completed_delta=1, record_info=dict(info))
 
     assert app._session_new_records == 1
-    assert app._session_new_record_keys == {"Alpha Song"}
+    assert app._session_new_record_keys == {"Alpha Song (precise)"}
 
 
 def test_new_counter_ignores_non_authoritative_delta_within_epsilon():
@@ -65,28 +65,28 @@ def test_new_counter_ignores_non_authoritative_delta_within_epsilon():
 
 def test_new_counter_dedupes_duplicate_score_by_normalized_song_name():
     app = _make_minimal_app()
-    info1 = _record("Gamma Song (Run 1/3)", prev_overall=100, best_overall=300)
-    info2 = _record("Gamma Song (Run 2/3)", prev_overall=100, best_overall=300)
+    info1 = _record("Gamma Song (precise, Run 1/3)", prev_overall=100, best_overall=300)
+    info2 = _record("Gamma Song (precise, Run 2/3)", prev_overall=100, best_overall=300)
 
     app._progress_event(completed_delta=0, record_info=info1)
     app._progress_event(completed_delta=0, record_info=info2)
 
     assert app._session_new_records == 1
-    assert app._session_new_record_keys == {"Gamma Song"}
-    assert app._session_new_record_best_by_song == {"Gamma Song": 300}
+    assert app._session_new_record_keys == {"Gamma Song (precise)"}
+    assert app._session_new_record_best_by_song == {"Gamma Song (precise)": 300}
 
 
 def test_new_counter_counts_later_same_song_record_improvement():
     app = _make_minimal_app()
-    info1 = _record("Gamma Song (Run 1/3)", prev_overall=100, best_overall=300)
-    info2 = _record("Gamma Song (Run 2/3)", prev_overall=300, best_overall=600)
+    info1 = _record("Gamma Song (precise, Run 1/3)", prev_overall=100, best_overall=300)
+    info2 = _record("Gamma Song (precise, Run 2/3)", prev_overall=300, best_overall=600)
 
     app._progress_event(completed_delta=0, record_info=info1)
     app._progress_event(completed_delta=0, record_info=info2)
 
     assert app._session_new_records == 2
-    assert app._session_new_record_keys == {"Gamma Song"}
-    assert app._session_new_record_best_by_song == {"Gamma Song": 600}
+    assert app._session_new_record_keys == {"Gamma Song (precise)"}
+    assert app._session_new_record_best_by_song == {"Gamma Song (precise)": 600}
 
 
 def test_new_counter_counts_native_fg_record_event_before_tracker_advances():

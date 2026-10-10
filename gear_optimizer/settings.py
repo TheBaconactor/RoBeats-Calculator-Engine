@@ -21,6 +21,8 @@ Environment variables the engine reads (every one of them):
     ROBEATSMETA_OPTIMIZER_SERVICE_MODE  running under the :8765 service (no self-update, GPU request timeouts,
                                         GPU runtime failures stop the process)
     ROBEATSMETA_OPTIMIZER_PERSISTENT_WORKER  keep the GPU executor alive between service solves
+    METAFINDER_PASS_STARTED             set by the engine when it relaunches itself after a memory-guard restart: when
+                                        the pass began (the relaunched run skips the solves stored since)
   :8765 service (see ServiceSettings) and MetaFinder distribution (see MetaFinderSettings).
 """
 
@@ -126,8 +128,7 @@ class RunSettings:
     loop_forever: bool = False
     # [IterationEngine]
     song_repeats: int = 1
-    song_queue_limit: int = 0
-    ignore_resume_queue: bool = False
+    song_queue_limit: int = 0  # the first N solve runs of the queue (0: all)
     search_depth: int = 210  # generations over all runs: 42 per run
     multi_start: int = 5
     memory_soft_limit_gb: float = 0.0  # 0: no absolute cap
@@ -143,7 +144,6 @@ _CONFIG_KEYS: dict[tuple[str, str], tuple[str, type]] = {
     ("CalculateSong", "loopforever"): ("loop_forever", bool),
     ("IterationEngine", "songrepeats"): ("song_repeats", int),
     ("IterationEngine", "songqueuelimit"): ("song_queue_limit", int),
-    ("IterationEngine", "ignoreresumequeue"): ("ignore_resume_queue", bool),
     ("IterationEngine", "ga_searchdepth"): ("search_depth", int),
     ("IterationEngine", "ga_multistart"): ("multi_start", int),
     ("IterationEngine", "memorysoftlimitgb"): ("memory_soft_limit_gb", float),
@@ -199,6 +199,20 @@ def reasoning_search(level: str) -> tuple[int, int]:
     multiplier = REASONING_LEVELS[level]
     defaults = RunSettings()
     return defaults.search_depth * multiplier, defaults.multi_start * multiplier
+
+
+PASS_STARTED_ENV = "METAFINDER_PASS_STARTED"
+
+
+def pass_started() -> float | None:
+    """When the pass a relaunched run continues began (epoch seconds); None for a fresh run."""
+    value = _env(PASS_STARTED_ENV)
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"{PASS_STARTED_ENV} must be a number, got {value!r}") from exc
 
 
 def ga_seed() -> int | None:

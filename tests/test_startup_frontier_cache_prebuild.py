@@ -45,59 +45,33 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
 
     _fake_prebuilds(monkeypatch, timeline=_timeline, fg=_fg)
 
-    cpu_work_manager.run_startup_cpu_work(
-        song_queue=[("Data/Easy/Fake.txt",)],
-        curves={},
-        data_root="Data",
-    )
+    cpu_work_manager.run_startup_cpu_work(charts_by_mode={"precise": ["Data/Easy/Fake.txt"]}, curves={})
 
     assert calls == ["timeline_start", "timeline_end", "fg_start", "fg_end"]
 
 
-def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(monkeypatch) -> None:
+def test_cpu_work_manager_reports_each_cache_and_fails_loud(monkeypatch) -> None:
+    import pytest
+
     from gear_optimizer.solver import cpu_work_manager
     from gear_optimizer.solver.frontier_cache import FrontierCachePrebuildSummary
 
     _fake_prebuilds(
         monkeypatch,
-        timeline=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
-        fg=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
+        timeline=lambda **_kwargs: FrontierCachePrebuildSummary(total=2, completed=2, built=1, disk=1),
+        fg=lambda **_kwargs: FrontierCachePrebuildSummary(total=2, completed=1, failures=1, disk=1),
     )
 
     stream = io.StringIO()
-    cpu_work_manager.run_startup_cpu_work(
-        song_queue=[("Data/Easy/Fake.txt",)],
-        curves={},
-        data_root="Data",
-        announce_stream=stream,
-    )
+    with pytest.raises(RuntimeError, match="FG response-frontier cache': 1"):
+        cpu_work_manager.run_startup_cpu_work(
+            charts_by_mode={"precise": ["a.txt"], "non-precise": ["A.TXT"]}, curves={}, announce_stream=stream
+        )
 
     output = stream.getvalue()
-    assert "Verifying exact timeline + FG response frontier caches" in output
-    assert "Building and caching exact timeline + FG response frontiers" not in output
-
-
-def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeypatch) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.frontier_cache import FrontierCachePrebuildSummary
-
-    _fake_prebuilds(
-        monkeypatch,
-        timeline=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=1, disk=0, memory=0),
-        fg=lambda **_kwargs: FrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
-    )
-
-    stream = io.StringIO()
-    cpu_work_manager.run_startup_cpu_work(
-        song_queue=[("Data/Easy/Fake.txt",)],
-        curves={},
-        data_root="Data",
-        announce_stream=stream,
-    )
-
-    output = stream.getvalue()
-    assert "Verifying exact timeline + FG response frontier caches" in output
-    assert "Building and caching exact timeline + FG response frontiers" in output
+    assert "caches for 1 queued song(s)" in output
+    assert "Timeline frontier cache ready: total=2 built=1 disk=1" in output
+    assert "FG response-frontier cache ready: total=2 built=0 disk=1 memory=0 failures=1" in output
 
 
 def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:

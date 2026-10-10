@@ -54,7 +54,7 @@ def test_the_run_solves_the_queue_with_run_queue_posting_to_the_post_processor(m
     post_queue: queue.Queue = queue.Queue()
     app._start_post_processor = lambda _total: (post_queue, object())
 
-    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+    app._run_sequential(tasks)
 
     assert calls == [(tasks, post_queue.put)]
     assert seen["started"] and seen["stopped"]  # a batch run persists Taichi's offline cache
@@ -66,7 +66,7 @@ def test_a_failed_run_raises(monkeypatch):
 
     _patch_queue(monkeypatch, _raise_runtime)
     with pytest.raises(RuntimeError, match="boom"):
-        _make_minimal_app()._run_sequential(_build_tasks(count=2), completed_songs=set(), memory_resume_tracker=None)
+        _make_minimal_app()._run_sequential(_build_tasks(count=2))
 
 
 def test_a_run_whose_songs_failed_raises_after_the_run(monkeypatch):
@@ -76,7 +76,7 @@ def test_a_run_whose_songs_failed_raises_after_the_run(monkeypatch):
     _patch_queue(monkeypatch, lambda *_a, **_k: ran.append(1))
 
     with pytest.raises(RuntimeError, match="failed in this run"):
-        app._run_sequential(_build_tasks(count=2), completed_songs=set(), memory_resume_tracker=None)
+        app._run_sequential(_build_tasks(count=2))
     assert ran == [1]
 
 
@@ -86,7 +86,7 @@ def test_a_gpu_timeout_ends_the_run(monkeypatch):
 
     _patch_queue(monkeypatch, _raise_timeout)
     with pytest.raises(GpuServiceTimeoutError, match="timed out"):
-        _make_minimal_app()._run_sequential(_build_tasks(), completed_songs=set(), memory_resume_tracker=None)
+        _make_minimal_app()._run_sequential(_build_tasks())
 
 
 def test_configure_execution_sizes_the_ga_buffers_and_starts_the_gpu_executor(monkeypatch):
@@ -183,7 +183,6 @@ def _looping_app(monkeypatch, tmp_path, failure: BaseException):
         raise failure
 
     monkeypatch.setattr(app_module, "sync_exported_game_data", fail)
-    monkeypatch.setattr(GearOptimizerApp, "_handle_loop_restart", lambda self: None)
     return GearOptimizerApp(), iterations
 
 

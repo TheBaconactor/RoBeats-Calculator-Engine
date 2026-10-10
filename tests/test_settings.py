@@ -34,7 +34,6 @@ def test_every_key_parses(tmp_path):
         "[IterationEngine]\n"
         "SongRepeats = 4\n"
         "SongQueueLimit = 2\n"
-        "IgnoreResumeQueue = yes\n"
         "GA_SearchDepth = 250\n"
         "GA_MultiStart = 6\n"
         "MemorySoftLimitGB = 7.5\n"
@@ -48,7 +47,6 @@ def test_every_key_parses(tmp_path):
         loop_forever=True,
         song_repeats=4,
         song_queue_limit=2,
-        ignore_resume_queue=True,
         search_depth=250,
         multi_start=6,
         memory_soft_limit_gb=7.5,
@@ -65,6 +63,7 @@ def test_empty_text_value_means_the_default(tmp_path):
     "text",
     [
         "[IterationEngine]\nInFlightSongs = 4\n",
+        "[IterationEngine]\nIgnoreResumeQueue = true\n",
         "[IterationEngine]\nForceGreatsDebug = true\n",
         "[IterationEngine]\nLoopForever = true\n",
         "[UserInputStatsGems]\nperfect_points = 3\n",

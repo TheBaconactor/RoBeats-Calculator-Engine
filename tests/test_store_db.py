@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from gear_optimizer.core.timing_modes import PRECISE
+from gear_optimizer.core.timing_modes import NON_PRECISE, PRECISE
 from gear_optimizer.store import db, schema, tables
 from tests.store_support import boards, fg_row, meta_row, result
 
@@ -155,3 +155,17 @@ def test_a_reader_on_the_log_delays_the_truncation_only_briefly(tmp_path):
     assert (tmp_path / "results.db-wal").stat().st_size == 0
     assert {x.loadout_hash for x in db.load_boards(conn, PRECISE, "Song A", "T5").meta} == {"a", "b", "c"}
     conn.close()
+
+
+def test_present_songs_are_the_processed_ones_with_or_without_stored_results(tmp_path):
+    path = tmp_path / "presence.db"
+    conn = schema.connect(path, write=True)
+    try:
+        db.store_results(conn, PRECISE, "Stored", "T5", [result("h1", 999, song="Stored", mode=PRECISE)])
+        db.store_results(conn, PRECISE, "Processed Without Results", "T5", [])
+        assert db.present_songs(conn, PRECISE, ["Stored", "Processed Without Results", "Never Run"]) == {
+            "Stored", "Processed Without Results"
+        }
+        assert db.present_songs(conn, NON_PRECISE, ["Stored"]) == set()
+    finally:
+        conn.close()

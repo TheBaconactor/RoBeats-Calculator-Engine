@@ -24,19 +24,19 @@ from gear_optimizer.core.memory import (
     memory_release_requested,
     set_memory_watchdog_limit,
 )
+from gear_optimizer.domain.jobs import SharedRunContext
+from gear_optimizer.pipeline.queue import build_queue
 from gear_optimizer.store import db, legacy, schema
 from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
 from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
 
 
 def request_run_settings(*, repeats: int, reasoning: str) -> RunSettings:
-    """The run settings of one service solve: the request's Hard chart once per repeat, no resume queue."""
+    """The run settings of one service solve: the request's Hard chart once per repeat."""
     depth, multi_start = reasoning_search(reasoning)
     return RunSettings(
         difficulty="Hard",
         song_repeats=max(1, int(repeats)),
-        song_queue_limit=1,
-        ignore_resume_queue=True,
         search_depth=depth,
         multi_start=multi_start,
     )
@@ -109,7 +109,8 @@ class PersistentOptimizerSession:
         self._app._force_exit_requested.clear()
         set_memory_watchdog_limit(compute_memory_guard_limit(run))
         schema.ensure(self._result_db)
-        tasks = self._app._prepare_tasks([(str(self._chart_path), song_name, "Hard")], run, self._curves, gears, minis)
+        tasks = build_queue(run, SharedRunContext(multi_start=run.multi_start, curves=self._curves, gears=gears,
+                                                  minis=minis, ga_depth=run.search_depth))
         try:
             self._solve_direct(tasks, gears, minis)
             mode = tasks[0].mode  # the chart's Timing Mode header: a request solves one mode

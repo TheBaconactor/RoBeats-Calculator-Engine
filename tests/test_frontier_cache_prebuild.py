@@ -72,10 +72,10 @@ class _Run:
         path.write_bytes(content)
         return path
 
-    def run(self, charts: list[Path], **kwargs):
-        kwargs.setdefault("timing_modes", ("non-precise",))
+    def run(self, charts: list[Path], *, timing_modes=("non-precise",), **kwargs):
         return prebuild_frontier_cache(
-            self.prebuild, song_queue=[(str(chart),) for chart in charts], curves=CURVES, data_root=None, **kwargs
+            self.prebuild, charts_by_mode={mode: [str(chart) for chart in charts] for mode in timing_modes},
+            curves=CURVES, **kwargs
         )
 
 
@@ -175,16 +175,14 @@ def test_every_timing_mode_is_verified_and_summed(tmp_path: Path, monkeypatch) -
     assert (summary.total, summary.built) == (4, 4)
 
 
-def test_an_empty_queue_verifies_every_chart_under_the_data_root(tmp_path: Path, monkeypatch) -> None:
+def test_each_mode_verifies_its_own_charts_once(tmp_path: Path, monkeypatch) -> None:
     run = _Run(tmp_path, monkeypatch)
-    data = tmp_path / "Data"
-    _chart(data / "Hard" / "b.txt", "B")
-    _chart(data / "Easy" / "a.txt", "A")
-    (data / "Other").mkdir()
-    _chart(data / "Other" / "ignored.txt", "C")
+    a, b = (_chart(tmp_path / "charts" / f"{name}.txt", name) for name in ("A", "B"))
 
     summary = prebuild_frontier_cache(
-        run.prebuild, song_queue=[], curves=CURVES, data_root=data, timing_modes=("precise",)
+        run.prebuild, charts_by_mode={"precise": [str(a), str(a).upper(), str(b)], "non-precise": [str(b)]},
+        curves=CURVES,
     )
 
-    assert summary.built == 2
+    assert sorted(call for call in run.calls if call.startswith("build")) == ["build:1", "build:2"]
+    assert (summary.total, summary.built) == (3, 3)

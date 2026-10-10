@@ -31,10 +31,9 @@ from gear_optimizer.chart import load_chart
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import pin_frontier_prebuild_worker
 from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.settings import DIFFICULTIES, paths
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
-from gear_optimizer.solver.timing_envelope import TIMING_MODES, TimedSong, time_song
+from gear_optimizer.solver.timing_envelope import TimedSong, time_song
 
 logger = logging.getLogger(__name__)
 
@@ -590,39 +589,9 @@ def prebuild_worker_curves() -> StatCurves:
     return _prebuild_worker_curves
 
 
-def ordered_frontier_cache_song_paths(
-    *,
-    queue_paths: Iterable[str],
-    data_root: str | os.PathLike[str] | None = None,
-) -> list[str]:
-    """The queued charts without repeats; every chart under `data_root` (default: the Data directory) when none are
-    queued."""
-    ordered: list[str] = []
-    seen: set[str] = set()
-
-    def add(path_text: str) -> None:
-        path = str(path_text or "").strip()
-        if not path:
-            return
-        key = os.path.abspath(path).casefold()
-        if key in seen:
-            return
-        seen.add(key)
-        ordered.append(path)
-
-    for path in queue_paths:
-        add(path)
-    if ordered:
-        return ordered
-    root = Path(data_root) if data_root else paths().data_dir
-    charts: list[Path] = []
-    for difficulty in DIFFICULTIES:
-        folder = root / str(difficulty)
-        if folder.exists():
-            charts.extend(path for path in folder.rglob("*.txt") if path.is_file())
-    for path in sorted(charts, key=lambda item: str(item).lower()):
-        add(str(path))
-    return ordered
+def _unique_chart_paths(chart_paths: Iterable[str]) -> list[str]:
+    """The charts in order, each path once (paths compared absolute, case-insensitively)."""
+    return list({os.path.abspath(path).casefold(): str(path) for path in reversed(list(chart_paths))}.values())[::-1]
 
 
 @dataclass(frozen=True)
@@ -639,23 +608,19 @@ class FrontierCachePrebuild:
 def prebuild_frontier_cache(
     prebuild: FrontierCachePrebuild,
     *,
-    song_queue: Iterable[tuple],
+    charts_by_mode: Mapping[str, Iterable[str]],
     curves: StatCurves,
-    data_root: str | os.PathLike[str] | None = None,
     build_missing: bool = True,
     authorize_destructive_rotation: bool = False,
-    timing_modes: Iterable[str] = TIMING_MODES,
 ) -> FrontierCachePrebuildSummary:
-    """Verify the cache files of the queued charts (all charts under `data_root` for an empty queue) in each timing
-    mode and build the missing ones; with `build_missing` False a missing file counts as a failure."""
+    """Verify the cache files of each timing mode's charts and build the missing ones; with `build_missing` False a
+    missing file counts as a failure."""
     started = time.perf_counter()
-    queue_paths = [str(item[0]) for item in song_queue or () if isinstance(item, tuple) and item]
-    song_paths = ordered_frontier_cache_song_paths(queue_paths=queue_paths, data_root=data_root)
     summaries = [
         _prebuild_timing_mode(
-            prebuild, song_paths, curves, str(mode or "").strip().lower(), build_missing, authorize_destructive_rotation
+            prebuild, _unique_chart_paths(charts), curves, mode, build_missing, authorize_destructive_rotation
         )
-        for mode in timing_modes
+        for mode, charts in charts_by_mode.items()
     ]
     return FrontierCachePrebuildSummary(
         total=sum(summary.total for summary in summaries),

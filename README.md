@@ -102,9 +102,8 @@ The repository includes chart and gear data under [`Data/`](DATA.md). Set `Song_
 | | `Difficulty` | `All` | `Easy`, `Normal`, `Hard` or `All` |
 | | `TargetPrimary`, `TargetSecondary` | `All` | Colors to include, e.g. `Rush` or `Flow,Beat` |
 | | `LoopForever` | `false` | Rescan and solve the queue again when it finishes |
-| `[IterationEngine]` | `SongRepeats` | `1` | Solves per chart, each with its own search seed |
-| | `SongQueueLimit` | `0` (no limit) | Charts per pass |
-| | `IgnoreResumeQueue` | `false` | Ignore the charts left over from a memory-guard restart |
+| `[IterationEngine]` | `SongRepeats` | `1` | Runs per solve (a chart in one timing mode), each with its own search seed |
+| | `SongQueueLimit` | `0` (no limit) | Solve runs per pass: the queue takes the solves the database lacks first, then the least recently solved |
 | | `GA_SearchDepth` | `210` | Search generations over all populations (42 each by default) |
 | | `GA_MultiStart` | `5` | Independent search populations |
 | | `MemorySoftLimitGB` | `0` (off) | Restart before the process uses this much memory |

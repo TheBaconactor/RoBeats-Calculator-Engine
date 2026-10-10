@@ -10,30 +10,24 @@ logger = logging.getLogger(__name__)
 
 
 class TaskExecutionMixin:
-    def _execute_tasks(self, tasks, memory_resume_tracker):
+    def _execute_tasks(self, tasks):
             """Solve the queue (_run_sequential), then record completion counts."""
             if self._stop_requested_now():
                 return
-            completed_songs = set()
             self._run_current_song_label = ""
             self._start_hotkeys()
             try:
-                self._run_sequential(tasks, completed_songs, memory_resume_tracker)
+                self._run_sequential(tasks)
             finally:
-                # Completion stats for end-of-iteration throughput reporting, and the resume state, also when songs
-                # failed (_run_sequential raises after the run).
+                # Completion stats for end-of-iteration throughput reporting, also when songs failed (_run_sequential
+                # raises after the run).
                 self._last_completed_tasks = self._runtime_completed_count
                 self._last_total_tasks = self._runtime_total_count or len(tasks)
-
                 if memory_release_requested():
-                    logger.warning("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
-                    logger.warning("[MemoryGuard] Scheduling automatic restart if pending songs remain.")
-
-                if memory_resume_tracker:
-                    memory_resume_tracker.finalize(memory_release_requested())
+                    logger.warning("[MemoryGuard] Soft limit reached; restarting to continue the pass.")
                 self._stop_hotkeys()
 
-    def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
+    def _run_sequential(self, tasks):
             """Solve the current queue in this process (_run_direct) with the run's post-processor storing the results.
             Raises when the run fails, or after the run when any song failed (the post-processor counts and logs them)."""
             if self._stop_requested_now():
@@ -52,13 +46,13 @@ class TaskExecutionMixin:
                 if self._progress is not None:
                     self._progress.update_counts(completed=0, total=total_tasks)
                 self._set_runtime_progress_counts(completed=0, total=total_tasks)
-                self._run_direct(tasks, post_queue, completed_songs, memory_resume_tracker)
+                self._run_direct(tasks, post_queue)
             finally:
                 songs_failed = not self._stop_post_processor(post_queue, post_proc)
             if songs_failed:
                 raise RuntimeError("song(s) failed in this run (see the [POST] FAILED lines)")
 
-    def _run_direct(self, tasks, post_queue, completed_songs, memory_resume_tracker) -> None:
+    def _run_direct(self, tasks, post_queue) -> None:
             """The queue solved in this process (pipeline.solve.run_queue), posting to the run's post-processor."""
             from gear_optimizer.pipeline.solve import run_queue
             from gear_optimizer.solver.gpu_executor import get_gpu_executor
@@ -70,8 +64,6 @@ class TaskExecutionMixin:
                     tasks,
                     executor,
                     post=post_queue.put,
-                    completed_songs=completed_songs,
-                    memory_resume_tracker=memory_resume_tracker,
                     stop_requested=self._stop_requested_now,
                     progress_cb=self._progress_event,
                 )

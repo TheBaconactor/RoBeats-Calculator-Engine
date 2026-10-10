@@ -34,23 +34,20 @@ def _key(name: str) -> str:
     return f"{name} ({PRECISE})"
 
 
-def _run(names, *, executor=None, stop_requested=None) -> tuple[list, set]:
+def _run(names, *, executor=None, stop_requested=None) -> list:
     posted: list = []
-    completed: set[str] = {_key("Done Before")}
-    solve_module.run_queue([_task(n) for n in names], executor, post=posted.append, completed_songs=completed,
-                           stop_requested=stop_requested)
-    return posted, completed - {_key("Done Before")}
+    solve_module.run_queue([_task(n) for n in names], executor, post=posted.append, stop_requested=stop_requested)
+    return posted
 
 
 def _labels(posted: list) -> list:
     return [p if isinstance(p, str) else (p["_song_name"], p["_error"]) for p in posted]
 
 
-def test_the_queue_is_solved_and_posted_in_order_and_each_task_completes(monkeypatch):
+def test_the_queue_is_solved_and_posted_in_order(monkeypatch):
     _stages(monkeypatch)
-    posted, completed = _run(["A", "Done Before", "B", "C"])
+    posted = _run(["A", "B", "C"])
     assert posted == [_key("A"), _key("B"), _key("C")]
-    assert completed == {_key("A"), _key("B"), _key("C")}
 
 
 def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(monkeypatch):
@@ -70,10 +67,9 @@ def test_failures_in_any_stage_are_posted_in_queue_order_and_the_queue_goes_on(m
         return song.config.task_key
 
     _stages(monkeypatch, prepare=prepare, run_ga=run_ga, finish=finish)
-    posted, completed = _run(["A", "Prep Fails", "GA Fails", "Finish Fails", "B"])
+    posted = _run(["A", "Prep Fails", "GA Fails", "Finish Fails", "B"])
     assert _labels(posted) == [_key("A"), ("Prep Fails", "bad chart"), ("GA Fails", "gpu boom"),
                                ("Finish Fails", "fg boom"), _key("B")]
-    assert completed == {_key(n) for n in ("A", "Prep Fails", "GA Fails", "Finish Fails", "B")}
 
 
 def test_each_song_is_judged_against_the_runs_bests_starting_from_the_stored_ones(monkeypatch):
@@ -109,7 +105,7 @@ def test_while_a_ga_runs_the_previous_song_finishes_and_the_next_is_prepared(mon
         return song.config.task_key
 
     _stages(monkeypatch, prepare=prepare, run_ga=run_ga, finish=finish)
-    assert _run(["A", "B", "C"])[0] == [_key("A"), _key("B"), _key("C")]
+    assert _run(["A", "B", "C"]) == [_key("A"), _key("B"), _key("C")]
 
 
 def test_a_stop_request_leaves_the_rest_of_the_queue_pending(monkeypatch):
@@ -120,9 +116,9 @@ def test_a_stop_request_leaves_the_rest_of_the_queue_pending(monkeypatch):
         return song.config.task_key
 
     _stages(monkeypatch, finish=finish)
-    posted, completed = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: None),
+    posted = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: None),
                              stop_requested=stop.is_set)
-    assert posted[0] == _key("A") and set(posted) <= {_key("A"), _key("B")} and completed == set(posted)
+    assert posted[0] == _key("A") and set(posted) <= {_key("A"), _key("B")}
 
 
 def test_a_stop_request_aborts_the_ga_in_progress_and_its_song_stays_pending(monkeypatch):
@@ -137,9 +133,9 @@ def test_a_stop_request_aborts_the_ga_in_progress_and_its_song_stays_pending(mon
         return "ga"
 
     _stages(monkeypatch, run_ga=run_ga)
-    posted, completed = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: aborted.set()),
+    posted = _run(["A", "B", "C"], executor=SimpleNamespace(request_abort=lambda reason: aborted.set()),
                              stop_requested=stop.is_set)
-    assert posted == [_key("A")] and completed == {_key("A")}
+    assert posted == [_key("A")]
 
 
 def test_a_fatal_gpu_error_ends_the_run_after_the_songs_past_their_ga_finish(monkeypatch):
@@ -153,7 +149,7 @@ def test_a_fatal_gpu_error_ends_the_run_after_the_songs_past_their_ga_finish(mon
     _stages(monkeypatch, run_ga=run_ga)
     posted: list = []
     with pytest.raises(GpuServiceTimeoutError):
-        solve_module.run_queue([_task("A"), _task("B"), _task("C")], None, post=posted.append, completed_songs=set())
+        solve_module.run_queue([_task("A"), _task("B"), _task("C")], None, post=posted.append)
     assert posted == [_key("A")]
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -38,7 +39,8 @@ class RuntimeUiMixin:
         epsilon and the song's earlier records this session."""
         if not record_info or not record_info.get("record_update"):
             return False
-        song_key = self._normalize_song_label(str(record_info.get("song") or "_").strip())
+        # A solve's runs share one record: "Song (mode, Run 2/3)" counts as "Song (mode)".
+        song_key = re.sub(r",\s*Run\s+\d+\s*/\s*\d+\)\s*$", ")", str(record_info.get("song") or "_").strip())
         best_overall_score = record_info["best_overall_score_run"]
         if (
             not song_key
