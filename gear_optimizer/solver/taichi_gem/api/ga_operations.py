@@ -17,7 +17,7 @@ from .ga_eval_cache import reset_ga_evaluation_cache, use_ga_evaluation_context
 from .initialization import ensure_ready, _ensure_ftff_combo_tables
 from ..kernels.kernels_helpers import gpu_color_flags
 from gear_optimizer.chart import Chart
-from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.solver.timing_envelope import TimedSong
 from ..combo_chunking import compute_combo_chunk
 from .common_operations import compute_array_sig, probability_to_u32_fp
@@ -25,19 +25,6 @@ _GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
 _GA_COMBO_CHUNK_MAX: int = 4096  # exact-combo dispatch chunk ceiling (TDR-safe)
 _GA_COMBO_TAIL_MERGE_MAX: int = 256  # merge a trailing remainder up to this size into the last chunk
 _GA_KERNELS_LIGHT_WARMED: bool = False
-
-
-def _warmup_curves() -> StatCurves:
-    x = np.linspace(0.0, 1.0, int(fields.GRID_SIZE), dtype=np.float32)
-    return StatCurves.from_mapping(
-        {
-            "Perfect Points": (1000.0 + (500.0 * x)).astype(np.float32, copy=False),
-            "Combo Multiplier": (1.0 + x).astype(np.float32, copy=False),
-            "Fever Multiplier": (1.0 + (0.5 * x)).astype(np.float32, copy=False),
-            "Fever Time": (5.0 + (30.0 * x)).astype(np.float32, copy=False),
-            "Fever Fill Rate": (1.0 + (4.0 * x)).astype(np.float32, copy=False),
-        }
-    )
 
 
 def _warmup_song() -> TimedSong:
@@ -82,7 +69,7 @@ def warmup_ga_kernels_light() -> None:
     song_slot = 0
     flags = gpu_color_flags(None)
 
-    curves = _warmup_curves()
+    curves = stat_curves()
     ensure_ready(curves)
     precompute_timeline_gpu_for_warmup(_warmup_song(), curves, song_slot=song_slot)
 

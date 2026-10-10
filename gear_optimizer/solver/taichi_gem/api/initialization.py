@@ -234,8 +234,6 @@ def load_curves(curves: StatCurves):
     # PP-vs-OV prefix argmax for a fixed base PP stat and color-flag combination: removes the inner
     # O(B) PP scan from each (CM, FM) pair of the bounded exact inner solver (O(B^3) -> O(B^2)).
     fields.exact_pp_best_gems_prefix.from_numpy(_build_exact_pp_best_gems_prefix(f32["Perfect Points"]))
-    fields.ref_ft_field.from_numpy(f32["Fever Time"])
-    fields.ref_ff_field.from_numpy(f32["Fever Fill Rate"])
 
     _ref_loaded = True
     _last_curves_sig = _curves_sig(curves)

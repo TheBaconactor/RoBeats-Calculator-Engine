@@ -36,8 +36,8 @@ def _create_mock_ref_arrays():
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
-        "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
-        "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64) * 0.333,
+        "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64) * 0.15,
     })
 
 

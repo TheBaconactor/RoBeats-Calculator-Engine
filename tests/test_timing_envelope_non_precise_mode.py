@@ -31,8 +31,8 @@ def _curves() -> dict[str, np.ndarray]:
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 4.0, rows, dtype=np.float64),
-        "Fever Fill Rate": np.linspace(0.3, 1.0, rows, dtype=np.float64),
-        "Fever Time": np.linspace(0.3, 1.0, rows, dtype=np.float64),
+        "Fever Fill Rate": np.linspace(0.3, 1.0, rows, dtype=np.float64) * 0.333,
+        "Fever Time": np.linspace(0.3, 1.0, rows, dtype=np.float64) * 0.15,
     })
 
 
@@ -88,9 +88,9 @@ def test_unknown_mode_fails_loudly():
 def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     """The stats->score adapter equals an independent chart-time fixed-timeline replay.
 
-    The reference re-derives the deterministic chart-time fever timeline with the numba walk
-    (``calculate_fever_timeline_indices``, not gear_optimizer.timing's) and scores that single
-    surface with gear_optimizer.score from independently resolved factors.
+    The reference walks the game's fever bar for the fill count, takes the reference ScoreEngine's fever duration,
+    re-derives the chart-time fever timeline with the numba walk (``calculate_fever_timeline_indices``) and scores
+    that single surface with gear_optimizer.score from independently resolved factors.
     """
     stats = _stats()
     song = _song()
@@ -99,21 +99,21 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     pp = lookup_reference_py(stats["Perfect Points"], ref.f64["Perfect Points"], MAX_STAT)
     combo = lookup_reference_py(stats["Combo Multiplier"], ref.f64["Combo Multiplier"], MAX_STAT)
     fever = lookup_reference_py(stats["Fever Multiplier"], ref.f64["Fever Multiplier"], MAX_STAT)
-    ft_factor = lookup_reference_py(stats["Fever Time"], ref.f64["Fever Time"], MAX_STAT)
-    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref.f64["Fever Fill Rate"], MAX_STAT)
+    decay_rate = lookup_reference_py(stats["Fever Time"], ref.f64["Fever Time"], MAX_STAT)
+    fill_base = lookup_reference_py(stats["Fever Fill Rate"], ref.f64["Fever Fill Rate"], MAX_STAT)
     base_value = float(stats["Rush"] * 2 + stats["Flow"]) + float(pp)
 
     timestamps = song.chart.timestamps
     total_notes = int(len(timestamps))
     mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+    denominator = (song.chart.total_notes - song.chart.long_notes) * float(fill_base)
+    fill_notes, bar = 0, 0.0
+    while bar < 1.0:
+        bar = min(bar + 1.0 / denominator, 1.0)
+        fill_notes += 1
+    duration = ((song.chart.last_note_time * 1000.0 + 1000.0) / 1000.0) * 0.15 * (float(decay_rate) / 0.15)
     fever_mask_head, count_body_fever, count_body_normal, _non_fever, _acts = calculate_fever_timeline_indices(
-        timestamps,
-        total_notes,
-        float(ff_factor),
-        float(ft_factor),
-        song.chart.long_notes,
-        song.chart.last_note_time,
-        mask_buffer,
+        timestamps, total_notes, fill_notes, duration, mask_buffer
     )
     cell = score.single_surface_cell(fever_mask_head, int(count_body_fever), int(count_body_normal))
     factors = score.Factors(

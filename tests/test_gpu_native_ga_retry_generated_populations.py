@@ -130,8 +130,8 @@ def _curves() -> dict[str, np.ndarray]:
         "Perfect Points": np.arange(161, dtype=np.float32),
         "Combo Multiplier": np.arange(161, dtype=np.float32),
         "Fever Multiplier": np.arange(161, dtype=np.float32),
-        "Fever Time": np.arange(161, dtype=np.float32),
-        "Fever Fill Rate": np.arange(161, dtype=np.float32),
+        "Fever Time": np.arange(161, dtype=np.float32) * 0.15,
+        "Fever Fill Rate": np.arange(161, dtype=np.float32) * 0.333,
     })
 
 

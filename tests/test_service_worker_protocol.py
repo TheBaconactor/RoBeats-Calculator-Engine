@@ -192,7 +192,7 @@ def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch
     session = object.__new__(worker.PersistentOptimizerSession)
     session._app = FakeApp()
 
-    monkeypatch.setattr(worker, "load_stat_curves", lambda _path: events.append("load curves") or object())
+    monkeypatch.setattr(worker, "stat_curves", lambda: events.append("load curves") or object())
     monkeypatch.setattr(worker, "load_gears", lambda _path: {})
     monkeypatch.setattr(worker, "load_minis", lambda _path: {})
     monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))

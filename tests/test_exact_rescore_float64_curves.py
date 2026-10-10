@@ -16,8 +16,8 @@ def _curves(rows: int, *, dtype):
         "Perfect Points": np.linspace(1.0, 2.0, rows, dtype=dtype),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=dtype),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=dtype),
-        "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=dtype),
-        "Fever Time": np.linspace(1.0, 2.5, rows, dtype=dtype),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=dtype) * 0.333,
+        "Fever Time": np.linspace(1.0, 2.5, rows, dtype=dtype) * 0.15,
     })
 
 
@@ -79,8 +79,8 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
         "Perfect Points": np.ones(MAX_STAT + 1, dtype=np.float64),
         "Combo Multiplier": np.ones(MAX_STAT + 1, dtype=np.float64) * 2.0,
         "Fever Multiplier": np.ones(MAX_STAT + 1, dtype=np.float64) * 4.0,
-        "Fever Fill Rate": np.ones(MAX_STAT + 1, dtype=np.float64),
-        "Fever Time": np.ones(MAX_STAT + 1, dtype=np.float64),
+        "Fever Fill Rate": np.ones(MAX_STAT + 1, dtype=np.float64) * 0.333,
+        "Fever Time": np.ones(MAX_STAT + 1, dtype=np.float64) * 0.15,
     })
     stats = {
         "Perfect Points": 0,

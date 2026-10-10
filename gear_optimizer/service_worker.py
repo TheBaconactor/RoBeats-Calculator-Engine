@@ -25,7 +25,7 @@ from gear_optimizer.core.memory import (
     set_memory_watchdog_limit,
 )
 from gear_optimizer.store import db, legacy, schema
-from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
+from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
 from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
 
 
@@ -69,7 +69,7 @@ class PersistentOptimizerSession:
             shutil.copytree(source, gear_dir)
 
     def _initialize(self) -> None:
-        self._curves = load_stat_curves(paths().stats_txt)
+        self._curves = stat_curves()
         self._gears = load_gears(paths().gears_csv)
         self._minis = load_minis(paths().minis_csv)
 

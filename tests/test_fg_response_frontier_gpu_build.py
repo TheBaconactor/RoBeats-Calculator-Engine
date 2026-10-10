@@ -1278,7 +1278,7 @@ def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation
 
 
 def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_boundaries() -> None:
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
     from tests.fg_response_frontier_oracles import edge_end_oracle
@@ -1286,7 +1286,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
 
     song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
-    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
+    curves = stat_curves()
     song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     real_fever_time = float(real_time_by_ft[51])
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
@@ -2376,7 +2376,7 @@ def test_fg_response_fused_body_reduce_matches_retired_randomized_production_sha
 
 
 def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
@@ -2389,7 +2389,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
     song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
-    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
+    curves = stat_curves()
     song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     raw_fever_fill = float(raw_fill_by_ff[67])
     non_fever_base = int(non_fever_base_by_ff[67])

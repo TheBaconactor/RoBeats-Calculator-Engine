@@ -30,7 +30,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.chart import Chart, load_chart
-from gear_optimizer.gamedata import StatCurves, load_stat_curves
+from gear_optimizer.gamedata import StatCurves, stat_curves
 from gear_optimizer.settings import paths
 from gear_optimizer.rules import GEM_BUDGET
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, normalize_team_buff, team_buff_effect
@@ -489,7 +489,7 @@ def main() -> int:
     # (f32 on MoltenVK / f64 on AMD), so the GPU gem search runs here; the served score is the
     # CPU-f64 exact rescore of the winner (lossless). --mode {meta,fg,both} all run.
 
-    curves = load_stat_curves(paths().stats_txt)
+    curves = stat_curves()
 
     baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
 

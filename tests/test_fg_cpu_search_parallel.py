@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.taichi_gem.force_greats import response_gem_search as search
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
@@ -34,7 +34,7 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
     counts = np.column_stack(
         [rng.integers(0, 121, surface_rows), rng.integers(0, 60, surface_rows), rng.integers(0, 40, surface_rows)]
     ).astype(np.int32)
-    curves = load_stat_curves(paths().stats_txt)
+    curves = stat_curves()
     shared = (
         rng.integers(0, patterns, surface_rows).astype(np.int32),
         words,

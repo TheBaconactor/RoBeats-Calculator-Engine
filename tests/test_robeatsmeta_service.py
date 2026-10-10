@@ -1208,7 +1208,7 @@ def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root,
     _write_chart(data_root, "Normal", "Old by Artist", "old.txt")
     _write_chart(data_root, "Normal", "New by Artist", "new.txt")
     changed = data_root / "Data" / "Normal" / "new.txt"
-    monkeypatch.setattr(gamedata, "load_stat_curves", lambda _path: object())
+    monkeypatch.setattr(gamedata, "stat_curves", lambda: object())
     queued: list[object] = []
 
     class _Stop(Exception):

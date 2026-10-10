@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.chart import load_chart
-from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import time_song
@@ -27,7 +27,7 @@ def test_great_rounding_uses_chart_colors(secondary, expected, colors) -> None:
 
 def test_reflections_force_greats_matches_observed_game_score() -> None:
     song = time_song(load_chart(ROOT / "Data" / "Normal" / "Reflections by Rutra.txt"), "precise")
-    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
+    curves = stat_curves()
     stats = {
         "Perfect Points": 85,
         "Combo Multiplier": 60,

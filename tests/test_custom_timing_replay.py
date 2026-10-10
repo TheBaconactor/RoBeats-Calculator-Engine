@@ -32,8 +32,8 @@ def _curves() -> dict[str, np.ndarray]:
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 4.0, rows, dtype=np.float64),
-        "Fever Fill Rate": np.linspace(0.3, 1.0, rows, dtype=np.float64),
-        "Fever Time": np.linspace(0.3, 1.0, rows, dtype=np.float64),
+        "Fever Fill Rate": np.linspace(0.3, 1.0, rows, dtype=np.float64) * 0.333,
+        "Fever Time": np.linspace(0.3, 1.0, rows, dtype=np.float64) * 0.15,
     })
 
 

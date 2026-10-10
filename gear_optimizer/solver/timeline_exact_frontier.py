@@ -148,8 +148,8 @@ def build_timeline_frontier_grid_payload(
 ) -> TimelineFrontierGridPayload:
     """Build every FT/FF Base cell from exact lane-aware all-Perfect producer surfaces.
 
-    `fever_times` holds each Fever Time row's window time (timing_envelope.fever_window_times), `fever_fills` each Fever
-    Fill Rate row's fill in Perfects (timing_envelope.fever_fill_raw)."""
+    `fever_times` holds each Fever Time row's fever duration and `fever_fills` each Fever Fill Rate row's fill threshold
+    in Perfects (timing_envelope.fever_axes)."""
     real_times = np.asarray(fever_times, dtype=np.float64).reshape(-1)
     fills = np.asarray(fever_fills, dtype=np.float64).reshape(-1)
     if int(real_times.shape[0]) != GRID_SIZE:

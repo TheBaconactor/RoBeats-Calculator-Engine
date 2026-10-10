@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from gear_optimizer.rules import FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
+from gear_optimizer.gamedata import stat_curves
+from gear_optimizer.solver.timing_envelope import fever_durations
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "Data" / "Normal" / "memories of blue by AAAA.txt"
-STATS = ROOT / "Data" / "Gear" / "Stats.txt"
 
 
 def _chart_metadata_and_notes() -> tuple[dict[str, str], dict[int, tuple[float, int, int]]]:
@@ -36,15 +36,6 @@ def _chart_metadata_and_notes() -> tuple[dict[str, str], dict[int, tuple[float, 
     return metadata, notes
 
 
-def _stat_lookup(stat_index: int, column: int) -> float:
-    rows: list[list[float]] = []
-    for raw in STATS.read_text(encoding="utf-8").splitlines()[1:]:
-        line = raw.strip()
-        if line:
-            rows.append([float(part) for part in line.split("\t")])
-    return rows[MAX_STAT - int(stat_index)][int(column)]
-
-
 def _server_fever_flags(cutoff_sec: float, event_times_sec: dict[int, float]) -> dict[int, bool]:
     return {note: float(event_time) < float(cutoff_sec) for note, event_time in event_times_sec.items()}
 
@@ -52,16 +43,15 @@ def _server_fever_flags(cutoff_sec: float, event_times_sec: dict[int, float]) ->
 def test_memories_of_blue_note89_duration_excludes_note375_without_tick_grace():
     metadata, notes = _chart_metadata_and_notes()
     last_note_time = float(metadata["Last Note Time"])
-    fever_time_factor = _stat_lookup(16, 4)
-    duration = (last_note_time * FEVER_TIME_PER_SECOND + FEVER_TIME_OFFSET) * fever_time_factor
+    decay_rate = float(stat_curves().f64["Fever Time"][16])
+    duration = float(fever_durations(last_note_time, [decay_rate])[0])
     cutoff = notes[89][0] + duration
 
-    assert FEVER_TIME_OFFSET == pytest.approx(0.15)
     assert cutoff * 1000.0 == pytest.approx(53480.591, abs=0.001)
     assert notes[373] == pytest.approx((53.323, 3, 3))
     assert notes[374] == pytest.approx((53.323, 1, 1))
     assert notes[375] == pytest.approx((53.492, 2, 2))
-    old_tick_cutoff = cutoff + (1.0 / 60.0) * fever_time_factor
+    old_tick_cutoff = cutoff + (1.0 / 60.0) * decay_rate / 0.15
     assert notes[375][0] < old_tick_cutoff
 
     non_precise = _server_fever_flags(cutoff, {373: notes[373][0], 374: notes[374][0], 375: notes[375][0]})

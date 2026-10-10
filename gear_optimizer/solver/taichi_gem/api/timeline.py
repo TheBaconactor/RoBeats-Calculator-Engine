@@ -31,7 +31,7 @@ from gear_optimizer.solver.frontier_cache import (
     write_atomically,
 )
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
-from gear_optimizer.solver.timing_envelope import TimedSong, fever_fill_raw, fever_window_times
+from gear_optimizer.solver.timing_envelope import TimedSong, fever_axes
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
@@ -215,6 +215,7 @@ _BASE_SHARED_FRONTIER_PRODUCER_SOURCES = tuple(
 )
 _TIMELINE_DP_SOURCES = (
     Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py",
+    Path(__file__).resolve().parents[2] / "fever_timeline.py",
     *_BASE_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
 _FRONTIER_DISK_CACHE_VERSION = (
@@ -386,12 +387,13 @@ def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dic
     else:
         perfect_candidates, perfect_floor, lanes = song.perfect_candidates, song.perfect_floor, chart.lanes
         exit_ceiling = song.exit_ceiling
+    fever_durations, fill_thresholds = fever_axes(total_notes, chart.long_notes, chart.last_note_time, curves)
     return {
         "song_key": song.timeline_key,
         "timestamps": chart.timestamps,
         "total_notes": total_notes,
-        "long_notes": chart.long_notes,
-        "last_note_time": chart.last_note_time,
+        "fever_durations": fever_durations,
+        "fill_thresholds": fill_thresholds,
         "ref_ft": curves.f32["Fever Time"],
         "ref_ff": curves.f32["Fever Fill Rate"],
         "perfect_candidates": perfect_candidates,
@@ -443,11 +445,9 @@ def _build_non_precise_timeline_payload(song: TimedSong, curves: StatCurves) -> 
     if total_notes > 1 and bool(np.any(np.diff(timestamps) < np.float32(0.0))):
         raise ValueError("non-precise chart timestamps must be non-decreasing")
 
-    ref_ft = curves.f32["Fever Time"]
-    ref_ff = curves.f32["Fever Fill Rate"]
+    fever_durations, fill_thresholds = fever_axes(total_notes, song.chart.long_notes, song.chart.last_note_time, curves)
+    fill_notes = np.ceil(fill_thresholds).astype(np.int64)
     grid_size = MAX_STAT + 1
-    if ref_ft.shape != (grid_size,) or ref_ff.shape != (grid_size,):
-        raise ValueError(f"non-precise timeline axes must both have shape ({grid_size},)")
 
     shape = (1, grid_size, grid_size)
     grid_count_body_fever = np.zeros(shape, dtype=np.int32)
@@ -464,8 +464,6 @@ def _build_non_precise_timeline_payload(song: TimedSong, curves: StatCurves) -> 
     body_normal_pool = np.zeros((1, pool_cap), dtype=np.int32)
     masks_pool = np.zeros((1, pool_cap, 4), dtype=np.uint32)
     head_coeffs_pool = np.zeros((1, pool_cap, 4), dtype=np.int16)
-    long_notes = song.chart.long_notes
-    last_note_time = song.chart.last_note_time
     pool_by_surface: dict[tuple[int, int, tuple[int, int, int, int], int, int], int] = {}
 
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
@@ -474,10 +472,8 @@ def _build_non_precise_timeline_payload(song: TimedSong, curves: StatCurves) -> 
     calculate_fever_timeline_surface_grid(
         timestamps,
         total_notes,
-        ref_ft,
-        ref_ff,
-        long_notes,
-        last_note_time,
+        fever_durations,
+        fill_notes,
         grid_count_body_fever[0],
         grid_count_body_normal[0],
         grid_fever_masks_bits[0],
@@ -551,10 +547,8 @@ def build_or_load_timeline_frontier_payload(
                 perfect_floor_timestamps=lookup["perfect_floor"],
                 exit_ceiling_timestamps=lookup["exit_ceiling"],
                 lanes=lookup["lanes"],
-                fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"]),
-                fever_fills=fever_fill_raw(
-                    max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"]
-                ),
+                fever_times=lookup["fever_durations"],
+                fever_fills=lookup["fill_thresholds"],
             )
         raw = _encode_frontier_payload_npz(payload)
         _save_frontier_payload(cache_key, raw)
@@ -664,10 +658,8 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
         exit_ceiling_timestamps=np.asarray(lookup["exit_ceiling"], dtype=np.float32),
         lanes=np.asarray(lookup["lanes"], dtype=np.int32),
-        fever_times=fever_window_times(lookup["last_note_time"], lookup["ref_ft"]),
-        fever_fills=fever_fill_raw(
-            max(0, int(lookup["total_notes"]) - int(lookup["long_notes"])), lookup["ref_ff"]
-        ),
+        fever_times=lookup["fever_durations"],
+        fever_fills=lookup["fill_thresholds"],
     )
     frontier_result = FrontierCacheLoad(
         payload=payload,

@@ -1,10 +1,9 @@
 """Bit-exactness guards for the numba-fied FG physical-replay pass.
 
-``validate_force_greats_physical_replay`` used to run its per-note judgment check, event-time
-accumulation, lane-cursor scan and event-time fever replay in Python. Those loops now live in
-``_force_greats_replay_kernel`` (numba, nogil). These tests pin the kernel to a Python golden
-reference built from the *original* helper functions (``_judgment_at`` / ``_event_time_fever_mask``
-are still the Base-path implementations), and pin the wrapper's fail-loud messages byte-for-byte.
+``validate_force_greats_physical_replay`` runs its per-note judgment check, event-time accumulation,
+lane-cursor scan and the game's event-time fever bar in ``_force_greats_replay_kernel`` (numba, nogil).
+These tests pin the kernel to a Python golden reference (``_judgment_at`` and the fever walk below,
+written from PlayerScore's powerbar), and pin the wrapper's fail-loud messages byte-for-byte.
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from gear_optimizer.solver.fg_response_scoring.physical_replay import (
     _REPLAY_ERR_LANE,
     _REPLAY_OK,
     _RESULT_CODE,
-    _event_time_fever_mask,
     _force_greats_replay_kernel,
     _judgment_at,
     _judgment_code,
@@ -37,6 +35,32 @@ from gear_optimizer.solver.fg_response_scoring.physical_replay import (
 )
 from gear_optimizer.score import HEAD_NOTES
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+
+
+def _reference_fever_walk(event_order, event_times, judgments, denom, duration):
+    """The game's event-time powerbar: a Perfect adds 1 / denom to the float64 bar, a Great 1 / (2 x denom), clamped to
+    1; fever starts on the hit that fills it; the first hit past the duration is the wasted one."""
+    if not np.isfinite(denom) or denom <= 0.0:
+        raise ValueError("fever-fill denominator")
+    if not np.isfinite(duration) or duration <= 0.0:
+        raise ValueError("fever duration")
+    fever = [False] * len(judgments)
+    bar, active, elapsed, previous = 0.0, False, 0.0, None
+    for idx in event_order:
+        t = float(event_times[idx])
+        if previous is not None and t < previous:
+            raise ValueError("moved backward")
+        if active:
+            elapsed += (t - previous) / 1000.0
+            if elapsed >= duration:
+                active, elapsed, bar = False, 0.0, 0.0
+        else:
+            bar = min(bar + (1.0 / (2.0 * denom) if judgments[idx] == "Great" else 1.0 / denom), 1.0)
+            if bar >= 1.0:
+                active, elapsed = True, 0.0
+        fever[idx] = active
+        previous = t
+    return tuple(fever)
 
 
 def _reference(
@@ -78,13 +102,7 @@ def _reference(
 
     judgments = ["Great" if int(expected_code[i]) == _GREAT_CODE else "Perfect" for i in range(n)]
     try:
-        replay = _event_time_fever_mask(
-            event_order=event_order,
-            event_times_ms=event_times,
-            judgments=judgments,
-            fever_fill_denom=float(denom),
-            fever_time_seconds=float(duration),
-        )
+        replay = _reference_fever_walk(event_order, event_times, judgments, float(denom), float(duration))
     except ValueError as exc:
         msg = str(exc)
         if "fever-fill denominator" in msg:
@@ -256,7 +274,7 @@ def _call(graph, *, note_types, lanes, denom=1.0, duration=10.0):
         timestamps=np.zeros(n, dtype=np.float64),
         note_types=np.asarray(note_types, dtype=np.int32),
         lanes=np.asarray(lanes, dtype=np.int32),
-        raw_fever_fill=denom,
+        fever_fill_denominator=denom,
         real_fever_time=duration,
         timing_mode="precise",
     )

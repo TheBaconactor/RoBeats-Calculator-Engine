@@ -632,7 +632,7 @@ def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
         timestamps=song_inputs.timestamps,
         note_types=song.chart.note_types,
         lanes=song_inputs.lanes,
-        raw_fever_fill=raw_fever_fill,
+        fever_fill_denominator=raw_fever_fill,
         real_fever_time=real_fever_time,
         timing_mode="precise",
     )
@@ -678,7 +678,7 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
         timestamps=song_inputs.timestamps,
         note_types=song.chart.note_types,
         lanes=song_inputs.lanes,
-        raw_fever_fill=raw_fever_fill,
+        fever_fill_denominator=raw_fever_fill,
         real_fever_time=real_fever_time,
         timing_mode="precise",
     )
@@ -732,7 +732,7 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
         timestamps=song_inputs.timestamps,
         note_types=song.chart.note_types,
         lanes=song_inputs.lanes,
-        raw_fever_fill=raw_fever_fill,
+        fever_fill_denominator=raw_fever_fill,
         real_fever_time=real_fever_time,
         timing_mode="precise",
     )
@@ -1559,7 +1559,7 @@ def test_base_note_graph_matches_production_fever_timeline():
     ts = (np.arange(n) * 0.1).astype(np.float32)
     buf = np.zeros(n, dtype=np.bool_)
     fever_mask_head, count_body_fever, count_body_normal, _act, _end = calculate_fever_timeline_indices(
-        ts, n, 1.0, 1.0, 0, float(ts[-1]), buf
+        ts, n, 44, 2.084999942779541, buf
     )
     graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=buf, timing_mode="precise")
     # body fever count in the reconstructed graph matches the production timeline body count
@@ -1973,7 +1973,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
     from gear_optimizer.store import db, schema
     from gear_optimizer.store.legacy import fg_payload
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.settings import paths
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
@@ -2015,7 +2015,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     }.items():
         stats[key] = int(stats.get(key, 0)) + int(val)
 
-    fever_time_factor = load_stat_curves(paths().stats_txt).factor("Fever Time", int(stats.get("Fever Time", 0)))
+    fever_time_factor = stat_curves().factor("Fever Time", int(stats.get("Fever Time", 0)))
     real_ft = (float(si.last_note_time) * 0.15 + 0.15) * fever_time_factor
     acts = [int(trace[0]["activation_index"]), int(trace[1]["activation_index"])]
     act_offs = [
@@ -2320,7 +2320,7 @@ def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:
         timestamps=np.asarray([0.0, 0.1], dtype=np.float32),
         note_types=np.ones(2, dtype=np.int16),
         lanes=np.asarray([0, 1], dtype=np.int32),
-        raw_fever_fill=1.0,
+        fever_fill_denominator=1.0,
         real_fever_time=10.0,
         timing_mode="precise",
     )
@@ -2373,7 +2373,7 @@ def test_physical_replay_preserves_exact_body_cross_lane_prefix_swap() -> None:
         timestamps=timestamps,
         note_types=np.ones(n, dtype=np.int16),
         lanes=lanes,
-        raw_fever_fill=102.5,
+        fever_fill_denominator=102.5,
         real_fever_time=1.0,
         timing_mode="precise",
     )
@@ -2384,17 +2384,22 @@ def test_physical_replay_preserves_exact_body_cross_lane_prefix_swap() -> None:
 
 def test_physical_replay_models_one_wasted_exit_hit_without_frame_extension() -> None:
     from gear_optimizer.solver.fg_response_scoring.physical_replay import (
-        _event_time_fever_mask,
+        _PERFECT_CODE,
+        _REPLAY_OK,
+        _fever_walk,
     )
 
-    fever = _event_time_fever_mask(
-        event_order=(0, 1, 2, 3),
-        event_times_ms=np.asarray([0.0, 100.0, 1_200.0, 1_300.0]),
-        judgments=("Perfect", "Perfect", "Perfect", "Perfect"),
-        fever_fill_denom=2.0,
-        fever_time_seconds=1.0,
+    fever = np.zeros(4, dtype=np.int8)
+    status = _fever_walk(
+        np.arange(4, dtype=np.int64),
+        np.asarray([0.0, 100.0, 1_200.0, 1_300.0]),
+        np.full(4, _PERFECT_CODE, dtype=np.int8),
+        2.0,
+        1.0,
+        fever,
     )
-    assert fever == (False, True, False, False)
+    assert status == _REPLAY_OK
+    assert fever.tolist() == [0, 1, 0, 0]
 
 
 def test_precise_fg_rejects_legacy_trace_without_exact_schedule() -> None:

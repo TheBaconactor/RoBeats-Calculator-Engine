@@ -20,8 +20,8 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
         "Perfect Points": np.full((161,), 10_000.0, dtype=np.float32),
         "Combo Multiplier": np.full((161,), 2.0, dtype=np.float32),
         "Fever Multiplier": np.full((161,), 5.0, dtype=np.float32),
-        "Fever Fill Rate": np.ones((161,), dtype=np.float32),
-        "Fever Time": np.ones((161,), dtype=np.float32),
+        "Fever Fill Rate": np.ones((161,), dtype=np.float32) * 0.333,
+        "Fever Time": np.ones((161,), dtype=np.float32) * 0.15,
     })
 
     with _GPU_LOCK:

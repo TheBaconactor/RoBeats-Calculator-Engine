@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from gear_optimizer.gamedata import stat_curves
+
 from tests.curves_support import synthetic_curves
 from tests.native_song_factory import make_native_song
 from tests.songs_support import make_chart, make_song
@@ -41,6 +43,7 @@ def _stub_song(note_count: int):
         mode="precise",
         fg_inputs=SimpleNamespace(
             total_notes=int(note_count),
+            long_notes=0,
             timestamps=ts,
             perfect_candidates=ts,
             great_candidates=ts,
@@ -62,8 +65,8 @@ def _minimal_fg_ref_arrays() -> dict[str, np.ndarray]:
         "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
-        "Fever Time": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
-        "Fever Fill Rate": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
+        "Fever Time": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32) * 0.15,
+        "Fever Fill Rate": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32) * 0.333,
     })
 
 
@@ -233,7 +236,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         selected_element="Rush",
         result=result,
         song=song,
-        curves={},
+        curves=stat_curves(),
         trace_cache=trace_cache,
     )
     second_payload = materialize_force_payload_from_response_frontier(
@@ -242,7 +245,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         selected_element="Rush",
         result=result,
         song=song,
-        curves={},
+        curves=stat_curves(),
         trace_cache=trace_cache,
     )
 
@@ -264,7 +267,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
             selected_element="Rush",
             result=result,
             song=_stub_song(1),
-            curves={},
+            curves=stat_curves(),
             trace_cache=trace_cache,
         )
 
@@ -316,7 +319,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         selected_element="Rush",
         result=result,
         song=_stub_song(1),
-        curves={},
+        curves=stat_curves(),
     )
 
     assert payload["BaseScore"] == 1000
@@ -417,7 +420,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         selected_element="Rush",
         result=result,
         song=song,
-        curves={},
+        curves=stat_curves(),
     )
 
     assert payload["BaseScore"] == 4000

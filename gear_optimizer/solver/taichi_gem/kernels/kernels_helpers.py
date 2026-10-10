@@ -54,8 +54,6 @@ GA_FTFF_REDUCE_BLOCK_DIM = 256  # MUST match fields.py GA_FTFF_REDUCE_BLOCK_DIM
 ref_pp_field = None
 ref_cm_field = None
 ref_fm_field = None
-ref_ft_field = None
-ref_ff_field = None
 exact_pp_best_gems_prefix = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16 - PP-vs-OV prefix argmax for exact bound solver
 
 # Grid fields

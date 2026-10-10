@@ -56,57 +56,6 @@ def _judgment_at(delta_ms: float, *, held_tail: bool) -> str:
     return "Miss"
 
 
-def _event_time_fever_mask(
-    *,
-    event_order: Sequence[int],
-    event_times_ms: np.ndarray,
-    judgments: Sequence[str],
-    fever_fill_denom: float,
-    fever_time_seconds: float,
-) -> tuple[bool, ...]:
-    """Replay the decompiled server's event-time powerbar order.
-
-    While fever is active, the current hit is applied to the old bar before elapsed verified event
-    time is charged. The first event that drains the bar is therefore the one wasted post-fever hit:
-    it is not fevered and does not refill. No independent frame or 1/60 term exists.
-    """
-    denom = float(fever_fill_denom)
-    duration = float(fever_time_seconds)
-    if not np.isfinite(denom) or denom <= 0.0:
-        raise ValueError("FG physical replay requires a finite positive fever-fill denominator")
-    if not np.isfinite(duration) or duration <= 0.0:
-        raise ValueError("FG physical replay requires a finite positive fever duration")
-
-    fever = [False] * len(judgments)
-    fill = 0.0
-    active = False
-    active_elapsed_seconds = 0.0
-    previous_event_ms: float | None = None
-    for index in event_order:
-        event_ms = float(event_times_ms[int(index)])
-        if previous_event_ms is not None and event_ms < previous_event_ms:
-            raise ValueError("FG physical replay event order moved backward in time")
-
-        if active:
-            if previous_event_ms is None:
-                raise AssertionError("active fever requires a preceding activation event")
-            active_elapsed_seconds += (event_ms - float(previous_event_ms)) / 1000.0
-            if active_elapsed_seconds >= duration:
-                active = False
-                active_elapsed_seconds = 0.0
-                fill = 0.0
-        else:
-            fill += 0.5 if str(judgments[int(index)]) == "Great" else 1.0
-            if fill >= denom:
-                active = True
-                active_elapsed_seconds = 0.0
-                fill = denom
-
-        fever[int(index)] = bool(active)
-        previous_event_ms = event_ms
-    return tuple(bool(value) for value in fever)
-
-
 def _base_graph_physical_replay(
     *,
     frontier_trace: Sequence[Mapping[str, object]],
@@ -114,7 +63,7 @@ def _base_graph_physical_replay(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray,
     lanes: Sequence[int] | np.ndarray,
-    fill_count: int,
+    fever_fill_denominator: float,
     fever_duration_ms: float,
     timing_mode: str,
 ) -> tuple[list[dict[str, object]], BasePhysicalReplay]:
@@ -125,8 +74,6 @@ def _base_graph_physical_replay(
     n = int(ts.shape[0])
     if n <= 0 or int(nt.shape[0]) != n or int(lane_arr.shape[0]) != n:
         raise ValueError("Base physical replay chart arrays must be non-empty and exactly aligned")
-    if int(fill_count) <= 0 or not np.isfinite(float(fever_duration_ms)) or float(fever_duration_ms) <= 0.0:
-        raise ValueError("Base physical replay requires positive fill count and fever duration")
 
     graph = timeline_frontier_note_graph(
         frontier_trace=frontier_trace,
@@ -172,13 +119,19 @@ def _base_graph_physical_replay(
             )
         lane_cursors[lane] = cursor + 1
 
-    replay_fever = _event_time_fever_mask(
-        event_order=event_order,
-        event_times_ms=event_times_ms,
-        judgments=("Perfect",) * n,
-        fever_fill_denom=float(fill_count),
-        fever_time_seconds=float(fever_duration_ms) / 1000.0,
+    fever_out = np.zeros(n, dtype=np.int8)
+    _raise_for_walk_status(
+        _fever_walk(
+            np.asarray(event_order, dtype=np.int64),
+            np.asarray(event_times_ms, dtype=np.float64),
+            np.full(n, _PERFECT_CODE, dtype=np.int8),
+            float(fever_fill_denominator),
+            float(fever_duration_ms) / 1000.0,
+            fever_out,
+        ),
+        "Base",
     )
+    replay_fever = tuple(bool(value) for value in fever_out)
     if response_surface is not None:
         replay_graph = [
             dict(note, fever=bool(replay_fever[index])) for index, note in enumerate(graph)
@@ -194,7 +147,7 @@ def validate_base_physical_replay(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray,
     lanes: Sequence[int] | np.ndarray,
-    fill_count: int,
+    fever_fill_denominator: float,
     fever_duration_ms: float,
     timing_mode: str,
 ) -> BasePhysicalReplay:
@@ -205,7 +158,7 @@ def validate_base_physical_replay(
         timestamps=timestamps,
         note_types=note_types,
         lanes=lanes,
-        fill_count=fill_count,
+        fever_fill_denominator=fever_fill_denominator,
         fever_duration_ms=fever_duration_ms,
         timing_mode=timing_mode,
     )
@@ -271,6 +224,56 @@ def _judgment_code(delta_ms, held_tail):
 
 
 @njit(cache=True, nogil=True)
+def _fever_walk(event_order, event_times_ms, result_codes, fever_fill_denominator, fever_time_seconds, fever_out):
+    """The game's event-time powerbar (PlayerScore) over the events in `event_order`; writes 1/0 per note into
+    `fever_out` and returns _REPLAY_OK or the error status.
+
+    A Perfect adds 1 / denominator to the float64 bar and a Great 1 / (2 x denominator); the bar is clamped to 1 and
+    fever starts on the hit that fills it. While fever is active the current hit is applied to the old bar before the
+    elapsed event time is charged, so the first event past the duration is the one wasted post-fever hit: outside
+    fever, and it adds no fill. No frame or 1/60 term exists.
+    """
+    if not np.isfinite(fever_fill_denominator) or fever_fill_denominator <= 0.0:
+        return _REPLAY_ERR_FILL_DENOM
+    if not np.isfinite(fever_time_seconds) or fever_time_seconds <= 0.0:
+        return _REPLAY_ERR_FEVER_DURATION
+    perfect_fill = 1.0 / fever_fill_denominator
+    great_fill = 1.0 / (2.0 * fever_fill_denominator)
+    bar = 0.0
+    active = False
+    elapsed_seconds = 0.0
+    previous_event_ms = 0.0
+    for pos in range(event_order.shape[0]):
+        idx = event_order[pos]
+        event_ms = event_times_ms[idx]
+        if pos > 0 and event_ms < previous_event_ms:
+            return _REPLAY_ERR_BACKWARD_TIME
+        if active:
+            elapsed_seconds += (event_ms - previous_event_ms) / 1000.0
+            if elapsed_seconds >= fever_time_seconds:
+                active = False
+                elapsed_seconds = 0.0
+                bar = 0.0
+        else:
+            bar = min(bar + (great_fill if result_codes[idx] == _GREAT_CODE else perfect_fill), 1.0)
+            if bar >= 1.0:
+                active = True
+                elapsed_seconds = 0.0
+        fever_out[idx] = 1 if active else 0
+        previous_event_ms = event_ms
+    return _REPLAY_OK
+
+
+def _raise_for_walk_status(status: int, replay: str) -> None:
+    if status == _REPLAY_ERR_FILL_DENOM:
+        raise ValueError(f"{replay} physical replay requires a finite positive fever-fill denominator")
+    if status == _REPLAY_ERR_FEVER_DURATION:
+        raise ValueError(f"{replay} physical replay requires a finite positive fever duration")
+    if status == _REPLAY_ERR_BACKWARD_TIME:
+        raise ValueError(f"{replay} physical replay event order moved backward in time")
+
+
+@njit(cache=True, nogil=True)
 def _force_greats_replay_kernel(
     delta_ms,
     hit_time_ms,
@@ -279,7 +282,7 @@ def _force_greats_replay_kernel(
     expected_fever,
     note_types,
     lanes,
-    raw_fever_fill,
+    fever_fill_denominator,
     real_fever_time,
     event_order,
     replay_fever,
@@ -341,36 +344,11 @@ def _force_greats_replay_kernel(
                 return _REPLAY_ERR_LANE, idx, expected_index
             lane_next[li] += 1
 
-    # Event-time fever replay (was ``_event_time_fever_mask`` at :300).
-    if not np.isfinite(raw_fever_fill) or raw_fever_fill <= 0.0:
-        return _REPLAY_ERR_FILL_DENOM, -1, -1
-    if not np.isfinite(real_fever_time) or real_fever_time <= 0.0:
-        return _REPLAY_ERR_FEVER_DURATION, -1, -1
-    fill = 0.0
-    active = False
-    active_elapsed_seconds = 0.0
-    has_prev = False
-    previous_event_ms = 0.0
-    for pos in range(n):
-        idx = event_order[pos]
-        event_ms = event_times_ms[idx]
-        if has_prev and event_ms < previous_event_ms:
-            return _REPLAY_ERR_BACKWARD_TIME, -1, -1
-        if active:
-            active_elapsed_seconds += (event_ms - previous_event_ms) / 1000.0
-            if active_elapsed_seconds >= real_fever_time:
-                active = False
-                active_elapsed_seconds = 0.0
-                fill = 0.0
-        else:
-            fill += 0.5 if expected_result_code[idx] == _GREAT_CODE else 1.0
-            if fill >= raw_fever_fill:
-                active = True
-                active_elapsed_seconds = 0.0
-                fill = raw_fever_fill
-        replay_fever[idx] = 1 if active else 0
-        has_prev = True
-        previous_event_ms = event_ms
+    status = _fever_walk(
+        event_order, event_times_ms, expected_result_code, fever_fill_denominator, real_fever_time, replay_fever
+    )
+    if status != _REPLAY_OK:
+        return status, -1, -1
 
     # Fever membership must match the response surface note-for-note.
     for i in range(n):
@@ -394,7 +372,7 @@ def validate_force_greats_physical_replay(
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray,
     lanes: Sequence[int] | np.ndarray,
-    raw_fever_fill: float,
+    fever_fill_denominator: float,
     real_fever_time: float,
     timing_mode: str,
 ) -> FgPhysicalReplay:
@@ -456,7 +434,7 @@ def validate_force_greats_physical_replay(
         expected_fever,
         nt,
         lane_arr,
-        float(raw_fever_fill),
+        float(fever_fill_denominator),
         float(real_fever_time),
         event_order_arr,
         replay_fever_arr,
@@ -476,12 +454,7 @@ def validate_force_greats_physical_replay(
             f"FG physical replay lane {int(lane_arr[int(arg_a)])} matched note {int(arg_b)}, "
             f"not intended note {int(arg_a)}"
         )
-    if status == _REPLAY_ERR_FILL_DENOM:
-        raise ValueError("FG physical replay requires a finite positive fever-fill denominator")
-    if status == _REPLAY_ERR_FEVER_DURATION:
-        raise ValueError("FG physical replay requires a finite positive fever duration")
-    if status == _REPLAY_ERR_BACKWARD_TIME:
-        raise ValueError("FG physical replay event order moved backward in time")
+    _raise_for_walk_status(status, "FG")
     if status == _REPLAY_ERR_FEVER_MEMBERSHIP:
         # The plan's inputs fill and drain fever otherwise than the surface it scored: it is not playable as scored.
         mismatch = int(arg_a)

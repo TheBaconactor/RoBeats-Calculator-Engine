@@ -1,54 +1,27 @@
-"""
-Deterministic fever timeline kernels (numba) for the fingerprinted frontier code and the website.
+"""The fever timeline of play at fixed hit times (Non-Precise, or chart + a custom offset): numba kernels for the
+frontier payload and the website, and the scorer's timing cell.
 
-gear_optimizer.timing is the rewrite's implementation of the same walk.
+The fever bar fills after `fill_notes` scored notes (timing_envelope.fever_axes: the game's fill threshold, rounded
+up to whole Perfects). The note that fills it is the first fever note, and the first section needs one note less
+because the fill is applied before the note is scored. Fever lasts `fever_duration` seconds (the game's float64
+duration); the note where it ends is scored outside fever without adding fill.
 """
 
 import numpy as np
-from math import ceil
 
 from ..core.jit_setup import jit
+from ..score import TimelineCell, single_surface_cell
 
 
 @jit(nopython=True, cache=True)
-def calculate_fever_timeline_indices(
-    song_timestamps,
-    total_notes,
-    fever_fill_rate,
-    fever_time_stat,
-    long_notes_count,
-    last_note_time,
-    fever_mask_buffer,
-):
+def calculate_fever_timeline_indices(song_timestamps, total_notes, fill_notes, fever_duration, fever_mask_buffer):
+    """The fever mask of play at `song_timestamps` (float32 seconds, non-decreasing) into `fever_mask_buffer`.
+
+    Returns (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx); the last
+    is where the last fever window ends (for the gap after it).
     """
-    Calculate fever timeline using corrected server-matching logic.
-
-    Key fixes:
-    1. First non-fever section: non_fever_base - 1 notes
-       Later sections: non_fever_base notes (1 "wasted" note where fever ends)
-    2. Binary search uses side="left" (>=) instead of side="right" (>)
-
-    Args:
-        song_timestamps: NumPy array of note timestamps
-        total_notes: Total number of notes in song
-        fever_fill_rate: Fever fill rate multiplier
-        fever_time_stat: Fever time multiplier
-        long_notes_count: Number of long notes
-        last_note_time: Timestamp of last note
-        fever_mask_buffer: Preallocated boolean array for fever mask
-
-    Returns:
-        tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
-               last_fever_end_idx = where the last fever window ends (for gap calculation)
-    """
-    # Game formula constants (see rules.FEVER_FILL_PER_NOTE, FEVER_TIME_PER_SECOND, FEVER_TIME_OFFSET)
-    non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_PER_NOTE
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    # Keep these literals in this cached kernel's own bytecode. Numba's disk-cache key does not
-    # include values imported from another module, so using FEVER_TIME_PER_SECOND/OFFSET here can revive
-    # machine code compiled with older constants after rules.py changes.
-    fever_time_cas = last_note_time * 0.15 + 0.15
-    real_fever_time = fever_time_cas * fever_time_stat
+    non_fever_base = fill_notes
+    real_fever_time = fever_duration
 
     is_fever = fever_mask_buffer
     is_fever[:] = False
@@ -100,10 +73,8 @@ def calculate_fever_timeline_indices(
 def calculate_fever_timeline_surface_grid(
     song_timestamps,
     total_notes,
-    ft_factors,
-    ff_factors,
-    long_notes_count,
-    last_note_time,
+    fever_durations,
+    fill_notes,
     body_fever_out,
     body_normal_out,
     head_mask_words_out,
@@ -112,16 +83,10 @@ def calculate_fever_timeline_surface_grid(
 ):
     """Batch the canonical fixed-timing surface over every FT/FF axis cell."""
     mask_buffer = np.zeros(total_notes, dtype=np.bool_)
-    for ft_idx in range(ft_factors.shape[0]):
-        for ff_idx in range(ff_factors.shape[0]):
+    for ft_idx in range(fever_durations.shape[0]):
+        for ff_idx in range(fill_notes.shape[0]):
             head_mask, body_fever, body_normal, activations, last_end = calculate_fever_timeline_indices(
-                song_timestamps,
-                total_notes,
-                ff_factors[ff_idx],
-                ft_factors[ft_idx],
-                long_notes_count,
-                last_note_time,
-                mask_buffer,
+                song_timestamps, total_notes, fill_notes[ff_idx], fever_durations[ft_idx], mask_buffer
             )
             body_fever_out[ft_idx, ff_idx] = body_fever
             body_normal_out[ft_idx, ff_idx] = body_normal
@@ -136,3 +101,10 @@ def calculate_fever_timeline_surface_grid(
                     head_mask_words_out[ft_idx, ff_idx, word_idx] |= np.uint32(1) << np.uint32(bit_idx)
 
 
+def fixed_timeline_cell(hit_times: np.ndarray, *, fill_notes: int, fever_duration: float) -> TimelineCell:
+    """The single timing surface of play at `hit_times` (float32, non-decreasing), as a TimelineCell."""
+    total = int(hit_times.shape[0])
+    head, body_fever, body_normal, _activations, _end = calculate_fever_timeline_indices(
+        np.asarray(hit_times, dtype=np.float32), total, int(fill_notes), float(fever_duration), np.zeros(total, np.bool_)
+    )
+    return single_surface_cell(head, int(body_fever), int(body_normal))

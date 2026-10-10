@@ -1,63 +1,44 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-from gear_optimizer.gamedata import CURVE_STATS, StatCurves, load_stat_curves, read_curves
+from gear_optimizer.gamedata import CURVE_STATS, StatCurves, stat_curves
 from gear_optimizer.rules import MAX_STAT
+from tools.verify import game_sim
 
-_GAME = load_stat_curves(Path(__file__).resolve().parents[1] / "Data" / "Gear" / "Stats.txt")
-
-
-def _write_stats_txt(path, rows: int = MAX_STAT + 1, columns: int = 5, multipliers=None) -> None:
-    # Stats.txt: one header line, then rows from stat value MAX_STAT down to 0. Row r holds r + column, but the combo
-    # and fever multipliers (columns 1 and 2) must be the game's curve values.
-    multipliers = multipliers or {stat: _GAME.f64[stat] for stat in ("Combo Multiplier", "Fever Multiplier")}
-    lines = []
-    for row in range(rows):
-        values = [float(row + col) for col in range(columns)]
-        for col, stat in ((1, "Combo Multiplier"), (2, "Fever Multiplier")):
-            if col < columns:
-                values[col] = float(multipliers[stat][MAX_STAT - row])
-        lines.append(" ".join(repr(value) for value in values))
-    path.write_text("header\n" + "\n".join(lines) + "\n")
-
-
-def test_read_curves_rejects_a_short_table(tmp_path) -> None:
-    path = tmp_path / "Stats.txt"
-    _write_stats_txt(path, rows=MAX_STAT)
-    with pytest.raises(ValueError, match="expected 161 rows of 5 values"):
-        read_curves(path)
+# GearStats.lua: each curve passes through its knots at stat 0, 40 and 80 and reaches a80 + (a80 - a40) x 0.35 at 160.
+_KNOTS = {
+    "Perfect Points": (200, 350, 450, 485),
+    "Combo Multiplier": (2.0, 2.4, 2.6, 2.67),
+    "Fever Multiplier": (3.0, 4.75, 5.25, 5.425),
+    "Fever Fill Rate": (0.333, 0.166, 0.1, 0.0769),
+    "Fever Time": (0.15, 0.35, 0.4, 0.4175),
+}
+# The reference ScoreEngine port of the same curves (tools/verify/game_sim), stat by stat.
+_REFERENCE = {
+    "Perfect Points": lambda v: game_sim._perfect_points(game_sim._statsdict_from({"PerfectPoints": v})),
+    "Combo Multiplier": lambda v: game_sim._combo_multipliers(game_sim._statsdict_from({"ComboMultiplier": v}))[2],
+    "Fever Multiplier": lambda v: game_sim._fever_multiplier(game_sim._statsdict_from({"FeverMultiplier": v})),
+    "Fever Fill Rate": lambda v: game_sim._fever_fill_scales(game_sim._statsdict_from({"FeverFillRate": v}))["perfect"],
+    "Fever Time": lambda v: game_sim._fever_decay_rate(game_sim._statsdict_from({"FeverTime": v})),
+}
 
 
-def test_read_curves_rejects_short_rows(tmp_path) -> None:
-    path = tmp_path / "Stats.txt"
-    _write_stats_txt(path, columns=4)
-    with pytest.raises(ValueError, match="expected 161 rows of 5 values"):
-        read_curves(path)
+def test_stat_curves_pass_through_the_games_knots() -> None:
+    curves = stat_curves()
+    for stat, (at0, at40, at80, at160) in _KNOTS.items():
+        values = curves.f64[stat][[0, 40, 80, MAX_STAT]]
+        assert values == pytest.approx([at0, at40, at80, at160], rel=1e-12), stat
+        assert np.all(np.diff(curves.f64[stat]) * np.sign(at80 - at0) >= 0), f"{stat} is monotone"
 
 
-def test_read_curves_reverses_the_file_rows_onto_the_stat_axis(tmp_path) -> None:
-    path = tmp_path / "Stats.txt"
-    _write_stats_txt(path)
-    curves = read_curves(path)
-    # The file's first data row is stat value MAX_STAT.
-    assert curves.f64["Perfect Points"][MAX_STAT] == 0.0
-    assert curves.f64["Perfect Points"][0] == float(MAX_STAT)
-    assert curves.f64["Fever Time"][MAX_STAT] == 4.0
-    assert curves.f64["Combo Multiplier"].tobytes() == _GAME.f64["Combo Multiplier"].tobytes()
-
-
-def test_read_curves_rejects_a_multiplier_off_the_games_curve(tmp_path) -> None:
-    combo = _GAME.f64["Combo Multiplier"].copy()
-    combo[80] += 1e-6
-    path = tmp_path / "Stats.txt"
-    _write_stats_txt(path, multipliers={"Combo Multiplier": combo, "Fever Multiplier": _GAME.f64["Fever Multiplier"]})
-    with pytest.raises(ValueError, match=r"Combo Multiplier 80 is 2\.600001\d*, the game's curve gives 2\.6"):
-        read_curves(path)
+def test_stat_curves_match_the_reference_port_at_every_stat_value() -> None:
+    # The port measures BezierDist chords with math.hypot, the game with sqrt(x*x + y*y): equal to the last ulp or two.
+    curves = stat_curves()
+    for stat, reference in _REFERENCE.items():
+        expected = np.array([reference(v) for v in range(MAX_STAT + 1)], dtype=np.float64)
+        assert curves.f64[stat] == pytest.approx(expected, rel=1e-15, abs=0), stat
 
 
 def test_float32_view_is_the_float64_values_rounded() -> None:
@@ -78,17 +59,3 @@ def test_from_mapping_requires_every_curve_at_full_length() -> None:
     values["Fever Time"] = np.ones(MAX_STAT)
     with pytest.raises(ValueError, match="Fever Time curve needs 161 values"):
         StatCurves.from_mapping(values)
-
-
-def test_load_stat_curves_reloads_after_the_file_changes(tmp_path) -> None:
-    path = tmp_path / "Stats.txt"
-    _write_stats_txt(path)
-    first = load_stat_curves(path)
-    assert load_stat_curves(path) is first
-    header, first, rest = path.read_text().split("\n", 2)
-    path.write_text("\n".join((header, "9.0" + first[len("0.0"):], rest)))
-    stat = path.stat()
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-    second = load_stat_curves(path)
-    assert second is not first
-    assert second.f64["Perfect Points"][MAX_STAT] == 9.0

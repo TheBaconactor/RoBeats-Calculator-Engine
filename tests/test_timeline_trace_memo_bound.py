@@ -29,7 +29,7 @@ def _install_stubs(monkeypatch) -> list[tuple[int, int, int]]:
         return {
             "frontier_trace": [{"note": int(ft_idx), "ff": int(ff_idx)}],
             "response_surface": [int(ft_idx), int(ff_idx)],
-            "fill_count": 1,
+            "raw_fever_fill": 1.0,
         }
 
     monkeypatch.setattr(exact_rescore, "_timeline_trace_for_payload_surface", _trace)

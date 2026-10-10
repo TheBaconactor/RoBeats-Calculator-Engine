@@ -44,7 +44,7 @@ from gear_optimizer.rules import (
 )
 from gear_optimizer.chart import load_chart, read_header
 from gear_optimizer.core.time_quantize import quantize_to_int_ms
-from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
@@ -486,7 +486,7 @@ def verify_song(conn: sqlite3.Connection, mode: str, song_name: str, chart_path:
         note_types=note_types,
     )
 
-    curves = load_stat_curves(paths().stats_txt)
+    curves = stat_curves()
     source_score = score_from_game_source(
         stats=stats,
         primary_color=str(details.get("pc") or ""),

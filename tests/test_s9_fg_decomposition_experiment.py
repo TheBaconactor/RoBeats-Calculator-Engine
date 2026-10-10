@@ -16,6 +16,7 @@ import math
 import os
 import sys
 import unittest
+
 import numpy as np
 
 # Add repo root to path
@@ -45,9 +46,12 @@ def make_synthetic_song(n_notes=200, spacing_ms=80, fever_fill_rate=0.5, fever_t
 
 def compute_fever_mask(timestamps, total_notes, fever_fill_rate, fever_time_stat, long_notes, last_note_time):
     """Compute fever mask using the existing function."""
+    # The synthetic song's factors scale 0.333 fill notes per hit object and 0.15 s of fever per song second.
+    fill_notes = math.ceil((total_notes - long_notes) * 0.333 * fever_fill_rate)
+    duration = (last_note_time * 0.15 + 0.15) * fever_time_stat
     mask_buffer = np.zeros(total_notes, dtype=bool)
     head_mask, body_fever, body_normal, activations, last_end = calculate_fever_timeline_indices(
-        timestamps, total_notes, fever_fill_rate, fever_time_stat, long_notes, last_note_time, mask_buffer
+        timestamps, total_notes, fill_notes, duration, mask_buffer
     )
     return mask_buffer.copy(), head_mask, body_fever, body_normal, activations
 

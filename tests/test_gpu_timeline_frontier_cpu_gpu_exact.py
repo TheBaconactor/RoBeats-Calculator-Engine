@@ -9,18 +9,17 @@ pytestmark = pytest.mark.gpu
 
 def _cpu_frontier_payload(song, curves):
     from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
-    from gear_optimizer.solver.timing_envelope import fever_fill_raw, fever_window_times
+    from gear_optimizer.solver.timing_envelope import fever_axes
 
+    durations, thresholds = fever_axes(song.chart.total_notes, song.chart.long_notes, song.chart.last_note_time, curves)
     return build_timeline_frontier_grid_payload(
         total_notes=song.chart.total_notes,
         timestamps=song.chart.timestamps,
         perfect_candidate_timestamps=song.perfect_candidates,
         perfect_floor_timestamps=song.perfect_floor,
         lanes=song.chart.lanes,
-        fever_times=fever_window_times(song.chart.last_note_time, curves.f32["Fever Time"]),
-        fever_fills=fever_fill_raw(
-            max(0, song.chart.total_notes - song.chart.long_notes), curves.f32["Fever Fill Rate"]
-        ),
+        fever_times=durations,
+        fever_fills=thresholds,
     )
 
 
@@ -54,8 +53,8 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float32),
-        "Fever Fill Rate": np.linspace(0.2, 2.2, rows, dtype=np.float32),
-        "Fever Time": np.linspace(0.8, 2.6, rows, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(0.2, 2.2, rows, dtype=np.float32) * 0.333,
+        "Fever Time": np.linspace(0.8, 2.6, rows, dtype=np.float32) * 0.15,
     })
 
     cells = [(10, 10), (80, 80), (160, 40), (120, 30)]
@@ -132,8 +131,8 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float32),
         # Force a degenerate FT/FF surface so repeated precompute hits the same frontier shape.
-        "Fever Fill Rate": np.full((rows,), 1.0, dtype=np.float32),
-        "Fever Time": np.full((rows,), 1.0, dtype=np.float32),
+        "Fever Fill Rate": np.full((rows,), 1.0, dtype=np.float32) * 0.333,
+        "Fever Time": np.full((rows,), 1.0, dtype=np.float32) * 0.15,
     })
 
     _prebuilt = build_or_load_timeline_frontier_payload(song, curves)

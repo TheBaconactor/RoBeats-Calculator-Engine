@@ -59,8 +59,8 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
-        "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
-        "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64) * 0.333,
+        "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64) * 0.15,
     })
 
     ftff_samples = [(10, 10), (80, 80), (160, 40)]

@@ -1,12 +1,13 @@
-"""Game data: gear, minis, the Stats.txt curves, TeamBuff tiers and Mini Ascension.
+"""Game data: gear, minis, the game's stat curves, TeamBuff tiers and Mini Ascension.
 
-Everything here is read from Data/Gear (Gears.csv, Minis.csv, Stats.txt, generated from the game's
-exported_game_data.json) and is immutable once loaded.
+Gear and minis are read from Data/Gear (Gears.csv, Minis.csv, generated from the game's exported_game_data.json);
+the stat curves are the game's own formulas (GearStats.lua), computed here. All of it is immutable once built.
 """
 
 from __future__ import annotations
 
 import csv
+import functools
 import json
 import math
 import threading
@@ -19,7 +20,7 @@ import numpy as np
 from .rules import MAX_STAT
 
 ELEMENTS = ("Chill", "Flow", "Rush", "Beat", "Vibe")
-# The five stats with a Stats.txt curve, in the file's column order.
+# The five stats that map through one of the game's stat curves (StatCurves).
 CURVE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
 # Every stat, in the order evolution.db stores them (details "st").
 STATS = (*CURVE_STATS, *ELEMENTS)
@@ -108,12 +109,15 @@ class SongMini:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class StatCurves:
-    """The multiplier each curve stat value 0..MAX_STAT maps to.
+    """What each curve stat value 0..MAX_STAT gives in the game (GearStats.lua).
 
-    f64 holds the game's values; exact scores use it (the game computes in float64). f32 holds the
-    same values rounded to float32, which is what the GPU search, the frontier builders and the
-    frontier cache keys use. combo_ramp[v] holds the combo multiplier at combos 1..COMBO_RAMP_NOTES for
-    Combo Multiplier value v; after them a note gets f64["Combo Multiplier"].
+    Perfect Points: a Perfect's base points; Combo Multiplier: the full combo multiplier; Fever Multiplier: the fever
+    multiplier; Fever Fill Rate: the fever fill base (a Perfect adds 1 / (hit objects x base) to the fever bar, a
+    Great half of that); Fever Time: the base decay rate (fever lasts the song's approximate length x rate seconds).
+    f64 holds the game's values; exact scores and fever timing use it (the game computes in float64). f32 holds the
+    same values rounded to float32, which is what the GPU search and the frontier cache keys use. combo_ramp[v] holds
+    the combo multiplier at combos 1..COMBO_RAMP_NOTES for Combo Multiplier value v; after them a note gets
+    f64["Combo Multiplier"].
     """
 
     f64: Mapping[str, np.ndarray]
@@ -304,29 +308,23 @@ def read_minis(path: Path) -> dict[str, Mini]:
     return minis
 
 
-def read_curves(path: Path) -> StatCurves:
-    """Stats.txt lists rows from stat value MAX_STAT down to 0 after one header line.
+def _curve(a0: float, a40: float, a80: float) -> np.ndarray:
+    return np.array([_stat_curve(a0, a40, a80, value) for value in range(MAX_STAT + 1)])
 
-    It prints the combo and fever multipliers to about 10 significant digits; the curves hold the game's exact values,
-    and a Stats.txt value further than its printed precision from the game's curve is an error.
-    """
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
-    table = [[float(cell) for cell in line.split()] for line in lines[1:] if line.split()]
-    if len(table) != MAX_STAT + 1 or any(len(row) != len(CURVE_STATS) for row in table):
-        raise ValueError(f"{path}: expected {MAX_STAT + 1} rows of {len(CURVE_STATS)} values")
-    columns = np.asarray(table, dtype=np.float64)[::-1]
-    f64 = {stat: columns[:, i] for i, stat in enumerate(CURVE_STATS)}
-    gains = np.array([_stat_curve(1, 1.4, 1.6, value) for value in range(MAX_STAT + 1)])
-    exact = {
+
+@functools.cache
+def stat_curves() -> StatCurves:
+    """The game's curves: GearStats get_perfect_points (floored), get_combo_multiplier, get_powerbar_multiplier,
+    get_fever_fill_base and get_base_decay_rate at every stat value 0..MAX_STAT. Callers share it and must not
+    mutate it."""
+    gains = _curve(1, 1.4, 1.6)
+    f64 = {
+        "Perfect Points": np.floor(_curve(200, 350, 450)),
         "Combo Multiplier": 1 + gains,
-        "Fever Multiplier": np.array([_stat_curve(3, 4.75, 5.25, value) for value in range(MAX_STAT + 1)]),
+        "Fever Multiplier": _curve(3, 4.75, 5.25),
+        "Fever Fill Rate": _curve(0.333, 0.166, 0.1),
+        "Fever Time": _curve(0.15, 0.35, 0.4),
     }
-    for stat, values in exact.items():
-        off = np.flatnonzero(np.abs(f64[stat] - values) > 1e-9 * values)
-        if off.size:
-            value = int(off[0])
-            raise ValueError(f"{path}: {stat} {value} is {f64[stat][value]}, the game's curve gives {values[value]}")
-        f64[stat] = values
     return StatCurves._of(f64, gains)
 
 
@@ -351,10 +349,6 @@ def _load_cached(path: Path, read):
     with _FILE_CACHE_LOCK:
         _FILE_CACHE[key] = (stamp, value)
     return value
-
-
-def load_stat_curves(path: Path) -> StatCurves:
-    return _load_cached(path, read_curves)
 
 
 def load_gears(path: Path) -> dict[str, Gear]:

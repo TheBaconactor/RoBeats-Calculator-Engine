@@ -27,7 +27,7 @@ from pathlib import Path
 
 from gear_optimizer.chart import load_chart
 from gear_optimizer.store.legacy import read_best_loadouts
-from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     compute_team_buff_tier_leaderboards,
 )
@@ -42,7 +42,7 @@ entries = read_best_loadouts(paths().database, song_key, "T5", limit=51)
 result = compute_team_buff_tier_leaderboards(
     entries=entries,
     song=song,
-    curves=load_stat_curves(paths().stats_txt),
+    curves=stat_curves(),
     tiers=("NONE", "T1", "T5", "T10", "T20", "T50", "T51"),
     limit=51,
 )
@@ -54,7 +54,7 @@ The returned payload contains:
 - `result["tiers"][tier]["fg_top51"]`; and
 - `result["meta"]`, which describes the resolved tier and Team Color context.
 
-`load_stat_curves` reads the Stats.txt curves (cached until the file changes);
+`stat_curves` gives the game's stat curves (computed once from GearStats' formulas);
 `load_chart` parses the chart (cached the same way) and `time_song` prepares it
 for one timing mode.
 

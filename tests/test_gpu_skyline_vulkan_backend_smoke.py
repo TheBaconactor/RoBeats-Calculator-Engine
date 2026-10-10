@@ -8,11 +8,11 @@ pytestmark = pytest.mark.gpu
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Regression reproduces on macOS Vulkan")
 def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
     from gear_optimizer.solver.taichi_gem.api import hard_reset_taichi
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
         _warmup_song,
-        _warmup_curves,
         reset_ga_upload_caches,
     )
     from gear_optimizer.solver.taichi_gem.api.skyline_operations import (
@@ -34,7 +34,7 @@ def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
     init_taichi()
     assert gpu_fields.IS_METAL is True
 
-    curves = _warmup_curves()
+    curves = stat_curves()
     ensure_ready(curves)
     precompute_timeline_gpu_for_warmup(_warmup_song(), curves, song_slot=0)
 

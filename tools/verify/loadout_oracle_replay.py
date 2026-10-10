@@ -46,7 +46,7 @@ from gear_optimizer.solver.fg_response_scoring.note_graph import (  # noqa: E402
 from gear_optimizer.solver.fg_response_scoring.physical_replay import (  # noqa: E402
     validate_force_greats_physical_replay,
 )
-from gear_optimizer.solver.timing_envelope import time_song  # noqa: E402
+from gear_optimizer.solver.timing_envelope import fever_fill_thresholds, time_song  # noqa: E402
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (  # noqa: E402
     reconstruct_force_greats_response_trace,
 )
@@ -241,7 +241,7 @@ def main(argv=None) -> int:
                 great_floor_timestamps=song.fg_inputs.great_floor,
                 late_great_floor_timestamps=song.fg_inputs.late_great_floor,
                 exit_ceiling_timestamps=song.fg_inputs.exit_ceiling,
-                raw_fever_fill=float(force["raw_fever_fill"]),
+                raw_fever_fill=float(fever_fill_thresholds(np.asarray([float(force["raw_fever_fill"])]))[0]),
                 real_fever_time=float(force["real_fever_time"]),
                 lanes=lanes,
                 use_forced_great_timing=True,
@@ -262,7 +262,7 @@ def main(argv=None) -> int:
         timestamps=ts,
         note_types=nt,
         lanes=lanes,
-        raw_fever_fill=float(fd["ForceGreats"]["raw_fever_fill"]),
+        fever_fill_denominator=float(fd["ForceGreats"]["raw_fever_fill"]),
         real_fever_time=float(fd["ForceGreats"]["real_fever_time"]),
         timing_mode="precise",
     )

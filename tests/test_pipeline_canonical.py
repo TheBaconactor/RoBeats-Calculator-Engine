@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.team_buff import team_buff_effect
-from gear_optimizer.gamedata import MINI_ASCENSION_VERSION, STATS, load_gears, load_minis, load_stat_curves, song_minis
+from gear_optimizer.gamedata import MINI_ASCENSION_VERSION, STATS, load_gears, load_minis, stat_curves, song_minis
 from gear_optimizer.pipeline import canonical
 from gear_optimizer.pipeline.canonical import canonical_rows, loadout_identity, row_order, stored_stats
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, SongSolve
@@ -162,7 +162,7 @@ def test_real_song_base_result_is_the_exhaustive_gem_optimum_scored_by_exact_rep
         (Path(__file__).parent / "fixtures" / "persistence_authority_be_right_there_t5.json").read_text()
     )
     song = time_song(load_chart(Path(__file__).resolve().parents[1] / frozen["song_file_rel"]), "precise")
-    curves = load_stat_curves(paths().stats_txt)
+    curves = stat_curves()
     build_or_load_timeline_frontier_payload(song, curves)
     base = frozen["base_entry"]
     solve = SongSolve(

@@ -38,8 +38,6 @@ GA_INIT_HEURISTIC_K = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HE
 ref_pp_field: ti.Field = None
 ref_cm_field: ti.Field = None
 ref_fm_field: ti.Field = None
-ref_ft_field: ti.Field = None  # Fever Time multipliers
-ref_ff_field: ti.Field = None  # Fever Fill Rate multipliers
 exact_pp_best_gems_prefix: ti.Field = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
 grid_count_body_fever: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
@@ -289,7 +287,7 @@ def allocate_fields():
     Allocate GPU fields. Must be called after ti.init().
     This allocates the baseline Taichi fields used by the solvers and GPU-native GA.
     """
-    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global ref_pp_field, ref_cm_field, ref_fm_field
     global exact_pp_best_gems_prefix
     global genome_base_stats
     global \
@@ -330,8 +328,6 @@ def allocate_fields():
     ref_pp_field = ti.field(dtype=ti.f32, shape=161)
     ref_cm_field = ti.field(dtype=ti.f32, shape=161)
     ref_fm_field = ti.field(dtype=ti.f32, shape=161)
-    ref_ft_field = ti.field(dtype=ti.f32, shape=161)
-    ref_ff_field = ti.field(dtype=ti.f32, shape=161)
     exact_pp_best_gems_prefix = ti.field(dtype=ti.i16, shape=(16, GRID_SIZE, MAX_TOTAL_BUDGET + 1))
     genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))

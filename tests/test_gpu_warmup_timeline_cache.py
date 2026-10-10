@@ -28,8 +28,8 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
         return {
             "song_key": ("warmup",),
             "total_notes": 1,
-            "long_notes": 0,
-            "last_note_time": 0.0,
+            "fever_durations": np.array([1.0]),
+            "fill_thresholds": np.array([1.0]),
             "timestamps": np.array([0.0], dtype=np.float32),
             "perfect_candidates": np.array([0.0], dtype=np.float32),
             "perfect_floor": np.array([0.0], dtype=np.float32),

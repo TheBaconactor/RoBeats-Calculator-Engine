@@ -22,7 +22,7 @@ from ..core.timing_modes import TIMING_MODES
 from ..chart import Chart
 from ..core.array_signature import array_sig16
 from ..core.time_quantize import quantize_to_int_ms
-from ..rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
+from ..gamedata import StatCurves
 
 # The game removes an unhit note once `now - hit > 200` ms (decompiled Constants.lua:19 NOTE_REMOVE_TIME = -200; the
 # same edge for taps (Note.lua:191), hold heads and the hold despawn (HeldNote.lua:219/231)). A held tail's late-Great
@@ -124,19 +124,54 @@ def precise_envelopes(
     )
 
 
-def fever_window_times(last_note_time: float, time_factors: np.ndarray) -> np.ndarray:
-    """Per Fever Time factor, the game's fever duration in float64 seconds."""
-    return np.maximum(
-        (float(last_note_time) * FEVER_TIME_PER_SECOND + FEVER_TIME_OFFSET)
-        * np.asarray(time_factors, dtype=np.float32).astype(np.float64),
-        0.0,
-    )
+def fever_durations(last_note_time: float, decay_rates: np.ndarray) -> np.ndarray:
+    """Per Fever Time value, the fever's duration in seconds as the game computes it in float64: the song's approximate
+    length ((LastNoteTime ms + 1000) / 1000, SongDatabase songkey_get_approx_length_sec) kept in ms by PlayerScore and
+    turned back into seconds by GearStats get_powerbar_base_decay_time_seconds, times the base decay rate."""
+    approx_length_ms = (round(float(last_note_time) * 1000.0) + 1000) / 1000 * 1000
+    return approx_length_ms / 1000 * np.asarray(decay_rates, dtype=np.float64)
 
 
-def fever_fill_raw(hit_objects: int, fill_factors: np.ndarray) -> np.ndarray:
-    """Per Fever Fill Rate point, the fever fill in Perfects (float64)."""
-    factors = np.asarray(fill_factors, dtype=np.float32).astype(np.float64)
-    return float(hit_objects) * FEVER_FILL_PER_NOTE * factors
+def fever_fill_denominators(hit_objects: int, fill_bases: np.ndarray) -> np.ndarray:
+    """Per Fever Fill Rate value, the game's fever fill denominator, hit objects x the fill base (GearStats
+    get_fever_fill_base): a Perfect adds 1 / denominator to the fever bar, a Great 1 / (2 x denominator); the bar is
+    clamped to 1 and fever starts when it reaches 1 (PlayerScore)."""
+    return float(hit_objects) * np.asarray(fill_bases, dtype=np.float64)
+
+
+def fever_fill_thresholds(denominators: np.ndarray) -> np.ndarray:
+    """Per denominator, the fill in Perfects (a Great counts half) at which the frontier's closed forms start fever.
+
+    They compare whole half-notes with it, so it is ceil(2 x denominator) / 2, except where the game's float64 bar
+    disagrees with that count. That needs a denominator that is a multiple of one half up to float64 rounding: there
+    the bar after the matching run of Perfects can read 0.9999999999999999 (Back Out (Easy) at Fever Fill Rate 80:
+    denominator 28, the 28th Perfect leaves the bar short and the game starts fever on the 29th). The threshold
+    follows the game's all-Perfect run; a run mixing Greats that lands exactly on such a denominator sums just below
+    or just above 1 depending on its order, so the physical replay walks the game's bar for every stored plan.
+    """
+    d = np.asarray(denominators, dtype=np.float64)
+    thresholds = np.ceil(2.0 * d) / 2.0
+    for i in np.flatnonzero(np.abs(2.0 * d - np.round(2.0 * d)) < 1e-6):
+        perfects = _perfects_to_fill(float(d[i]))
+        thresholds[i] = min(max(thresholds[i], perfects - 0.5), perfects)
+    return thresholds
+
+
+def fever_axes(total_notes: int, long_notes: int, last_note_time: float, curves: StatCurves) -> tuple[np.ndarray, np.ndarray]:
+    """The axes every (Fever Time, Fever Fill Rate) cell of a chart is built from: per Fever Time value the fever's
+    duration in seconds, per Fever Fill Rate value its fill threshold in Perfects (hit objects = notes - long notes)."""
+    durations = fever_durations(last_note_time, curves.f64["Fever Time"])
+    denominators = fever_fill_denominators(int(total_notes) - int(long_notes), curves.f64["Fever Fill Rate"])
+    return durations, fever_fill_thresholds(denominators)
+
+
+def _perfects_to_fill(denominator: float) -> int:
+    """How many Perfects in a row fill the game's fever bar (PlayerScore es_playerscore_apply_hit_to_powerbar)."""
+    fill, bar, perfects = 1.0 / denominator, 0.0, 0
+    while bar < 1.0:
+        bar = min(bar + fill, 1.0)
+        perfects += 1
+    return perfects
 
 
 def baseline_hit_timeline(

@@ -259,10 +259,10 @@ def _prebuild_frontier_caches(
     Returns only the files of the charts it verified; _prebuild_frontier_caches_isolated runs it
     in a child process and adds the active publication's files for an incremental build.
     """
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 
-    curves = load_stat_curves(data_root / "Gear" / "Stats.txt")
+    curves = stat_curves()
     song_paths = (
         tuple(str(chart) for chart in changed_charts)
         if changed_charts is not None

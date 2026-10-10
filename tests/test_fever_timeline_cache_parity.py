@@ -19,15 +19,8 @@ def _timeline_transitions(fn) -> list[int]:
         dtype=np.float32,
     )
     mask = np.zeros(timestamps.size, dtype=np.bool_)
-    fn(
-        timestamps,
-        int(timestamps.size),
-        0.4266503765,
-        2.318051911,
-        256,
-        104.194,
-        mask,
-    )
+    # 133 Perfects fill the bar; fever lasts 36.5767729088601 s (the song's fill and duration at those stats).
+    fn(timestamps, int(timestamps.size), 133, 36.5767729088601, mask)
     return np.flatnonzero(mask[1:] != mask[:-1]).tolist()
 
 
@@ -39,9 +32,9 @@ def test_cached_fever_kernel_matches_current_python_formula() -> None:
 
 def test_batched_surface_grid_matches_every_canonical_scalar_cell() -> None:
     timestamps = np.round(np.arange(137, dtype=np.float32) * np.float32(0.137), 4)
-    ft_factors = np.asarray([0.31, 0.73, 1.19, 1.87], dtype=np.float32)
-    ff_factors = np.asarray([0.29, 0.61, 0.94, 1.43, 2.05], dtype=np.float32)
-    shape = (len(ft_factors), len(ff_factors))
+    fever_durations = np.asarray([1.0, 2.3, 3.7, 5.9])
+    fill_notes = np.asarray([3, 6, 10, 15, 21], dtype=np.int64)
+    shape = (len(fever_durations), len(fill_notes))
     body_fever = np.zeros(shape, dtype=np.int32)
     body_normal = np.zeros(shape, dtype=np.int32)
     mask_words = np.full((*shape, 4), np.iinfo(np.uint32).max, dtype=np.uint32)
@@ -51,10 +44,8 @@ def test_batched_surface_grid_matches_every_canonical_scalar_cell() -> None:
     calculate_fever_timeline_surface_grid(
         timestamps,
         len(timestamps),
-        ft_factors,
-        ff_factors,
-        11,
-        float(timestamps[-1]),
+        fever_durations,
+        fill_notes,
         body_fever,
         body_normal,
         mask_words,
@@ -63,18 +54,10 @@ def test_batched_surface_grid_matches_every_canonical_scalar_cell() -> None:
     )
 
     mask_buffer = np.zeros(len(timestamps), dtype=np.bool_)
-    for ft_idx, ft_factor in enumerate(ft_factors):
-        for ff_idx, ff_factor in enumerate(ff_factors):
+    for ft_idx, duration in enumerate(fever_durations):
+        for ff_idx, fill in enumerate(fill_notes):
             head, scalar_fever, scalar_normal, scalar_activations, scalar_last_end = (
-                calculate_fever_timeline_indices(
-                    timestamps,
-                    len(timestamps),
-                    float(ff_factor),
-                    float(ft_factor),
-                    11,
-                    float(timestamps[-1]),
-                    mask_buffer,
-                )
+                calculate_fever_timeline_indices(timestamps, len(timestamps), int(fill), float(duration), mask_buffer)
             )
             scalar_words = np.zeros(4, dtype=np.uint32)
             for note_idx in np.flatnonzero(head):

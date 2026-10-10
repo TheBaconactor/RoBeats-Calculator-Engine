@@ -6,8 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import TimedSong
+from gear_optimizer.solver.timing_envelope import TimedSong, fever_fill_denominators
 from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats import (
@@ -130,11 +131,21 @@ def materialize_force_payload_from_response_frontier(
         raise ValueError("FG response materialization requires song input lanes")
     non_fever_base = int(frontier.non_fever_base)
     surface = result.surface
+    # The frontier plans against the fill threshold (result.raw_fever_fill); the replay and the persisted trace use the
+    # game's own fill denominator for the final Fever Fill stat, so the stored plan is checked against the game's
+    # float64 bar.
+    fever_fill_denominator = float(
+        fever_fill_denominators(
+            int(song_inputs.total_notes) - int(song_inputs.long_notes),
+            curves.f64["Fever Fill Rate"][min(int(result.stats["Fever Fill Rate"]), MAX_STAT)],
+        )
+    )
     # Memoize the trace DFS across the loadouts materialized for one song: the trace is a pure
     # function of its inputs but is recomputed once per kept loadout today, and that DFS (with
     # its per-section centered-witness) is the dominant post-score host cost. The key MUST
-    # include raw_fever_fill / non_fever_base -- they build the action table and vary per
-    # candidate via the Fever Fill stat, so a surface-only key would be wrong -- while the
+    # include the fill denominator / non_fever_base -- they fix the action table (the threshold is a
+    # function of the denominator) and the replay, and vary per candidate via the Fever Fill stat, so a
+    # surface-only key would be wrong -- while the
     # song-level timestamp/floor inputs are constant across the calls sharing one trace_cache
     # and are excluded. With no cache supplied this is the original single-shot behavior with
     # zero added work: no key, no lookup, no copy.
@@ -149,7 +160,7 @@ def materialize_force_payload_from_response_frontier(
                 int(surface.great0), int(surface.great1), int(surface.great2), int(surface.great3),
                 int(surface.body_fever), int(surface.body_great), int(surface.body_fever_great),
             ),
-            float(result.raw_fever_fill),
+            fever_fill_denominator,
             float(result.real_fever_time),
             bool(song_inputs.use_forced_great_timing),
         )
@@ -183,7 +194,7 @@ def materialize_force_payload_from_response_frontier(
             timestamps=song_inputs.timestamps,
             note_types=song.chart.note_types,
             lanes=song_lanes,
-            raw_fever_fill=float(result.raw_fever_fill),
+            fever_fill_denominator=fever_fill_denominator,
             real_fever_time=float(result.real_fever_time),
             timing_mode=song.mode,
         )
@@ -229,7 +240,7 @@ def materialize_force_payload_from_response_frontier(
         # duration in seconds). Persisted so the legality audit (tools/dev/audit_loadout_legality.py)
         # can re-derive the canonical fill-crossing / drain for every loadout without re-solving,
         # and so the frontend timing graph can place the fever window. Cheap (two floats), exact.
-        "raw_fever_fill": float(result.raw_fever_fill),
+        "raw_fever_fill": fever_fill_denominator,
         "real_fever_time": float(result.real_fever_time),
         "frontier_trace": list(frontier_trace),
         "frontier_first_surfaces": int(len(frontier.first_frontier)),

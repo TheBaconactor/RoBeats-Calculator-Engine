@@ -3,7 +3,7 @@ CPU exact score replay of a timed song.
 
 The scores are the game's exact visible scores (float64 like the game's Luau numbers), not the
 optimizer's float32 GPU search scores. The math lives in the rewrite's core (gear_optimizer.score and
-gear_optimizer.timing); this module adds the timing frontier lookup and the base trace reconstruction.
+solver.fever_timeline); this module adds the timing frontier lookup and the base trace reconstruction.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import numpy as np
 from ... import score as core_score
 from gear_optimizer.rules import MAX_STAT
 from ...gamedata import STATS, StatCurves
-from ...timing import fixed_timeline_cell
-from ..timing_envelope import TimedSong, fever_fill_raw, fever_window_times
+from ..fever_timeline import fixed_timeline_cell
+from ..timing_envelope import TimedSong, fever_axes, fever_fill_denominators
 
 # Base timeline-trace memo: the reconstructed trace is a pure function of
 # (frontier payload cache_key, FT cell, FF cell, winning pool row) -- stats enter only
@@ -174,22 +174,17 @@ def score_stats_timing_exact_batch(
             "score_stats_timing_exact_batch: hit_timestamps must be non-decreasing "
             "(a per-note timing offset may not reorder notes)"
         )
-    long_notes = song.chart.long_notes
-    last_note_time = song.chart.last_note_time
+    durations, thresholds = fever_axes(song.chart.total_notes, song.chart.long_notes, song.chart.last_note_time, curves)
     primary, secondary = song.chart.primary, song.chart.secondary
     cells: dict[tuple[int, int], core_score.TimelineCell] = {}
     scores: list[int] = []
     for stats in stats_rows:
         f = core_score.factors(_stats_row(stats), curves, primary, secondary)
-        key = (f.fever_time_row, f.fever_fill_row)
+        key = (max(0, min(f.fever_time_row, MAX_STAT)), max(0, min(f.fever_fill_row, MAX_STAT)))
         cell = cells.get(key)
         if cell is None:
             cell = cells[key] = fixed_timeline_cell(
-                hits,
-                long_notes=long_notes,
-                last_note_time=last_note_time,
-                fill_factor=curves.factor("Fever Fill Rate", f.fever_fill_row),
-                time_factor=curves.factor("Fever Time", f.fever_time_row),
+                hits, fill_notes=int(np.ceil(thresholds[key[1]])), fever_duration=float(durations[key[0]])
             )
         scores.append(core_score.best_timeline_score(f, cell, int(chart.shape[0]))[0])
     return scores
@@ -215,15 +210,12 @@ def _timeline_trace_for_payload_surface(
     body_normal = int(payload.grid_frontier_body_normal_pool[0, pool_idx_i])
     words = tuple(int(payload.grid_frontier_masks_bits_pool[0, pool_idx_i, word]) for word in range(4))
     song_inputs = song.fg_inputs
-    ref_ft = curves.f32["Fever Time"]
-    ref_ff = curves.f32["Fever Fill Rate"]
-
-    total_notes_i = int(song_inputs.total_notes)
-    long_notes_i = int(song_inputs.long_notes)
-    raw_fever_fill = float(fever_fill_raw(max(0, total_notes_i - long_notes_i), ref_ff)[ff_idx])
-    fill_count = int(np.ceil(raw_fever_fill))
-    fill_count = max(1, int(fill_count))
-    real_fever_time = float(fever_window_times(song_inputs.last_note_time, ref_ft[ft_idx : ft_idx + 1])[0])
+    durations, thresholds = fever_axes(song_inputs.total_notes, song_inputs.long_notes, song_inputs.last_note_time, curves)
+    raw_fever_fill = float(thresholds[ff_idx])
+    fever_fill_denominator = float(
+        fever_fill_denominators(song_inputs.total_notes - song_inputs.long_notes, curves.f64["Fever Fill Rate"])[ff_idx]
+    )
+    real_fever_time = float(durations[ft_idx])
 
     trace = reconstruct_timeline_physical_trace(
         head_bits=(int(words[0]), int(words[1]), int(words[2]), int(words[3])),
@@ -252,7 +244,7 @@ def _timeline_trace_for_payload_surface(
         timestamps=song.chart.timestamps,
         note_types=song.chart.note_types,
         lanes=song.chart.lanes,
-        fill_count=int(fill_count),
+        fever_fill_denominator=fever_fill_denominator,
         fever_duration_ms=float(real_fever_time) * 1000.0,
         timing_mode=song.mode,
     )
@@ -262,7 +254,7 @@ def _timeline_trace_for_payload_surface(
         "frontier_pool_index": int(pool_idx_i),
         "frontier_first_surfaces": int(payload.grid_frontier_count[0, ft_idx, ff_idx]),
         "activation_judgment": "perfect",
-        "fill_count": int(fill_count),
+        "raw_fever_fill": fever_fill_denominator,
         "fever_duration_ms": float(real_fever_time) * 1000.0,
     }
 

@@ -7,11 +7,11 @@ import numpy as np
 
 def _load_case(chart_path: Path):
     from gear_optimizer.chart import load_chart
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.settings import paths
     from gear_optimizer.solver.timing_envelope import time_song
 
-    return time_song(load_chart(chart_path), "precise"), load_stat_curves(paths().stats_txt)
+    return time_song(load_chart(chart_path), "precise"), stat_curves()
 
 
 def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) -> None:
@@ -66,7 +66,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         timestamps=timestamps,
         note_types=note_types,
         lanes=lanes,
-        fill_count=int(timeline["fill_count"]),
+        fever_fill_denominator=float(timeline["raw_fever_fill"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
         timing_mode="precise",
     )
@@ -170,7 +170,7 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         timestamps=song.chart.timestamps,
         note_types=song.chart.note_types,
         lanes=song.chart.lanes,
-        fill_count=int(timeline["fill_count"]),
+        fever_fill_denominator=float(timeline["raw_fever_fill"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
         timing_mode="precise",
     )
@@ -225,7 +225,7 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         timestamps=song.chart.timestamps,
         note_types=song.chart.note_types,
         lanes=song.chart.lanes,
-        fill_count=int(timeline["fill_count"]),
+        fever_fill_denominator=float(timeline["raw_fever_fill"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
         timing_mode="precise",
     )

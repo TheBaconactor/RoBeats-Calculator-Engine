@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import taichi as ti
 
-from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers as fields
 from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import (
@@ -145,7 +145,7 @@ def _compare(
 def test_warmstart_reuses_exact_score_and_preserves_seed_ties():
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
 
-    ensure_ready(load_stat_curves(paths().stats_txt))
+    ensure_ready(stat_curves())
     rng = np.random.default_rng(735)
     stats = np.array(
         [

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
-from gear_optimizer.solver.timing_envelope import fever_fill_raw, fever_window_times
+from gear_optimizer.solver.timing_envelope import fever_durations, fever_fill_denominators, fever_fill_thresholds
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
 from tests.songs_support import make_song
 
@@ -28,8 +28,9 @@ def test_timeline_cache_fingerprint_covers_shared_frontier_producer() -> None:
 
 
 def _build_small_payload():
-    ref_ft = np.linspace(0.0, 1.6, 161, dtype=np.float32)
-    ref_ff = np.linspace(0.0, 1.6, 161, dtype=np.float32)
+    decay_rates = np.linspace(0.0, 1.6, 161)
+    # A fill base is never 0 in the game (its curve ends at 0.0769): a zero denominator has no fill threshold.
+    fill_bases = np.linspace(0.01, 1.6, 161)
     timestamps = np.array([0.0, 0.0, 0.1, 0.1, 0.22, 0.22], dtype=np.float32)
     payload = build_timeline_frontier_grid_payload(
         total_notes=6,
@@ -37,16 +38,17 @@ def _build_small_payload():
         perfect_candidate_timestamps=timestamps + np.float32(0.04),
         perfect_floor_timestamps=timestamps - np.float32(0.019),
         lanes=np.arange(6, dtype=np.int32),
-        fever_times=fever_window_times(1.8, ref_ft),
-        fever_fills=fever_fill_raw(6, ref_ff),
+        fever_times=fever_durations(1.8, decay_rates),
+        fever_fills=fever_fill_thresholds(fever_fill_denominators(6, fill_bases)),
     )
     return payload
 
 
 def _curves() -> dict[str, np.ndarray]:
+    # A fill base is never 0 in the game (its curve ends at 0.0769): a zero denominator has no fill threshold.
     return synthetic_curves({
-        "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32),
-        "Fever Fill Rate": np.linspace(0.0, 1.6, 161, dtype=np.float32),
+        "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32) * 0.15,
+        "Fever Fill Rate": np.linspace(0.01, 1.6, 161, dtype=np.float32) * 0.333,
     })
 
 

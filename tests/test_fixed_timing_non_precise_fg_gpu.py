@@ -45,8 +45,8 @@ def _curves(rows: int = 161) -> dict:
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": _inside_float32(np.linspace(1.95, 2.72, rows, dtype=np.float64), 2.72),
         "Fever Multiplier": _inside_float32(np.linspace(2.95, 5.48, rows, dtype=np.float64), 5.48),
-        "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
-        "Fever Time": np.full(rows, 0.5, dtype=np.float64),
+        "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64) * 0.333,
+        "Fever Time": np.full(rows, 0.5, dtype=np.float64) * 0.15,
     })
 
 

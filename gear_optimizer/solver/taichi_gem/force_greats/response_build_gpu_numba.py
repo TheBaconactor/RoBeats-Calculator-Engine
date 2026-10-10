@@ -1609,7 +1609,7 @@ def _numba_touch_body_candidate(
 # every floor's max/min is resolved), and a multilinear function attains its extrema at the box
 # VERTICES -- so a surface's exact dominance over the WHOLE box is decided at its 16 corners, with
 # the integer floors bounded by a per-pair margin. No probe sampling. `c`/`f` are the gear's
-# combo/fever-multiplier ranges from Data/Gear/Stats.txt; `v`/`g` are a generous superset of every
+# combo/fever-multiplier ranges (gamedata.stat_curves); `v`/`g` are a generous superset of every
 # realizable base_value / great_base. assert_head_dominance_box (response_cache) fails loud if a
 # gear rebalance pushes c/f outside this box, so the box can never silently under-cover.
 _HEAD_DOM_V = (200.0, 8000.0)

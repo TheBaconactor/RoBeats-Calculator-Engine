@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 _PROTOCOL = 2
 # The game export and the item catalogs generated from it. Frontier cache keys hash only chart
-# content and Data/Gear/Stats.txt (the reference arrays), so a game-data publication that changes
-# nothing else reuses the active caches instead of re-verifying every song's frontier.
+# content and the engine's own stat curves, so a game-data publication that changes nothing else
+# reuses the active caches instead of re-verifying every song's frontier.
 _FRONTIER_NEUTRAL_DATA_PATHS = frozenset(
     {"Data/exported_game_data.json", "Data/Gear/Gears.csv", "Data/Gear/Minis.csv"}
 )

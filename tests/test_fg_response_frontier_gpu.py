@@ -166,8 +166,8 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
-        "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
-        "Fever Time": np.full(rows, 0.5, dtype=np.float64),
+        "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64) * 0.333,
+        "Fever Time": np.full(rows, 0.5, dtype=np.float64) * 0.15,
     })
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
     song = make_song(timestamps, mode="non-precise")
@@ -201,7 +201,7 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
 def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path, monkeypatch):
     """Pin the current event-time fever duration, not the retired extra-1/60 duration."""
     from gear_optimizer.chart import load_chart
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -210,7 +210,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import fg_solve_results
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "precise")
-    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
+    curves = stat_curves()
     final_stats = {
         "Perfect Points": 25,
         "Combo Multiplier": 55,
@@ -244,6 +244,16 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     assert replay.tally == {"perfect": 1042, "great": 6, "okay": 0, "miss": 0}
     assert int(replay.max_combo) == 1048
 
+    # The persisted plan replays against the game's fill denominator of the final FF stat (58), not of the FF gem
+    # count (0 here): materialization fails loud if the replay's fever window differs from the surface's.
+    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
+
+    payload = materialize_force_payload_from_response_frontier(
+        base_stats=final_stats, paired_base_score=1, selected_element="Vibe", result=result, song=song, curves=curves
+    )
+    hits = int(song.chart.total_notes) - int(song.chart.long_notes)
+    assert payload["ForceGreats"]["raw_fever_fill"] == hits * float(curves.f64["Fever Fill Rate"][58])
+
 
 def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):
     rows = 161
@@ -251,8 +261,8 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
         "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
-        "Fever Fill Rate": np.full(rows, 0.6, dtype=np.float64),
-        "Fever Time": np.full(rows, 0.4, dtype=np.float64),
+        "Fever Fill Rate": np.full(rows, 0.6, dtype=np.float64) * 0.333,
+        "Fever Time": np.full(rows, 0.4, dtype=np.float64) * 0.15,
     })
     timestamps = np.asarray([0.0, 0.3, 0.7, 1.4, 2.2, 3.0, 3.2, 3.4, 4.0], dtype=np.float32)
     song = make_song(timestamps, mode="non-precise")
@@ -312,7 +322,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     for every surface this producer emits.
     """
     from gear_optimizer.chart import load_chart
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
@@ -321,7 +331,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     from gear_optimizer.solver.timing_envelope import time_song
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), "precise")
-    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
+    curves = stat_curves()
     final_stats = {
         "Perfect Points": 29,
         "Combo Multiplier": 57,

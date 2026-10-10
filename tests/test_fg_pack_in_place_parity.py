@@ -138,7 +138,7 @@ def _score_cpu_f64(group_meta, packed, *, allow_pp: bool) -> np.ndarray:
     idx = np.arange(MAX_STAT + 1, dtype=np.float64)
     curves = StatCurves.from_mapping({
         "Perfect Points": idx * 0.5 + 0.3, "Combo Multiplier": 1.0 + idx * 0.011, "Fever Multiplier": 1.0 + idx * 0.017,
-        "Fever Time": np.ones(MAX_STAT + 1), "Fever Fill Rate": np.ones(MAX_STAT + 1),
+        "Fever Time": np.ones(MAX_STAT + 1) * 0.15, "Fever Fill Rate": np.ones(MAX_STAT + 1) * 0.333,
     })
     color_flags = (
         np.asarray([1, 0, 0, 0, 0, 0, 1, 0, 0], dtype=np.int32)

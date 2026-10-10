@@ -19,7 +19,7 @@ from gear_optimizer.core.memory import (
     MEMORY_GUARD_RESUME_FILE,
 )
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
-from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
+from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
 from gear_optimizer.client_update import update_and_restart_client
 from gear_optimizer.frontier_client import sync_frontiers_from_server
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
@@ -232,7 +232,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.info(" >> [ForceGreats] ResponseFrontier")
             loop_forever = run.loop_forever
             sync_exported_game_data()
-            curves = load_stat_curves(paths().stats_txt)
+            curves = stat_curves()
             gears = load_gears(paths().gears_csv)
             minis = load_minis(paths().minis_csv)
             song_queue = self._build_song_queue(run)

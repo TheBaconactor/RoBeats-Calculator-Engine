@@ -58,8 +58,8 @@ def _curves(rows: int) -> dict:
         "Perfect Points": pp,
         "Combo Multiplier": np.ones(rows, dtype=np.float64),
         "Fever Multiplier": np.ones(rows, dtype=np.float64),
-        "Fever Fill Rate": np.ones(rows, dtype=np.float64),
-        "Fever Time": np.ones(rows, dtype=np.float64),
+        "Fever Fill Rate": np.ones(rows, dtype=np.float64) * 0.333,
+        "Fever Time": np.ones(rows, dtype=np.float64) * 0.15,
     })
 
 
@@ -1685,12 +1685,12 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
     the tier delta is zero, so the re-solved Stats equal the persisted Stats and the retained score
     must equal the CPU-exact replay of the persisted Stats — the floor-boundary divergence guard.)
     """
-    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.settings import paths
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
-    curves = load_stat_curves(paths().stats_txt)
+    curves = stat_curves()
 
     # Minimal 12-note prefix extracted from a real chart known to trigger CPU/GPU divergence.
     timestamps = np.asarray(

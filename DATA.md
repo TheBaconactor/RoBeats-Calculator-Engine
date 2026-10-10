@@ -23,8 +23,7 @@ Data/
 ├── Hard/                      # Hard chart .txt files
 ├── Gear/
 │   ├── Gears.csv
-│   ├── Minis.csv
-│   └── Stats.txt
+│   └── Minis.csv
 └── exported_game_data.json    # game export; feeds gear CSV regeneration
 ```
 

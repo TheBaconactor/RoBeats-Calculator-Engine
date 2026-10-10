@@ -13,8 +13,7 @@ Data/
 ├── Hard/          # Hard chart .txt files
 ├── Gear/
 │   ├── Gears.csv
-│   ├── Minis.csv
-│   └── Stats.txt
+│   └── Minis.csv
 └── exported_game_data.json   # structured game export; feeds `python -m gear_optimizer.cli sync-data`
 ```
 

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from tests.curves_support import synthetic_curves
 from tests.songs_support import make_song
-from gear_optimizer.gamedata import load_stat_curves
-from gear_optimizer.settings import paths
+from gear_optimizer.gamedata import stat_curves
 import concurrent.futures
 import multiprocessing
 import os
@@ -39,15 +38,15 @@ def _song(name: str = "FG Cache Unit", timestamps=(0.0, 0.2, 0.4)):
 
 def _curves() -> dict[str, np.ndarray]:
     return synthetic_curves({
-        "Fever Time": np.ones((161,), dtype=np.float32),
-        "Fever Fill Rate": np.ones((161,), dtype=np.float32),
+        "Fever Time": np.ones((161,), dtype=np.float32) * 0.15,
+        "Fever Fill Rate": np.ones((161,), dtype=np.float32) * 0.333,
     })
 
 
 def _varying_ref_arrays() -> dict[str, np.ndarray]:
     return synthetic_curves({
-        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
-        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32) * 0.15,
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32) * 0.333,
     })
 
 
@@ -1815,7 +1814,7 @@ def test_fixed_timing_fg_replays_release_song_memory_on_failure(monkeypatch) -> 
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
 
     song = _song()
-    refs = load_stat_curves(paths().stats_txt)
+    refs = stat_curves()
     store.reset_fg_response_frontier_payload_cache()
     try:
         seeded: list = []
@@ -1850,7 +1849,7 @@ def test_fixed_timing_fg_replays_release_song_memory_on_success(monkeypatch) -> 
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
 
     song = _song()
-    refs = load_stat_curves(paths().stats_txt)
+    refs = stat_curves()
     store.reset_fg_response_frontier_payload_cache()
     try:
         seeded: list = []

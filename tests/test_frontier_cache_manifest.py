@@ -15,7 +15,7 @@ import numpy as np
 from gear_optimizer.solver.frontier_cache import FrontierCache, FrontierCacheBuildResult, content_addressed_path
 from tests.curves_support import synthetic_curves
 
-CURVES = synthetic_curves({"Fever Time": np.ones(161, np.float32), "Fever Fill Rate": np.ones(161, np.float32)})
+CURVES = synthetic_curves({"Fever Time": np.ones(161, np.float32) * 0.15, "Fever Fill Rate": np.ones(161, np.float32) * 0.333})
 
 
 def _cache(directory: Path, *, file_path=None, is_complete=None, version: str = "v1") -> FrontierCache:

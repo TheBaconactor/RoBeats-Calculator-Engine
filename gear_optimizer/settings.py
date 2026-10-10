@@ -92,10 +92,6 @@ class Paths:
     def minis_csv(self) -> Path:
         return self.gear_dir / "Minis.csv"
 
-    @property
-    def stats_txt(self) -> Path:
-        return self.gear_dir / "Stats.txt"
-
     def chart_dir(self, difficulty: str) -> Path:
         if difficulty not in DIFFICULTIES:
             raise ValueError(f"unknown difficulty {difficulty!r}; expected one of {DIFFICULTIES}")
