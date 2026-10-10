@@ -1401,23 +1401,14 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     )
 
     options = _edge_surface_options(
-        reachability_context=reachability_context,
+        context=reachability_context,
         i=0,
         first=False,
-        n=int(timestamps.shape[0]),
         actions=actions,
-        later_fill=later_fill,
-        first_fill=first_fill,
-        later_forced=later_forced,
-        first_forced=first_forced,
+        fills=later_fill,
+        forced=later_forced,
         real_fever_time=1.0,
         use_forced_great_timing=True,
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        perfect_floor_timestamps=timestamps,
-        great_floor_timestamps=timestamps,
-        lanes=lanes,
-        raw_fever_fill=2.0,
     )
 
     assert not any(int(option["k"]) == 1 and int(option["next_state"]) == 5 for option in options)
@@ -1504,24 +1495,14 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
     )
 
     options = _edge_surface_options(
-        reachability_context=reachability_context,
+        context=reachability_context,
         i=99,
         first=False,
-        n=int(timestamps.shape[0]),
         actions=actions,
-        later_fill=later_fill,
-        first_fill=first_fill,
-        later_forced=later_forced,
-        first_forced=first_forced,
+        fills=later_fill,
+        forced=later_forced,
         real_fever_time=1.0,
         use_forced_great_timing=True,
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidates,
-        great_candidate_timestamps=great_candidates,
-        perfect_floor_timestamps=perfect_floor,
-        great_floor_timestamps=great_floor,
-        lanes=lanes,
-        raw_fever_fill=raw_fever_fill,
     )
 
     assert not any(
@@ -2575,24 +2556,14 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     for row in trace:
         edge_match = None
         for option in _edge_surface_options(
-            reachability_context=reachability_context,
+            context=reachability_context,
             i=state,
             first=first,
-            n=int(timestamps.shape[0]),
             actions=actions,
-            later_fill=later_fill,
-            first_fill=first_fill,
-            later_forced=later_forced,
-            first_forced=first_forced,
+            fills=first_fill if first else later_fill,
+            forced=first_forced if first else later_forced,
             real_fever_time=real_fever_time,
             use_forced_great_timing=True,
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidates,
-            great_candidate_timestamps=great_candidates,
-            perfect_floor_timestamps=perfect_floor,
-            great_floor_timestamps=great_floor,
-            lanes=lanes,
-            raw_fever_fill=raw_fever_fill,
         ):
             if (
                 int(option["next_state"]) == int(row["next_state"])

@@ -228,24 +228,14 @@ def edge_surface_option_details(
             perfect_floor_timestamps=perfect_floor_timestamps,
         )
         for option in _edge_surface_options(
-            reachability_context=reachability_context,
+            context=reachability_context,
             i=int(i),
             first=bool(first),
-            n=int(n),
             actions=actions,
-            later_fill=later_fill,
-            first_fill=first_fill,
-            later_forced=later_forced,
-            first_forced=first_forced,
+            fills=first_fill if bool(first) else later_fill,
+            forced=first_forced if bool(first) else later_forced,
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidate_timestamps,
-            great_candidate_timestamps=great_candidate_timestamps,
-            perfect_floor_timestamps=perfect_floor_timestamps,
-            great_floor_timestamps=great_floor_timestamps,
-            lanes=lanes,
-            raw_fever_fill=float(raw_fever_fill),
         )
     ]
 
@@ -296,24 +286,14 @@ def input_engine_rebuild_first_frontier(
         states_evaluated += 1
         generated: list[FgResponseSurface] = []
         for option in _edge_surface_options(
-            reachability_context=reachability_context,
+            context=reachability_context,
             i=int(state),
             first=bool(first),
-            n=int(n),
             actions=actions,
-            later_fill=later_fill,
-            first_fill=first_fill,
-            later_forced=later_forced,
-            first_forced=first_forced,
+            fills=first_fill if bool(first) else later_fill,
+            forced=first_forced if bool(first) else later_forced,
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidate_timestamps,
-            great_candidate_timestamps=great_candidate_timestamps,
-            perfect_floor_timestamps=perfect_floor_timestamps,
-            great_floor_timestamps=great_floor_timestamps,
-            lanes=lanes,
-            raw_fever_fill=float(raw_fever_fill),
         ):
             edge = option["surface"]
             next_state = int(option["next_state"])
