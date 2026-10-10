@@ -223,7 +223,11 @@ _FRONTIER_DISK_CACHE_VERSION = (
 )
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's payloads only when it
 # lists that version here, after a byte gate proved the persisted payloads identical. The version history is in git.
-_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {}
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # The trace reconstruction left the fingerprint; no producer output changed: the 40-chart sample's payloads (both
+    # modes) hold the same arrays, chart by chart, as the 35c21d69e3b1 producer's (the 2026-10-10 recompute's engine).
+    "exact-frontier-v12+logic-624f6c8c7e36": ("exact-frontier-v12+logic-35c21d69e3b1",),
+}
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:

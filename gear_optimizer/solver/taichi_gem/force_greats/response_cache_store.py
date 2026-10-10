@@ -62,7 +62,14 @@ _UNREADABLE = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZ
 
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's bundles only when it lists
 # that version here, after a byte gate proved the persisted bundles identical. The version history is in git.
-_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {}
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # The trace reconstruction left the fingerprint and its witnesses left fill_crossing.py; no producer output
+    # changed: the 40-chart sample's bundles (both modes) hold the same arrays, chart by chart, as the 38e82e26a8ec
+    # producer's (the 2026-10-10 recompute's engine; its gate digests, lists/ref40_head_digests.tsv).
+    "fg-response-frontier-visible-first-v32+logic-2653d51a312d": (
+        "fg-response-frontier-visible-first-v32+logic-38e82e26a8ec",
+    ),
+}
 
 
 def _byte_planes(table: np.ndarray) -> np.ndarray:
