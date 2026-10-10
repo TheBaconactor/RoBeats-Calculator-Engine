@@ -6,6 +6,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from ...scoring.fg_policy import FGSongInputs
 from .activation_witness import activation_schedule_witnesses, exact_label_hit_intervals
 from .fill_crossing import server_fill_crossing_run
 from . import response_build_gpu_numba as _rb_numba
@@ -1122,63 +1123,40 @@ def _option_with_witness(
     }
 
 
-def reconstruct_force_greats_response_counts(
-    *,
-    frontier: FgResponseFrontierResult,
-    target_surface: FgResponseSurface,
-    timestamps: Any,
-    perfect_candidate_timestamps: Any | None = None,
-    great_candidate_timestamps: Any | None = None,
-    perfect_floor_timestamps: Any,
-    great_floor_timestamps: Any,
-    raw_fever_fill: float,
-    real_fever_time: float,
-    lanes: Any | None = None,
-    use_forced_great_timing: bool = True,
-    late_great_floor_timestamps: Any | None = None,
-) -> tuple[int, ...]:
-    # Thin adapter for the solve path, which has the full frontier in hand; forward only
-    # the one field the reconstruction primitive consumes (its `non_fever_base`).
-    trace = reconstruct_force_greats_response_trace(
-        non_fever_base=int(frontier.non_fever_base),
-        target_surface=target_surface,
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidate_timestamps,
-        great_candidate_timestamps=great_candidate_timestamps,
-        perfect_floor_timestamps=perfect_floor_timestamps,
-        great_floor_timestamps=great_floor_timestamps,
-        late_great_floor_timestamps=late_great_floor_timestamps,
-        lanes=lanes,
-        raw_fever_fill=float(raw_fever_fill),
-        real_fever_time=float(real_fever_time),
-        use_forced_great_timing=bool(use_forced_great_timing),
+def _empty(words: tuple[int, ...]) -> bool:
+    return not any(int(value) for value in words)
+
+
+def _subtract_edge(words: tuple[int, ...], edge: FgResponseSurface) -> tuple[int, ...] | None:
+    """The surface words left after an edge's (head bits and body counts); None when the edge does not fit."""
+    edge_values = tuple(int(value) for value in edge)
+    if any(edge_values[idx] & ~words[idx] for idx in range(8)) or any(
+        edge_values[idx] > words[idx] for idx in range(8, 11)
+    ):
+        return None
+    return tuple(words[idx] & ~edge_values[idx] for idx in range(8)) + tuple(
+        words[idx] - edge_values[idx] for idx in range(8, 11)
     )
-    return tuple(int(row["forced_count"]) for row in trace)
 
 
 def reconstruct_force_greats_response_trace(
     *,
+    inputs: FGSongInputs,
     non_fever_base: int,
     target_surface: FgResponseSurface,
-    timestamps: Any,
-    perfect_candidate_timestamps: Any | None = None,
-    great_candidate_timestamps: Any | None = None,
-    perfect_floor_timestamps: Any,
-    great_floor_timestamps: Any,
     raw_fever_fill: float,
     real_fever_time: float,
-    lanes: Any | None = None,
-    use_forced_great_timing: bool = True,
     edge_options_cache: FgTraceEdgeOptionsCache | None = None,
-    late_great_floor_timestamps: Any | None = None,
-    exit_ceiling_timestamps: Any | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    n = int(np.asarray(timestamps).reshape(-1).shape[0])
+    """The section trace whose edges add up to ``target_surface``: per fever section its activation, forced Greats,
+    exact witness and fever end, as the producer priced them for the song's FG ``inputs``."""
+    n = int(np.asarray(inputs.timestamps).reshape(-1).shape[0])
     if n <= 0 or target_surface == _EMPTY_SURFACE:
         return ()
+    use_forced_great_timing = bool(inputs.use_forced_great_timing)
     ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = song_arrays(
-        timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
-        great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
+        inputs.timestamps, inputs.perfect_candidates, inputs.great_candidates, inputs.perfect_floor,
+        inputs.great_floor, inputs.late_great_floor, inputs.exit_ceiling, inputs.lanes,
     )
     if max(1, ceil(float(raw_fever_fill))) < early_exit_min_fill(floor_ts, perfect_ts):
         exit_ceiling_ts = np.full_like(exit_ceiling_ts, -np.inf)  # as the search: no early exits at this fill
@@ -1213,14 +1191,14 @@ def reconstruct_force_greats_response_trace(
     shared_edge_options = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
     shared_edge_options.bind_inputs(
         owner_inputs=(
-            timestamps,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
-            perfect_floor_timestamps,
-            great_floor_timestamps,
-            late_great_floor_timestamps,
-            exit_ceiling_timestamps,
-            lanes,
+            inputs.timestamps,
+            inputs.perfect_candidates,
+            inputs.great_candidates,
+            inputs.perfect_floor,
+            inputs.great_floor,
+            inputs.late_great_floor,
+            inputs.exit_ceiling,
+            inputs.lanes,
         ),
         note_count=n,
     )
@@ -1230,19 +1208,6 @@ def reconstruct_force_greats_response_trace(
         float(real_fever_time),
         bool(use_forced_great_timing),
     )
-
-    def _empty(words: tuple[int, ...]) -> bool:
-        return not any(int(value) for value in words)
-
-    def _subtract_edge(words: tuple[int, ...], edge: FgResponseSurface) -> tuple[int, ...] | None:
-        edge_values = tuple(int(value) for value in edge)
-        if any(edge_values[idx] & ~words[idx] for idx in range(8)) or any(
-            edge_values[idx] > words[idx] for idx in range(8, 11)
-        ):
-            return None
-        return tuple(words[idx] & ~edge_values[idx] for idx in range(8)) + tuple(
-            words[idx] - edge_values[idx] for idx in range(8, 11)
-        )
 
     memo: set[tuple[int, bool, tuple[int, ...]]] = set()
 

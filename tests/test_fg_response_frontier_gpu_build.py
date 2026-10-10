@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests.fg_song_inputs import fg_song_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1015,17 +1016,19 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
         if int(surface.fever0) == 0b1100 and int(surface.great0) == 0
     )
     trace = reconstruct_force_greats_response_trace(
+        inputs=fg_song_inputs(
+            timestamps=timestamps,
+            perfect_candidates=perfect_candidates,
+            great_candidates=great_candidates,
+            perfect_floor=perfect_floor,
+            great_floor=great_floor,
+            lanes=_lanes_for(timestamps),
+            use_forced_great_timing=True,
+        ),
         non_fever_base=int(frontier.non_fever_base),
         target_surface=target,
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidates,
-        great_candidate_timestamps=great_candidates,
-        perfect_floor_timestamps=perfect_floor,
-        great_floor_timestamps=great_floor,
-            lanes=_lanes_for(timestamps),
         raw_fever_fill=2.25,
         real_fever_time=1.0,
-        use_forced_great_timing=True,
     )
 
     assert trace[0]["activation_judgment"] == "perfect"
@@ -1208,17 +1211,19 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
     assert int(target.fever0) & int(target.great0) & 0b00100
 
     trace = reconstruct_force_greats_response_trace(
+        inputs=fg_song_inputs(
+            timestamps=timestamps,
+            perfect_candidates=perfect_candidates,
+            great_candidates=great_candidates,
+            perfect_floor=perfect_floor,
+            great_floor=great_floor,
+            lanes=_lanes_for(timestamps),
+            use_forced_great_timing=True,
+        ),
         non_fever_base=int(frontier.non_fever_base),
         target_surface=target,
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidates,
-        great_candidate_timestamps=great_candidates,
-        perfect_floor_timestamps=perfect_floor,
-        great_floor_timestamps=great_floor,
-            lanes=_lanes_for(timestamps),
         raw_fever_fill=2.25,
         real_fever_time=1.0,
-        use_forced_great_timing=True,
     )
 
     assert trace[0]["activation_judgment"] == "late_great"
@@ -1441,17 +1446,19 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
     found = False
     for surface in frontier.first_frontier:
         trace = reconstruct_force_greats_response_trace(
+            inputs=fg_song_inputs(
+                timestamps=timestamps,
+                perfect_candidates=perfect_candidates,
+                great_candidates=great_candidates,
+                perfect_floor=perfect_floor,
+                great_floor=great_floor,
+                lanes=lanes,
+                use_forced_great_timing=True,
+            ),
             non_fever_base=int(frontier.non_fever_base),
             target_surface=surface,
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidates,
-            great_candidate_timestamps=great_candidates,
-            perfect_floor_timestamps=perfect_floor,
-            great_floor_timestamps=great_floor,
-            lanes=lanes,
             raw_fever_fill=raw_fever_fill,
             real_fever_time=real_fever_time,
-            use_forced_great_timing=True,
         )
         if any(
             int(row.get("forced_run_count", 0)) > 0
@@ -2403,17 +2410,11 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     assert frontier.first_frontier
     for surface in frontier.first_frontier:
         reconstruct_force_greats_response_trace(
+            inputs=song_inputs,
             non_fever_base=int(frontier.non_fever_base),
             target_surface=surface,
-            timestamps=song_inputs.timestamps,
-            perfect_candidate_timestamps=song_inputs.perfect_candidates,
-            great_candidate_timestamps=song_inputs.great_candidates,
-            perfect_floor_timestamps=song_inputs.perfect_floor,
-            great_floor_timestamps=song_inputs.great_floor,
-            lanes=song_inputs.lanes,
             raw_fever_fill=raw_fever_fill,
             real_fever_time=real_fever_time,
-            use_forced_great_timing=song_inputs.use_forced_great_timing,
         )
 
 
@@ -2441,14 +2442,13 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
 
 
 @pytest.mark.gpu
-def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
+def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _EMPTY_SURFACE,
         _build_activation_reachability_context,
         _edge_surface_options,
-        reconstruct_force_greats_response_counts,
         reconstruct_force_greats_response_trace,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
@@ -2486,31 +2486,20 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     )[0]
     target = slim.first_frontier[-1]
 
-    counts = reconstruct_force_greats_response_counts(
-        frontier=slim,
-        target_surface=target,
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        perfect_candidate_timestamps=perfect_candidates,
-        perfect_floor_timestamps=perfect_floor,
-        great_floor_timestamps=great_floor,
-        lanes=lanes,
-        raw_fever_fill=raw_fever_fill,
-        real_fever_time=real_fever_time,
-        use_forced_great_timing=True,
-    )
     trace = reconstruct_force_greats_response_trace(
+        inputs=fg_song_inputs(
+            timestamps=timestamps,
+            great_candidates=great_candidates,
+            perfect_candidates=perfect_candidates,
+            perfect_floor=perfect_floor,
+            great_floor=great_floor,
+            lanes=lanes,
+            use_forced_great_timing=True,
+        ),
         non_fever_base=int(slim.non_fever_base),
         target_surface=target,
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        perfect_candidate_timestamps=perfect_candidates,
-        perfect_floor_timestamps=perfect_floor,
-        great_floor_timestamps=great_floor,
-        lanes=lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
-        use_forced_great_timing=True,
     )
 
     actions, later_fill, first_fill, later_forced, first_forced = action_table(
@@ -2527,7 +2516,6 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         lanes=lanes,
         fever_fill_denom=raw_fever_fill,
     )
-    assert [row["forced_count"] for row in trace] == list(counts)
     assert all(
         "activation_ms" in row
         and "activation_hit_offset_ms" in row

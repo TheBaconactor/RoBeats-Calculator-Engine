@@ -188,7 +188,7 @@ def finish_fg(song: NativeSong, ga_result: dict, progress_tracker: ProgressTrack
         def materialize(index: int, result: Any) -> Any:
             payload_fg = materialize_force_payload_from_response_frontier(
                 base_stats=base_stats[index], paired_base_score=paired[index], selected_element=selected,
-                result=result, song=timed, curves=curves, trace_cache=trace_cache, song_inputs=song_inputs,
+                result=result, song=timed, curves=curves, trace_cache=trace_cache,
             )
             return solved_fg(payload_fg, default_element=selected)
 

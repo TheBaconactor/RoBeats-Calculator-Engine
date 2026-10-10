@@ -200,7 +200,7 @@ def _timeline_trace_for_payload_surface(
     curves: StatCurves,
 ) -> dict[str, Any]:
     from ..fg_response_scoring.physical_replay import validate_base_physical_replay
-    from ..timeline_exact_frontier import reconstruct_timeline_physical_trace
+    from ..taichi_gem.api.timeline import reconstruct_base_trace
 
     pool_idx_i = int(pool_idx)
     if pool_idx_i < 0 or pool_idx_i >= int(payload.frontier_pool_used):
@@ -217,18 +217,12 @@ def _timeline_trace_for_payload_surface(
     )
     real_fever_time = float(durations[ft_idx])
 
-    trace = reconstruct_timeline_physical_trace(
-        head_bits=(int(words[0]), int(words[1]), int(words[2]), int(words[3])),
+    trace = reconstruct_base_trace(
+        song_inputs,
+        head_words=words,
         body_fever=int(body_fever),
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        lanes=song_inputs.lanes,
         raw_fever_fill=float(raw_fever_fill),
         real_fever_time=float(real_fever_time),
-        exit_ceiling_timestamps=song_inputs.exit_ceiling,
     )
     response_surface = [
         int(words[0]),

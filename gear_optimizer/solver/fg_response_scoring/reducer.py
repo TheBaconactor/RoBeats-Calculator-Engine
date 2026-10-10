@@ -108,21 +108,13 @@ def materialize_force_payload_from_response_frontier(
     song: TimedSong,
     curves: StatCurves,
     trace_cache: FgTraceMaterializationCache | None = None,
-    song_inputs: Any | None = None,
 ) -> dict[str, Any]:
     if trace_cache is not None:
         trace_cache.bind(song)
     frontier = result.frontier
-    # ``song_inputs`` is a pure function of ``song``; a batch materializer sharing one
-    # song owner hoists it once and threads it in (mirrors the trace_cache lifetime).
-    # Defaults to the standalone per-call extraction for single-payload callers.
-    if song_inputs is None:
-        song_inputs = song.fg_inputs
+    song_inputs = song.fg_inputs
     if trace_cache is not None:
         trace_cache.edge_options.bind_owner(song, note_count=len(song_inputs.timestamps))
-    song_lanes = getattr(song_inputs, "lanes", None)
-    if song_lanes is None:
-        raise ValueError("FG response materialization requires song input lanes")
     non_fever_base = int(frontier.non_fever_base)
     surface = result.surface
     # The frontier plans against the fill threshold (result.raw_fever_fill); the replay and the persisted trace use the
@@ -162,19 +154,11 @@ def materialize_force_payload_from_response_frontier(
         trace_is_validated = base_trace is not None
     if base_trace is None:
         base_trace = reconstruct_force_greats_response_trace(
+            inputs=song_inputs,
             non_fever_base=non_fever_base,
             target_surface=surface,
-            timestamps=song_inputs.timestamps,
-            perfect_candidate_timestamps=song_inputs.perfect_candidates,
-            great_candidate_timestamps=song_inputs.great_candidates,
-            perfect_floor_timestamps=song_inputs.perfect_floor,
-            great_floor_timestamps=song_inputs.great_floor,
-            late_great_floor_timestamps=song_inputs.late_great_floor,
-            exit_ceiling_timestamps=song_inputs.exit_ceiling,
-            lanes=song_lanes,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),
-            use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
             edge_options_cache=None if trace_cache is None else trace_cache.edge_options,
         )
     # Validate before publishing into the song-local cache. A cache hit therefore proves this
@@ -187,7 +171,7 @@ def materialize_force_payload_from_response_frontier(
             surface=surface,
             timestamps=song_inputs.timestamps,
             note_types=song.chart.note_types,
-            lanes=song_lanes,
+            lanes=song_inputs.lanes,
             fever_fill_denominator=fever_fill_denominator,
             real_fever_time=float(result.real_fever_time),
             timing_mode=song.mode,

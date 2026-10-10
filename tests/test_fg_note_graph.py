@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from gear_optimizer.core.timing_modes import PRECISE
+from tests.fg_song_inputs import fg_song_inputs
 
 
 def _exact_force_greats_note_graph(
@@ -176,17 +177,19 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
         surface = opt["surface"]
         try:
             trace = reconstruct_force_greats_response_trace(
+                inputs=fg_song_inputs(
+                    timestamps=timestamps,
+                    perfect_candidates=perfect_candidates,
+                    great_candidates=great_candidates,
+                    perfect_floor=perfect_floor,
+                    great_floor=great_floor,
+                    lanes=np.arange(n, dtype=np.int32),
+                    use_forced_great_timing=True,
+                ),
                 non_fever_base=non_fever_base,
                 target_surface=surface,
-                timestamps=timestamps,
-                perfect_candidate_timestamps=perfect_candidates,
-                great_candidate_timestamps=great_candidates,
-                perfect_floor_timestamps=perfect_floor,
-                great_floor_timestamps=great_floor,
-                lanes=np.arange(n, dtype=np.int32),
                 raw_fever_fill=1.0,
                 real_fever_time=real_fever_time,
-                use_forced_great_timing=True,
                 edge_options_cache=edge_options_cache,
             )
         except ValueError:
@@ -233,12 +236,9 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
 
 
 def test_reconstruct_force_greats_response_trace_is_stats_free():
-    """The FG note-graph trace reconstruction takes NO stat/tier input — only the surface, song
-    timing, and FT/FF fever geometry. This is why the FG witness is tier-invariant: a TeamBuff
-    tier delta cannot reach any input of this function (it shifts only Perfect Points + colors).
-    Guards against anyone re-introducing a stats/frontier dependency that would make the persisted
-    FG trace tier-dependent. (The misleading `frontier: FgResponseFrontierResult` parameter that
-    once implied a GPU-search dependency is gone — the primitive consumes only `non_fever_base`.)"""
+    """The FG trace reconstruction takes no stat or tier input: only the song's FG inputs (timing arrays, lanes), the
+    surface and the FT/FF fever geometry. So the FG witness is tier-invariant: a TeamBuff tier delta (Perfect Points
+    and colors) reaches none of its inputs."""
     import inspect
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
@@ -247,25 +247,13 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
 
     params = set(inspect.signature(reconstruct_force_greats_response_trace).parameters)
     assert params == {
+        "inputs",
         "non_fever_base",
         "target_surface",
-        "timestamps",
-        "perfect_candidate_timestamps",
-        "great_candidate_timestamps",
-        "perfect_floor_timestamps",
-        "great_floor_timestamps",
-        "late_great_floor_timestamps",
-        "exit_ceiling_timestamps",
-        "lanes",
         "raw_fever_fill",
         "real_fever_time",
-        "use_forced_great_timing",
         "edge_options_cache",
     }
-    # no stat vector, base_value, perfect-points, element color, or frontier/DP object
-    for stat_like in ("stats", "base_value", "perfect_points", "frontier", "tier", "team_buff"):
-        assert stat_like not in params
-
 
 def test_trace_edge_cache_rejects_cross_song_geometry_reuse():
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
@@ -283,24 +271,27 @@ def test_trace_edge_cache_rejects_cross_song_geometry_reuse():
         options,
     ) = _build_options(110, 96, 1.5)
     cache = FgTraceEdgeOptionsCache()
+    arrays = {
+        "perfect_candidates": perfect_candidates,
+        "great_candidates": great_candidates,
+        "perfect_floor": perfect_floor,
+        "great_floor": great_floor,
+        "lanes": np.arange(110, dtype=np.int32),
+    }
     kwargs = {
+        "inputs": fg_song_inputs(timestamps=timestamps, **arrays),
         "non_fever_base": 96,
         "target_surface": options[0]["surface"],
-        "timestamps": timestamps,
-        "perfect_candidate_timestamps": perfect_candidates,
-        "great_candidate_timestamps": great_candidates,
-        "perfect_floor_timestamps": perfect_floor,
-        "great_floor_timestamps": great_floor,
-        "lanes": np.arange(110, dtype=np.int32),
         "raw_fever_fill": 1.0,
         "real_fever_time": 1.5,
-        "use_forced_great_timing": True,
         "edge_options_cache": cache,
     }
     reconstruct_force_greats_response_trace(**kwargs)
 
     with pytest.raises(ValueError, match="cannot be reused across song timing owners"):
-        reconstruct_force_greats_response_trace(**{**kwargs, "timestamps": timestamps.copy()})
+        reconstruct_force_greats_response_trace(
+            **{**kwargs, "inputs": fg_song_inputs(timestamps=timestamps.copy(), **arrays)}
+        )
 
 
 def test_trace_edge_cache_bounds_retained_options_and_skips_oversized_states():
@@ -613,17 +604,11 @@ def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
     raw_fever_fill = 24.53966249004006
     real_fever_time = 43.218920541501035
     trace = reconstruct_force_greats_response_trace(
+        inputs=song_inputs,
         non_fever_base=25,
         target_surface=surface,
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        lanes=song_inputs.lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
-        use_forced_great_timing=song_inputs.use_forced_great_timing,
     )
 
     replay = validate_force_greats_physical_replay(
@@ -659,17 +644,11 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
     raw_fever_fill = 195.50747138670087
     real_fever_time = 55.122186673736564
     trace = reconstruct_force_greats_response_trace(
+        inputs=song_inputs,
         non_fever_base=196,
         target_surface=surface,
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        lanes=song_inputs.lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
-        use_forced_great_timing=song_inputs.use_forced_great_timing,
     )
 
     replay = validate_force_greats_physical_replay(
@@ -713,17 +692,11 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
     raw_fever_fill = 81.71601202940941
     real_fever_time = 59.28149701967239
     trace = reconstruct_force_greats_response_trace(
+        inputs=song_inputs,
         non_fever_base=82,
         target_surface=surface,
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        lanes=song_inputs.lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
-        use_forced_great_timing=song_inputs.use_forced_great_timing,
     )
 
     replay = validate_force_greats_physical_replay(

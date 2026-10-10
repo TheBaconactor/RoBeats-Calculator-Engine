@@ -13,7 +13,6 @@ from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.solver.gem_search import GemWinner, SurfacePool, gem_groups, gem_winners
 from gear_optimizer.stats import apply_gems, gems
 
-from .response_builder import reconstruct_force_greats_response_trace
 from .response_cache_serde import frontier_result_from_scoring_bundle_for_stats
 from .response_cache_store import gather_surface_patterns
 from .response_cache_types import FgResponseFrontierScoringBundle
@@ -33,7 +32,6 @@ __all__ = [
     "fg_solve_result",
     "fg_solve_results",
     "required_response_stat_keys_for_scoring_batch",
-    "reconstruct_force_greats_response_trace",
 ]
 
 _ResponsePair = tuple[int, int, FgResponseFrontierResult, float, float]

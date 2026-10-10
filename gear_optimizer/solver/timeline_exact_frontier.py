@@ -86,55 +86,6 @@ def _head_mask_coefficients_py(
     return n_hn, n_hf, sigma_hn, sigma_hf
 
 
-def reconstruct_timeline_physical_trace(
-    *,
-    head_bits: tuple[int, int, int, int],
-    body_fever: int,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    lanes: np.ndarray,
-    raw_fever_fill: float,
-    real_fever_time: float,
-    exit_ceiling_timestamps: np.ndarray | None = None,
-) -> list[dict[str, object]]:
-    """Decode one retained Base surface through the same exact lane-aware producer owner."""
-    from .taichi_gem.force_greats.response_builder import reconstruct_force_greats_response_trace
-    from .taichi_gem.force_greats.response_types import FgResponseSurface
-
-    surface = FgResponseSurface(
-        int(head_bits[0]),
-        int(head_bits[1]),
-        int(head_bits[2]),
-        int(head_bits[3]),
-        0,
-        0,
-        0,
-        0,
-        int(body_fever),
-        0,
-        0,
-    )
-    return reconstruct_force_greats_response_trace(
-        non_fever_base=0,
-        target_surface=surface,
-        timestamps=np.asarray(timestamps, dtype=np.float32),
-        perfect_candidate_timestamps=np.asarray(
-            perfect_candidate_timestamps, dtype=np.float32
-        ),
-        great_candidate_timestamps=np.asarray(great_candidate_timestamps, dtype=np.float32),
-        perfect_floor_timestamps=np.asarray(perfect_floor_timestamps, dtype=np.float32),
-        great_floor_timestamps=np.asarray(great_floor_timestamps, dtype=np.float32),
-        lanes=np.asarray(lanes, dtype=np.int32),
-        raw_fever_fill=float(raw_fever_fill),
-        real_fever_time=float(real_fever_time),
-        use_forced_great_timing=False,
-        exit_ceiling_timestamps=exit_ceiling_timestamps,
-    )
-
-
 def build_timeline_frontier_grid_payload(
     *,
     total_notes: int,

@@ -7,6 +7,7 @@ the cached grid/frontier payload for the active song slot.
 
 import io
 import time
+from dataclasses import replace
 from pathlib import Path
 import logging
 import numpy as np
@@ -32,6 +33,7 @@ from gear_optimizer.solver.frontier_cache import (
 )
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.solver.timing_envelope import TimedSong, fever_axes
+from gear_optimizer.solver.scoring.fg_policy import FGSongInputs
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
@@ -224,9 +226,9 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's payloads only when it
 # lists that version here, after a byte gate proved the persisted payloads identical. The version history is in git.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # The trace reconstruction left the fingerprint; no producer output changed: the 40-chart sample's payloads (both
-    # modes) hold the same arrays, chart by chart, as the 35c21d69e3b1 producer's (the 2026-10-10 recompute's engine).
-    "exact-frontier-v12+logic-624f6c8c7e36": ("exact-frontier-v12+logic-35c21d69e3b1",),
+    # The trace reconstruction left the timeline sources; no producer output changed: the 40-chart sample's payloads
+    # (both modes) hold the same arrays, chart by chart, as the 35c21d69e3b1 producer's (the 2026-10-10 recompute's).
+    "exact-frontier-v12+logic-3879362bd129": ("exact-frontier-v12+logic-35c21d69e3b1",),
 }
 
 
@@ -523,6 +525,28 @@ def _build_non_precise_timeline_payload(song: TimedSong, curves: StatCurves) -> 
         grid_gap=grid_gap,
         grid_fever_activations=grid_fever_activations,
         frontier_pool_used=len(pool_by_surface),
+    )
+
+
+def reconstruct_base_trace(
+    inputs: FGSongInputs,
+    *,
+    head_words: tuple[int, int, int, int],
+    body_fever: int,
+    raw_fever_fill: float,
+    real_fever_time: float,
+) -> tuple[dict, ...]:
+    """The physical trace of a Base surface: the FG reconstruction of the same surface without Greats, so without
+    forced-Great timing (and its late-Great floor)."""
+    from ..force_greats.response_builder import reconstruct_force_greats_response_trace
+    from ..force_greats.response_types import FgResponseSurface
+
+    return reconstruct_force_greats_response_trace(
+        inputs=replace(inputs, late_great_floor=None, use_forced_great_timing=False),
+        non_fever_base=0,
+        target_surface=FgResponseSurface(*head_words, 0, 0, 0, 0, int(body_fever), 0, 0),
+        raw_fever_fill=float(raw_fever_fill),
+        real_fever_time=float(real_fever_time),
     )
 
 

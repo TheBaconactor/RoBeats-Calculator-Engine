@@ -77,17 +77,11 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
 
     song_inputs = song.fg_inputs
     trace = reconstruct_force_greats_response_trace(
+        inputs=song_inputs,
         non_fever_base=int(result.frontier.non_fever_base),
         target_surface=result.surface,
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        lanes=song_inputs.lanes,
         raw_fever_fill=float(result.raw_fever_fill),
         real_fever_time=float(result.real_fever_time),
-        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
     )
 
     ts = song.chart.timestamps
