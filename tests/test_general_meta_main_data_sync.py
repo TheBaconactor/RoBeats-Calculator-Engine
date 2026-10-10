@@ -318,5 +318,5 @@ def test_checked_in_mini_song_targets_resolve_to_song_headers() -> None:
         for mini in entry.get("minis", [])
         if isinstance(mini, dict)
     )
-    assert len(rows) == 90
+    assert len(rows) == 91
     assert linked_count == expected_linked_count
