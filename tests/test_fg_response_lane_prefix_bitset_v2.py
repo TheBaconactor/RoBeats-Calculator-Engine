@@ -3,8 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-    activation_schedule_witnesses_weighted_lane_aware,
+from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+    LabelHitIntervals,
+    activation_schedule_witnesses,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
     HitTimes,
@@ -55,24 +56,19 @@ def _retired_boolean_prefix_reachable(
         is_great[a] = True
     low = np.where(is_great, great_floor_timestamps, perfect_floor_timestamps)
     high = np.where(is_great, great_candidate_timestamps, perfect_candidate_timestamps)
-    fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
     preactivation_count = int(a) - int(start)
     preactivation_great_count = int(np.count_nonzero(is_great[start:a]))
     return bool(
-        activation_schedule_witnesses_weighted_lane_aware(
+        activation_schedule_witnesses(
+            # The section ends at ``end``: the witnesses read no note past it.
+            labels=LabelHitIntervals(is_great[:end], low[:end], high[:end], np.full(end, np.inf), np.full(end, -np.inf)),
+            lanes=lanes[:end],
             activation_index=a,
             activation_hit_timestamp=float(activation_hit_timestamp),
-            low_hit_timestamps=low,
-            high_hit_timestamps=high,
-            lanes=lanes,
-            fill_units=fill_units,
             fever_fill_denom=denom,
             section_start=start,
-            section_end=end,
-            required_preactivation_fill_half_units=(
-                2 * int(preactivation_count) - int(preactivation_great_count)
-            ),
-            required_preactivation_event_count=int(preactivation_count),
+            predecessor_hit_timestamp=None,
+            required_signature=(2 * int(preactivation_count) - int(preactivation_great_count), int(preactivation_count)),
         )
     )
 

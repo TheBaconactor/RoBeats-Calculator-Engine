@@ -330,7 +330,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
 def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
@@ -343,7 +343,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     raw_fever_fill = 2.25
     non_fever_base = 7
     real_fever_time = 0.55
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=raw_fever_fill,
         non_fever_base=non_fever_base,
         use_forced_great_timing=True,

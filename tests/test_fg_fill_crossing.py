@@ -1,7 +1,7 @@
 """Canonical FG fill-crossing oracle + late-Great legality gate.
 
 These pin the SOURCE OF TRUTH for fever activation (``server_fill_crossing``): a placement-aware
-walk that reproduces the WebPort ScoreEngine crossing, replacing ``_action_table``'s compressed
+walk that reproduces the WebPort ScoreEngine crossing, replacing ``action_table``'s compressed
 ``ceil(raw_fever_fill + 0.5*k)`` estimate (which lands one note too far right once Greats are placed
 non-uniformly -- the FG late-Great over-report). The gate (``late_great_activation_is_legal``) keeps
 a late-Great activation only when the Great is genuinely the fill-completion note.
@@ -299,7 +299,7 @@ def test_late_great_prefix_gate_matches_the_walk_oracle():
 
 
 def test_consolidated_owners_match_the_legacy_inline_formulas():
-    # The DRY consolidation routed _action_table's fill and both the search compaction + reconstruct
+    # The DRY consolidation routed action_table's fill and both the search compaction + reconstruct
     # mirror's late-Great math through perfect_fill_crossing_offset / late_great_activation_prefix.
     # Pin those single owners to the EXACT legacy inline formulas they replaced, so a future edit to a
     # helper that diverges from the shipped (bit-exact-verified) behavior is caught here. The
@@ -336,8 +336,9 @@ def test_weighted_reachability_discrete_fill_grid_fractional_denom():
     # dodges every integer -- the old scalar check over-accepted exactly there.
     import numpy as np
 
-    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-        activation_hit_is_reachable_weighted_lane_aware,
+    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+        LabelHitIntervals,
+        activation_schedule_witnesses,
     )
 
     n = 5
@@ -348,17 +349,15 @@ def test_weighted_reachability_discrete_fill_grid_fractional_denom():
     hi = np.full(n, 2.0, dtype=np.float32)  # every window still open at h_a -> all optional
 
     def reachable(units):
-        return activation_hit_is_reachable_weighted_lane_aware(
+        return bool(activation_schedule_witnesses(
+            labels=LabelHitIntervals(np.asarray(units) == 0.5, lo, hi, np.full(n, np.inf), np.full(n, -np.inf)),
+            lanes=lanes,
             activation_index=a,
             activation_hit_timestamp=h_a,
-            low_hit_timestamps=lo,
-            high_hit_timestamps=hi,
-            lanes=lanes,
-            fill_units=np.asarray(units, dtype=np.float32),
             fever_fill_denom=2.75,
             section_start=0,
-            section_end=n,
-        )
+            predecessor_hit_timestamp=None,
+        ))
 
     # All-Perfect optional pool: achievable S in {0,1,2,3,4}; window [2.25, 2.75) has no integer.
     assert reachable([1.0, 1.0, 1.0, 0.5, 1.0]) is False
@@ -374,8 +373,9 @@ def test_weighted_reachability_discrete_fill_respects_forced_offset():
     # misses, half-grid hits.
     import numpy as np
 
-    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-        activation_hit_is_reachable_weighted_lane_aware,
+    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+        LabelHitIntervals,
+        activation_schedule_witnesses,
     )
 
     n = 5
@@ -386,17 +386,15 @@ def test_weighted_reachability_discrete_fill_respects_forced_offset():
     hi[0] = 0.5  # closes before h_a = 1.0 -> forced
 
     def reachable(units):
-        return activation_hit_is_reachable_weighted_lane_aware(
+        return bool(activation_schedule_witnesses(
+            labels=LabelHitIntervals(np.asarray(units) == 0.5, lo, hi, np.full(n, np.inf), np.full(n, -np.inf)),
+            lanes=lanes,
             activation_index=a,
             activation_hit_timestamp=1.0,
-            low_hit_timestamps=lo,
-            high_hit_timestamps=hi,
-            lanes=lanes,
-            fill_units=np.asarray(units, dtype=np.float32),
             fever_fill_denom=2.75,
             section_start=0,
-            section_end=n,
-        )
+            predecessor_hit_timestamp=None,
+        ))
 
     assert reachable([1.0, 1.0, 1.0, 0.5, 1.0]) is False
     assert reachable([1.0, 0.5, 1.0, 0.5, 1.0]) is True
@@ -410,8 +408,9 @@ def test_weighted_reachability_same_lane_optional_prefix_closure():
     # a window needing exactly +0.5 must be infeasible.
     import numpy as np
 
-    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-        activation_hit_is_reachable_weighted_lane_aware,
+    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+        LabelHitIntervals,
+        activation_schedule_witnesses,
     )
 
     # denom 2.25, Great activation (unit 0.5): S_opt window = [1.75, 2.25). forced = 0.
@@ -429,17 +428,15 @@ def test_weighted_reachability_same_lane_optional_prefix_closure():
     hi = np.full(n, 2.0, dtype=np.float32)
 
     def reachable(units, lanes, denom):
-        return activation_hit_is_reachable_weighted_lane_aware(
+        return bool(activation_schedule_witnesses(
+            labels=LabelHitIntervals(np.asarray(units) == 0.5, lo, hi, np.full(n, np.inf), np.full(n, -np.inf)),
+            lanes=np.asarray(lanes, dtype=np.int32),
             activation_index=a,
             activation_hit_timestamp=h_a,
-            low_hit_timestamps=lo,
-            high_hit_timestamps=hi,
-            lanes=np.asarray(lanes, dtype=np.int32),
-            fill_units=np.asarray(units, dtype=np.float32),
             fever_fill_denom=float(denom),
             section_start=0,
-            section_end=n,
-        )
+            predecessor_hit_timestamp=None,
+        ))
 
     # Window [0.5, 1.0): needs S_opt = 0.5 exactly (0.5-grid). The only half-unit (note 1) sits
     # BEHIND a same-lane Perfect (note 0): its smallest prefix including it is 1.5 -> infeasible.

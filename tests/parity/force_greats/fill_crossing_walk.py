@@ -4,7 +4,7 @@
 Great half of it) and activates on the first note whose own fill takes the bar to full; ``server_fill_crossing_fast``
 is the same answer by prefix sum + searchsorted; ``server_fever_end`` is the canonical drain; and
 ``canonical_fever_sections`` steps a whole timeline with them. Production never calls these: its O(1) closed forms
-(``server_fill_crossing_run``, ``late_great_prefix_is_legal``, ``_action_table``'s ``ceil(raw + 0.5k)``) are proven
+(``server_fill_crossing_run``, ``late_great_prefix_is_legal``, ``action_table``'s ``ceil(raw + 0.5k)``) are proven
 bit-exact against them in tests/test_fg_fill_crossing.py. The module docstring of fill_crossing.py explains the
 model.
 """
@@ -14,8 +14,6 @@ from __future__ import annotations
 from typing import Sequence
 
 import numpy as np
-
-from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import _GREAT_UNIT, _PERFECT_UNIT
 
 # The bar activates fever the instant a hit's own fill takes it to full (PlayerScore.lua; the
 # WebPort ScoreEngine gate ``feverBar >= SCORING.FEVER_ACTIVATE_AT``).
@@ -82,7 +80,7 @@ def late_great_activation_is_legal(
 # walk's running bar, and ``searchsorted(..., side="left")`` is the first note that reaches full -- so
 # it returns the identical index (proven bit-equal to the walk on randomized + real placements in
 # ``test_fg_fill_crossing``).  It exists as an ORACLE / kernel-portable reference; production does NOT
-# call it -- the hot path uses ``_action_table``'s ``ceil(raw + 0.5k)``, which is itself bit-exact with
+# call it -- the hot path uses ``action_table``'s ``ceil(raw + 0.5k)``, which is itself bit-exact with
 # this crossing on the whole production band (region-3 Perfect; measured 0 diffs), so the two agree and
 # neither is a mere "hint".
 # --------------------------------------------------------------------------------------------------
@@ -93,7 +91,7 @@ def fill_prefix_perfect_units(is_great: Sequence[bool]) -> np.ndarray:
 
     Precompute once per candidate placement; feed to :func:`server_fill_crossing_fast` per section.
     """
-    fills = np.where(np.asarray(is_great, dtype=bool), _GREAT_UNIT, _PERFECT_UNIT)
+    fills = np.where(np.asarray(is_great, dtype=bool), 0.5, 1.0)
     return np.cumsum(fills)
 
 
@@ -174,7 +172,7 @@ def canonical_fever_sections(
 
     This REPLACES both historical steppings with one loop:
       * BASE ``calculate_fever_timeline_indices`` (``non_fever_base = ceil(...)`` integer note-count),
-      * FG ``_action_table`` + ``activation = state_i + fill`` (``fill = ceil(raw + 0.5*k)``),
+      * FG ``action_table`` + ``activation = state_i + fill`` (``fill = ceil(raw + 0.5*k)``),
     which both put activation on an integer note-count rather than the float bar crossing and so land
     one note off once Greats are placed non-uniformly (FG: past the true crossing -> late-Great
     over-report).  It carries no first/later/wasted-note offset arithmetic and no ``ceil`` corrections:

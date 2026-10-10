@@ -100,7 +100,7 @@ def _exact_force_greats_note_graph(
 
 def _build_options(n, non_fever_base, real_fever_time):
     from gear_optimizer.solver.timing_envelope import precise_envelopes
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
 
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
@@ -108,7 +108,7 @@ def _build_options(n, non_fever_base, real_fever_time):
     envelopes = precise_envelopes(timestamps, note_types)
     perfect_candidates, perfect_floor, great_floor, great_candidates = envelopes[:4]
     raw_fever_fill = 1.0
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=raw_fever_fill,
         non_fever_base=non_fever_base,
         use_forced_great_timing=True,

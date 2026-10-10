@@ -15,8 +15,8 @@ from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     reconstruct_force_greats_response_trace,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-    activation_hit_is_reachable_weighted_lane_aware,
+from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+    activation_schedule_witnesses,
     exact_label_hit_intervals,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
@@ -71,7 +71,7 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
             is_great[forced_start:forced_end] = True
         if str(row.get("activation_judgment")) == "late_great":
             is_great[a] = True
-        lo, hi, secondary_lo, secondary_hi = exact_label_hit_intervals(
+        labels = exact_label_hit_intervals(
             is_great=is_great,
             timestamps=ts,
             perfect_floor_timestamps=pf,
@@ -79,20 +79,14 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
             great_floor_timestamps=gf,
             great_candidate_timestamps=gc,
         )
-        units = np.where(is_great, np.float32(0.5), np.float32(1.0)).astype(np.float32)
-        h_a = float(row.get("activation_hit_window_upper_ms", float(hi[a]) * 1000.0)) / 1000.0
-        if not activation_hit_is_reachable_weighted_lane_aware(
+        h_a = float(row.get("activation_hit_window_upper_ms", float(labels.primary_high[a]) * 1000.0)) / 1000.0
+        if not activation_schedule_witnesses(
+            labels=labels,
+            lanes=lanes,
             activation_index=a,
             activation_hit_timestamp=h_a,
-            low_hit_timestamps=lo,
-            high_hit_timestamps=hi,
-            lanes=lanes,
-            fill_units=units,
             fever_fill_denom=float(raw_fever_fill),
             section_start=section_start,
-            section_end=n,
-            secondary_low_hit_timestamps=secondary_lo,
-            secondary_high_hit_timestamps=secondary_hi,
             predecessor_hit_timestamp=(
                 None if int(section_start) == 0 else float(pf[int(section_start) - 1])
             ),

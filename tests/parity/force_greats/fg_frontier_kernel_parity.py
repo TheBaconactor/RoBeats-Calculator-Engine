@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.solver.timing_envelope import precise_envelopes
-from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
     _compact_first_frontier_action_arrays,
 )
@@ -65,7 +65,7 @@ def build_kernel_args(
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
 
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=float(raw_fever_fill),
         non_fever_base=max(0, int(non_fever_base)),
         use_forced_great_timing=bool(use_forced_great_timing),

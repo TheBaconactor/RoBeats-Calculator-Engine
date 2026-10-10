@@ -6,13 +6,10 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from .fill_crossing import (
-    activation_schedule_witnesses_weighted_lane_aware,
-    exact_label_hit_intervals,
-    perfect_fill_crossing_offset,
-    server_fill_crossing_run,
-)
+from .activation_witness import activation_schedule_witnesses, exact_label_hit_intervals
+from .fill_crossing import server_fill_crossing_run
 from . import response_build_gpu_numba as _rb_numba
+from .response_build_gpu_batch import action_table, early_exit_min_fill, song_arrays
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
 from ...timing_envelope import FRAME_MARGIN_MS
 
@@ -149,105 +146,6 @@ def _build_activation_reachability_context(
         lanes=lane_arr,
         fever_fill_denom=float(fever_fill_denom),
     )
-
-
-def _early_exit_min_fill(perfect_floor_timestamps: np.ndarray, perfect_candidate_timestamps: np.ndarray) -> int:
-    """The smallest fill count at which no early fever exit can delay the next activation.
-
-    The search state is a fever's end, not its cutoff, and every note after an early exit is hit at or past the cutoff,
-    so an early exit is planned only where the activation `fill` notes past any note has its earliest Perfect two frame
-    margins past that note's (and every later note's) latest Perfect: past any cutoff a fever can end there at, its
-    conservative separation from the cutoff and next press."""
-    floor = np.asarray(perfect_floor_timestamps, dtype=np.float64)
-    latest = np.asarray(perfect_candidate_timestamps, dtype=np.float64)
-    reach = np.minimum.accumulate(latest[::-1])[::-1] + 2.0 * FRAME_MARGIN_MS / 1000.0
-    n = int(floor.shape[0])
-    lo, hi = 1, max(1, n)
-    while lo < hi:  # the condition only gets easier as the fill grows
-        mid = (lo + hi) // 2
-        if bool(np.all(floor[mid:] >= reach[: n - mid])):
-            hi = mid
-        else:
-            lo = mid + 1
-    return int(lo)
-
-
-def _song_arrays(
-    timestamps: Any,
-    perfect_candidate_timestamps: Any | None,
-    great_candidate_timestamps: Any | None,
-    perfect_floor_timestamps: Any,
-    great_floor_timestamps: Any,
-    late_great_floor_timestamps: Any | None,
-    exit_ceiling_timestamps: Any | None,
-    lanes: Any | None,
-) -> tuple[np.ndarray, ...]:
-    """Coerce and check one song's per-note arrays (candidates default to the chart timestamps, the late-Great floor to
-    1 ms past the latest Perfect and the exit ceiling to the suffix minimum of the latest Perfects: precise's).
-    """
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
-    n = int(ts.shape[0])
-    if bool(np.any(ts[1:] < ts[:-1])):
-        raise ValueError("timestamps must be sorted in nondecreasing order")
-
-    def _f32(values: Any, name: str) -> np.ndarray:
-        arr = np.ascontiguousarray(np.asarray(values, dtype=np.float32).reshape(-1))
-        if int(arr.shape[0]) != n:
-            raise ValueError(f"{name} length must match timestamps")
-        return arr
-
-    perfect_ts, great_ts = (
-        ts if values is None else _f32(values, name)
-        for values, name in (
-            (perfect_candidate_timestamps, "perfect_candidate_timestamps"),
-            (great_candidate_timestamps, "great_candidate_timestamps"),
-        )
-    )
-    # Both floors are REQUIRED (issues #42/#44): searching chart instead would under-count endpoint-early fever.
-    floor_ts = _f32(perfect_floor_timestamps, "perfect_floor_timestamps")
-    great_floor_ts = _f32(great_floor_timestamps, "great_floor_timestamps")
-    late_great_floor_ts = (
-        perfect_ts + np.float32(0.001)
-        if late_great_floor_timestamps is None
-        else _f32(late_great_floor_timestamps, "late_great_floor_timestamps")
-    )
-    exit_ceiling_ts = (
-        np.ascontiguousarray(np.minimum.accumulate(perfect_ts[::-1])[::-1])
-        if exit_ceiling_timestamps is None
-        else _f32(exit_ceiling_timestamps, "exit_ceiling_timestamps")
-    )
-    if lanes is None:
-        raise ValueError("lanes are required for input-engine-aware FG response build")
-    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
-    if int(lane_arr.shape[0]) != n:
-        raise ValueError("lanes length must match timestamps")
-    return ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr
-
-
-def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
-    actions: list[int] = []
-    later_fill: list[int] = []
-    first_fill: list[int] = []
-    later_forced: list[int] = []
-    first_forced: list[int] = []
-    last_fill: int | None = None
-    for k in range(max(0, int(non_fever_base)) + 1):
-        fill = perfect_fill_crossing_offset(float(raw_fever_fill), int(k), first=False)
-        if bool(use_forced_great_timing) or last_fill is None or fill != last_fill:
-            fill_first = perfect_fill_crossing_offset(float(raw_fever_fill), int(k), first=True)
-            actions.append(int(k))
-            later_fill.append(int(fill))
-            first_fill.append(int(fill_first))
-            later_forced.append(min(int(k), int(fill)))
-            first_forced.append(min(int(k), int(fill_first)))
-        last_fill = int(fill)
-    if not actions:
-        actions.append(0)
-        later_fill.append(0)
-        first_fill.append(0)
-        later_forced.append(0)
-        first_forced.append(0)
-    return actions, later_fill, first_fill, later_forced, first_forced
 
 
 def _lower_bound_from(timestamps: np.ndarray, value: float) -> int:
@@ -1142,7 +1040,7 @@ def _option_with_witness(
     is_great[max(0, int(run_start)) : max(0, int(run_end))] = True
     if str(option["activation_judgment"]) == "late_great":
         is_great[int(activation_idx)] = True
-    low, high, secondary_low, secondary_high = exact_label_hit_intervals(
+    labels = exact_label_hit_intervals(
         is_great=is_great,
         timestamps=reachability_context.timestamps,
         perfect_floor_timestamps=reachability_context.perfect_floor_timestamps,
@@ -1150,7 +1048,6 @@ def _option_with_witness(
         great_floor_timestamps=reachability_context.great_floor_timestamps,
         great_candidate_timestamps=reachability_context.great_candidate_timestamps,
     )
-    fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
     preactivation_event_count = int(activation_idx) - int(section_start)
     preactivation_great_count = max(
         0,
@@ -1159,25 +1056,19 @@ def _option_with_witness(
     preactivation_fill_half = (
         2 * int(preactivation_event_count) - int(preactivation_great_count)
     )
-    schedule_rows = activation_schedule_witnesses_weighted_lane_aware(
+    schedule_rows = activation_schedule_witnesses(
+        labels=labels,
+        lanes=reachability_context.lanes,
         activation_index=int(activation_idx),
         activation_hit_timestamp=float(centered_start_time),
-        low_hit_timestamps=low,
-        high_hit_timestamps=high,
-        lanes=reachability_context.lanes,
-        fill_units=fill_units,
         fever_fill_denom=float(reachability_context.fever_fill_denom),
         section_start=int(section_start),
-        section_end=int(n),
-        required_preactivation_fill_half_units=int(preactivation_fill_half),
-        required_preactivation_event_count=int(preactivation_event_count),
-        secondary_low_hit_timestamps=secondary_low,
-        secondary_high_hit_timestamps=secondary_high,
         predecessor_hit_timestamp=(
             None
             if int(section_start) == 0
             else float(reachability_context.perfect_floor_timestamps[int(section_start) - 1])
         ),
+        required_signature=(int(preactivation_fill_half), int(preactivation_event_count)),
     )
     if len(schedule_rows) != 1:
         raise ValueError(
@@ -1285,11 +1176,11 @@ def reconstruct_force_greats_response_trace(
     n = int(np.asarray(timestamps).reshape(-1).shape[0])
     if n <= 0 or target_surface == _EMPTY_SURFACE:
         return ()
-    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = _song_arrays(
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = song_arrays(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
         great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
     )
-    if max(1, ceil(float(raw_fever_fill))) < _early_exit_min_fill(floor_ts, perfect_ts):
+    if max(1, ceil(float(raw_fever_fill))) < early_exit_min_fill(floor_ts, perfect_ts):
         exit_ceiling_ts = np.full_like(exit_ceiling_ts, -np.inf)  # as the search: no early exits at this fill
     reachability_context: _ActivationReachabilityContext | None = None
 
@@ -1309,7 +1200,7 @@ def reconstruct_force_greats_response_trace(
             )
         return reachability_context
 
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=float(raw_fever_fill),
         non_fever_base=int(non_fever_base),
         use_forced_great_timing=bool(use_forced_great_timing),

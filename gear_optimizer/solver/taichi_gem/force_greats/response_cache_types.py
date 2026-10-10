@@ -34,7 +34,6 @@ _FG_SHARED_FRONTIER_PRODUCER_SOURCES = (
     _SOLVER_DIR / "timing_envelope.py",
     _SOLVER_DIR / "scoring" / "fg_policy.py",
     _HERE / "fill_crossing.py",
-    _HERE / "response_builder.py",
     _HERE / "response_types.py",
     _HERE / "response_build_gpu_batch.py",
     _HERE / "response_build_gpu_scheduler.py",

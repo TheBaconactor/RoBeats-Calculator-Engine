@@ -17,8 +17,8 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns impor
     pack_surface_patterns,
 )
 
+from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
-    _action_table,
     _build_activation_reachability_context,
     _edge_surface_options,
     _option_with_witness,
@@ -254,7 +254,7 @@ def input_engine_rebuild_first_frontier(
     use_forced_great_timing: bool,
 ) -> FgResponseFrontierResult:
     """Slow exact recurrence used only to check the optimized Numba reducer."""
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=float(raw_fever_fill),
         non_fever_base=max(0, int(non_fever_base)),
         use_forced_great_timing=bool(use_forced_great_timing),

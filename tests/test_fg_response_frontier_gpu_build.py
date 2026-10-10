@@ -36,10 +36,11 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     non_fever_base: int,
     real_fever_time: float,
 ):
-    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-        activation_hit_is_reachable_weighted_lane_aware,
-        server_fill_crossing_run,
+    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+        LabelHitIntervals,
+        activation_schedule_witnesses,
     )
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import server_fill_crossing_run
     from tests.fg_response_frontier_oracles import (
         _combine_surfaces,
         _reduce_surfaces,
@@ -85,7 +86,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     ) -> bool:
         lo = np.asarray(perfect_floor_timestamps, dtype=np.float32).copy()
         hi = np.asarray(perfect_candidate_timestamps, dtype=np.float32).copy()
-        units = np.ones((n,), dtype=np.float32)
+        is_great = np.zeros((n,), dtype=np.bool_)
         great_start_i = max(0, min(int(great_start), n))
         great_end_i = min(n, great_start_i + max(0, int(great_count)))
         if great_end_i > great_start_i:
@@ -95,24 +96,22 @@ def _bruteforce_pg_contiguous_run_first_frontier(
             hi[great_start_i:great_end_i] = np.asarray(great_candidate_timestamps, dtype=np.float32)[
                 great_start_i:great_end_i
             ]
-            units[great_start_i:great_end_i] = np.float32(0.5)
+            is_great[great_start_i:great_end_i] = True
         if bool(activation_great):
             lo[int(activation_index)] = np.asarray(great_floor_timestamps, dtype=np.float32)[int(activation_index)]
             hi[int(activation_index)] = np.asarray(great_candidate_timestamps, dtype=np.float32)[
                 int(activation_index)
             ]
-            units[int(activation_index)] = np.float32(0.5)
-        return activation_hit_is_reachable_weighted_lane_aware(
+            is_great[int(activation_index)] = True
+        return bool(activation_schedule_witnesses(
+            labels=LabelHitIntervals(is_great, lo, hi, np.full(n, np.inf), np.full(n, -np.inf)),
+            lanes=lane_arr,
             activation_index=int(activation_index),
             activation_hit_timestamp=float(hit),
-            low_hit_timestamps=lo,
-            high_hit_timestamps=hi,
-            lanes=lane_arr,
-            fill_units=units,
             fever_fill_denom=float(raw_fever_fill),
             section_start=int(section_start),
-            section_end=int(n),
-        )
+            predecessor_hit_timestamp=None,
+        ))
 
     def _great_floor_end(start_time: float, activation_index: int) -> int:
         end = int(np.searchsorted(great_floor_timestamps, np.float32(float(start_time) + float(real_fever_time))))
@@ -789,7 +788,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
         response_build_gpu_numba as rb,
         response_build_gpu_precompute,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
 
     timestamps = np.asarray([idx * 0.071 for idx in range(180)], dtype=np.float32)
     timestamps[28:31] = timestamps[28]
@@ -800,7 +799,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
     great_floor = timestamps - np.float32(0.095)
     lanes = np.asarray([(idx * 3) % 4 for idx in range(int(timestamps.shape[0]))], dtype=np.int32)
     raw_fever_fill = 8.2
-    actions, *_rest = _action_table(
+    actions, *_rest = action_table(
         raw_fever_fill=raw_fever_fill,
         non_fever_base=9,
         use_forced_great_timing=True,
@@ -1375,8 +1374,8 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
 
 
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
-        _action_table,
         _build_activation_reachability_context,
         _edge_surface_options,
     )
@@ -1384,7 +1383,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     timestamps = np.asarray([float(idx) for idx in range(8)], dtype=np.float32)
     great_candidates = timestamps.copy()
     great_candidates[3] = np.float32(3.5)
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=2.0,
         non_fever_base=7,
         use_forced_great_timing=True,
@@ -1465,8 +1464,8 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
 
 
 def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
-        _action_table,
         _build_activation_reachability_context,
         _edge_surface_options,
     )
@@ -1478,7 +1477,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
     perfect_floor = timestamps - np.float32(0.019)
     great_floor = timestamps - np.float32(0.094)
     raw_fever_fill = 2.25
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=raw_fever_fill,
         non_fever_base=3,
         use_forced_great_timing=True,
@@ -1525,13 +1524,13 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
 
 
 def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
 
     timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
     perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
     raw_fever_fill = 2.25
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=raw_fever_fill,
         non_fever_base=6,
         use_forced_great_timing=True,
@@ -1875,8 +1874,9 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
 
 
 def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-        activation_schedule_witnesses_weighted_lane_aware,
+    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+        LabelHitIntervals,
+        activation_schedule_witnesses,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         HitTimes,
@@ -1918,24 +1918,21 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
             is_great[a] = True
         lows = np.where(is_great, great_floor_timestamps, perfect_floor_timestamps)
         highs = np.where(is_great, great_candidate_timestamps, perfect_candidate_timestamps)
-        fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
         preactivation_count = int(a) - int(start)
         preactivation_great_count = int(np.count_nonzero(is_great[start:a]))
         return bool(
-            activation_schedule_witnesses_weighted_lane_aware(
+            activation_schedule_witnesses(
+                # The section ends at ``end``: the witnesses read no note past it.
+                labels=LabelHitIntervals(
+                    is_great[:end], lows[:end], highs[:end], np.full(end, np.inf), np.full(end, -np.inf)
+                ),
+                lanes=lanes[:end],
                 activation_index=a,
                 activation_hit_timestamp=float(activation_hit_timestamp),
-                low_hit_timestamps=lows,
-                high_hit_timestamps=highs,
-                lanes=lanes,
-                fill_units=fill_units,
                 fever_fill_denom=float(fever_fill_denom),
                 section_start=start,
-                section_end=end,
-                required_preactivation_fill_half_units=(
-                    2 * int(preactivation_count) - int(preactivation_great_count)
-                ),
-                required_preactivation_event_count=int(preactivation_count),
+                predecessor_hit_timestamp=None,
+                required_signature=(2 * int(preactivation_count) - int(preactivation_great_count), int(preactivation_count)),
             )
         )
 
@@ -2446,9 +2443,9 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
 @pytest.mark.gpu
 def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _EMPTY_SURFACE,
-        _action_table,
         _build_activation_reachability_context,
         _edge_surface_options,
         reconstruct_force_greats_response_counts,
@@ -2516,7 +2513,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         use_forced_great_timing=True,
     )
 
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=raw_fever_fill,
         non_fever_base=non_fever_base,
         use_forced_great_timing=True,

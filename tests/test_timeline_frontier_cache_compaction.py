@@ -20,11 +20,12 @@ def test_timeline_cache_fingerprint_covers_shared_frontier_producer() -> None:
     assert {
         "timeline_exact_frontier.py",
         "timing_envelope.py",
-        "response_builder.py",
+        "fill_crossing.py",
         "response_build_gpu_batch.py",
         "response_build_gpu_numba.py",
     }.issubset(sources)
-    assert "fg_policy.py" not in sources
+    # Neither the FG scoring policy nor the trace reconstruction determines a cached payload.
+    assert not {"fg_policy.py", "response_builder.py", "activation_witness.py"} & sources
 
 
 def _build_small_payload():

@@ -40,7 +40,7 @@ class _FirstFrontierGroupContext:
     use_forced_great_timing: bool
     empty_region_table: tuple | None
     workspace_plan: _FirstFrontierWorkspacePlan
-    # Below this fill a geometry plans no early fever exits (response_builder._early_exit_min_fill); its exit tables are
+    # Below this fill a geometry plans no early fever exits (response_build_gpu_batch.early_exit_min_fill); its exit tables are
     # then no_early_exit_e (every activation's earliest end is n, so each uses its own latest end).
     early_exit_min_fill: int
     no_early_exit_e: np.ndarray
