@@ -49,6 +49,14 @@ def test_exit_note_reclaimed_at_chart_time_is_pushed_to_perfect_hi():
     assert notes[6]["delta_ms"] == 0.0
 
 
+def test_exit_note_with_a_frame_of_room_is_planned_frame_safe():
+    # Exit note 5 chart = 500 ms needs a hit at or after the cutoff 501 ms. +22 is the latest Perfect every frame
+    # timing judges, and 522 ms is still a frame margin past the cutoff, so the hit lands there, not at +40.
+    notes = _graph([1] * 10, cutoff_ms=501.0)
+    assert notes[5]["delta_ms"] == 22.0
+    assert notes[5]["fever"] is False
+
+
 def test_exit_note_already_past_cutoff_stays_zero():
     # Exit note 5 chart = 500 ms; cutoff 450 ms -> the drain already excludes it at d=0. No push.
     notes = _graph([1] * 10, cutoff_ms=450.0)

@@ -37,7 +37,8 @@ Two graphs per loadout, matching the intended software behavior:
 
 ``timing_mode`` selects the timing semantic (issue #66):
   * ``"precise"``: apply activation witness offsets, endpoint-early
-    guidance, and fever-end safe-target guidance.
+    guidance, and fever-end safe-target guidance; every other hit is planned no later than its band's
+    frame-safe offset when that keeps its input order and fever (_plan_frame_safe_hits).
   * ``"non-precise"``: Perfects stay on time. Leading Greats in a tie are early to precede its
     first Perfect, at the latest offset every frame timing still judges an early Great; other
     Greats use their canonical late hit, or that early offset when the late hit would come within
@@ -139,10 +140,15 @@ def _late_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, flo
     return _bounds_at(note_types, j)[2]
 
 
+def _frame_safe_latest_ms(latest_ms: float) -> float:
+    """The latest planned offset every frame timing still judges at or before `latest_ms`: the game judges a press up
+    to one frame margin after it is planned (any rate >= 60 fps)."""
+    return float(np.floor(latest_ms - FRAME_MARGIN_MS))
+
+
 def _guaranteed_early_great_ms(note_types: np.ndarray, j: int) -> float:
-    """The latest planned offset every frame timing judges an early Great: the game judges a press up to one frame
-    margin after it is planned (any rate >= 60 fps)."""
-    return float(np.floor(_early_great_bounds_ms_at(note_types, j)[1] - FRAME_MARGIN_MS))
+    """The latest planned offset every frame timing judges an early Great."""
+    return _frame_safe_latest_ms(_early_great_bounds_ms_at(note_types, j)[1])
 
 
 def _selector_default_delta_ms(note_types: np.ndarray, j: int, result: str, delta: Any) -> float:
@@ -1016,18 +1022,16 @@ def _plan_blocked_late_greats_early(
 def _assign_exact_input_order(
     notes: list[dict[str, Any]],
     constraints: Sequence[tuple[int, int]],
-) -> None:
-    """Topologically order equal-time inputs while keeping physical time authoritative."""
+) -> list[int]:
+    """Topologically order equal-time inputs while keeping physical time authoritative; returns the note indices in
+    input order."""
     n = len(notes)
     event_times: list[float] = []
     for index, note in enumerate(notes):
-        delta = note.get("delta_ms")
-        if delta is None:
-            raise ValueError(f"note_graph: note {index} lacks a canonical input timing")
-        event_time = float(note["hit_time_ms"]) + float(delta)
+        event_time = float(note["hit_time_ms"]) + float(note["delta_ms"])
         if not np.isfinite(event_time):
             raise ValueError(f"note_graph: note {index} has a non-finite input timing")
-        event_times.append(float(event_time))
+        event_times.append(event_time)
 
     successors: list[set[int]] = [set() for _ in range(n)]
     indegree = [0] * n
@@ -1045,37 +1049,87 @@ def _assign_exact_input_order(
             successors[before].add(after)
             indegree[after] += 1
 
-    ready = [
-        (float(event_times[index]), int(index))
-        for index in range(n)
-        if int(indegree[index]) == 0
-    ]
+    # No constraint runs backward in time, so popping the earliest ready input yields a time-monotone order.
+    ready = [(event_times[index], index) for index in range(n) if indegree[index] == 0]
     heapq.heapify(ready)
     ordered: list[int] = []
     while ready:
         _event_time, index = heapq.heappop(ready)
-        ordered.append(int(index))
-        for after in successors[int(index)]:
-            indegree[int(after)] -= 1
-            if int(indegree[int(after)]) == 0:
-                heapq.heappush(ready, (float(event_times[int(after)]), int(after)))
+        ordered.append(index)
+        for after in successors[index]:
+            indegree[after] -= 1
+            if indegree[after] == 0:
+                heapq.heappush(ready, (event_times[after], after))
     if len(ordered) != n:
         raise ValueError("note_graph: exact input-order constraints contain a cycle")
-    if any(
-        event_times[int(after)] < event_times[int(before)]
-        for before, after in zip(ordered, ordered[1:])
-    ):
-        raise ValueError("note_graph: exact input order is not monotone in physical event time")
     for input_order, note_index in enumerate(ordered):
-        notes[int(note_index)]["input_order"] = int(input_order)
+        notes[note_index]["input_order"] = input_order
+    return ordered
+
+
+def _plan_frame_safe_hits(
+    notes: list[dict[str, Any]],
+    *,
+    ordered: Sequence[int],
+    note_types: Sequence[int] | np.ndarray | None,
+    frontier_trace: Sequence[Mapping[str, Any]],
+) -> None:
+    """Plan each hit no later than the latest offset every frame timing judges in its band.
+
+    A later hit moves back to that offset when it stays a frame margin after the previous input and keeps its fever
+    state: a fever hit stays after the previous fever input, and a hit out of fever stays a frame margin past the
+    cutoff of the last window an input was in. Its judgment, the input order and fever membership, and so the score,
+    stay as planned. Activations (in fever after an input out of it) never move. A hit on its chart time is safe in
+    every band, so only offset hits are visited (`ordered`: note indices in input order).
+    """
+    nt = np.asarray(note_types).reshape(-1)
+    if int(nt.shape[0]) != len(notes):
+        raise ValueError("note_graph: frame-safe hits need note_types (length == total_notes) -- never guessed")
+    witnesses = (notes[min(int(sec["fever_end_index"]), len(notes)) - 1] for sec in frontier_trace)
+    cutoffs = {
+        witness["section"]: float(witness["fever_end_ms"])
+        for witness in witnesses
+        if witness["is_fever_end_witness"] and witness["fever_end_ms"] is not None
+    }
+    offset_hits = sorted(
+        (int(note["input_order"]), index) for index, note in enumerate(notes) if note["delta_ms"] != 0.0
+    )
+    last_fever, scanned = None, 0
+    for position, index in offset_hits:
+        while scanned < position:  # the last fever input before this one
+            if notes[ordered[scanned]]["fever"]:
+                last_fever = notes[ordered[scanned]]
+            scanned += 1
+        note = notes[index]
+        perfect, early_great, late_great = _bounds_at(nt, index)
+        delta = float(note["delta_ms"])
+        if note["note_result"] == "Perfect":
+            low, high = perfect
+        else:
+            low, high = early_great if delta <= early_great[1] else late_great
+        safe = _frame_safe_latest_ms(high)
+        if not delta > safe >= low:
+            continue
+        previous = notes[ordered[position - 1]] if position else None
+        if note["fever"] and not (previous and previous["fever"]):
+            continue
+        earliest_ms = -np.inf
+        if previous is not None:
+            earliest_ms = float(previous["hit_time_ms"]) + float(previous["delta_ms"]) + FRAME_MARGIN_MS
+        if not note["fever"] and last_fever is not None:
+            earliest_ms = max(earliest_ms, cutoffs.get(last_fever["section"], np.inf) + FRAME_MARGIN_MS)
+        if float(note["hit_time_ms"]) + safe >= earliest_ms:
+            note["delta_ms"] = safe
 
 
 def _apply_exact_schedule_fever(
     notes: list[dict[str, Any]],
     *,
+    ordered: Sequence[int],
     frontier_trace: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Materialize fever membership from exact event order and trace-owned durations."""
+    """Materialize fever membership from exact event order (`ordered`: note indices in input order) and trace-owned
+    durations."""
     activation_rows: list[tuple[int, float]] = []
     seen_activations: set[int] = set()
     for sec in frontier_trace:
@@ -1084,34 +1138,26 @@ def _apply_exact_schedule_fever(
         activation = int(sec.get("activation_index", -1))
         if not (0 <= activation < len(notes)) or activation in seen_activations:
             raise ValueError("note_graph: exact schedule fever has an invalid activation identity")
-        seen_activations.add(int(activation))
+        seen_activations.add(activation)
         duration_ms = float(sec.get("fever_duration_ms", float("nan")))
         if not np.isfinite(duration_ms) or duration_ms <= 0.0:
             raise ValueError("note_graph: exact schedule fever duration is missing or invalid")
-        activation_rows.append((int(activation), float(duration_ms)))
+        activation_rows.append((activation, duration_ms))
 
-    ordered_indices = tuple(
-        int(index) for index in sorted(range(len(notes)), key=lambda index: int(notes[index]["input_order"]))
-    )
     activation_cursor = 0
     active_until_ms: float | None = None
-    for note_index in ordered_indices:
-        note = notes[int(note_index)]
+    for note_index in ordered:
+        note = notes[note_index]
         event_ms = float(note["hit_time_ms"]) + float(note["delta_ms"])
-        if active_until_ms is not None and event_ms >= float(active_until_ms):
+        if active_until_ms is not None and event_ms >= active_until_ms:
             active_until_ms = None
-        is_next_activation = bool(
-            int(activation_cursor) < len(activation_rows)
-            and int(activation_rows[int(activation_cursor)][0]) == int(note_index)
-        )
-        if is_next_activation:
+        if activation_cursor < len(activation_rows) and activation_rows[activation_cursor][0] == note_index:
             if active_until_ms is not None:
                 raise ValueError("note_graph: a persisted activation occurs while fever is still active")
-            duration_ms = float(activation_rows[int(activation_cursor)][1])
-            active_until_ms = float(event_ms) + float(duration_ms)
+            active_until_ms = event_ms + activation_rows[activation_cursor][1]
             activation_cursor += 1
-        note["fever"] = bool(active_until_ms is not None)
-    if int(activation_cursor) != len(activation_rows):
+        note["fever"] = active_until_ms is not None
+    if activation_cursor != len(activation_rows):
         raise ValueError("note_graph: exact input order did not consume every persisted activation")
 
 
@@ -1580,7 +1626,8 @@ def timeline_frontier_note_graph(
                 total_notes=n,
                 note_types=note_types,
             ))
-            _assign_exact_input_order(notes, input_order_constraints)
+            ordered = _assign_exact_input_order(notes, input_order_constraints)
+            _plan_frame_safe_hits(notes, ordered=ordered, note_types=note_types, frontier_trace=frontier_trace)
 
         return notes
 
@@ -1753,9 +1800,10 @@ def force_greats_note_graph(
         _materialize_remaining_selector_deltas(notes, note_types=note_types)
         if not apply_guidance:
             _plan_blocked_late_greats_early(notes, note_types=nt, lanes=lane_arr, frontier_trace=frontier_trace)
-        _assign_exact_input_order(notes, input_order_constraints if apply_guidance else ())
+        ordered = _assign_exact_input_order(notes, input_order_constraints if apply_guidance else ())
         if apply_guidance:
-            _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)
+            _apply_exact_schedule_fever(notes, ordered=ordered, frontier_trace=frontier_trace)
+            _plan_frame_safe_hits(notes, ordered=ordered, note_types=nt, frontier_trace=frontier_trace)
 
         return notes
 

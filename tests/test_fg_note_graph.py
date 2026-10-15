@@ -460,6 +460,57 @@ def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
     assert graph[2]["hit_time_ms"] + graph[2]["delta_ms"] < graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
 
 
+def test_fg_note_graph_plans_a_capped_early_great_frame_safe():
+    """A forced Great the plan presses before its same-time Perfect partner is capped below the partner's hit; it is
+    planned at -38 ms (an early Great at every frame timing), not at the band's last ms -20, and keeps its order."""
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 110
+    ts = np.arange(n, dtype=np.float64) * 0.2
+    ts[104] = ts[103]
+    lanes = np.asarray([1 + (i % 4) for i in range(n)], dtype=np.int32)
+    lanes[103:107] = (3, 4, 1, 2)
+    order = list(range(105))
+    order[103], order[104] = 104, 103
+    lane_counts = {int(lane): int((lanes[:105] == lane).sum()) for lane in dict.fromkeys(lanes.tolist())}
+    activation_hit_ms = ts[105] * 1000.0 + 95.0
+    trace = [{
+        "section": 1, "activation_index": 105, "fever_end_index": n, "forced_start_index": 0,
+        "forced_run_start_index": 104, "forced_run_count": 3, "activation_judgment": "late_great",
+        "activation_hit_offset_ms": 95.0, "activation_schedule_schema_version": 1, "preactivation_order": order,
+        "preactivation_lane_prefixes": [{"lane": lane, "count": count} for lane, count in lane_counts.items()],
+        "preactivation_fill_half_units": 2 * 105 - 1, "preactivation_event_count": 105,
+        "preactivation_great_count": 1, "fever_window_end_ms": ts[-1] * 1000.0 + 1000.0,
+        "fever_duration_ms": ts[-1] * 1000.0 + 1000.0 - activation_hit_ms,
+    }]
+    graph = force_greats_note_graph(
+        frontier_trace=trace, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16), lanes=lanes,
+        timing_mode="precise",
+    )
+
+    assert graph[104]["note_result"] == "Great" and graph[104]["delta_ms"] == -38.0
+    assert graph[103]["note_result"] == "Perfect" and graph[103]["delta_ms"] == 0.0
+    assert graph[104]["input_order"] < graph[103]["input_order"]
+    assert graph[105]["is_activation_witness"] and graph[105]["delta_ms"] == 95.0
+
+
+def test_fg_note_graph_never_moves_an_activation_to_a_frame_safe_hit():
+    """A late-Great activation planned past the frame-safe +172 ms keeps its hit: it sets where fever starts."""
+    n = 8
+    ts = np.arange(n, dtype=np.float64) * 0.5
+    trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": n, "forced_start_index": 0,
+        "forced_run_start_index": 3, "forced_run_count": 1, "activation_judgment": "late_great",
+        "activation_hit_offset_ms": 180.0,
+    }]
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16),
+    )
+
+    assert graph[3]["is_activation_witness"] and graph[3]["delta_ms"] == pytest.approx(180.0)
+    assert [note["fever"] for note in graph] == [False] * 3 + [True] * 5
+
+
 def test_same_time_body_selector_uses_physical_order_not_head_chart_order():
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
         _assign_exact_input_order,
