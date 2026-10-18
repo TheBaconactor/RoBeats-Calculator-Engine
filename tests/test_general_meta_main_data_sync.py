@@ -4,11 +4,13 @@ import csv
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 import gear_optimizer.cli as optimizer_cli
+import gear_optimizer.data.exported_game_data_sync as sync_module
 from gear_optimizer.data.exported_game_data_sync import (
     ExportedGameDataPaths,
     default_exported_game_data_paths,
@@ -214,6 +216,53 @@ def test_sync_exported_game_data_rejects_mini_song_target_missing_from_local_son
         sync_exported_game_data(paths=paths)
 
     assert not paths.minis_csv.exists()
+
+
+def test_local_chart_song_names_reads_headers_concurrently(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for index in range(8):
+        _write_song_header(tmp_path, "Normal", f"song{index}.txt", f"Song {index}")
+    together = threading.Barrier(4, timeout=5)  # four reads must be outstanding at once, as a hard disk needs
+    real_read_header = sync_module.read_header
+
+    def read_header_together(path: Path) -> dict[str, str]:
+        together.wait()
+        return real_read_header(path)
+
+    monkeypatch.setattr(sync_module, "read_header", read_header_together)
+
+    assert sync_module._local_chart_song_names(tmp_path) == {f"Song {index}" for index in range(8)}
+
+
+@pytest.mark.parametrize(
+    ("files", "message"),
+    [
+        # a duplicate in file order wins over an unreadable header after it, as when the files are read one at a time
+        (
+            {"a.txt": "Song Name\tSong A\n", "b.txt": "Song Name\tSong A\n", "c.txt": "no tab\n"},
+            "Duplicate local Song Name",
+        ),
+        ({"a.txt": "no tab\n", "b.txt": "Song Name\t\n"}, "not 'key<TAB>value'"),
+        ({"a.txt": "Song Name\tSong A\n", "b.txt": "Song Data\n"}, "missing a non-empty Song Name"),
+    ],
+)
+def test_local_chart_song_names_reports_the_first_problem_in_file_order(
+    tmp_path: Path, files: dict[str, str], message: str
+) -> None:
+    (tmp_path / "Easy").mkdir()
+    for name, text in files.items():
+        (tmp_path / "Easy" / name).write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        sync_module._local_chart_song_names(tmp_path)
+
+
+def test_local_chart_song_names_rejects_song_folders_without_charts(tmp_path: Path) -> None:
+    (tmp_path / "Hard").mkdir()
+
+    with pytest.raises(ValueError, match="No local song data files found"):
+        sync_module._local_chart_song_names(tmp_path)
+
+    assert sync_module._local_chart_song_names(tmp_path / "nowhere") is None
 
 
 def test_sync_module_main_runs(tmp_path: Path) -> None:

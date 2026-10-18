@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -46,6 +47,9 @@ _GEAR_STAT_KEYS = (
 # A mini's fever stats (CbMlt, FvMlt, FvTim, FvFil); Minis.csv lists them at base (x4) and at level 1.
 _MINI_FEVER_KEYS = ("ComboMultiplier", "FeverMultiplier", "FeverTime", "FeverFillRate")
 _SONG_DATA_DIRS = ("Easy", "Normal", "Hard")
+# A chart header is a cold disk read when the charts sit on a hard disk, and read one at a time each pays its own seek:
+# 2,279 charts took 65 to 171 s on a busy disk. With outstanding reads the disk reorders its seeks (7 to 9 s).
+_HEADER_READ_THREADS = 32
 
 _GEAR_CSV_HEADER = [
     "Type",
@@ -224,12 +228,17 @@ def _local_chart_song_names(data_dir: Path) -> set[str] | None:
     if not song_dirs:
         return None
 
+    song_paths = [song_path for song_dir in song_dirs for song_path in sorted(song_dir.glob("*.txt"))]
+    if not song_paths:
+        joined_dirs = ", ".join(str(path) for path in song_dirs)
+        raise ValueError(f"No local song data files found under: {joined_dirs}")
+
     names_by_header: dict[str, Path] = {}
-    scanned_files = 0
-    for song_dir in song_dirs:
-        for song_path in sorted(song_dir.glob("*.txt")):
-            scanned_files += 1
-            song_name = read_header(song_path).get("Song Name", "")
+    pool = ThreadPoolExecutor(max_workers=_HEADER_READ_THREADS)
+    try:
+        # map yields in file order, so the first bad header or duplicate reported is the one a sequential read finds.
+        for song_path, header in zip(song_paths, pool.map(read_header, song_paths)):
+            song_name = header.get("Song Name", "")
             if not song_name:
                 raise ValueError(f"Song data file is missing a non-empty Song Name header: {song_path}")
             previous_path = names_by_header.get(song_name)
@@ -238,10 +247,8 @@ def _local_chart_song_names(data_dir: Path) -> set[str] | None:
                     f"Duplicate local Song Name header detected: {song_name!r} ({previous_path}, {song_path})"
                 )
             names_by_header[song_name] = song_path
-
-    if scanned_files == 0:
-        joined_dirs = ", ".join(str(path) for path in song_dirs)
-        raise ValueError(f"No local song data files found under: {joined_dirs}")
+    finally:
+        pool.shutdown(cancel_futures=True)
     return set(names_by_header)
 
 
