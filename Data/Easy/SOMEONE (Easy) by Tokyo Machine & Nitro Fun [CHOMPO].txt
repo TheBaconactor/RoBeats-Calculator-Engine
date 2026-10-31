@@ -7,7 +7,7 @@ Primary Color	Chill
 Secondary Color	Beat
 Cover Image ID	77437123472407
 Audio Asset ID	rbxassetid://90267822651816
-Audio File	90267822651816.ogg
+Audio File	N/A
 Last Note Time	112.950
 Total Notes	279
 Fever Fill	74
