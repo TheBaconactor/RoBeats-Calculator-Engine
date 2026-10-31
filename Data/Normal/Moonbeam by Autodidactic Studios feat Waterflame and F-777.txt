@@ -7,7 +7,7 @@ Primary Color	Vibe
 Secondary Color	Chill
 Cover Image ID	103551556311825
 Audio Asset ID	rbxassetid://130571675415165
-Audio File	130571675415165.ogg
+Audio File	N/A
 Last Note Time	187.041
 Total Notes	1424
 Fever Fill	391
