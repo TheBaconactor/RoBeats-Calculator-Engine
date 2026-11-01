@@ -264,7 +264,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     )
     scoring = dict(
         total_budget=GEM_BUDGET, gem_scale_fever=STAT_GEM_GAIN_FEVER, song_slot=song_slot,
-        flags=gpu_color_flags(dict(color_flags)),
+        flags=gpu_color_flags(color_flags),
     )
     caps = dict(max_ft_gems_global=max_ft_gems_global, max_ff_gems_global=max_ff_gems_global)
     gpu_api._ensure_ftff_combo_tables(GEM_BUDGET, max_ft_gems=max_ft_gems_global, max_ff_gems=max_ff_gems_global)

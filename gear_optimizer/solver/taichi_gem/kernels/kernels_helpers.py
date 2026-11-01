@@ -13,7 +13,7 @@ The field variables below are placeholders that get populated by bind_fields().
 """
 import taichi as ti
 
-from ....core.color_flags import normalize_color_flags
+from ....core.color_flags import COLOR_FLAG_KEYS
 from ..runtime import get_block_dim
 
 # The song's color flags as one kernel argument: whether the primary / secondary element takes each gem kind's
@@ -34,9 +34,10 @@ GpuColorFlags = ti.types.struct(
 )
 
 
-def gpu_color_flags(flags) -> GpuColorFlags:
-    """The GpuColorFlags of a ColorFlags or a flag mapping (missing flags are 0)."""
-    return GpuColorFlags(**normalize_color_flags(flags).as_dict())
+def gpu_color_flags(flags=None) -> GpuColorFlags:
+    """The GpuColorFlags of a flag mapping (core.color_flags.build_color_flags); missing flags are 0."""
+    flags = flags or {}
+    return GpuColorFlags(**{key: flags.get(key, 0) for key in COLOR_FLAG_KEYS})
 
 # Resolve once at import time so Taichi sees a plain constant in `ti.loop_config`.
 # (Calling Python functions inside kernels triggers Taichi AST warnings.)
