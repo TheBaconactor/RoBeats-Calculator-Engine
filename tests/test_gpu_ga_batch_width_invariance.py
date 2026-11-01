@@ -35,7 +35,7 @@ from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_contex
 from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt
 from gear_optimizer.solver.gpu_tuning_policy import choose_ga_batch_runs
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.gamedata import Gear, SongMini
+from gear_optimizer.gamedata import Gear, SongMini, empty_stats
 from tests.items_support import make_gear, make_song_mini
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from tests.curves_support import synthetic_curves
@@ -164,7 +164,7 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
     slot_count = np.asarray(gpu_arrays["slot_count"], dtype=np.int32)
 
     selected_color = _SELECTED_COLOR
-    base_fixed_stats_arr = build_stats_array({})
+    base_fixed_stats_arr = build_stats_array(empty_stats())
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
 
     gear_name_rank, mini_sig_id = effective_tables_for_context(

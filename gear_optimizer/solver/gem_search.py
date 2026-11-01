@@ -27,6 +27,7 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_NORMAL,
 )
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
+from gear_optimizer.stats import STAT_GEMS
 
 # (CM, FM) gem pairs per bound block side.
 _TILE = 8
@@ -82,19 +83,15 @@ class GemWinner:
 def color_flags(primary_color: str, secondary_color: str, selected_color: str) -> tuple[int, ...]:
     """Which gem elements raise the song's colors: (PP->primary, PP->secondary, CM->p, CM->s, FM->p, FM->s,
     element->p, element->s, single color)."""
-    primary = str(primary_color or "")
-    secondary = str(secondary_color or "")
-    selected = str(selected_color or "")
+    gem_flags = []
+    for stat in ("Perfect Points", "Combo Multiplier", "Fever Multiplier"):
+        element = STAT_GEMS[stat][1]
+        gem_flags += [int(primary_color == element), int(secondary_color == element)]
     return (
-        int(primary == "Chill"),
-        int(secondary == "Chill"),
-        int(primary == "Flow"),
-        int(secondary == "Flow"),
-        int(primary == "Rush"),
-        int(secondary == "Rush"),
-        int(primary == selected and bool(selected)),
-        int(secondary == selected and bool(selected)),
-        int(primary == secondary),
+        *gem_flags,
+        int(bool(selected_color) and primary_color == selected_color),
+        int(bool(selected_color) and secondary_color == selected_color),
+        int(primary_color == secondary_color),
     )
 
 
@@ -265,9 +262,11 @@ def gem_groups(
     """The gem-search groups of a batch of loadouts (base_components rows: PP, CM, FM, primary, secondary, FT, FF) over
     every FT/FF split of total_budget (FT gems raise Beat, FF gems Vibe)."""
     ft_values, ff_values, residual_values = ftff_combo_arrays(int(total_budget))
+    ft_element, ff_element = STAT_GEMS["Fever Time"][1], STAT_GEMS["Fever Fill Rate"][1]
     primary_delta, secondary_delta = (
         np.asarray(
-            (ft_values * int(color == "Beat") + ff_values * int(color == "Vibe")) * STAT_GEM_ELEMENT_GAIN, dtype=np.int32
+            (ft_values * int(color == ft_element) + ff_values * int(color == ff_element)) * STAT_GEM_ELEMENT_GAIN,
+            dtype=np.int32,
         )
         for color in (primary_color, secondary_color)
     )
@@ -279,7 +278,7 @@ def gem_groups(
         frontier_idx_by_stat,
         primary_delta,
         secondary_delta,
-        not {primary_color, secondary_color} & {"Beat", "Vibe"},
+        not {primary_color, secondary_color} & {ft_element, ff_element},
         min(int(total_notes), 100),
         max(0, int(total_notes) - 100),
     )

@@ -15,7 +15,7 @@ import numpy as np
 from ...gamedata import Stats, StatCurves
 from ...rules import GEM_BUDGET, MAX_STAT
 from ...stats import GEM_KINDS, apply_gems
-from ..base_stats import build_stats_dict, build_stats_list
+from ..base_stats import STAT_NAMES
 from ..force_greats_common import response_frontier_base_components_row
 from ..gem_search import SurfacePool, gem_groups, gem_winners
 from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
@@ -37,7 +37,7 @@ def solve_best_fever_combination_batch(
 ) -> list[GemSolve]:
     """Each pre-gem stat row's best gem allocation, one GemSolve per row in order; a tie goes to the search's first
     FT/FF split, then its first surface, then the fewest CM, FM and PP gems."""
-    rows = [build_stats_dict(build_stats_list(s)) for s in stats_list]
+    rows = [{name: s[name] for name in STAT_NAMES} for s in stats_list]
     if not rows:
         return []
     chart = song.chart

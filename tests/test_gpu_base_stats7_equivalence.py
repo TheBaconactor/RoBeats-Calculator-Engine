@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
+from gear_optimizer.gamedata import empty_stats
 from gear_optimizer.solver.base_stats import build_stats_array, build_stats_dict
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
@@ -132,7 +133,7 @@ def real_ga_run():
     slot_start = np.asarray(gpu_arrays["slot_start"], dtype=np.int32)
     slot_count = np.asarray(gpu_arrays["slot_count"], dtype=np.int32)
 
-    base_stats_fixed: dict[str, int] = {}
+    base_stats_fixed = empty_stats()
     selected_color = _SELECTED_COLOR
     base_fixed_stats_arr = build_stats_array(base_stats_fixed)
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)

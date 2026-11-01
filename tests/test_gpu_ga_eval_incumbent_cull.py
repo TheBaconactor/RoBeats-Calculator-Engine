@@ -29,7 +29,7 @@ import pytest
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.gamedata import Gear, SongMini
+from gear_optimizer.gamedata import Gear, SongMini, empty_stats
 from tests.items_support import make_gear, make_song_mini
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 
@@ -237,7 +237,7 @@ def eval_device_state():
     item_stats = np.asarray(gpu_arrays["item_stats"], dtype=np.int32)
     slot_start = np.asarray(gpu_arrays["slot_start"], dtype=np.int32)
     slot_count = np.asarray(gpu_arrays["slot_count"], dtype=np.int32)
-    base_fixed_stats_arr = build_stats_array({})
+    base_fixed_stats_arr = build_stats_array(empty_stats())
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
 
     song = _song()
