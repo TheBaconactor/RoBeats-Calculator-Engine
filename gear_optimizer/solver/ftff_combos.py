@@ -88,18 +88,19 @@ def ftff_shortlist(
         axis=1,
     )
     surfaces, surface_of_row = np.unique(rows, axis=0, return_inverse=True)
-    surface_of_row = surface_of_row.reshape(-1)
+    # Each cell's distinct surfaces, ascending: (cell, surface) pairs of the cell's frontier rows, deduplicated.
     offsets = np.asarray(payload.grid_frontier_offset[0], dtype=np.int64).ravel()
     counts = np.asarray(payload.grid_frontier_count[0], dtype=np.int64).ravel()
-    cell_surfaces = [np.unique(surface_of_row[o : o + n]) for o, n in zip(offsets.tolist(), counts.tolist())]
-    cell_count = np.asarray([len(s) for s in cell_surfaces], dtype=np.int64)
-    cell_start = np.concatenate([[0], np.cumsum(cell_count)[:-1]]).astype(np.int64)
+    first = np.cumsum(counts) - counts
+    row = np.repeat(offsets - first, counts) + np.arange(int(counts.sum()))
+    pairs = np.unique(np.repeat(np.arange(len(counts)), counts) * len(surfaces) + surface_of_row.reshape(-1)[row])
+    cell_count = np.bincount(pairs // len(surfaces), minlength=len(counts))
     side = MAX_STAT + 1
     keep_bits = np.zeros((side * side, (len(combo_ft) + 63) // 64), dtype=np.uint64)
     _shortlist_keep(
         np.ascontiguousarray(reach.ravel()), combo_index, int(total_budget), int(gem_scale_fever),
-        np.stack([cell_start, cell_count], axis=1), np.concatenate(cell_surfaces), np.ascontiguousarray(surfaces),
-        np.asarray(element_gains, dtype=np.int64), keep_bits,
+        np.stack([np.cumsum(cell_count) - cell_count, cell_count], axis=1), pairs % len(surfaces),
+        np.ascontiguousarray(surfaces), np.asarray(element_gains, dtype=np.int64), keep_bits,
     )
     start, count, combos = _decode_keep(keep_bits, len(combo_ft))
     return FtffShortlist(start, count, combos, int(total_budget))
@@ -122,10 +123,15 @@ def _decode_keep(keep_bits, n_combos):
     combos = np.empty(start[-1] + count[-1], dtype=np.int32)
     for key in range(n_keys):
         pos = start[key]
-        for c in range(n_combos):
-            if (keep_bits[key, c >> 6] >> np.uint64(c & 63)) & np.uint64(1):
-                combos[pos] = c
-                pos += 1
+        for w in range(keep_bits.shape[1]):
+            x = keep_bits[key, w]
+            c = w * 64
+            while x:
+                if x & np.uint64(1):
+                    combos[pos] = c
+                    pos += 1
+                x >>= np.uint64(1)
+                c += 1
     return start, count, combos
 
 
@@ -139,7 +145,7 @@ def _shortlist_keep(reach, combo_index, budget, gem_scale, cell_ranges, cell_sur
     option's beaters are found once. A beater at (xp, yp) is reachable exactly from the keys with ft0 <= xp and
     ff0 <= yp (it has r >= the option's, so it fits the budget wherever the option does): the option is kept for the
     keys it fits (ft0 <= x, ff0 <= y within the budget) outside the quadrants below its beaters' corners
-    (min(xp, x), min(yp, y)), a staircase. O(options^2 / gem_scale^2) beater checks and O(kept) emission, against
+    (min(xp, x), min(yp, y)), a staircase. O(options^2 / (2 gem_scale^2)) beater checks and O(kept) emission, against
     O(keys x options per key x log) for scoring every key apart.
 
     combo_index: (a, b) -> index in the combo table; cell_ranges: (cells, 2) start and count into cell_surfaces;
@@ -150,7 +156,8 @@ def _shortlist_keep(reach, combo_index, budget, gem_scale, cell_ranges, cell_sur
     wx, wy = gains[0] - gains[2], gains[1] - gains[2]
     for i in range(gem_scale):
         for j in range(gem_scale):
-            # Options of the class in lattice units: cell (i + gem_scale X, j + gem_scale Y).
+            # Options of the class in lattice units (cell (i + gem_scale X, j + gem_scale Y)) by anti-diagonal
+            # X + Y: an option's beaters (r >=, so X + Y <=) are the options before diagonal_end[its X + Y].
             nx, ny = (MAX_STAT - i) // gem_scale + 1, (MAX_STAT - j) // gem_scale + 1
             n = 0
             for X in range(nx):
@@ -159,13 +166,15 @@ def _shortlist_keep(reach, combo_index, budget, gem_scale, cell_ranges, cell_sur
             ox = np.empty(n, dtype=np.int64)
             oy = np.empty(n, dtype=np.int64)
             osf = np.empty(n, dtype=np.int64)
+            diagonal_end = np.empty(nx + ny - 1, dtype=np.int64)
             n = 0
-            for X in range(nx):
-                for Y in range(ny):
-                    cell = (i + gem_scale * X) * side + j + gem_scale * Y
+            for d in range(nx + ny - 1):
+                for X in range(max(0, d - ny + 1), min(nx, d + 1)):
+                    cell = (i + gem_scale * X) * side + j + gem_scale * (d - X)
                     for q in range(cell_ranges[cell, 0], cell_ranges[cell, 0] + cell_ranges[cell, 1]):
-                        ox[n], oy[n], osf[n] = X, Y, cell_surfaces[q]
+                        ox[n], oy[n], osf[n] = X, d - X, cell_surfaces[q]
                         n += 1
+                diagonal_end[d] = n
             # stair[X]: the highest beaten Y of keys in column X (before the running maximum), -1 none.
             stair = np.empty(nx, dtype=np.int64)
             for o in range(n):
@@ -173,10 +182,10 @@ def _shortlist_keep(reach, combo_index, budget, gem_scale, cell_ranges, cell_sur
                 w_o = wx * xo + wy * yo
                 stair[: xo + 1] = -1
                 dead = False
-                for p in range(n):
+                for p in range(diagonal_end[xo + yo]):
                     xp, yp, sp = ox[p], oy[p], osf[p]
                     w_p = wx * xp + wy * yp
-                    if xp + yp > xo + yo or w_p < w_o:
+                    if w_p < w_o:
                         continue
                     if sp == so:
                         # Same surface: an equal (r, v) beats only from a higher combo index.
