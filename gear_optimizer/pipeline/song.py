@@ -57,18 +57,9 @@ class NativeSongFGState:
 
 
 @dataclass
-class NativeSongDBState:
-    db_best_score: int = 0
-    db_best_fg_score: int = 0
-    db_baseline_valid: bool = False
-    record_info: Optional[dict[str, Any]] = None
-
-
-@dataclass
 class NativeSongRuntimeState:
     song_slot: int = 0
     fg: NativeSongFGState = field(default_factory=NativeSongFGState)
-    db: NativeSongDBState = field(default_factory=NativeSongDBState)
 
 
 # eq=False (identity equality and hash): a generated value __eq__ would compare NativeSongGPUInputs' numpy fields
@@ -78,9 +69,3 @@ class NativeSong:
     config: NativeSongConfig
     gpu_inputs: NativeSongGPUInputs
     runtime: NativeSongRuntimeState
-
-
-def native_song_label(song: NativeSong) -> str:
-    """The song's progress label: its queue label, else its name."""
-    return song.config.task_key or song.config.song_name
-

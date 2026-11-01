@@ -6,7 +6,6 @@ from typing import Any
 from gear_optimizer.pipeline.song import (
     NativeSong,
     NativeSongConfig,
-    NativeSongDBState,
     NativeSongFGState,
     NativeSongGPUInputs,
     NativeSongRuntimeState,
@@ -22,7 +21,6 @@ _FIELD_PATH_BY_NAME = {
     **{name: ("gpu_inputs",) for name in _field_names(NativeSongGPUInputs)},
     "song_slot": ("runtime",),
     **{name: ("runtime", "fg") for name in _field_names(NativeSongFGState)},
-    **{name: ("runtime", "db") for name in _field_names(NativeSongDBState)},
 }
 
 

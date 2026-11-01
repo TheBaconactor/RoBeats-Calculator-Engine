@@ -1,6 +1,3 @@
-import os
-import queue
-import sys
 import types
 
 import pytest
@@ -8,102 +5,77 @@ import pytest
 from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.domain.jobs import SharedRunContext, SongTask
+from gear_optimizer.settings import RunSettings
 from gear_optimizer.solver.gpu_executor import GpuFatalError, GpuServiceTimeoutError
 
 
-def _make_minimal_app() -> GearOptimizerApp:
+def _app() -> GearOptimizerApp:
     app = object.__new__(GearOptimizerApp)
+    app._progress_enabled = False
     app._progress = None
+    app._hotkey_thread = None
+    app._session_new_records = 0
+    app._session_new_record_best_by_song = {}
     app._stop_requested_now = lambda: False
-    app._start_post_processor = lambda _total: (queue.Queue(), object())
-    app._stop_post_processor = lambda _queue, _proc: True  # every song stored
-    app._set_runtime_progress_counts = lambda **_kwargs: None
-    app._progress_event = lambda **_kwargs: None
     return app
 
 
-def _build_tasks(*, count: int = 2):
+def _tasks(count: int) -> list[SongTask]:
     context = SharedRunContext(multi_start=3, curves={}, gears={}, minis={}, ga_depth=1)
     return [SongTask(f"song-{idx}.txt", f"Song {idx}", PRECISE, context) for idx in range(count)]
 
 
-def _patch_queue(monkeypatch, run_queue) -> dict:
-    """The app's run with pipeline.solve.run_queue replaced: no GPU executor, no post-processor process."""
-    from gear_optimizer.pipeline import solve as solve_module
-    from gear_optimizer.solver import gpu_executor
+def _solve_queue(monkeypatch, outcome) -> list:
+    """The app's worker pool replaced: `outcome(tasks, kwargs)` plays the run."""
+    import gear_optimizer.app as app_module
 
-    seen: dict = {}
-
-    class _Executor:
-        def start(self):
-            seen["started"] = True
-
-        def stop(self):
-            seen["stopped"] = True
-
-    monkeypatch.setattr(gpu_executor, "get_gpu_executor", _Executor)
-    monkeypatch.setattr(solve_module, "run_queue", run_queue)
-    return seen
-
-
-def test_the_run_solves_the_queue_with_run_queue_posting_to_the_post_processor(monkeypatch):
     calls = []
-    seen = _patch_queue(monkeypatch, lambda tasks, executor, *, post, **kwargs: calls.append((tasks, post)))
-    tasks = _build_tasks(count=2)
-    app = _make_minimal_app()
-    post_queue: queue.Queue = queue.Queue()
-    app._start_post_processor = lambda _total: (post_queue, object())
 
-    app._run_sequential(tasks)
+    def solve_queue(tasks, **kwargs):
+        calls.append(kwargs)
+        return outcome(tasks, kwargs)
 
-    assert calls == [(tasks, post_queue.put)]
-    assert seen["started"] and seen["stopped"]  # a batch run persists Taichi's offline cache
+    monkeypatch.setattr(app_module, "solve_queue", solve_queue)
+    return calls
 
 
-def test_a_failed_run_raises(monkeypatch):
-    def _raise_runtime(*_args, **_kwargs):
-        raise RuntimeError("boom")
+def test_the_queue_goes_to_the_configured_workers_capped_by_its_size(monkeypatch):
+    calls = _solve_queue(monkeypatch, lambda tasks, kw: [kw["on_done"](t.label, 0, 10) for t in tasks])
+    app = _app()
+    app._solve(_tasks(3), RunSettings(workers=8))
+    app._solve(_tasks(9), RunSettings(workers=8))
+    assert [call["workers"] for call in calls] == [3, 8]
+    assert app._completed_tasks == 9 and app._session_new_records == 9
 
-    _patch_queue(monkeypatch, _raise_runtime)
-    with pytest.raises(RuntimeError, match="boom"):
-        _make_minimal_app()._run_sequential(_build_tasks(count=2))
+
+def test_without_a_workers_setting_the_machine_decides(monkeypatch):
+    import gear_optimizer.app as app_module
+
+    calls = _solve_queue(monkeypatch, lambda tasks, kw: 0)
+    monkeypatch.setattr(app_module, "solve_worker_count", lambda: 5)
+    _app()._solve(_tasks(9), RunSettings())
+    assert calls[0]["workers"] == 5
 
 
 def test_a_run_whose_songs_failed_raises_after_the_run(monkeypatch):
-    app = _make_minimal_app()
-    app._stop_post_processor = lambda _queue, _proc: False  # the post-processor reported failed songs
-    ran = []
-    _patch_queue(monkeypatch, lambda *_a, **_k: ran.append(1))
+    def outcome(tasks, kw):
+        kw["on_failed"](tasks[0].label)
+        kw["on_done"](tasks[1].label, 5, 5)
 
-    with pytest.raises(RuntimeError, match="failed in this run"):
-        app._run_sequential(_build_tasks(count=2))
-    assert ran == [1]
-
-
-def test_a_gpu_timeout_ends_the_run(monkeypatch):
-    def _raise_timeout(*_args, **_kwargs):
-        raise GpuServiceTimeoutError("GPU call _ga_turn timed out after 240.0s")
-
-    _patch_queue(monkeypatch, _raise_timeout)
-    with pytest.raises(GpuServiceTimeoutError, match="timed out"):
-        _make_minimal_app()._run_sequential(_build_tasks())
+    _solve_queue(monkeypatch, outcome)
+    app = _app()
+    with pytest.raises(RuntimeError, match="1 song\\(s\\) failed in this run"):
+        app._solve(_tasks(2), RunSettings(workers=2))
+    assert app._completed_tasks == 2
 
 
-def test_configure_execution_sizes_the_ga_buffers_and_starts_the_gpu_executor(monkeypatch):
-    from gear_optimizer.solver import gpu_executor
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+def test_a_lost_gpu_ends_the_run(monkeypatch):
+    def outcome(tasks, kw):
+        raise GpuFatalError("GPU call _ga_turn timed out after 240.0s")
 
-    started = []
-    # No real GPU: a started executor would keep initializing Taichi after the test, racing later tests' resets.
-    monkeypatch.setattr(gpu_executor, "get_gpu_executor", lambda: types.SimpleNamespace(start=lambda: started.append(1)))
-    app = object.__new__(GearOptimizerApp)
-    app._materialize_gpu_runtime_on_main_thread = lambda: None
-    gpu_fields._REQUESTED_MAX_GA_RUNS = None
-    app._configure_execution_and_prewarm(3)
-
-    # GA buffer sizing is recorded in-process now (was the GPU_NATIVE_GA_MAX_RUNS env bridge).
-    assert gpu_fields._REQUESTED_MAX_GA_RUNS == 3
-    assert started == [1]
+    _solve_queue(monkeypatch, outcome)
+    with pytest.raises(GpuFatalError, match="timed out"):
+        _app()._solve(_tasks(2), RunSettings(workers=2))
 
 
 def test_ga_buffer_config_restores_defaults_and_clears_request_on_reset():
@@ -131,38 +103,12 @@ def test_ga_buffer_config_restores_defaults_and_clears_request_on_reset():
         gpu_fields.reset_fields_state()
 
 
-def test_request_stop_requests_gpu_abort(monkeypatch):
-    import gear_optimizer.solver.gpu_executor as gpu_executor_module
-
+def test_request_stop_goes_to_the_stop_control():
     app = object.__new__(GearOptimizerApp)
-
-    class _FakeStopControl:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, bool]] = []
-
-        def request_stop(self, reason: str, *, force: bool = False):
-            self.calls.append((str(reason), bool(force)))
-            return "stop-set"
-
-    class _FakeExecutor:
-        def __init__(self) -> None:
-            self.is_running = True
-            self.abort_calls: list[str] = []
-
-        def request_abort(self, reason: str) -> None:
-            self.abort_calls.append(str(reason))
-
-    stop_control = _FakeStopControl()
-    fake_executor = _FakeExecutor()
-    app._stop_control = stop_control
-
-    monkeypatch.setattr(gpu_executor_module, "get_gpu_executor", lambda: fake_executor)
-
-    out = app.request_stop("hotkey stop", force=True)
-
-    assert out == "stop-set"
-    assert stop_control.calls == [("hotkey stop", True)]
-    assert fake_executor.abort_calls == ["stop requested (hotkey stop)"]
+    calls = []
+    app._stop_control = types.SimpleNamespace(request_stop=lambda reason, *, force=False: calls.append((reason, force)))
+    app.request_stop("hotkey stop", force=True)
+    assert calls == [("hotkey stop", True)]
 
 
 def _looping_app(monkeypatch, tmp_path, failure: BaseException):

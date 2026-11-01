@@ -21,8 +21,6 @@ Environment variables the engine reads (every one of them):
     ROBEATSMETA_OPTIMIZER_SERVICE_MODE  running under the :8765 service (no self-update, GPU request timeouts,
                                         GPU runtime failures stop the process)
     ROBEATSMETA_OPTIMIZER_PERSISTENT_WORKER  keep the GPU executor alive between service solves
-    METAFINDER_PASS_STARTED             set by the engine when it relaunches itself after a memory-guard restart: when
-                                        the pass began (the relaunched run skips the solves stored since)
   :8765 service (see ServiceSettings) and MetaFinder distribution (see MetaFinderSettings).
 """
 
@@ -133,6 +131,7 @@ class RunSettings:
     multi_start: int = 5
     memory_soft_limit_gb: float = 0.0  # 0: no absolute cap
     memory_soft_limit_percent: float | None = None  # None: the platform default; <= 0 disables
+    workers: int = 0  # solve processes; 0: cpu_affinity.solve_worker_count()
 
 
 # (section, key as configparser lowercases it) -> (RunSettings field, value type)
@@ -148,6 +147,7 @@ _CONFIG_KEYS: dict[tuple[str, str], tuple[str, type]] = {
     ("IterationEngine", "ga_multistart"): ("multi_start", int),
     ("IterationEngine", "memorysoftlimitgb"): ("memory_soft_limit_gb", float),
     ("IterationEngine", "memorysoftlimitpercent"): ("memory_soft_limit_percent", float),
+    ("IterationEngine", "workers"): ("workers", int),
 }
 
 
@@ -184,8 +184,10 @@ def read_run_settings(path: Path | None = None) -> RunSettings:
                 continue  # an empty text value means the default (e.g. `Difficulty =` is All)
             values[name] = _parse_value(raw, kind, where=f"{config_file}: [{section}] {key}")
     settings = RunSettings(**values)
-    if settings.song_repeats < 1 or settings.song_queue_limit < 0 or settings.search_depth < 1 or settings.multi_start < 1:
-        raise ValueError(f"{config_file}: SongRepeats/GA_SearchDepth/GA_MultiStart must be >= 1, SongQueueLimit >= 0")
+    if (settings.song_repeats < 1 or settings.song_queue_limit < 0 or settings.search_depth < 1
+            or settings.multi_start < 1 or settings.workers < 0):
+        raise ValueError(f"{config_file}: SongRepeats/GA_SearchDepth/GA_MultiStart must be >= 1, SongQueueLimit and "
+                         "Workers >= 0")
     return settings
 
 
@@ -199,20 +201,6 @@ def reasoning_search(level: str) -> tuple[int, int]:
     multiplier = REASONING_LEVELS[level]
     defaults = RunSettings()
     return defaults.search_depth * multiplier, defaults.multi_start * multiplier
-
-
-PASS_STARTED_ENV = "METAFINDER_PASS_STARTED"
-
-
-def pass_started() -> float | None:
-    """When the pass a relaunched run continues began (epoch seconds); None for a fresh run."""
-    value = _env(PASS_STARTED_ENV)
-    if not value:
-        return None
-    try:
-        return float(value)
-    except ValueError as exc:
-        raise ValueError(f"{PASS_STARTED_ENV} must be a number, got {value!r}") from exc
 
 
 def ga_seed() -> int | None:

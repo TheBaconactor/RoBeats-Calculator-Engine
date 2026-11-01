@@ -61,7 +61,6 @@ def _compare(
         p = stats[row, 3] + 3 * (ft * flags[row, 0] + ff * flags[row, 2])
         s = stats[row, 4] + 3 * (ft * flags[row, 1] + ff * flags[row, 3])
         result = solve_combo_warmstart_preloaded(
-            row,
             combo,
             stats[row, 5],
             3,
@@ -74,8 +73,6 @@ def _compare(
             stats[row, 4],
             0,
             0,
-            53,
-            53,
             0,
         )
         for i in ti.static(range(5)):

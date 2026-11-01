@@ -47,7 +47,7 @@ def _assert_darwin_main_thread_materialization() -> None:
 
     Raising here converts that unrecoverable trap into an ordinary exception the caller can shed
     on. Hosts that want in-process GPU on darwin materialize on the main thread first (see
-    ``app.py::_materialize_gpu_runtime_on_main_thread``); once that has run, ``init_taichi()``
+    ``gpu_executor.start_gpu_executor``); once that has run, ``init_taichi()``
     short-circuits on ``_ti_initialized`` and every thread proceeds normally.
 
     Scoped to the first materialization only: the GLFW context is process-global and refcounted,

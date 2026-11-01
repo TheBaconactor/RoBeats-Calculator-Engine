@@ -44,9 +44,6 @@ def request_run_settings(*, repeats: int, reasoning: str) -> RunSettings:
 
 class PersistentOptimizerSession:
     def __init__(self) -> None:
-        from gear_optimizer.app import GearOptimizerApp
-
-        self._app = GearOptimizerApp()
         engine_paths = paths()
         self._chart_path = engine_paths.chart_dir("Hard") / "service_request.txt"
         # Deleted between solves, so it must be this worker's own database (the service sets EVOLUTION_DB_PATH to it).
@@ -73,8 +70,11 @@ class PersistentOptimizerSession:
         self._gears = load_gears(paths().gears_csv)
         self._minis = load_minis(paths().minis_csv)
 
-        # Size the GA run buffers for the largest multi-start a request can ask for.
-        self._app._configure_execution_and_prewarm(reasoning_search("max")[1])
+        from gear_optimizer.solver.gpu_executor import start_gpu_executor
+
+        # Size the GA run buffers for the largest multi-start a request can ask for; the executor keeps Taichi and
+        # the kernels warm between requests.
+        start_gpu_executor(reasoning_search("max")[1])
         reassert_process_background_only()
         self._initialized = True
 
@@ -104,9 +104,6 @@ class PersistentOptimizerSession:
         if gear_dir:
             gears, minis = load_gears(Path(gear_dir) / "Gears.csv"), load_minis(Path(gear_dir) / "Minis.csv")
 
-        self._app._stop_cached_result = False
-        self._app._stop_requested.clear()
-        self._app._force_exit_requested.clear()
         set_memory_watchdog_limit(compute_memory_guard_limit(run))
         schema.ensure(self._result_db)
         tasks = build_queue(run, SharedRunContext(multi_start=run.multi_start, curves=self._curves, gears=gears,
@@ -127,12 +124,11 @@ class PersistentOptimizerSession:
 
     def _solve_direct(self, tasks: list, gears: Mapping[str, Gear], minis: Mapping[str, Mini]) -> None:
         """Each task (a song repeat) solved in this process and stored into the result database."""
-        from gear_optimizer.pipeline.post_processor import store_solve
         from gear_optimizer.pipeline.solve import solve_song
+        from gear_optimizer.pipeline.storing import store_solve
         from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
         executor = get_gpu_executor()
-        executor.start()  # once: it keeps Taichi and the kernels warm between requests
         conn = schema.connect(self._result_db, write=True)
         try:
             for task in tasks:

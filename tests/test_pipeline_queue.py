@@ -56,16 +56,12 @@ def test_unstored_solves_come_first_by_chart_then_the_least_recently_solved(data
     ]
 
 
-def test_the_queue_limit_counts_solve_runs_and_a_relaunched_pass_skips_what_it_stored(data):
+def test_the_queue_limit_counts_solve_runs(data):
     for name in ("A", "B"):
         _chart(data, "Hard", name)
     _stored(data, "A", PRECISE, 100.0)
     assert _solves(build_queue(RunSettings(song_queue_limit=3), CONTEXT)) == [
         ("A", NON_PRECISE), ("B", PRECISE), ("B", NON_PRECISE)
-    ]
-    _stored(data, "B", PRECISE, 500.0)
-    assert _solves(build_queue(RunSettings(), CONTEXT, solved_before=400.0)) == [
-        ("A", NON_PRECISE), ("B", NON_PRECISE), ("A", PRECISE)
     ]
 
 

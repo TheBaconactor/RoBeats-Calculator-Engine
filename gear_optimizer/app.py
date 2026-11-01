@@ -4,15 +4,10 @@ import multiprocessing
 import sys
 import threading
 import time
-from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
+from gear_optimizer.core.cpu_affinity import solve_worker_count
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.store import schema
-from gear_optimizer.core.memory import (
-    compute_memory_guard_limit,
-    set_memory_watchdog_limit,
-    memory_release_requested,
-    restart_process_for_memory_guard,
-)
+from gear_optimizer.core.memory import compute_memory_guard_limit
 from gear_optimizer.domain.jobs import SharedRunContext
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
@@ -26,15 +21,15 @@ from gear_optimizer.ui.progress import (
     _stream_is_tty,
 )
 from gear_optimizer.pipeline.queue import build_queue
+from gear_optimizer.pipeline.workers import solve_queue
 from gear_optimizer import settings
 from gear_optimizer.settings import RunSettings, paths
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
-from gear_optimizer.task_execution import TaskExecutionMixin
 
 logger = logging.getLogger(__name__)
 
 
-class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
+class GearOptimizerApp(RuntimeUiMixin):
     def __init__(self):
         self.setup_logging()
         self._stop_control = StopController(bin_dir=str(paths().bin_dir))
@@ -54,21 +49,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._orig_stdout = None
         self._orig_stderr = None
         self._hotkey_thread: threading.Thread | None = None
-        self._run_current_song_label = ""
-        self._runtime_status_name = "idle"
-        self._stop_poll_interval_sec = 0.05
         self._stop_next_check_monotonic = 0.0
         self._stop_cached_result = False
         self._session_new_records = 0
-        self._session_new_record_keys: set[str] = set()
         self._session_new_record_best_by_song: dict[str, int] = {}
-        self._runtime_completed_count = 0
-        self._runtime_total_count = 0
-        self._runtime_failed_count = 0
-        # The last run's completed and total tasks (_execute_tasks), for the throughput line.
-        self._last_completed_tasks = 0
-        self._last_total_tasks = 0
-        self._passes_begun = 0
+        self._completed_tasks = 0
 
     def setup_logging(self) -> None:
         from gear_optimizer.core.logging_config import configure_default_logging
@@ -76,14 +61,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         configure_default_logging()
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
-        try:
-            return self._stop_control.request_stop(reason, force=force)
-        finally:
-            from gear_optimizer.solver.gpu_executor import get_gpu_executor
-
-            gpu_executor = get_gpu_executor()
-            if gpu_executor.is_running:
-                gpu_executor.request_abort(f"stop requested ({reason})")
+        """Stop the run: the workers take no further song and abort the GAs in progress."""
+        self._stop_control.request_stop(reason, force=force)
 
     def _stop_requested_now(self) -> bool:
         if self._stop_cached_result:
@@ -94,87 +73,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if self._stop_control.stop_requested_now():
             self._stop_cached_result = True
             return True
-        self._stop_next_check_monotonic = now + self._stop_poll_interval_sec
+        self._stop_next_check_monotonic = now + 0.05
         return False
-
-    def _materialize_gpu_runtime_on_main_thread(self) -> None:
-        """
-        Materialize the Taichi/Vulkan GPU runtime once, on the OS main thread.
-
-        Required OS/GPU dispatch-safety boundary (the only kind of branch the
-        canonical-path rule permits): ``ti.vulkan`` lowers through MoltenVK on
-        macOS, and Taichi acquires a GLFW/Cocoa context inside
-        ``VulkanProgramImpl::materialize_runtime``. GLFW/AppKit initialization
-        traps (SIGTRAP) unless it runs on the OS main thread. The GPU executor
-        owns all *subsequent* GPU command submission on its own thread, but that
-        one-time runtime materialization must be pinned to the main thread first.
-        This mirrors the hub's ``_materialize_optimizer_runtime_on_main_thread``,
-        which is why the live API serves GPU scores on this same Mac without
-        trapping.
-
-        Idempotent (guarded by ``is_initialized()``) and completes synchronously
-        BEFORE the GPU executor thread is started, giving a strict happens-before
-        ordering with no concurrent GPU access (no races). Gated to darwin at the
-        call site: Linux/Windows have no main-thread GLFW requirement and keep
-        their prior lazy executor-thread init, so this does not add an eager
-        startup GPU dependency there. On darwin a materialization failure is a
-        genuine GPU-first fatal (the lazy path would otherwise SIGTRAP), so it
-        intentionally fails loud rather than being swallowed.
-        """
-        from gear_optimizer.solver.taichi_gem.runtime import is_initialized
-
-        if is_initialized():
-            return
-        if threading.current_thread() is not threading.main_thread():
-            raise RuntimeError(
-                "GPU runtime must be materialized on the OS main thread; got thread "
-                f"'{threading.current_thread().name}'. On macOS this is fatal: "
-                "Taichi/MoltenVK acquires a GLFW/Cocoa context during "
-                "materialize_runtime, which traps off the main thread."
-            )
-        from gear_optimizer.solver.taichi_gem import api as gpu_api
-        from gear_optimizer.solver.taichi_gem.runtime import ti
-
-        logger.info("[Startup][GPU] Materializing Taichi/Vulkan runtime on main thread...")
-        gpu_api.ensure_ready()
-        # Force full runtime materialization here on the main thread (GLFW/Cocoa
-        # init) rather than letting it happen lazily on the executor thread.
-        ti.sync()
-        logger.info("[Startup][GPU] Taichi/Vulkan runtime materialized on main thread.")
-
-    def _configure_execution_and_prewarm(self, multi_start: int) -> None:
-        from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-        gpu_fields.configure_ga_run_buffers(max_runs=max(1, multi_start), max_genomes=GA_POPULATION_SIZE)
-        # macOS-only required dispatch-safety boundary: on darwin `ti.vulkan` lowers through
-        # MoltenVK and Taichi acquires a GLFW/Cocoa context during materialize_runtime, which
-        # traps off the OS main thread. Pin that one-time materialization to the main thread
-        # before any GPU executor thread spawns. Placed AFTER configure_ga_run_buffers (which
-        # MUST precede the first ensure_fields_allocated) and BEFORE the executor start below /
-        # the lazy executor start on the single-song (inflight<=1) task path. On Linux/Windows
-        # there is no main-thread requirement, so we leave their startup path exactly as before
-        # (lazy init on the executor thread) and do not introduce an eager startup GPU dependency.
-        if sys.platform == "darwin":
-            self._materialize_gpu_runtime_on_main_thread()
-        logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
-        from gear_optimizer.solver.gpu_executor import get_gpu_executor
-
-        get_gpu_executor().start()
-        logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
-
-    def _set_runtime_progress_counts(
-        self,
-        *,
-        completed: int | None = None,
-        total: int | None = None,
-        failed: int | None = None,
-    ) -> None:
-        if completed is not None:
-            self._runtime_completed_count = max(0, completed)
-        if total is not None:
-            self._runtime_total_count = max(0, total)
-        if failed is not None:
-            self._runtime_failed_count = max(0, failed)
 
     def run(self) -> int:
         """Run iterations until the queue is done (forever with LoopForever). Returns the process exit status:
@@ -201,31 +101,24 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             restore_stderr(self._orig_stderr)
         return 1 if self._run_failed else 0
 
-    def _run_single_iteration(self):
-        memory_guard_restart = False
+    def _run_single_iteration(self) -> bool:
+        """Scan the charts and solve the queue; whether to run another iteration (LoopForever)."""
         start_time = time.time()
-        # A run relaunched after a memory-guard restart continues its pass; every other iteration begins one.
-        relaunched_pass = settings.pass_started() if not self._passes_begun else None
-        self._passes_begun += 1
-        pass_started = relaunched_pass if relaunched_pass is not None else start_time
         tasks = []
         loop_forever = False  # Default, updated from config.ini
         graceful_stop = False
         fatal = False
         queued_songs = 0
+        self._completed_tasks = 0
         try:
             if self._stop_requested_now():
-                graceful_stop = True
-                loop_forever = False
                 return False
             update_and_restart_client()
             frontier_sync = sync_frontiers_from_server()
             run = settings.read_run_settings()
-            set_memory_watchdog_limit(compute_memory_guard_limit(run))
-            db_display_name = paths().database.name
             if self._banner_enabled:
                 self._print_banner()
-            logger.info(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
+            logger.info(f"[Run] Gear Optimizer started. DB file: {paths().database.name}")
             schema.ensure(paths().database)
             logger.info(" >> [ForceGreats] ResponseFrontier")
             loop_forever = run.loop_forever
@@ -236,7 +129,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             context = SharedRunContext(
                 multi_start=run.multi_start, curves=curves, gears=gears, minis=minis, ga_depth=run.search_depth
             )
-            tasks = build_queue(run, context, solved_before=relaunched_pass)
+            tasks = build_queue(run, context)
             queued_songs = len({task.song_name for task in tasks})
             charts_by_mode: dict[str, list[str]] = {}
             for task in tasks:
@@ -247,10 +140,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
                 build_missing=not frontier_sync.enabled,
             )
-            self._configure_execution_and_prewarm(run.multi_start)
-            self._start_progress(len(tasks))
-            self._execute_tasks(tasks)
-            memory_guard_restart = memory_release_requested() and self._last_completed_tasks < len(tasks)
+            self._solve(tasks, run)
         except KeyboardInterrupt:
             graceful_stop = True
             loop_forever = False
@@ -268,16 +158,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 logger.error("[Run] Fatal GPU runtime failure; exiting so the supervisor can restart cleanly.")
                 fatal = True
         finally:
-            self._stop_progress()
             elapsed = time.time() - start_time
             logger.info(f"Run completed in {elapsed:.2f}s")
             if elapsed > 0:
                 elapsed_h = elapsed / 3600.0
-                completed, total = self._last_completed_tasks, self._last_total_tasks
+                completed = self._completed_tasks
                 # Songs are estimated as tasks (capped by the queue): repeats are not told apart.
                 songs = min(queued_songs, completed)
                 logger.info(
-                    f"[Throughput] Completed {completed}/{total} task(s) (queue={queued_songs} song(s)) -> "
+                    f"[Throughput] Completed {completed}/{len(tasks)} task(s) (queue={queued_songs} song(s)) -> "
                     f"{songs / elapsed_h:.1f} songs/hour, {completed / elapsed_h:.1f} tasks/hour"
                 )
             gc.collect()
@@ -286,15 +175,39 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return False
         if fatal:
             return False
-        if memory_guard_restart:
-            restart_process_for_memory_guard(pass_started)
-            return False  # Process replaced
-        elif loop_forever:
+        if loop_forever:
             logger.info("Restarting song scan immediately...")
             return True
-        else:
-            logger.info("LoopForever=FALSE; exiting after completing queue.")
-            return False
+        logger.info("LoopForever=FALSE; exiting after completing queue.")
+        return False
+
+    def _solve(self, tasks: list, run: RunSettings) -> None:
+        """Solve and store the queue on the run's workers (config.ini Workers, else cpu_affinity.solve_worker_count).
+        Raises after the run when a song failed."""
+        if not tasks:
+            return
+        failed: list[str] = []
+
+        def song_failed(label: str) -> None:
+            failed.append(label)
+            self._song_failed(label)
+
+        self._start_progress(len(tasks))
+        self._start_hotkeys()
+        try:
+            solve_queue(
+                tasks,
+                workers=min(run.workers or solve_worker_count(), len(tasks)),
+                memory_limit_bytes=compute_memory_guard_limit(run),
+                stop_requested=self._stop_requested_now,
+                on_done=self._song_stored,
+                on_failed=song_failed,
+            )
+        finally:
+            self._stop_hotkeys()
+            self._stop_progress()
+        if failed:
+            raise RuntimeError(f"{len(failed)} song(s) failed in this run (see the [Workers] errors)")
 
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
         from gear_optimizer.solver.gpu_executor import is_fatal_gpu_error

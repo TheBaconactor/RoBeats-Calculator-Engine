@@ -27,34 +27,37 @@ flowchart TD
     D --> E["Configuration, database, and exported game data"]
     E --> F["Chart queue construction"]
     F --> G["Startup CPU work: timeline and FG frontier caches"]
-    G --> H["Main-thread Taichi/Vulkan initialization"]
-    H --> I["pipeline.solve.run_queue"]
-    I --> J["Song preparation (prep thread)"]
-    J --> K["GA and fused FG owner score (GPU executor)"]
-    K --> L["Decode and host-only exact FG materialization (finish thread)"]
-    L --> N["Canonical post-processing"]
+    G --> I["pipeline.workers.solve_queue: one process per worker"]
+    I --> J["Song preparation"]
+    J --> K["GA and fused FG owner score (the worker's GPU executor)"]
+    K --> L["Decode and host-only exact FG materialization"]
+    L --> N["Canonicalization (pipeline.storing)"]
     N --> O["Atomic SQLite persistence"]
 ```
 
 `GearOptimizerApp._run_single_iteration()` owns startup ordering:
 
 1. synchronize the client and optional managed frontier data;
-2. load configuration, resolve paths, and apply the memory guard;
+2. load configuration and resolve paths;
 3. initialize SQLite and synchronize exported game data;
 4. load stats, gear, minis, and the selected chart queue;
-5. build or verify timeline and Force Great response-frontier caches;
-6. initialize Taichi/Vulkan on the main thread; and
-7. solve the queue of `domain.jobs.SongTask`s (one per song run) with `pipeline.solve.run_queue`.
+5. build or verify timeline and Force Great response-frontier caches; and
+6. solve the queue of `domain.jobs.SongTask`s (one per song run) with `pipeline.workers.solve_queue`.
 
-Taichi initialization happens before worker scheduling because the device
-runtime is process-global and must have one unambiguous owner.
+The parent process runs no GPU work: each worker owns its Taichi/Vulkan runtime
+(a GPU executor thread, initialized on the worker's main thread on macOS).
 
 ## Execution and ownership
 
-`gear_optimizer/pipeline/solve.py` solves the queue in one optimizer process
-with a single device owner: one GA runs at a time on the GPU executor while a
-prep thread prepares the next songs and a finish thread finishes the previous
-ones.
+`gear_optimizer/pipeline/workers.py` solves the queue on `Workers` processes
+(config.ini). Each worker takes the next task from a shared queue, solves it
+(`pipeline/solve.py`: preparation, the GA and FG turn on its GPU executor, the
+host-only finish) and stores it (`pipeline/storing.py`), the path the
+service's persistent worker takes for one request. Workers report on a pipe of
+their own; the parent counts progress, replaces a worker that left for memory
+or died in a song (that song fails), and stops them all on a stop request or a
+lost GPU. GA seeds are per song, mode and run, so results do not depend on the
+number of workers or on which worker took a song.
 
 ```mermaid
 flowchart LR
@@ -66,18 +69,20 @@ flowchart LR
 
 The main execution owners are:
 
-- `gear_optimizer/pipeline/solve.py` for the song stages and the queue;
+- `gear_optimizer/pipeline/workers.py` for the queue on the run's worker
+  processes;
+- `gear_optimizer/pipeline/solve.py` for a song's stages;
 - `gear_optimizer/pipeline/song.py` for the state of a song being solved and
   `pipeline/prepare.py` for its preparation;
 - `gear_optimizer/pipeline/ga.py` for the GA request and its decode;
 - `gear_optimizer/pipeline/fg.py` for Force Great preparation, planning and
   results;
-- `gear_optimizer/pipeline/progress.py` for records, progress and completion;
-- `gear_optimizer/solver/gpu_executor.py` for all GPU execution: one owner
-  thread initializes Taichi and runs every GPU call.
+- `gear_optimizer/pipeline/storing.py` for storing a solved song;
+- `gear_optimizer/solver/gpu_executor.py` for all GPU execution: in each
+  worker one owner thread initializes Taichi and runs every GPU call.
 
-Force Great payload materialization is CPU-only and runs on the finish thread;
-it never initializes or accesses the GPU.
+Force Great payload materialization is CPU-only and runs on the worker's main
+thread; it never initializes or accesses the GPU.
 
 ## Search, scoring, and Force Great frontiers
 
@@ -125,14 +130,15 @@ Force Great behavior is split by responsibility:
 Response-frontier identity includes the chart and score semantics that can
 change a result. A missing or incompatible exact surface is an error.
 
-## Post-processing and persistence
+## Canonicalization and persistence
 
-`gear_optimizer/pipeline/post_processor.py` runs in a separate process. Each
-solved song arrives as a `SongSolve` (`pipeline/results.py`: the GA surface and
-the Force Great results the FG stage published); `pipeline/canonical.py` turns
-it into store rows (the exhaustive meta gem re-solve, exact replays, identity
-and stats, each computed once) and the post-processor merges them with
-`store.db.store_results()` and prints what the database holds. Every Force
+`gear_optimizer/pipeline/storing.py` stores a solved song in the worker that
+solved it. The song arrives as a `SongSolve` (`pipeline/results.py`: the GA
+surface and the Force Great results the FG stage published);
+`pipeline/canonical.py` turns it into store rows (the exhaustive meta gem
+re-solve, exact replays, identity and stats, each computed once) and
+`store_solve` merges them with `store.db.store_results()` and prints what the
+database holds. Every Force
 Great result the FG stage evaluated stays attached to its loadout with its
 replay, whether or not it beats the meta score; the store's FG board lists
 only those that do.

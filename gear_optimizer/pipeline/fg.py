@@ -9,14 +9,13 @@ effective loadout, with their exact Base scores and validated FG results, as the
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from gear_optimizer.data.loadout_equivalence import effective_loadout_hash_from_names, effective_mini_signature_for_name
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.pipeline.progress import evaluate_fg_progress_record_update
 from gear_optimizer.pipeline.results import SolvedLoadout, SongSolve, solved_fg
 from gear_optimizer.pipeline.song import NativeSong
 from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX, build_stats_dict
@@ -37,9 +36,6 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import r
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
 from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import fg_solve_result, score_fg_base_components
 from gear_optimizer.stats import GEM_KINDS, apply_gems, gems
-
-if TYPE_CHECKING:
-    from gear_optimizer.pipeline.progress import ProgressTracker
 
 logger = logging.getLogger(__name__)
 # The FG search's beam: this many loadouts per GA run (the reasoning level sets the runs: 5 / 10 / 20).
@@ -154,10 +150,10 @@ def best_fg_results(jobs, materialize, song_name: str) -> list[tuple[int, Any]]:
     return sorted(results, key=lambda item: item[1].score, reverse=True)
 
 
-def finish_fg(song: NativeSong, ga_result: dict, progress_tracker: ProgressTracker | None = None) -> SongSolve:
-    """The song's SongSolve from its GA result ({runs_payload, fg_owner_score}), and its record info: the selected
-    surface with exact Base scores, each loadout's FG solve (loadouts with equal pre-gem stats share one) and the FG
-    results best_fg_results keeps."""
+def finish_fg(song: NativeSong, ga_result: dict) -> SongSolve:
+    """The song's SongSolve from its GA result ({runs_payload, fg_owner_score}): the selected surface with exact Base
+    scores, each loadout's FG solve (loadouts with equal pre-gem stats share one) and the FG results best_fg_results
+    keeps."""
     gpu_inputs, fg = song.gpu_inputs, song.runtime.fg
     timed, curves, selected = gpu_inputs.timed_song, gpu_inputs.curves, gpu_inputs.meta_primary_color
     payload = np.asarray(ga_result["runs_payload"], dtype=np.int32)
@@ -197,8 +193,5 @@ def finish_fg(song: NativeSong, ga_result: dict, progress_tracker: ProgressTrack
         # The surfaces (~0.5-1.5 GB) are not read again; a later access rebuilds them from the on-disk bundle.
         release_fg_response_song_memory(fg.fg_response_scoring_bundle.cache_key)
         fg.fg_response_scoring_bundle = None
-    song.runtime.db.record_info = evaluate_fg_progress_record_update(
-        song, int(payload[0, 1]), [solved for _index, solved in results], progress_tracker
-    )
     return SongSolve(song=str(song.config.db_key), tier=OPTIMIZER_BASELINE_TEAM_BUFF, timed=timed, curves=curves,
                      loadouts=tuple(loadouts), fg=tuple(results))

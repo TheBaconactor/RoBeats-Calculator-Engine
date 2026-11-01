@@ -1,16 +1,16 @@
-"""The memory guard: a watchdog thread that requests a graceful restart once the process tree's RSS reaches the soft
-limit; the relaunched run continues the pass (pipeline.queue skips the solves stored since it began)."""
+"""The memory guard: a watchdog thread that asks the process to leave once its process tree's RSS reaches the soft
+limit (a run's solve worker leaves after its song and a new worker takes its place; the service's worker leaves after
+its request)."""
 
 import logging
 import os
-import subprocess
 import sys
 import threading
 import time
 
 import psutil
 
-from ..settings import ENGINE_ROOT, PASS_STARTED_ENV, RunSettings
+from ..settings import RunSettings
 
 # Errors a per-process RSS read can raise. `psutil.AccessDenied` is a `psutil.Error`, NOT an
 # `OSError`, so it must be listed explicitly or it escapes the read guard and kills the
@@ -138,27 +138,3 @@ def detect_total_physical_memory():
         MEMORY_WATCHDOG_TOTAL_RAM_BYTES = int(psutil.virtual_memory().total)
         print(f"[MemoryGuard] Detected physical RAM: {_bytes_to_gb(MEMORY_WATCHDOG_TOTAL_RAM_BYTES):.2f} GB")
     return MEMORY_WATCHDOG_TOTAL_RAM_BYTES
-
-
-def restart_process_for_memory_guard(pass_started: float) -> None:
-    """Relaunch this run (same entry point and arguments) to release memory, then exit; the relaunched run continues
-    the pass that began at `pass_started` (epoch seconds)."""
-    message = "[MemoryGuard] Restarting optimizer to release memory and resume pending songs."
-    print(message)
-    logging.warning(message)
-    sys.stdout.flush()
-    python = sys.executable or "python"
-    if getattr(sys, "frozen", False):
-        cmd = [python, *sys.argv[1:]]  # PyInstaller: sys.executable is the app and sys.argv[0] its path
-    elif sys.argv and sys.argv[0] and os.path.exists(sys.argv[0]):
-        cmd = [python, *sys.argv]
-    else:
-        cmd = [python, str(ENGINE_ROOT / "main.py"), *sys.argv[1:]]
-    try:
-        subprocess.Popen(cmd, cwd=str(ENGINE_ROOT), env={**os.environ, PASS_STARTED_ENV: repr(float(pass_started))})
-    except OSError as exc:
-        fail_msg = f"[MemoryGuard] Failed to relaunch automatically: {exc}"
-        print(fail_msg)
-        logging.error(fail_msg)
-        sys.exit(1)
-    sys.exit(0)

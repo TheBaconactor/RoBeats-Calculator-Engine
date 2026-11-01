@@ -94,24 +94,26 @@ def _stop_this_process(message: str) -> None:
 
 
 def _init_gpu() -> None:
-    """Taichi init + the GA kernel warmups, on the owner thread."""
+    """Taichi init + the GA kernel warmups, on the owner thread. A run's workers warm up side by side: only Taichi's init
+    and the offline cache dump at shutdown hold the cross-process cache lock."""
     # Import order matters: nothing that allocates Taichi fields is imported before init_taichi.
     from .taichi_gem import runtime as ti_runtime
 
     ti_runtime.init_taichi()
     from .taichi_gem.api import ga_operations as ga_ops
 
-    with ti_runtime.offline_cache_lock(timeout_sec=None):
-        ga_ops.warmup_ga_kernels_light()
+    ga_ops.warmup_ga_kernels_light()
 
 
 def _finalize_gpu() -> None:
     """Taichi finalized on the owner thread, with the Vulkan runtime fully alive: left to interpreter exit, the offline
     kernel cache dump races daemon-thread teardown and truncates (observed: 1-9 of ~40 kernels persisted per run)."""
     try:
+        from .taichi_gem import runtime as ti_runtime
         from .taichi_gem.api.initialization import hard_reset_taichi
 
-        hard_reset_taichi(reason="executor shutdown (persist offline kernel cache)")
+        with ti_runtime.offline_cache_lock():  # one process dumps the shared cache at a time
+            hard_reset_taichi(reason="executor shutdown (persist offline kernel cache)")
     except Exception as exc:
         logger.warning("[GpuExecutor] Taichi shutdown finalize failed (offline cache may be stale): %s", exc)
 
@@ -213,3 +215,27 @@ def get_gpu_executor() -> GpuExecutor:
     if _executor is None:
         _executor = GpuExecutor()
     return _executor
+
+
+def start_gpu_executor(multi_start: int) -> GpuExecutor:
+    """The process's GPU executor, started with GA buffers for `multi_start` runs. On macOS the Taichi runtime is
+    materialized first, on the main thread: MoltenVK takes a GLFW/Cocoa context in materialize_runtime, which traps off
+    the main thread (Linux and Windows initialize on the owner thread)."""
+    import sys
+
+    from .genetic_pipeline import GA_POPULATION_SIZE
+    from .taichi_gem import fields as gpu_fields
+
+    gpu_fields.configure_ga_run_buffers(max_runs=multi_start, max_genomes=GA_POPULATION_SIZE)
+    if sys.platform == "darwin":
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("the GPU runtime must be materialized on the OS main thread on macOS, got thread "
+                               f"{threading.current_thread().name!r}")
+        from .taichi_gem import api as gpu_api
+        from .taichi_gem.runtime import ti
+
+        gpu_api.ensure_ready()
+        ti.sync()
+    executor = get_gpu_executor()
+    executor.start()
+    return executor

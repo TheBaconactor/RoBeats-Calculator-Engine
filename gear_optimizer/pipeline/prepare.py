@@ -14,7 +14,6 @@ from gear_optimizer.pipeline.fg import prepare_fg_static
 from gear_optimizer.pipeline.song import (
     NativeSong,
     NativeSongConfig,
-    NativeSongDBState,
     NativeSongGPUInputs,
     NativeSongRuntimeState,
 )
@@ -103,7 +102,7 @@ def prepare_native_song(task: SongTask) -> NativeSong:
             song_name=task.song_name,
             task_key=task.label,
             ga_seed=task.ga_seed,
-            db_key=core.db_context.db_key,
+            db_key=task.song_name.strip(),
         ),
         gpu_inputs=NativeSongGPUInputs(
             curves=context.curves,
@@ -127,13 +126,7 @@ def prepare_native_song(task: SongTask) -> NativeSong:
             fg_gear_name_rank=fg_gear_name_rank,
             fg_mini_sig_id=fg_mini_sig_id,
         ),
-        runtime=NativeSongRuntimeState(
-            db=NativeSongDBState(
-                db_best_score=core.db_context.best_score,
-                db_best_fg_score=core.db_context.best_fg_score,
-                db_baseline_valid=core.db_context.valid,
-            ),
-        ),
+        runtime=NativeSongRuntimeState(),
     )
     prepare_fg_static(song)
     # Hydrate the in-memory timeline-frontier payload cache here (host side, no Taichi) so the GPU owner's upload at

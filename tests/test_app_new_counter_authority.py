@@ -1,107 +1,41 @@
+"""The NEW-record counter: a stored song whose board's best rose by more than the epsilon counts once per song and
+session improvement (a song's runs count as the song)."""
+
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.pipeline.progress import (
-    RECORD_UPDATE_SCORE_EPSILON,
-    ProgressTracker,
-    evaluate_fg_progress_record_update,
-)
-from gear_optimizer.gamedata import STATS
-from gear_optimizer.pipeline.results import SolvedFg
-from tests.native_song_factory import make_native_song
+from gear_optimizer.ui.runtime_ui import RECORD_UPDATE_SCORE_EPSILON
 
 
-def _fg(*, score: int, paired: int) -> SolvedFg:
-    return SolvedFg(element="Rush", gems=(0,) * 6, stats=(0,) * len(STATS), surface=(0,) * 11, trace={},
-                    score=score, paired=paired)
-
-
-def _make_minimal_app() -> GearOptimizerApp:
+def _app() -> GearOptimizerApp:
     app = object.__new__(GearOptimizerApp)
     app._session_new_records = 0
-    app._session_new_record_keys = set()
     app._session_new_record_best_by_song = {}
     app._progress = None
-    app._runtime_completed_count = 0
-    app._runtime_total_count = 0
-    app._runtime_failed_count = 0
-    app._run_current_song_label = ""
-    app._runtime_status_name = "idle"
-    app._set_runtime_progress_counts = lambda **_kwargs: None
+    app._completed_tasks = 0
     return app
 
 
-def _record(song: str, *, prev_overall: int, best_overall: int, record_update: bool = True) -> dict:
-    return {
-        "song": str(song),
-        "record_update": bool(record_update),
-        "prev_overall_score": int(prev_overall),
-        "best_overall_score_run": int(best_overall),
-        "score": int(best_overall),
-        "best_fg_score_run": 0,
-    }
-
-
-def test_new_counter_counts_authoritative_song_once_for_duplicate_progress_events():
-    app = _make_minimal_app()
-    info = _record("Alpha Song (precise, Run 1/2)", prev_overall=1000, best_overall=1400)
-
-    app._progress_event(completed_delta=0, record_info=info)
-    app._progress_event(completed_delta=1, record_info=dict(info))
-
-    assert app._session_new_records == 1
-    assert app._session_new_record_keys == {"Alpha Song (precise)"}
-
-
-def test_new_counter_ignores_non_authoritative_delta_within_epsilon():
-    app = _make_minimal_app()
-    prev_overall = 5000
-    best_overall = prev_overall + int(RECORD_UPDATE_SCORE_EPSILON)
-    info = _record("Beta Song", prev_overall=prev_overall, best_overall=best_overall)
-
-    app._progress_event(completed_delta=1, record_info=info)
-
+def test_a_record_needs_the_boards_best_to_rise_by_more_than_the_epsilon():
+    app = _app()
+    app._song_stored("Alpha Song (precise)", 1000, 1000 + RECORD_UPDATE_SCORE_EPSILON)  # scoring noise
+    app._song_stored("Beta Song (precise)", 1000, 1000)  # no improvement
     assert app._session_new_records == 0
-    assert app._session_new_record_keys == set()
-
-
-def test_new_counter_dedupes_duplicate_score_by_normalized_song_name():
-    app = _make_minimal_app()
-    info1 = _record("Gamma Song (precise, Run 1/3)", prev_overall=100, best_overall=300)
-    info2 = _record("Gamma Song (precise, Run 2/3)", prev_overall=100, best_overall=300)
-
-    app._progress_event(completed_delta=0, record_info=info1)
-    app._progress_event(completed_delta=0, record_info=info2)
-
+    app._song_stored("Gamma Song (precise)", 1000, 1000 + RECORD_UPDATE_SCORE_EPSILON + 1)
     assert app._session_new_records == 1
-    assert app._session_new_record_keys == {"Gamma Song (precise)"}
-    assert app._session_new_record_best_by_song == {"Gamma Song (precise)": 300}
+    assert app._completed_tasks == 3
 
 
-def test_new_counter_counts_later_same_song_record_improvement():
-    app = _make_minimal_app()
-    info1 = _record("Gamma Song (precise, Run 1/3)", prev_overall=100, best_overall=300)
-    info2 = _record("Gamma Song (precise, Run 2/3)", prev_overall=300, best_overall=600)
-
-    app._progress_event(completed_delta=0, record_info=info1)
-    app._progress_event(completed_delta=0, record_info=info2)
-
+def test_a_songs_runs_count_as_one_song_and_only_a_higher_record_counts_again():
+    app = _app()
+    app._song_stored("Delta Song (precise, Run 1/3)", 1000, 1100)
+    app._song_stored("Delta Song (precise, Run 2/3)", 1000, 1100)  # the same best: not a new record
+    assert app._session_new_records == 1
+    app._song_stored("Delta Song (precise, Run 3/3)", 1100, 1200)
     assert app._session_new_records == 2
-    assert app._session_new_record_keys == {"Gamma Song (precise)"}
-    assert app._session_new_record_best_by_song == {"Gamma Song (precise)": 600}
+    assert app._session_new_record_best_by_song == {"Delta Song (precise)": 1200}
 
 
-def test_new_counter_counts_native_fg_record_event_before_tracker_advances():
-    app = _make_minimal_app()
-    tracker = ProgressTracker()
-    tracker.seed_valid_baseline("fg-song", best_score=1000, best_fg=900, baseline_valid=True)
-    song = make_native_song(
-        db_key="fg-song",
-        task_key="FG Song (Hard)",
-        db_best_score=1000,
-        db_best_fg_score=900,
-    )
-
-    info = evaluate_fg_progress_record_update(song, 1000, [_fg(score=1050, paired=1000)], tracker)
-    app._progress_event(completed_delta=0, record_info=info)
-
-    assert app._session_new_records == 1
-    assert app._session_new_record_keys == {"FG Song (Hard)"}
+def test_the_modes_of_a_song_are_separate_records():
+    app = _app()
+    app._song_stored("Epsilon Song (precise)", 0, 500)
+    app._song_stored("Epsilon Song (non-precise)", 0, 500)
+    assert app._session_new_records == 2

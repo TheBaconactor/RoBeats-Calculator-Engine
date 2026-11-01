@@ -14,6 +14,7 @@ available. Worker/thread sizing uses that same budget on every platform.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,33 @@ def pin_to_performance_cores() -> None:
         logger.warning("CPU: P-core pinning failed; running unpinned", exc_info=True)
 
 
+def solve_worker_count() -> int:
+    """A run's solve workers when config.ini sets none: one per logical P-core on a Windows hybrid CPU (16 on the
+    i9-13900K box; 100 songs x 2 modes: 0.25 s per solve, 0.32 with 8 workers, 2.02 for the one-process engine), a
+    quarter of the logical cores elsewhere (unmeasured; each worker also runs the FG scoring threads)."""
+    if sys.platform == "win32":
+        found = _performance_core_mask()
+        if found is not None:
+            return len(found[1])
+    return max(1, logical_core_count() // 4)
+
+
+def pin_solve_worker(index: int, workers: int) -> None:
+    """Best-effort: on a Windows hybrid CPU put solve worker `index` of `workers` on the P-cores when it is among the
+    first three quarters, else on the E-cores (each at full clock); elsewhere the OS places it."""
+    if sys.platform != "win32":
+        return
+    try:
+        found = _performance_core_mask()
+        if found is None:
+            return
+        p_mask = found[0]
+        all_mask = sum(1 << lp for lp, _ in _windows_logical_cpu_efficiency_classes() or ())
+        _apply_affinity_mask(p_mask if index < -(-3 * workers // 4) else all_mask & ~p_mask)
+    except Exception:  # Windows API boundary: pinning is an optimization and never blocks a worker
+        logger.warning("CPU: pinning solve worker %d failed; running unpinned", index, exc_info=True)
+
+
 def usable_core_count() -> int:
     """Logical processors this process may run on: on Windows the affinity mask's CPUs (the P-cores after
     pin_to_performance_cores), elsewhere all of them. Read by tools/dev/verify_pcore_pin.py."""
@@ -155,8 +183,6 @@ def usable_core_count() -> int:
 
 def logical_core_count() -> int:
     """Total logical processors on the machine (all P + E), regardless of the current affinity mask."""
-    import os
-
     return os.cpu_count() or 1
 
 

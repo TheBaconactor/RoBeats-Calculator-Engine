@@ -106,7 +106,8 @@ The repository includes chart and gear data under [`Data/`](DATA.md). Set `Song_
 | | `SongQueueLimit` | `0` (no limit) | Solve runs per pass: the queue takes the solves the database lacks first, then the least recently solved |
 | | `GA_SearchDepth` | `210` | Search generations over all populations (42 each by default) |
 | | `GA_MultiStart` | `5` | Independent search populations |
-| | `MemorySoftLimitGB` | `0` (off) | Restart before the process uses this much memory |
+| | `Workers` | `0` (by machine) | Solve processes; `0` picks one per logical performance core on a Windows hybrid CPU (the first three quarters on the P-cores, the rest on the E-cores), else a quarter of the logical cores |
+| | `MemorySoftLimitGB` | `0` (off) | The run's memory limit: a worker past its share (the limit / `Workers`) is replaced after its song |
 | | `MemorySoftLimitPercent` | platform default | The same limit as a share of physical memory (`0` disables) |
 
 ### 4. Run the optimizer

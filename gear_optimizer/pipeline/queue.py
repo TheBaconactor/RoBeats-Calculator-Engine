@@ -29,17 +29,11 @@ logger = logging.getLogger(__name__)
 _SOLVE_ORDER = (PRECISE, NON_PRECISE)
 
 
-def build_queue(run: RunSettings, context: SharedRunContext, *, solved_before: float | None = None) -> list[SongTask]:
-    """The run's solves in queue order, each SongRepeats run a task. `solved_before` (a pass relaunched after a
-    memory-guard restart) leaves out the solves the database stored at or after it."""
+def build_queue(run: RunSettings, context: SharedRunContext) -> list[SongTask]:
+    """The run's solves in queue order, each SongRepeats run a task."""
     charts = [chart for difficulty in _difficulties(run) for chart in _charts(difficulty, run)]
     last_solved = _last_solved(charts)
-    solves = [
-        (chart, mode)
-        for chart in charts
-        for mode in _modes(chart)
-        if solved_before is None or last_solved.get((mode, chart.name), 0.0) < solved_before
-    ]
+    solves = [(chart, mode) for chart in charts for mode in _modes(chart)]
     solves.sort(key=lambda solve: _queue_key(solve, last_solved))
     tasks = _seeded_tasks(solves, run, context)
     if run.song_queue_limit:

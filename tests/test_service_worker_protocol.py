@@ -183,14 +183,11 @@ def test_service_worker_marks_daemon_before_native_startup(monkeypatch):
 
 
 def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch, tmp_path):
+    from gear_optimizer.solver import gpu_executor
+
     events: list[str] = []
-
-    class FakeApp:
-        def _configure_execution_and_prewarm(self, multi_start):
-            events.append(f"native_prewarm:{multi_start}")
-
+    monkeypatch.setattr(gpu_executor, "start_gpu_executor", lambda multi_start: events.append(f"native_prewarm:{multi_start}"))
     session = object.__new__(worker.PersistentOptimizerSession)
-    session._app = FakeApp()
 
     monkeypatch.setattr(worker, "stat_curves", lambda: events.append("load curves") or object())
     monkeypatch.setattr(worker, "load_gears", lambda _path: {})

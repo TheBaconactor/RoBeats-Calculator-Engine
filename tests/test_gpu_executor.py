@@ -107,3 +107,20 @@ def test_fatal_gpu_errors_are_the_engines_own_or_a_lost_device_anywhere_in_the_c
     assert is_fatal_gpu_error(GpuServiceTimeoutError("GPU call _ga_turn timed out after 240.0s"))
     assert is_fatal_gpu_error(chained)
     assert not is_fatal_gpu_error(RuntimeError("GpuExecutor aborted: stop requested"))
+
+
+def test_starting_the_gpu_sizes_the_ga_buffers_and_starts_the_executor(monkeypatch):
+    import sys
+    import types
+
+    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+    started = []
+    # No real GPU: a started executor would keep initializing Taichi after the test, racing later tests' resets.
+    monkeypatch.setattr(gpu_executor, "get_gpu_executor", lambda: types.SimpleNamespace(start=lambda: started.append(1)))
+    monkeypatch.setattr(sys, "platform", "linux")  # macOS would materialize Taichi here first
+    gpu_fields._REQUESTED_MAX_GA_RUNS = None
+    gpu_executor.start_gpu_executor(3)
+    assert gpu_fields._REQUESTED_MAX_GA_RUNS == 3
+    assert started == [1]
+    gpu_fields.reset_fields_state()
