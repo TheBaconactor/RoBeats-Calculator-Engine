@@ -5,7 +5,9 @@ Greats pay can rank low on Base. The search starts from those loadouts' FG score
 pre-gem totals (equal totals score alike). Each pass FG-scores the unscored 1-swap neighbours of the beam, each with the
 score that enters the beam as its floor, in chunks between which the floor rises with the beam; a pass that leaves the
 beam unchanged ends the search. A neighbour below its floor cannot enter the beam, then or later (the floor never
-falls), so the floors cut the gem search's work without changing the beam.
+falls), so the floors cut the gem search's work without changing the beam. At fixed FT and FF the FG score is
+non-decreasing in PP, CM, FM and the two colors (every note value and multiplier is), so a neighbour none of whose
+other totals exceeds those of a loadout already found below a floor is below it too, and is not scored.
 
 Cost: passes x beam_width x N1 neighbours (N1 = the 1-swap neighbourhood, about 180-250), minus totals already scored
 or pruned; a neighbour below its floor costs only the gem search's bound checks (COMPLEXITY.md section 4).
@@ -41,6 +43,8 @@ def search_fg_loadouts(
         if key not in found:
             found[key] = (tuple(genome), seed_rows[key])
     pruned: set[tuple[int, ...]] = set()
+    # Per (FT, FF): the other totals (PP, CM, FM, primary, secondary) of the loadouts found below a floor.
+    below: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
 
     def best_of(keys):  # the beam_width best, ties kept in order
         return sorted(keys, key=lambda k: -found[k][1].inner_row[0])[:beam_width]
@@ -60,13 +64,20 @@ def search_fg_loadouts(
             chunk = keys[start : start + _CHUNK]
             top = best_of(contenders)
             floor = found[top[-1]][1].inner_row[0] if len(top) == beam_width else -1
-            rows = score(np.asarray(chunk, dtype=np.int32), np.full(len(chunk), floor, dtype=np.int64))
+            scored = []
             for key in chunk:
+                if any(all(a >= b for a, b in zip(loser, key[:5])) for loser in below.get(key[5:], ())):
+                    pruned.add(key)
+                else:
+                    scored.append(key)
+            rows = score(np.asarray(scored, dtype=np.int32), np.full(len(scored), floor, dtype=np.int64))
+            for key in scored:
                 if rows[key].inner_row[0] >= floor:
                     found[key] = (fresh[key], rows[key])
                     contenders.append(key)
                 else:
                     pruned.add(key)
+                    below.setdefault(key[5:], []).append(key[:5])
         next_beam = best_of(contenders)
         if set(next_beam) == set(beam):
             return found

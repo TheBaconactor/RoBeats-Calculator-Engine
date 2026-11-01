@@ -36,7 +36,7 @@ def test_response_surface_head_coeffs_match_bruteforce():
 def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
-    from gear_optimizer.solver.gem_search import _score_response_group_meta_cpu
+    from gear_optimizer.solver.gem_search import GemGroups, SurfacePool, gem_winners
 
     pattern_a = np.zeros((8,), dtype=np.uint32)
     pattern_b = np.zeros((8,), dtype=np.uint32)
@@ -44,35 +44,27 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     identity_words = np.stack((pattern_a, pattern_a, pattern_b)).astype(np.uint32)
     shared_words = np.stack((pattern_a, pattern_b)).astype(np.uint32)
     counts = np.asarray(((0, 0, 0), (2, 0, 0), (1, 0, 0)), dtype=np.int32)
-    group_meta = np.asarray(((0, 10, 10, 10, 120, 60, 4, 3),), dtype=np.int32)
-    common = {
-        "group_meta": group_meta,
-        "group_offsets": np.asarray((0,), dtype=np.int32),
-        "group_lengths": np.asarray((3,), dtype=np.int32),
-        "candidate_slices": ((0, 1),),
-        "primary_color": "Rush",
-        "secondary_color": "Flow",
-        "selected_color": "Rush",
-        "curves": synthetic_curves({
-            "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float64),
-            "Combo Multiplier": np.linspace(2.0, 2.6, MAX_STAT + 1, dtype=np.float64),
-            "Fever Multiplier": np.linspace(3.0, 5.0, MAX_STAT + 1, dtype=np.float64),
-        }),
-        "surface_counts": counts,
-    }
-    identity = _score_response_group_meta_cpu(
-        **common,
-        surface_pattern_ids=np.asarray((0, 1, 2), dtype=np.int32),
-        surface_pattern_words=identity_words,
-        surface_pattern_head_coeffs=surface_head_coeffs(identity_words, head_len=4),
+    zero = np.zeros(1, dtype=np.int32)
+    groups = GemGroups(
+        meta=np.asarray(((0, 10, 10, 10, 120, 60, 4, 3),), dtype=np.int32),
+        ft=zero,
+        ff=zero,
+        ft_stat=zero,
+        ff_stat=zero,
+        frontiers=zero,
+        candidate_slices=np.asarray(((0, 1),), dtype=np.int32),
     )
-    shared = _score_response_group_meta_cpu(
-        **common,
-        surface_pattern_ids=np.asarray((0, 0, 1), dtype=np.int32),
-        surface_pattern_words=shared_words,
-        surface_pattern_head_coeffs=surface_head_coeffs(shared_words, head_len=4),
-    )
+    curves = synthetic_curves({
+        "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float64),
+        "Combo Multiplier": np.linspace(2.0, 2.6, MAX_STAT + 1, dtype=np.float64),
+        "Fever Multiplier": np.linspace(3.0, 5.0, MAX_STAT + 1, dtype=np.float64),
+    })
 
-    np.testing.assert_array_equal(shared, identity)
+    def winner(pattern_ids, words):
+        pool = SurfacePool(zero, np.asarray((3,), dtype=np.int32), np.asarray(pattern_ids, dtype=np.int32), words,
+                           counts, surface_head_coeffs(words, head_len=4))
+        return gem_winners(groups, pool, colors=("Rush", "Flow", "Rush"), curves=curves)
+
+    assert winner((0, 0, 1), shared_words) == winner((0, 1, 2), identity_words)
 
 

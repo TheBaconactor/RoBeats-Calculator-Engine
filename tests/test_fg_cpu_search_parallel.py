@@ -15,14 +15,20 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns impor
 def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")):
     rng = np.random.default_rng(seed)
     lengths = rng.integers(1, 9, group_count).astype(np.int64)
+    # Loadouts of 1-5 groups (the search prunes across a loadout's groups); a loadout's groups share its PP, CM, FM.
+    starts = np.cumsum(np.concatenate(([0], rng.integers(1, 6, group_count))))
+    first = np.full(group_count, -2, dtype=np.int64)
+    first[starts[starts < group_count]] = -1
+    loadout = np.cumsum(first >= -1) - 1
+    loadout_stats = rng.integers(0, 161, (int(loadout[-1]) + 1, 3))
     offsets = np.concatenate(([0], np.cumsum(lengths)[:-1])).astype(np.int64)
     surface_rows = int(lengths.sum())
     meta = np.column_stack(
         [
             rng.integers(0, 25, group_count),  # residual gem budget
-            rng.integers(0, 161, group_count),  # perfect points
-            rng.integers(0, 161, group_count),  # combo multiplier
-            rng.integers(0, 161, group_count),  # fever multiplier
+            loadout_stats[loadout, 0],  # perfect points
+            loadout_stats[loadout, 1],  # combo multiplier
+            loadout_stats[loadout, 2],  # fever multiplier
             rng.integers(0, 200, group_count),  # primary
             rng.integers(0, 120, group_count),  # secondary
             np.full(group_count, 100),  # head length (one per batch)
@@ -36,40 +42,38 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
     ).astype(np.int32)
     curves = stat_curves()
     shared = (
-        rng.integers(0, patterns, surface_rows).astype(np.int32),
-        words,
-        counts,
-        surface_head_coeffs(words, head_len=100),
+        (rng.integers(0, patterns, surface_rows).astype(np.int32), words, counts, surface_head_coeffs(words, head_len=100)),
         np.array(search.color_flags(*colors), dtype=np.int32),
-        np.ascontiguousarray(curves.f64["Perfect Points"], dtype=np.float64),
-        np.ascontiguousarray(curves.f64["Combo Multiplier"], dtype=np.float64),
-        np.ascontiguousarray(curves.combo_ramp, dtype=np.float64),
-        np.ascontiguousarray(curves.f64["Fever Multiplier"], dtype=np.float64),
+        tuple(
+            np.ascontiguousarray(table, dtype=np.float64)
+            for table in (curves.f64["Perfect Points"], curves.f64["Combo Multiplier"], curves.combo_ramp,
+                          curves.f64["Fever Multiplier"])
+        ),
     )
-    # Loadouts of 1-5 groups: the search prunes across a loadout's groups.
-    starts = np.cumsum(np.concatenate(([0], rng.integers(1, 6, group_count))))
-    first = np.full(group_count, -2, dtype=np.int64)
-    first[starts[starts < group_count]] = -1
     return offsets, lengths, meta, first, shared
+
+
+def _stats(offsets, lengths, shared):
+    return search._group_bound_stats(offsets, lengths, shared[0])
 
 
 def test_parallel_search_equals_one_serial_call():
     for group_count, seed in ((1, 1), (7, 2), (33, 3), (257, 4), (1000, 5)):
         offsets, lengths, meta, first, shared = _random_batch(group_count, seed)
-        serial = search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, *shared)
-        parallel = search._score_fg_response_groups_on_cpu_cores(offsets, lengths, meta, first, shared)
+        serial = search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, _stats(offsets, lengths, shared), *shared)
+        parallel = search._score_fg_response_groups_on_cpu_cores(offsets, lengths, meta, first, _stats(offsets, lengths, shared), shared)
         np.testing.assert_array_equal(parallel, serial)
 
 
 def test_search_kernel_releases_the_gil():
     offsets, lengths, meta, first, shared = _random_batch(20000, 9)
-    search._score_fg_response_groups_native_f64(offsets[:2], lengths[:2], meta[:2], first[:2], *shared)  # compile
+    search._score_fg_response_groups_native_f64(offsets[:2], lengths[:2], meta[:2], first[:2], _stats(offsets[:2], lengths[:2], shared), *shared)  # compile
     done = threading.Event()
     kernel = {}
 
     def run_kernel():
         kernel["start"] = time.perf_counter()
-        search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, *shared)
+        search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, _stats(offsets, lengths, shared), *shared)
         kernel["stop"] = time.perf_counter()
         done.set()
 
@@ -91,14 +95,14 @@ def test_search_kernel_releases_the_gil():
 
 def test_floors_keep_every_loadout_that_reaches_them_exact():
     offsets, lengths, meta, first, shared = _random_batch(1000, 6)
-    rows = search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, *shared)
+    rows = search._score_fg_response_groups_native_f64(offsets, lengths, meta, first, _stats(offsets, lengths, shared), *shared)
     starts = np.flatnonzero(first >= -1)
     ends = np.append(starts[1:], len(first))
     winners = [s + int(np.argmax(rows[s:e, 0])) for s, e in zip(starts, ends)]
     best = rows[winners, 0]
     floored = first.copy()
     floored[starts] = best + np.arange(len(starts)) % 2  # every other loadout one point out of reach
-    got = search._score_fg_response_groups_native_f64(offsets, lengths, meta, floored, *shared)
+    got = search._score_fg_response_groups_native_f64(offsets, lengths, meta, floored, _stats(offsets, lengths, shared), *shared)
     for k, (s, e) in enumerate(zip(starts, ends)):
         top = s + int(np.argmax(got[s:e, 0]))
         if k % 2 == 0:

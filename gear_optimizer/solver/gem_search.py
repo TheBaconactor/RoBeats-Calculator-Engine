@@ -5,8 +5,12 @@ A loadout's candidate groups are its FT/FF gem splits that reach distinct fronti
 consumer reads only each loadout's argmax group (first occurrence), so groups that cannot beat the loadout's best so
 far, or a floor the caller gives it, are pruned. Per surface, (CM, FM) gem pairs are visited in TILE x TILE blocks: the
 score bound is monotone in CM and FM gems and base is linear in them, so a block's corner bounds every pair in it.
-Cost per loadout: O(G S + sum over surviving surfaces of K2 / TILE^2 + pairs in surviving blocks) (G groups, S surfaces
-per group, K2 (CM, FM) pairs; COMPLEXITY.md, section 3).
+Block bounds are dot products of a surface's six bound statistics with per-block coefficients built once per loadout
+and residual budget; their per-statistic maxima bound a column of blocks, a whole surface and, at a frontier's most of
+each statistic, a whole group; inside a block a CM row is bounded before its pairs. Cost per loadout: O(R B) for the
+tables + O(G) group bounds + the surface bounds of surviving groups + C column bounds per surviving surface + the
+blocks of surviving columns + the rows of surviving blocks + the pairs of surviving rows (R residual budgets, B blocks
+and C columns per budget, G groups; COMPLEXITY.md, section 3).
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -15,12 +19,14 @@ import os
 import threading
 from typing import Any
 
+import numba
 import numpy as np
 
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
+    GEM_BUDGET,
     MAX_STAT,
     STAT_GEM_ELEMENT_GAIN,
     STAT_GEM_GAIN_FEVER,
@@ -296,21 +302,28 @@ def gem_winners(
     """Each loadout's winner (its first group with the highest score) over `pool`'s surfaces of its groups' frontiers,
     in batch order; colors = (primary, secondary, selected). With `floors` (a score per loadout) a winner is exact only
     when it reaches its floor."""
-    offsets = pool.frontier_offsets[groups.frontiers]
-    rows = _score_response_group_meta_cpu(
-        group_meta=groups.meta,
-        group_offsets=offsets,
-        group_lengths=pool.frontier_lengths[groups.frontiers],
-        candidate_slices=groups.candidate_slices,
-        primary_color=colors[0],
-        secondary_color=colors[1],
-        selected_color=colors[2],
-        curves=curves,
-        surface_pattern_ids=pool.pattern_ids,
-        surface_pattern_words=pool.pattern_words,
-        surface_counts=pool.counts,
-        surface_pattern_head_coeffs=pool.head_coeffs,
-        floors=floors,
+    offsets = np.ascontiguousarray(pool.frontier_offsets[groups.frontiers], dtype=np.int64)
+    lengths = np.ascontiguousarray(pool.frontier_lengths[groups.frontiers], dtype=np.int64)
+    candidate_floor = np.full(groups.meta.shape[0], -2, dtype=np.int64)
+    candidate_floor[groups.candidate_slices[:, 0]] = -1 if floors is None else floors
+    surfaces = (
+        np.ascontiguousarray(pool.pattern_ids, dtype=np.int32),
+        np.ascontiguousarray(pool.pattern_words, dtype=np.uint32),
+        np.ascontiguousarray(pool.counts, dtype=np.int32),
+        np.ascontiguousarray(pool.head_coeffs, dtype=np.int32),
+    )
+    tables = tuple(
+        np.ascontiguousarray(table, dtype=np.float64)
+        for table in (curves.f64["Perfect Points"], curves.f64["Combo Multiplier"], curves.combo_ramp,
+                      curves.f64["Fever Multiplier"])
+    )
+    rows = _score_fg_response_groups_on_cpu_cores(
+        offsets,
+        lengths,
+        np.ascontiguousarray(groups.meta, dtype=np.int32),
+        candidate_floor,
+        _group_bound_stats(offsets, lengths, surfaces),
+        (surfaces, np.asarray(color_flags(*colors), dtype=np.int32), tables),
     )
     winners = []
     for start, count in groups.candidate_slices.tolist():
@@ -323,7 +336,7 @@ def gem_winners(
                 ft_stat=int(groups.ft_stat[g]),
                 ff_stat=int(groups.ff_stat[g]),
                 inner_row=tuple(int(v) for v in rows[g]),
-                surface=(*(int(v) for v in pool.pattern_words[pool.pattern_ids[surface]]), *(int(v) for v in pool.counts[surface])),
+                surface=tuple(int(v) for v in (*pool.pattern_words[pool.pattern_ids[surface]], *pool.counts[surface])),
             )
         )
     return winners
@@ -339,19 +352,11 @@ def _stat_row(stat):
 
 
 @jit(nopython=True, cache=True)
-def _fg_response_upper_bound_native_f64(
-    base_value,
-    combo_mul,
-    fever_mul,
-    body_fever,
-    body_normal,
-    n_hn,
-    n_hf,
-    sigma_hn,
-    sigma_hf,
-):
-    """Upper bound of a surface's score at one stat line: every head note at its Perfect value. Non-decreasing in
-    base_value, combo_mul and fever_mul."""
+def _fg_response_upper_bound_native_f64(base_value, combo_mul, fever_mul, stats):
+    """Upper bound of a surface's score at one stat line: every head note at its Perfect value (stats: the surface's
+    body fever and normal notes, head normal and fever notes, their combo ramp sums). Non-decreasing in base_value,
+    combo_mul and fever_mul."""
+    body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf = stats
     ub_eps = 1024.0
     combo_val = int(np.floor(base_value * combo_mul))
     fever_val = int(np.floor(base_value * combo_mul * fever_mul))
@@ -438,21 +443,106 @@ def _fg_response_surface_score_native_f64(
     return score
 
 
+@numba.njit(cache=True, nogil=True, inline="always")
+def _block_dot(c, delta, stats):
+    """A block bound: its coefficients c (per surface statistic, a value and its slope in base_init) at a surface's
+    stats (as in _fg_response_upper_bound_native_f64) and the group's base_init (delta), with the bound's margin (+1
+    against the float order)."""
+    body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf = stats
+    return (
+        body_fever * (c[0] + delta * c[1]) + body_normal * (c[2] + delta * c[3]) + n_hn * (c[4] + delta * c[5])
+        + n_hf * (c[6] + delta * c[7]) + sigma_hn * (c[8] + delta * c[9]) + sigma_hf * (c[10] + delta * c[11])
+        + 1025.0
+    )
+
+
+@jit(nopython=True, cache=True)
+def _gem_curve(ref, stat, gain, allowed):
+    """ref at stat + k * gain for k = 0 .. the gems that take stat to MAX_STAT (at most GEM_BUDGET; none unless
+    allowed)."""
+    gems = min(max(0, (MAX_STAT - stat + gain - 1) // gain), GEM_BUDGET) if allowed else 0
+    out = np.empty(gems + 1, dtype=np.float64)
+    for k in range(gems + 1):
+        out[k] = ref[_stat_row(stat + k * gain)]
+    return out
+
+
+@jit(nopython=True, cache=True)
+def _block_bound_tables():
+    """Empty bound tables, refilled per loadout (_fill_block_bounds): per residual budget the coefficients' maxima, the
+    same per column of its blocks, each column's first block (and the end of its last), its column count; then every
+    budget's block coefficients and (cm0, cm1, fm0, fm1) corners, flat in (budget, column) order."""
+    side = (GEM_BUDGET + _TILE) // _TILE
+    return (
+        np.empty((GEM_BUDGET + 1, 12), dtype=np.float64),
+        np.empty((GEM_BUDGET + 1, side, 12), dtype=np.float64),
+        np.empty((GEM_BUDGET + 1, side + 1), dtype=np.int64),
+        np.empty(GEM_BUDGET + 1, dtype=np.int64),
+        np.empty(((GEM_BUDGET + 1) * side * side, 12), dtype=np.float64),
+        np.empty(((GEM_BUDGET + 1) * side * side, 4), dtype=np.int64),
+    )
+
+
+@jit(nopython=True, cache=True)
+def _fill_block_bounds(tables, w_cm, w_fm, w_ov, pp_bound_prefix_max, cm_ref_cache, fm_ref_cache):
+    """A loadout's bound tables (_block_bound_tables): per residual budget r (0..GEM_BUDGET), its (CM, FM) blocks of
+    _TILE x _TILE gem pairs in columns of equal cm0, each block's bound coefficients at its best corner
+    (_fg_response_upper_bound_native_f64 without its floors, base_value = the corner's base without base_init +
+    base_init) and their maxima per column and over r. The caches hold one entry per gem count the loadout can spend on
+    PP, CM and FM."""
+    term_max, columns, first, column_count, blocks, corners = tables
+    cm_lin_up = w_cm > w_ov
+    fm_lin_up = w_fm > w_ov
+    full_pp, full_cm, full_fm = len(pp_bound_prefix_max) - 1, len(cm_ref_cache) - 1, len(fm_ref_cache) - 1
+    b = 0
+    for r in range(GEM_BUDGET + 1):
+        max_cm = min(full_cm, r)
+        column_count[r] = max_cm // _TILE + 1
+        for j in range(column_count[r]):
+            cm0 = j * _TILE
+            cm1 = min(cm0 + _TILE - 1, max_cm)
+            fm_top = min(full_fm, r - cm0)
+            first[r, j] = b
+            for fm0 in range(0, fm_top + 1, _TILE):
+                fm1 = min(fm0 + _TILE - 1, fm_top)
+                lin_cm = cm1 if cm_lin_up else cm0
+                lin_fm = fm1 if fm_lin_up else fm0
+                base = float(lin_cm * w_cm + lin_fm * w_fm + (r - lin_cm - lin_fm) * w_ov)
+                base += pp_bound_prefix_max[min(full_pp, r - cm0 - fm0)]
+                cm, fm = cm_ref_cache[cm1], fm_ref_cache[fm1]
+                ramp = (cm - 1.0) / 100.0
+                c = blocks[b]
+                c[0], c[1], c[2], c[3] = base * cm * fm, cm * fm, base * cm, cm
+                c[4], c[5], c[6], c[7] = base, 1.0, base * fm, fm
+                c[8], c[9], c[10], c[11] = ramp * base, ramp, ramp * base * fm, ramp * fm
+                corners[b, 0], corners[b, 1], corners[b, 2], corners[b, 3] = cm0, cm1, fm0, fm1
+                for t in range(12):
+                    columns[r, j, t] = max(columns[r, j, t], c[t]) if fm0 else c[t]
+                b += 1
+            for t in range(12):
+                term_max[r, t] = max(term_max[r, t], columns[r, j, t]) if j else columns[r, j, t]
+        first[r, column_count[r]] = b
+
+
+@jit(nopython=True, cache=True)
+def _group_bound_stats(group_offsets, group_lengths, pool):
+    """Per group, over its frontier's surfaces (pool as in _score_fg_response_groups_native_f64): the most body fever
+    notes, the fewest, and the most of each head coefficient (normal and fever notes, their combo ramp sums)."""
+    pattern_ids, _words, counts, head_coeffs = pool
+    out = np.zeros((group_offsets.shape[0], 6), dtype=np.int64)
+    for g in range(group_offsets.shape[0]):
+        out[g, 1] = 1 << 40 if group_lengths[g] else 0
+        for row in range(group_offsets[g], group_offsets[g] + group_lengths[g]):
+            out[g, 0] = max(out[g, 0], counts[row, 0])
+            out[g, 1] = min(out[g, 1], counts[row, 0])
+            for t in range(4):
+                out[g, 2 + t] = max(out[g, 2 + t], head_coeffs[pattern_ids[row], t])
+    return out
+
+
 @jit(nopython=True, cache=True)
 def _score_fg_response_groups_native_f64(
-    group_offsets,
-    group_lengths,
-    row_meta,
-    candidate_floor,
-    surface_pattern_ids,
-    surface_pattern_words,
-    surface_counts,
-    surface_pattern_head_coeffs,
-    color_flags,
-    ref_pp,
-    ref_cm,
-    ref_ramp,
-    ref_fm,
+    group_offsets, group_lengths, row_meta, candidate_floor, group_stats, pool, color_flags, curves
 ):
     """Each group's best gem allocation over its surfaces (the residual budget's CM / FM / PP / element split).
 
@@ -465,9 +555,21 @@ def _score_fg_response_groups_native_f64(
     are non-strict (a tie is still scored) because blocks visit pairs out of lexicographic order and the explicit
     tie-break must see every tie.
 
-    Output columns: [best_score, best_surface, g_pp, g_cm, g_fm, g_ov, final_pp, final_cm, final_fm, final_primary,
-    final_secondary].
+    Bounds, each at least every pair score under it: per loadout and residual budget, each (CM, FM) block's bound is a
+    dot product of six surface statistics (stats: body fever and normal notes, head normal and fever notes and their
+    combo ramp sums) with the block's coefficients at its best corner; a column of blocks (equal cm0) uses each
+    coefficient's maximum over its blocks (the max of a sum is at most the sum of the maxes), a surface the maxima over
+    all blocks, and a group the surface's at the most of each statistic over its frontier's surfaces (group_stats:
+    _group_bound_stats). Inside a block, a CM row's bound takes the row's best linear base, PP part and FM multiplier
+    (each monotone along it) before its pairs' own bounds. A skipped group or surface writes what an all-skipped one
+    did.
+
+    pool: the surfaces' (pattern ids, pattern words, body counts, head coefficients), as in SurfacePool; curves: the
+    Perfect Points, Combo Multiplier, combo ramp and Fever Multiplier f64 tables. Output columns: [best_score,
+    best_surface, g_pp, g_cm, g_fm, g_ov, final_pp, final_cm, final_fm, final_primary, final_secondary].
     """
+    surface_pattern_ids, surface_pattern_words, surface_counts, surface_pattern_head_coeffs = pool
+    ref_pp, ref_cm, ref_ramp, ref_fm = curves
     group_count = int(row_meta.shape[0])
     out = np.zeros((group_count, 11), dtype=np.int64)
 
@@ -487,13 +589,17 @@ def _score_fg_response_groups_native_f64(
     w_fm = (fm_p_delta << 1) + fm_s_delta
     w_ov = (ov_p_delta << 1) + ov_s_delta
     delta_pp_vs_ov = w_pp - w_ov
+    fm_lin_up = w_fm > w_ov
     pp_primary_delta = pp_p_delta - ov_p_delta
     pp_secondary_delta = pp_s_delta - ov_s_delta
 
-    candidate_best = -1
+    candidate_best = full_pp_gems = 0
+    pp_ref_base = 0.0
+    loadout_pp = loadout_cm = loadout_fm = -1  # no loadout yet: a group before its loadout's first group raises
+    pp_ref_cache = cm_ref_cache = fm_ref_cache = pp_bound_prefix_max = np.empty(1, dtype=np.float64)
+    tables = _block_bound_tables()
+    term_max, columns, column_first, column_count, blocks, block_corners = tables
     for g in range(group_count):
-        if candidate_floor[g] >= -1:
-            candidate_best = candidate_floor[g]
         residual_budget = int(row_meta[g, 0])
         cur_pp = int(row_meta[g, 1])
         cur_cm = int(row_meta[g, 2])
@@ -503,65 +609,35 @@ def _score_fg_response_groups_native_f64(
         head_len = min(int(row_meta[g, 6]), 100)
         body_total = int(row_meta[g, 7])
 
-        max_pp_gems = 0
-        if allow_pp and cur_pp < MAX_STAT:
-            max_pp_gems = (MAX_STAT - cur_pp + STAT_GEM_GAIN_NORMAL - 1) // STAT_GEM_GAIN_NORMAL
-        max_cm_gems = 0
-        if cur_cm < MAX_STAT:
-            max_cm_gems = (MAX_STAT - cur_cm + STAT_GEM_GAIN_NORMAL - 1) // STAT_GEM_GAIN_NORMAL
-        max_fm_gems = 0
-        if cur_fm < MAX_STAT:
-            max_fm_gems = (MAX_STAT - cur_fm + STAT_GEM_GAIN_FEVER - 1) // STAT_GEM_GAIN_FEVER
-        max_pp_gems = min(max_pp_gems, residual_budget)
-        max_cm_gems = min(max_cm_gems, residual_budget)
-        max_fm_gems = min(max_fm_gems, residual_budget)
-
+        if candidate_floor[g] >= -1:
+            # A loadout's first group: its floor, its stat curves per gem count (its groups share its PP, CM and FM and
+            # differ only in residual gems) and, per residual budget, its (CM, FM) blocks with their bound coefficients.
+            candidate_best = candidate_floor[g]
+            loadout_pp, loadout_cm, loadout_fm = cur_pp, cur_cm, cur_fm
+            pp_ref_cache = _gem_curve(ref_pp, cur_pp, STAT_GEM_GAIN_NORMAL, allow_pp)
+            cm_ref_cache = _gem_curve(ref_cm, cur_cm, STAT_GEM_GAIN_NORMAL, True)
+            fm_ref_cache = _gem_curve(ref_fm, cur_fm, STAT_GEM_GAIN_FEVER, True)
+            full_pp_gems = len(pp_ref_cache) - 1
+            pp_ref_base = pp_ref_cache[0]
+            # pp_bound_prefix_max[k]: the best base_value PP can add with at most k PP gems (in place of element gems).
+            pp_bound_prefix_max = pp_ref_cache.copy()
+            for gp in range(1, full_pp_gems + 1):
+                pp_bound_prefix_max[gp] = max(
+                    pp_bound_prefix_max[gp - 1], float(gp * delta_pp_vs_ov) + pp_ref_cache[gp]
+                )
+            _fill_block_bounds(tables, w_cm, w_fm, w_ov, pp_bound_prefix_max, cm_ref_cache, fm_ref_cache)
+        elif cur_pp != loadout_pp or cur_cm != loadout_cm or cur_fm != loadout_fm:
+            raise ValueError("a loadout's groups must follow its first group and share its PP, CM and FM")
         base_init = (cur_primary << 1) + cur_secondary
-        pp_ref_base = ref_pp[_stat_row(cur_pp)]
-        cm_ref_cache = np.empty(max_cm_gems + 1, dtype=np.float64)
-        for gc in range(max_cm_gems + 1):
-            cm_ref_cache[gc] = ref_cm[_stat_row(cur_cm + gc * STAT_GEM_GAIN_NORMAL)]
-        fm_ref_cache = np.empty(max_fm_gems + 1, dtype=np.float64)
-        for gf in range(max_fm_gems + 1):
-            fm_ref_cache[gf] = ref_fm[_stat_row(cur_fm + gf * STAT_GEM_GAIN_FEVER)]
-        # pp_bound_prefix_max[k]: the best base_value PP can add with at most k PP gems (in place of element gems).
-        pp_ref_cache = np.empty(max_pp_gems + 1, dtype=np.float64)
-        pp_bound_prefix_max = np.empty(max_pp_gems + 1, dtype=np.float64)
-        pp_ref_cache[0] = pp_ref_base
-        pp_bound_prefix_max[0] = pp_ref_base
-        if allow_pp:
-            running = -1.0e30
-            for gp in range(max_pp_gems + 1):
-                v = ref_pp[_stat_row(cur_pp + gp * STAT_GEM_GAIN_NORMAL)]
-                pp_ref_cache[gp] = v
-                bound = float(gp * delta_pp_vs_ov) + v
-                if bound > running:
-                    running = bound
-                pp_bound_prefix_max[gp] = running
-        # The base_value bound of a block of gem pairs: base_value is linear in (CM gems, FM gems) beyond the PP part.
-        cm_lin_up = w_cm > w_ov
-        fm_lin_up = w_fm > w_ov
-        # No allocation's base_value exceeds every residual gem on the heaviest weight plus the best PP part.
-        surface_base_max = float(base_init + residual_budget * max(w_cm, w_fm, w_ov))
-        if allow_pp:
-            surface_base_max += pp_bound_prefix_max[max_pp_gems]
-        else:
-            surface_base_max += pp_ref_base
+        delta = float(base_init)
+        terms = term_max[residual_budget]
+        fs = group_stats[g]
+        group_ub = _block_dot(terms, delta, (fs[0], max(0, body_total - fs[1]), fs[2], fs[3], fs[4], fs[5]))
 
         group_best_score = -1
-        group_best_surface = 0
-        group_best_pp = 0
-        group_best_cm = 0
-        group_best_fm = 0
-        group_best_ov = residual_budget
-        group_best_final_pp = cur_pp
-        group_best_final_cm = cur_cm
-        group_best_final_fm = cur_fm
-        group_best_final_primary = cur_primary + group_best_ov * ov_p_delta
-        group_best_final_secondary = cur_secondary + group_best_ov * ov_s_delta
-
+        group_best_surface = group_best_pp = group_best_cm = group_best_fm = 0
         start = int(group_offsets[g])
-        for ls in range(int(group_lengths[g])):
+        for ls in range(int(group_lengths[g]) if group_ub >= float(candidate_best) else 0):
             sr = start + ls
             pattern_row = int(surface_pattern_ids[sr])
             body_fever = int(surface_counts[sr, 0])
@@ -572,64 +648,44 @@ def _score_fg_response_groups_native_f64(
             n_hf = int(surface_pattern_head_coeffs[pattern_row, 1])
             sigma_hn = int(surface_pattern_head_coeffs[pattern_row, 2])
             sigma_hf = int(surface_pattern_head_coeffs[pattern_row, 3])
+            stats = (body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf)
+            best_score, best_pp, best_cm, best_fm = group_best_score, group_best_pp, group_best_cm, group_best_fm
 
-            best_score = group_best_score
-            best_pp = group_best_pp
-            best_cm = group_best_cm
-            best_fm = group_best_fm
-            best_ov = group_best_ov
-            best_final_pp = group_best_final_pp
-            best_final_cm = group_best_final_cm
-            best_final_fm = group_best_final_fm
-            best_final_primary = group_best_final_primary
-            best_final_secondary = group_best_final_secondary
-
-            surface_ub = _fg_response_upper_bound_native_f64(
-                surface_base_max, cm_ref_cache[max_cm_gems], fm_ref_cache[max_fm_gems], body_fever, body_normal,
-                n_hn, n_hf, sigma_hn, sigma_hf,
-            )
-            if surface_ub < float(max(best_score, candidate_best)):
+            if _block_dot(terms, delta, stats) < float(max(best_score, candidate_best)):
                 continue
-            for cm0 in range(0, max_cm_gems + 1, _TILE):
-                cm1 = min(cm0 + _TILE - 1, max_cm_gems)
-                fm_top = min(max_fm_gems, residual_budget - cm0)
-                for fm0 in range(0, fm_top + 1, _TILE):
-                    fm1 = min(fm0 + _TILE - 1, fm_top)
-                    lin_cm = cm1 if cm_lin_up else cm0
-                    lin_fm = fm1 if fm_lin_up else fm0
-                    block_base = float(
-                        base_init + lin_cm * w_cm + lin_fm * w_fm + (residual_budget - lin_cm - lin_fm) * w_ov
-                    )
-                    if allow_pp:
-                        block_base += pp_bound_prefix_max[min(max_pp_gems, residual_budget - cm0 - fm0)]
-                    else:
-                        block_base += pp_ref_base
-                    block_ub = _fg_response_upper_bound_native_f64(
-                        block_base, cm_ref_cache[cm1], fm_ref_cache[fm1], body_fever, body_normal, n_hn, n_hf,
-                        sigma_hn, sigma_hf,
-                    )
-                    if block_ub < float(max(best_score, candidate_best)):
+            for j in range(column_count[residual_budget]):
+                if _block_dot(columns[residual_budget, j], delta, stats) < float(max(best_score, candidate_best)):
+                    continue
+                for bi in range(column_first[residual_budget, j], column_first[residual_budget, j + 1]):
+                    if _block_dot(blocks[bi], delta, stats) < float(max(best_score, candidate_best)):
                         continue
+                    cm0, cm1 = block_corners[bi, 0], block_corners[bi, 1]
+                    fm0, fm1 = block_corners[bi, 2], block_corners[bi, 3]
                     for g_cm in range(cm0, cm1 + 1):
                         leftover_after_cm = residual_budget - g_cm
-                        cm_stat = cur_cm + g_cm * STAT_GEM_GAIN_NORMAL
                         cm_mul = cm_ref_cache[g_cm]
-                        cm_ramp = ref_ramp[_stat_row(cm_stat)]
-                        for g_fm in range(fm0, min(fm1, max_fm_gems, leftover_after_cm) + 1):
+                        fm_hi = min(fm1, leftover_after_cm)
+                        # The row's bound.
+                        lin_fm = fm_hi if fm_lin_up else fm0
+                        row_base = float(base_init + g_cm * w_cm + lin_fm * w_fm + (leftover_after_cm - lin_fm) * w_ov)
+                        row_base += pp_bound_prefix_max[min(full_pp_gems, leftover_after_cm - fm0)]
+                        if _fg_response_upper_bound_native_f64(row_base, cm_mul, fm_ref_cache[fm_hi], stats) < float(
+                            max(best_score, candidate_best)
+                        ):
+                            continue
+                        cm_ramp = ref_ramp[_stat_row(cur_cm + g_cm * STAT_GEM_GAIN_NORMAL)]
+                        for g_fm in range(fm0, fm_hi + 1):
                             leftover_after_fm = leftover_after_cm - g_fm
-                            fm_stat = cur_fm + g_fm * STAT_GEM_GAIN_FEVER
                             fm_mul = fm_ref_cache[g_fm]
-                            g_pp_max = min(max_pp_gems, leftover_after_fm)
+                            g_pp_max = min(full_pp_gems, leftover_after_fm)
                             base_linear_common = base_init + g_cm * w_cm + g_fm * w_fm + leftover_after_fm * w_ov
                             if allow_pp:
                                 max_base_value = float(base_linear_common) + pp_bound_prefix_max[g_pp_max]
                             else:
                                 max_base_value = float(base_linear_common) + pp_ref_base
-                            ub = _fg_response_upper_bound_native_f64(
-                                max_base_value, cm_mul, fm_mul, body_fever, body_normal, n_hn, n_hf, sigma_hn,
-                                sigma_hf,
-                            )
-                            if ub < float(max(best_score, candidate_best)):
+                            if _fg_response_upper_bound_native_f64(max_base_value, cm_mul, fm_mul, stats) < float(
+                                max(best_score, candidate_best)
+                            ):
                                 continue
                             primary_base = (
                                 cur_primary + g_cm * cm_p_delta + g_fm * fm_p_delta + leftover_after_fm * ov_p_delta
@@ -637,146 +693,53 @@ def _score_fg_response_groups_native_f64(
                             secondary_base = (
                                 cur_secondary + g_cm * cm_s_delta + g_fm * fm_s_delta + leftover_after_fm * ov_s_delta
                             )
-                            if allow_pp and max_pp_gems > 0:
-                                record_base_value = -1.0e30
-                                for g_pp in range(g_pp_max + 1):
-                                    g_ov = leftover_after_fm - g_pp
-                                    pp_stat = cur_pp + g_pp * STAT_GEM_GAIN_NORMAL
-                                    primary_val = primary_base + g_pp * pp_primary_delta
-                                    secondary_val = secondary_base + g_pp * pp_secondary_delta
-                                    pp_base_value = (
-                                        float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
-                                    )
-                                    # Great bases are nonincreasing only when both coordinates are.
-                                    if pp_primary_delta <= 0 and pp_secondary_delta <= 0:
-                                        if pp_base_value <= record_base_value:
-                                            continue
-                                        record_base_value = pp_base_value
-                                    pp_ub = _fg_response_upper_bound_native_f64(
-                                        pp_base_value, cm_mul, fm_mul, body_fever, body_normal, n_hn, n_hf,
-                                        sigma_hn, sigma_hf,
-                                    )
-                                    if pp_ub < float(max(best_score, candidate_best)):
+                            record_base_value = -1.0e30
+                            for g_pp in range(g_pp_max + 1):
+                                pp_base_value = float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
+                                # Great bases are nonincreasing only when both coordinates are.
+                                if pp_primary_delta <= 0 and pp_secondary_delta <= 0:
+                                    if pp_base_value <= record_base_value:
                                         continue
-                                    score = _fg_response_surface_score_native_f64(
-                                        surface_pattern_words, pattern_row, body_fever, body_great, body_fever_great,
-                                        head_len, body_total, primary_val, secondary_val, pp_ref_cache[g_pp], cm_mul,
-                                        cm_ramp, fm_mul, single_color,
-                                    )
-                                    if score > best_score or (
-                                        score == best_score
-                                        and (
-                                            g_cm < best_cm
-                                            or (
-                                                g_cm == best_cm
-                                                and (g_fm < best_fm or (g_fm == best_fm and g_pp < best_pp))
-                                            )
-                                        )
-                                    ):
-                                        best_score = score
-                                        best_pp = g_pp
-                                        best_cm = g_cm
-                                        best_fm = g_fm
-                                        best_ov = g_ov
-                                        best_final_pp = pp_stat
-                                        best_final_cm = cm_stat
-                                        best_final_fm = fm_stat
-                                        best_final_primary = primary_val
-                                        best_final_secondary = secondary_val
-                            else:
+                                    record_base_value = pp_base_value
+                                if _fg_response_upper_bound_native_f64(pp_base_value, cm_mul, fm_mul, stats) < float(
+                                    max(best_score, candidate_best)
+                                ):
+                                    continue
                                 score = _fg_response_surface_score_native_f64(
                                     surface_pattern_words, pattern_row, body_fever, body_great, body_fever_great,
-                                    head_len, body_total, primary_base, secondary_base, pp_ref_base, cm_mul, cm_ramp,
+                                    head_len, body_total, primary_base + g_pp * pp_primary_delta,
+                                    secondary_base + g_pp * pp_secondary_delta, pp_ref_cache[g_pp], cm_mul, cm_ramp,
                                     fm_mul, single_color,
                                 )
                                 if score > best_score or (
-                                    score == best_score
-                                    and (
-                                        g_cm < best_cm
-                                        or (g_cm == best_cm and (g_fm < best_fm or (g_fm == best_fm and 0 < best_pp)))
-                                    )
+                                    score == best_score and (g_cm, g_fm, g_pp) < (best_cm, best_fm, best_pp)
                                 ):
-                                    best_score = score
-                                    best_pp = 0
-                                    best_cm = g_cm
-                                    best_fm = g_fm
-                                    best_ov = leftover_after_fm
-                                    best_final_pp = cur_pp
-                                    best_final_cm = cm_stat
-                                    best_final_fm = fm_stat
-                                    best_final_primary = primary_base
-                                    best_final_secondary = secondary_base
+                                    best_score, best_pp, best_cm, best_fm = score, g_pp, g_cm, g_fm
 
             if best_score > group_best_score:
-                group_best_score = best_score
-                group_best_surface = ls
-                group_best_pp = best_pp
-                group_best_cm = best_cm
-                group_best_fm = best_fm
-                group_best_ov = best_ov
-                group_best_final_pp = best_final_pp
-                group_best_final_cm = best_final_cm
-                group_best_final_fm = best_final_fm
-                group_best_final_primary = best_final_primary
-                group_best_final_secondary = best_final_secondary
+                group_best_score, group_best_surface = best_score, ls
+                group_best_pp, group_best_cm, group_best_fm = best_pp, best_cm, best_fm
 
+        g_ov = residual_budget - group_best_pp - group_best_cm - group_best_fm
         out[g, 0] = group_best_score
         out[g, 1] = group_best_surface
         out[g, 2] = group_best_pp
         out[g, 3] = group_best_cm
         out[g, 4] = group_best_fm
-        out[g, 5] = group_best_ov
-        out[g, 6] = group_best_final_pp
-        out[g, 7] = group_best_final_cm
-        out[g, 8] = group_best_final_fm
-        out[g, 9] = group_best_final_primary
-        out[g, 10] = group_best_final_secondary
-        if group_best_score > candidate_best:
-            candidate_best = group_best_score
+        out[g, 5] = g_ov
+        out[g, 6] = cur_pp + group_best_pp * STAT_GEM_GAIN_NORMAL
+        out[g, 7] = cur_cm + group_best_cm * STAT_GEM_GAIN_NORMAL
+        out[g, 8] = cur_fm + group_best_fm * STAT_GEM_GAIN_FEVER
+        out[g, 9] = (
+            cur_primary + group_best_pp * pp_p_delta + group_best_cm * cm_p_delta + group_best_fm * fm_p_delta
+            + g_ov * ov_p_delta
+        )
+        out[g, 10] = (
+            cur_secondary + group_best_pp * pp_s_delta + group_best_cm * cm_s_delta + group_best_fm * fm_s_delta
+            + g_ov * ov_s_delta
+        )
+        candidate_best = max(candidate_best, group_best_score)
     return out
-
-
-def _score_response_group_meta_cpu(
-    *,
-    group_meta: np.ndarray,
-    group_offsets: np.ndarray,
-    group_lengths: np.ndarray,
-    candidate_slices: tuple[tuple[int, int], ...],
-    primary_color: str,
-    secondary_color: str,
-    selected_color: str,
-    curves: StatCurves,
-    surface_pattern_ids: np.ndarray,
-    surface_pattern_words: np.ndarray,
-    surface_counts: np.ndarray,
-    surface_pattern_head_coeffs: np.ndarray,
-    floors: np.ndarray | None = None,
-) -> np.ndarray:
-    """The groups' best gem allocations (rows as in _score_fg_response_groups_native_f64) over CPU cores; only each
-    loadout's argmax row (candidate_slices: its (first group, group count)) is exact, and with `floors` (one score per
-    loadout) only when it reaches the loadout's floor."""
-    group_meta = np.ascontiguousarray(group_meta, dtype=np.int32)
-    candidate_floor = np.full(int(group_meta.shape[0]), -2, dtype=np.int64)
-    candidate_floor[[int(start) for start, _count in candidate_slices]] = -1 if floors is None else floors
-    shared = (
-        np.ascontiguousarray(surface_pattern_ids, dtype=np.int32),
-        np.ascontiguousarray(surface_pattern_words, dtype=np.uint32),
-        np.ascontiguousarray(surface_counts, dtype=np.int32),
-        np.ascontiguousarray(surface_pattern_head_coeffs, dtype=np.int32),
-        np.asarray(color_flags(primary_color, secondary_color, selected_color), dtype=np.int32),
-        np.ascontiguousarray(curves.f64["Perfect Points"], dtype=np.float64),
-        np.ascontiguousarray(curves.f64["Combo Multiplier"], dtype=np.float64),
-        np.ascontiguousarray(curves.combo_ramp, dtype=np.float64),
-        np.ascontiguousarray(curves.f64["Fever Multiplier"], dtype=np.float64),
-    )
-    rows = _score_fg_response_groups_on_cpu_cores(
-        np.ascontiguousarray(group_offsets, dtype=np.int64),
-        np.ascontiguousarray(group_lengths, dtype=np.int64),
-        group_meta,
-        candidate_floor,
-        shared,
-    )
-    return np.asarray(rows, dtype=np.int32)
 
 
 def _fg_cpu_search_executor() -> ThreadPoolExecutor:
@@ -794,6 +757,7 @@ def _score_fg_response_groups_on_cpu_cores(
     group_lengths: np.ndarray,
     group_meta: np.ndarray,
     candidate_floor: np.ndarray,
+    group_stats: np.ndarray,
     shared_args: tuple[Any, ...],
 ) -> np.ndarray:
     """``_score_fg_response_groups_native_f64`` over contiguous chunks of whole loadouts on several cores.
@@ -808,7 +772,7 @@ def _score_fg_response_groups_on_cpu_cores(
     )
     if _FG_CPU_SEARCH_WORKERS <= 1 or chunk_count <= 1:
         return _score_fg_response_groups_native_f64(
-            group_offsets, group_lengths, group_meta, candidate_floor, *shared_args
+            group_offsets, group_lengths, group_meta, candidate_floor, group_stats, *shared_args
         )
     cumulative = np.cumsum(group_lengths, dtype=np.int64)
     targets = cumulative[-1] * np.arange(1, chunk_count, dtype=np.int64) // chunk_count
@@ -822,6 +786,7 @@ def _score_fg_response_groups_on_cpu_cores(
             group_lengths[start:stop],
             group_meta[start:stop],
             candidate_floor[start:stop],
+            group_stats[start:stop],
             *shared_args,
         )
         for start, stop in zip(cuts[:-1], cuts[1:])

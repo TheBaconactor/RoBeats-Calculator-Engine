@@ -13,7 +13,7 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
-from gear_optimizer.solver.gem_search import _score_response_group_meta_cpu
+from gear_optimizer.solver.gem_search import GemGroups, SurfacePool, gem_winners
 
 @dataclass(frozen=True, slots=True)
 class ChampionAtom:
@@ -45,24 +45,32 @@ def _score_single_frontier_domain(
     selected_color: str,
     curves: dict,
 ) -> np.ndarray:
-    rows = np.ascontiguousarray(group_meta, dtype=np.int32)
-    group_offsets = np.zeros((int(rows.shape[0]),), dtype=np.int32)
-    group_lengths = np.full((int(rows.shape[0]),), int(surface_words.shape[0]), dtype=np.int32)
-    scored = _score_response_group_meta_cpu(
-        group_meta=rows,
-        group_offsets=group_offsets,
-        group_lengths=group_lengths,
-        candidate_slices=tuple((i, 1) for i in range(int(rows.shape[0]))),
-        primary_color=str(primary_color or ""),
-        secondary_color=str(secondary_color or ""),
-        selected_color=str(selected_color or ""),
-        curves=curves,
-        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
-        surface_pattern_words=np.ascontiguousarray(surface_words, dtype=np.uint32),
-        surface_counts=np.ascontiguousarray(surface_counts, dtype=np.int32),
-        surface_pattern_head_coeffs=np.ascontiguousarray(surface_head_coeffs, dtype=np.int32),
+    count = int(group_meta.shape[0])
+    zeros = np.zeros(count, dtype=np.int32)
+    groups = GemGroups(  # each group its own loadout, all on one frontier: every row is exact
+        meta=np.ascontiguousarray(group_meta, dtype=np.int32),
+        ft=zeros,
+        ff=zeros,
+        ft_stat=zeros,
+        ff_stat=zeros,
+        frontiers=zeros,
+        candidate_slices=np.stack((np.arange(count), np.ones(count, dtype=np.int64)), axis=1),
     )
-    return np.ascontiguousarray(scored, dtype=np.int32)
+    pool = SurfacePool(
+        frontier_offsets=np.zeros(1, dtype=np.int32),
+        frontier_lengths=np.asarray((surface_words.shape[0],), dtype=np.int32),
+        pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+        pattern_words=np.ascontiguousarray(surface_words, dtype=np.uint32),
+        counts=np.ascontiguousarray(surface_counts, dtype=np.int32),
+        head_coeffs=np.ascontiguousarray(surface_head_coeffs, dtype=np.int32),
+    )
+    winners = gem_winners(
+        groups,
+        pool,
+        colors=(str(primary_color or ""), str(secondary_color or ""), str(selected_color or "")),
+        curves=curves,
+    )
+    return np.asarray([winner.inner_row for winner in winners], dtype=np.int32)
 
 
 def _atom_from_row(row: np.ndarray, *, surface_index: int) -> ChampionAtom:
