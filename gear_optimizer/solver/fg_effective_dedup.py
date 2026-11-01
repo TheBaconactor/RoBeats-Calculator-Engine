@@ -54,11 +54,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import threading
 
 import numpy as np
 
-from ..core.singleflight import SingleFlight
 from ..data.loadout_equivalence import effective_mini_signature
 from ..gamedata import Gear, SongMini
 from .item_registry import MINI_SLOT_INDICES, ItemRegistry
@@ -234,28 +232,6 @@ def build_mini_sig_id(
     )
 
 
-# ---------------------------------------------------------------------------
-# Canonical CPU reference selector
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Cached production effective-equivalence tables
-# ---------------------------------------------------------------------------
-
-
-_CONTEXT_TABLES_LOCK = threading.Lock()
-_CONTEXT_TABLES_CACHE: dict[tuple[int, str, str, str], tuple[np.ndarray, np.ndarray]] = {}
-_CONTEXT_TABLES_SINGLEFLIGHT: SingleFlight[
-    tuple[int, str, str, str], tuple[np.ndarray, np.ndarray]
-] = SingleFlight()
-# The cache key is id(registry); registries are LRU-evicted from the 32-entry _REGISTRY_GPU_CACHE
-# and rebuilt with fresh ids, so without a bound every rebuild leaks a permanent
-# (gear_name_rank, sig_id) ndarray pair for a now-dead registry. The live working set is the
-# <=32 registries x their colour contexts, so a generous cap clears rarely and only sheds orphans.
-_CONTEXT_TABLES_CACHE_MAX = 256
-
-
 def effective_tables_for_context(
     registry: ItemRegistry,
     *,
@@ -263,41 +239,8 @@ def effective_tables_for_context(
     secondary_color: str,
     selected_color: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build (gear_name_rank, mini_sig_id) for one song color context, cached.
-
-    The cache key is (registry identity, colors): registries are long-lived and
-    shared across songs of a pool, so repeat songs hit the cache and the build
-    cost stays off the per-song path. A rebuilt registry gets a new id and a
-    fresh (correct) build.
-    """
-    key = (
-        id(registry),
-        str(primary_color or ""),
-        str(secondary_color or ""),
-        str(selected_color or ""),
+    """(gear_name_rank, mini_sig_id) for one song color context (pipeline.prepare keeps them per item pool)."""
+    sig_tables = build_mini_sig_id(
+        registry, primary_color=primary_color, secondary_color=secondary_color, selected_color=selected_color
     )
-    with _CONTEXT_TABLES_LOCK:
-        cached = _CONTEXT_TABLES_CACHE.get(key)
-    if cached is not None:
-        return cached
-
-    def _build_and_cache() -> tuple[np.ndarray, np.ndarray]:
-        with _CONTEXT_TABLES_LOCK:
-            existing = _CONTEXT_TABLES_CACHE.get(key)
-        if existing is not None:
-            return existing
-        gear_rank = build_gear_name_rank(registry)
-        sig_tables = build_mini_sig_id(
-            registry,
-            primary_color=str(primary_color or ""),
-            secondary_color=str(secondary_color or ""),
-            selected_color=str(selected_color or ""),
-        )
-        tables = (gear_rank, sig_tables.sig_id)
-        with _CONTEXT_TABLES_LOCK:
-            if len(_CONTEXT_TABLES_CACHE) >= _CONTEXT_TABLES_CACHE_MAX:
-                _CONTEXT_TABLES_CACHE.clear()
-            _CONTEXT_TABLES_CACHE[key] = tables
-        return tables
-
-    return _CONTEXT_TABLES_SINGLEFLIGHT.run(key, _build_and_cache)
+    return build_gear_name_rank(registry), sig_tables.sig_id

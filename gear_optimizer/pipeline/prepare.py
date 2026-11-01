@@ -23,10 +23,11 @@ from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_contex
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 
-# Per pool key (_ga_registry): the item registry, its GPU arrays and the GA's initial-heuristic top-k. Bounded: a
-# long-lived worker adds one key per custom pool; the least recently used goes first.
+# Per pool key (_ga_registry): the item registry, its GPU arrays, the GA's initial-heuristic top-k and the FG
+# effective-loadout tables. Bounded: a long-lived worker adds one key per custom pool; the least recently used goes
+# first.
 _PREP_CACHE_MAX = 32
-_PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray]]" = OrderedDict()
+_PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray, tuple[np.ndarray, np.ndarray]]]" = OrderedDict()
 
 
 def _catalog_digest(gears, song_minis) -> str:
@@ -46,7 +47,8 @@ _SLOTS = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
 
 
 def _ga_registry(gears, song_minis, primary: str, secondary: str):
-    """The song's item registry, its GPU arrays and the GA's initial-heuristic top-k items, cached per pool key."""
+    """The song's item registry, its GPU arrays, the GA's initial-heuristic top-k items and the FG effective-loadout
+    tables (gear name rank, mini signature id; the GA selects the primary element), cached per pool key."""
     from gear_optimizer.helpers.ga_helpers import initialize_pools
     from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
     from gear_optimizer.solver.taichi_gem.fields import GA_INIT_HEURISTIC_K
@@ -68,7 +70,10 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
         secondary_color=secondary,
         heuristic_k=GA_INIT_HEURISTIC_K,
     )
-    prepared = _PREP_CACHE[pool_key] = (registry, gpu_data, topk)
+    effective = effective_tables_for_context(
+        registry, primary_color=primary, secondary_color=secondary, selected_color=primary
+    )
+    prepared = _PREP_CACHE[pool_key] = (registry, gpu_data, topk, effective)
     if len(_PREP_CACHE) > _PREP_CACHE_MAX:
         _PREP_CACHE.popitem(last=False)
     return prepared
@@ -87,9 +92,8 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     )
     timed_song = core.song
     primary, secondary = timed_song.chart.primary, timed_song.chart.secondary
-    registry, gpu_data, init_heuristic_topk = _ga_registry(context.gears, core.minis, primary, secondary)
-    fg_gear_name_rank, fg_mini_sig_id = effective_tables_for_context(
-        registry, primary_color=primary, secondary_color=secondary, selected_color=primary
+    registry, gpu_data, init_heuristic_topk, (fg_gear_name_rank, fg_mini_sig_id) = _ga_registry(
+        context.gears, core.minis, primary, secondary
     )
     num_runs = max(1, context.multi_start)
     song = NativeSong(
