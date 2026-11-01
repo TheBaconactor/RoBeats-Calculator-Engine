@@ -54,7 +54,8 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
 
 
 def _stats(offsets, lengths, shared):
-    return search._group_bound_stats(offsets, lengths, shared[0])
+    """Every group its own frontier."""
+    return search._group_bound_stats(np.arange(offsets.shape[0]), offsets, lengths, shared[0])
 
 
 def test_parallel_search_equals_one_serial_call():

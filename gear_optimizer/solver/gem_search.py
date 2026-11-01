@@ -103,7 +103,7 @@ def color_flags(primary_color: str, secondary_color: str, selected_color: str) -
 
 @jit(nopython=True, cache=True)
 def _kept_split_positions(
-    base_components,
+    base_ftff,
     ft_values,
     ff_values,
     residual_values,
@@ -112,14 +112,15 @@ def _kept_split_positions(
     secondary_ftff_delta_values,
     score_elements_constant,
 ):
-    """Each loadout's groups as positions into the FT/FF split arrays, flat in loadout order, and per-loadout counts.
+    """The groups of each pre-gem (FT, FF) row of base_ftff as positions into the FT/FF split arrays, flat in row
+    order, and per-row counts (a loadout's base colors add to every split alike: its groups depend on FT and FF only).
 
-    A loadout's splits reach frontiers (frontier_idx_by_stat at the split's clipped FT/FF stats); per frontier, in
+    A row's splits reach frontiers (frontier_idx_by_stat at the split's clipped FT/FF stats); per frontier, in
     first-reached order, it keeps the split with the most residual gems (the first one on a tie), or, when the splits
-    reaching it give the song's colors different values, every split no other split there matches or beats in
-    (residual, primary, secondary) (the earlier split wins an exact tie), in split order. O(splits) per loadout, plus
-    the pairwise check inside a frontier reached by splits of different color values."""
-    candidate_count = base_components.shape[0]
+    reaching it give the song's colors different gains, every split no other split there matches or beats in
+    (residual, primary gain, secondary gain) (the earlier split wins an exact tie), in split order. O(splits) per row,
+    plus the pairwise check inside a frontier reached by splits of different color gains."""
+    key_count = base_ftff.shape[0]
     pair_count = ft_values.shape[0]
     frontier_count = int(frontier_idx_by_stat.max()) + 1
     stamp = np.full(frontier_count, -1, dtype=np.int64)
@@ -128,16 +129,14 @@ def _kept_split_positions(
     best = np.empty(frontier_count, dtype=np.int64)
     next_pos = np.empty(pair_count, dtype=np.int64)
     reached = np.empty(pair_count, dtype=np.int64)
-    positions = np.empty(candidate_count * pair_count, dtype=np.int32)
-    counts = np.zeros(candidate_count, dtype=np.int64)
+    positions = np.empty(key_count * pair_count, dtype=np.int32)
+    counts = np.zeros(key_count, dtype=np.int64)
     write = 0
-    for c in range(candidate_count):
-        base_primary = base_components[c, 3]
-        base_secondary = base_components[c, 4]
+    for c in range(key_count):
         reached_count = 0
         for pos in range(pair_count):
-            ft_stat = min(max(base_components[c, 5] + ft_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
-            ff_stat = min(max(base_components[c, 6] + ff_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
+            ft_stat = min(max(base_ftff[c, 0] + ft_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
+            ff_stat = min(max(base_ftff[c, 1] + ff_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
             fid = frontier_idx_by_stat[ft_stat, ff_stat]
             if fid < 0:
                 raise ValueError("FG response frontier scoring bundle does not cover a requested stat key")
@@ -175,22 +174,18 @@ def _kept_split_positions(
                 continue
             row = first
             while row >= 0:
-                row_primary = base_primary + primary_ftff_delta_values[row]
-                row_secondary = base_secondary + secondary_ftff_delta_values[row]
                 dominated = False
                 other = first
                 while other >= 0:
                     if other != row:
-                        other_primary = base_primary + primary_ftff_delta_values[other]
-                        other_secondary = base_secondary + secondary_ftff_delta_values[other]
                         if (
                             residual_values[other] >= residual_values[row]
-                            and other_primary >= row_primary
-                            and other_secondary >= row_secondary
+                            and primary_ftff_delta_values[other] >= primary_ftff_delta_values[row]
+                            and secondary_ftff_delta_values[other] >= secondary_ftff_delta_values[row]
                             and (
                                 residual_values[other] > residual_values[row]
-                                or other_primary > row_primary
-                                or other_secondary > row_secondary
+                                or primary_ftff_delta_values[other] > primary_ftff_delta_values[row]
+                                or secondary_ftff_delta_values[other] > secondary_ftff_delta_values[row]
                                 or other < row
                             )
                         ):
@@ -222,16 +217,14 @@ def build_response_group_rows(
     PP, CM, FM, primary and secondary with the split's element gains, head length, body notes; candidate_slices rows:
     (first group, group count) per loadout."""
     base_components = np.ascontiguousarray(base_components, dtype=np.int32)
-    positions, counts = _kept_split_positions(
-        base_components,
-        np.ascontiguousarray(ft_values, dtype=np.int32),
-        np.ascontiguousarray(ff_values, dtype=np.int32),
-        np.ascontiguousarray(residual_values, dtype=np.int32),
-        np.ascontiguousarray(frontier_idx_by_stat, dtype=np.int32),
-        np.ascontiguousarray(primary_ftff_delta_values, dtype=np.int32),
-        np.ascontiguousarray(secondary_ftff_delta_values, dtype=np.int32),
-        bool(score_elements_constant),
+    keys, key_of = np.unique(base_components[:, 5:7], axis=0, return_inverse=True)
+    key_positions, key_counts = _kept_split_positions(
+        keys, ft_values, ff_values, residual_values, frontier_idx_by_stat, primary_ftff_delta_values,
+        secondary_ftff_delta_values, score_elements_constant,
     )
+    per_key = np.split(key_positions, np.cumsum(key_counts)[:-1])
+    positions = np.concatenate([per_key[k] for k in key_of])
+    counts = key_counts[key_of]
     owner = np.repeat(np.arange(base_components.shape[0]), counts)
     base = base_components[owner]
     group_ft = np.ascontiguousarray(ft_values[positions], dtype=np.int32)
@@ -322,7 +315,7 @@ def gem_winners(
         lengths,
         np.ascontiguousarray(groups.meta, dtype=np.int32),
         candidate_floor,
-        _group_bound_stats(offsets, lengths, surfaces),
+        _group_bound_stats(groups.frontiers, pool.frontier_offsets, pool.frontier_lengths, surfaces),
         (surfaces, np.asarray(color_flags(*colors), dtype=np.int32), tables),
     )
     winners = []
@@ -525,18 +518,26 @@ def _fill_block_bounds(tables, w_cm, w_fm, w_ov, pp_bound_prefix_max, cm_ref_cac
 
 
 @jit(nopython=True, cache=True)
-def _group_bound_stats(group_offsets, group_lengths, pool):
+def _group_bound_stats(group_frontiers, frontier_offsets, frontier_lengths, pool):
     """Per group, over its frontier's surfaces (pool as in _score_fg_response_groups_native_f64): the most body fever
-    notes, the fewest, and the most of each head coefficient (normal and fever notes, their combo ramp sums)."""
+    notes, the fewest, and the most of each head coefficient (normal and fever notes, their combo ramp sums). Each
+    frontier's are computed once: O(groups + the surfaces of distinct frontiers)."""
     pattern_ids, _words, counts, head_coeffs = pool
-    out = np.zeros((group_offsets.shape[0], 6), dtype=np.int64)
-    for g in range(group_offsets.shape[0]):
-        out[g, 1] = 1 << 40 if group_lengths[g] else 0
-        for row in range(group_offsets[g], group_offsets[g] + group_lengths[g]):
-            out[g, 0] = max(out[g, 0], counts[row, 0])
-            out[g, 1] = min(out[g, 1], counts[row, 0])
-            for t in range(4):
-                out[g, 2 + t] = max(out[g, 2 + t], head_coeffs[pattern_ids[row], t])
+    frontier_stats = np.zeros((frontier_offsets.shape[0], 6), dtype=np.int64)
+    done = np.zeros(frontier_offsets.shape[0], dtype=np.bool_)
+    out = np.empty((group_frontiers.shape[0], 6), dtype=np.int64)
+    for g in range(group_frontiers.shape[0]):
+        f = group_frontiers[g]
+        stats = frontier_stats[f]
+        if not done[f]:
+            done[f] = True
+            stats[1] = 1 << 40 if frontier_lengths[f] else 0
+            for row in range(frontier_offsets[f], frontier_offsets[f] + frontier_lengths[f]):
+                stats[0] = max(stats[0], counts[row, 0])
+                stats[1] = min(stats[1], counts[row, 0])
+                for t in range(4):
+                    stats[2 + t] = max(stats[2 + t], head_coeffs[pattern_ids[row], t])
+        out[g] = stats
     return out
 
 
