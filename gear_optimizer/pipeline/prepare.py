@@ -60,17 +60,13 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
     gear_pool, mini_pool = initialize_pools(gears, song_minis, primary, list(_SLOTS), s_color=secondary)
     registry = ItemRegistry(gear_pool, mini_pool, list(_SLOTS))
     gpu_data = registry.to_gpu_arrays()
-    topk = np.asarray(
-        build_ga_init_heuristic_topk(
-            item_stats=gpu_data["item_stats"],
-            slot_start=gpu_data["slot_start"],
-            slot_count=gpu_data["slot_count"],
-            primary_color=primary,
-            secondary_color=secondary,
-            heuristic_k=GA_INIT_HEURISTIC_K,
-            n_slots=9,
-        ),
-        dtype=np.int32,
+    topk = build_ga_init_heuristic_topk(
+        item_stats=gpu_data["item_stats"],
+        slot_start=gpu_data["slot_start"],
+        slot_count=gpu_data["slot_count"],
+        primary_color=primary,
+        secondary_color=secondary,
+        heuristic_k=GA_INIT_HEURISTIC_K,
     )
     prepared = _PREP_CACHE[pool_key] = (registry, gpu_data, topk)
     if len(_PREP_CACHE) > _PREP_CACHE_MAX:
