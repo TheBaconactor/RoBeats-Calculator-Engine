@@ -171,8 +171,8 @@ def test_publication_reuses_recorded_digests_of_unchanged_bundles(monkeypatch, t
     }
     first = frontier_server.build_publication(data_revision="1" * 40, code_revision="2" * 40, **roots)
     hashed: list[Path] = []
-    real_sha256_file = frontier_server._sha256_file
-    monkeypatch.setattr(frontier_server, "_sha256_file", lambda path: hashed.append(path) or real_sha256_file(path))
+    real_sha256_file = frontier_server.sha256_file
+    monkeypatch.setattr(frontier_server, "sha256_file", lambda path: hashed.append(path) or real_sha256_file(path))
 
     second = frontier_server.build_publication(data_revision="3" * 40, code_revision="4" * 40, **roots)
 

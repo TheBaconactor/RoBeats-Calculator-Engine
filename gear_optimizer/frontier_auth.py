@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from gear_optimizer.core.utils import write_json_atomically
 from gear_optimizer.settings import metafinder_settings
 
 CLIENT_ID_HEADER = "X-Metafinder-Client"
@@ -193,20 +194,6 @@ class FrontierRequestAuthenticator:
             return True
 
 
-def _atomic_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8") as handle:
-            json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
-            handle.write("\n")
-        if os.name != "nt":
-            os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def issue_client(client_id: str, output: str | Path, *, registry: str | Path | None = None) -> Path:
     credentials = _parse_client(client_id, secrets.token_urlsafe(32))
     registry_path = Path(registry) if registry is not None else server_clients_path()
@@ -218,10 +205,11 @@ def issue_client(client_id: str, output: str | Path, *, registry: str | Path | N
     if credentials.client_id in clients:
         raise ValueError(f"MetaFinder client already exists: {credentials.client_id}")
     clients[credentials.client_id] = credentials.secret
-    _atomic_json(registry_path, payload)
-    _atomic_json(
+    write_json_atomically(registry_path, payload, mode=0o600)
+    write_json_atomically(
         output_path,
         {"schema": _SCHEMA, "client_id": credentials.client_id, "secret": credentials.secret},
+        mode=0o600,
     )
     return output_path
 
@@ -232,7 +220,7 @@ def revoke_client(client_id: str, *, registry: str | Path | None = None) -> None
     payload = _read_registry(registry_path)
     if payload["clients"].pop(cleaned, None) is None:
         raise KeyError(f"unknown MetaFinder client: {cleaned}")
-    _atomic_json(registry_path, payload)
+    write_json_atomically(registry_path, payload, mode=0o600)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

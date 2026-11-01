@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import io
 import json
 import logging
@@ -14,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from gear_optimizer.settings import paths
-from gear_optimizer.core.utils import safe_int as _safe_int
+from gear_optimizer.core.utils import safe_int as _safe_int, sha256_file
 from gear_optimizer.chart import read_header
 
 logger = logging.getLogger(__name__)
@@ -383,14 +382,6 @@ def _source_stat(path: Path) -> tuple[int, int]:
     return stat.st_size, stat.st_mtime_ns
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _read_sync_state(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
@@ -437,7 +428,7 @@ def _sync_reason(paths: ExportedGameDataPaths, *, force: bool) -> tuple[bool, st
     if (state.get("source_size"), state.get("source_mtime_ns")) == source_stat and state.get("source_sha256"):
         _remember_up_to_date(paths)
         return False, "up_to_date", ""
-    current_sha = _sha256_file(paths.exported_json)
+    current_sha = sha256_file(paths.exported_json)
     if state.get("source_sha256") != current_sha:
         return True, "exported_game_data_changed", current_sha
     _remember_up_to_date(paths)
@@ -478,7 +469,7 @@ def sync_exported_game_data(
         wrote_files = True
 
     _write_sync_state(
-        resolved.sync_state, source_sha256=known_sha or _sha256_file(resolved.exported_json), source_stat=source_stat
+        resolved.sync_state, source_sha256=known_sha or sha256_file(resolved.exported_json), source_stat=source_stat
     )
     _remember_up_to_date(resolved)
     if wrote_files:

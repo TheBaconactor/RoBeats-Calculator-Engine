@@ -14,6 +14,7 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable
 
+from gear_optimizer.core.utils import sha256_file, write_json_atomically
 from gear_optimizer.settings import metafinder_settings
 from gear_optimizer.data.exported_game_data_sync import ExportedGameDataPaths, sync_exported_game_data
 
@@ -37,24 +38,6 @@ def publication_root() -> Path:
 
 def source_snapshot_root() -> Path:
     return metafinder_settings().source_dir
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _atomic_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    try:
-        temporary.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _safe_relative(path: Path, root: Path) -> str:
@@ -279,7 +262,7 @@ def build_publication(
             file_stat = source.stat()
             size = file_stat.st_size
             mtime_ns = file_stat.st_mtime_ns
-            digest = prior_hashes.get((scope, relative, size, mtime_ns)) or _sha256_file(source)
+            digest = prior_hashes.get((scope, relative, size, mtime_ns)) or sha256_file(source)
             entry = {
                 "scope": scope,
                 "path": relative,
@@ -325,7 +308,7 @@ def build_publication(
     ).hexdigest()
     final_root = publications / revision
     if final_root.is_dir():
-        _atomic_json(publications / "current.json", {"schema": 1, "revision": revision})
+        write_json_atomically(publications / "current.json", {"schema": 1, "revision": revision})
         return final_root
 
     work = publications / f".{revision}.{os.getpid()}.{time.time_ns()}.tmp"
@@ -351,7 +334,7 @@ def build_publication(
             # A hard link shares the prior bundle's bytes, so its recorded digest still holds;
             # re-reading every unchanged bundle cost gigabytes of I/O per publication.
             recorded = str(prior.get("sha256") or "") if linked and prior.get("size") == bundle["size"] else ""
-            bundle["sha256"] = recorded if re.fullmatch(r"[0-9a-f]{64}", recorded) else _sha256_file(destination)
+            bundle["sha256"] = recorded if re.fullmatch(r"[0-9a-f]{64}", recorded) else sha256_file(destination)
         manifest = {
             "protocol": _PROTOCOL,
             "revision": revision,
@@ -365,7 +348,7 @@ def build_publication(
             encoding="utf-8",
         )
         os.replace(work, final_root)
-        _atomic_json(publications / "current.json", {"schema": 1, "revision": revision})
+        write_json_atomically(publications / "current.json", {"schema": 1, "revision": revision})
         return final_root
     finally:
         shutil.rmtree(work, ignore_errors=True)

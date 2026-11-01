@@ -1,7 +1,14 @@
 """
-Utility functions and helpers for the gear optimizer.
-Pure functions with no external dependencies.
+Utility functions and helpers for the gear optimizer (standard library only).
 """
+
+import hashlib
+import json
+import os
+import secrets
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 
 def safe_int(val, default=0):
@@ -54,3 +61,28 @@ def get_selected_element(data: object, default: str = "") -> str:
     if not v:
         v = default
     return str(v or "")
+
+
+def sha256_file(path: Path) -> str:
+    """The hex SHA-256 of a file's bytes."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_json_atomically(path: Path, payload: Mapping[str, Any], *, mode: int | None = None) -> None:
+    """Write `payload` as compact sorted JSON and a newline through a new temporary sibling and a rename: readers see
+    the old file or the whole new one. `mode` (POSIX) is set on the file before it appears."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+            handle.write("\n")
+        if mode is not None and os.name != "nt":
+            os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)

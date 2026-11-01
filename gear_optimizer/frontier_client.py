@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from gear_optimizer.core.utils import write_json_atomically
 from gear_optimizer.settings import metafinder_settings, paths, service_mode
 from gear_optimizer.frontier_auth import (
     frontier_credentials_configured,
@@ -88,17 +89,6 @@ def _load_state(filename: str) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) and int(payload.get("schema", 0) or 0) == 1 else {}
-
-
-def _write_state(filename: str, payload: dict) -> None:
-    path = _state_path(filename)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _relative_path(value: object) -> str:
@@ -416,7 +406,7 @@ def _sync_scopes(
     for bundle in state_manifest["bundles"]:
         for entry in bundle["files"]:
             entry["local_mtime_ns"] = _destination(entry["scope"], entry["path"], code_root).stat().st_mtime_ns
-    _write_state(state_filename, {"schema": 1, **state_manifest})
+    write_json_atomically(_state_path(state_filename), {"schema": 1, **state_manifest})
     result = FrontierSyncResult(
         enabled=True,
         revision=manifest["revision"],
