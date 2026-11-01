@@ -11,14 +11,13 @@ from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_f
 
 @pytest.mark.parametrize("change", [
     {"total_budget": 12}, {"gem_scale_fever": 2}, {"song_slot": 1},
-    {"max_ft_gems_global": 1}, {"max_ff_gems_global": 1},
     *({"flags": gpu_color_flags({f"is_{color}_{stat}": 1})} for color in ("p", "s")
       for stat in ("ft", "ff", "pp", "cm", "fm", "ov")),
 ])
 def test_every_scoring_argument_invalidates_cached_results(monkeypatch, change):
     clears = []
     monkeypatch.setattr(ga, "ensure_ready", lambda: None)
-    monkeypatch.setattr(ga, "_ensure_ftff_combo_tables", lambda *_a, **_k: 1)
+    monkeypatch.setattr(ga, "_ensure_ftff_combo_tables", lambda _total_budget: 1)
     monkeypatch.setattr(ga, "uploaded_timeline_song_key", lambda _song_slot: "song")
     monkeypatch.setattr(ga_eval_cache, "_context", None)
     monkeypatch.setattr(ga.fields, "ga_eval_cache_key", SimpleNamespace(fill=lambda value: clears.append(value)))
@@ -31,9 +30,7 @@ def test_every_scoring_argument_invalidates_cached_results(monkeypatch, change):
     }))
     def evaluate(**kwargs):
         # The GA uploads each song's shortlist for the combo table it evaluates with.
-        budget = kwargs["total_budget"]
-        table = (budget, *(min(budget, kwargs.get(f"max_{s}_gems_global", budget)) for s in ("ft", "ff")))
-        monkeypatch.setattr(ga, "_FTFF_SHORTLIST", ("song", table, None, None, None))
+        monkeypatch.setattr(ga, "_FTFF_SHORTLIST", ("song", kwargs["total_budget"], None, None, None))
         ga.ga_evaluate_prepared_population(3, **kwargs)
 
     original = {"total_budget": 9, "flags": gpu_color_flags(None)}

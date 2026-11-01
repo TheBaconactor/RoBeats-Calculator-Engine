@@ -10,7 +10,7 @@ from tests.songs_support import make_song
 
 
 _EMPTY_SHORTLIST = FtffShortlist(np.zeros(161 * 161, dtype=np.int32), np.zeros(161 * 161, dtype=np.int32),
-                                 np.zeros(0, dtype=np.int32), 90, 90, 90)
+                                 np.zeros(0, dtype=np.int32), 90)
 
 
 class _FakeGpuApi:
@@ -39,7 +39,7 @@ class _FakeGpuApi:
                 pop[i, 6:9] = np.asarray([101 + i, 201 + i, 301 + i], dtype=np.int32)
         return pop
 
-    def _ensure_ftff_combo_tables(self, _total_budget, **_kwargs):
+    def _ensure_ftff_combo_tables(self, _total_budget):
         return 1
 
     def precompute_timeline_gpu(self, *_args, **_kwargs):
@@ -403,8 +403,6 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
 
     assert isinstance(out, np.ndarray)
     assert evaluate_kwargs
-    assert all("max_ft_gems_global" in kwargs for kwargs in evaluate_kwargs)
-    assert all("max_ff_gems_global" in kwargs for kwargs in evaluate_kwargs)
     assert all("materialize_mode" not in kwargs for kwargs in evaluate_kwargs)
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
 

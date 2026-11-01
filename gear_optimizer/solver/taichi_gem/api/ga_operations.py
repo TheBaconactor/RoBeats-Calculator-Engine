@@ -77,7 +77,7 @@ def warmup_ga_kernels_light() -> None:
     keys = (MAX_STAT + 1) ** 2
     ga_upload_ftff_shortlist(
         FtffShortlist(np.zeros(keys, dtype=np.int32), np.zeros(keys, dtype=np.int32), np.zeros(0, dtype=np.int32),
-                      total_budget, total_budget, total_budget),
+                      total_budget),
         song_key=warmup_song.timeline_key,
     )
 
@@ -158,8 +158,7 @@ def ga_upload_ftff_shortlist(shortlist: FtffShortlist, *, song_key: tuple) -> No
         if values.shape[0]:
             device.from_numpy(values)
         arrays.append(device)
-    table = (shortlist.total_budget, shortlist.max_ft_gems, shortlist.max_ff_gems)
-    _FTFF_SHORTLIST = (song_key, table, *arrays)
+    _FTFF_SHORTLIST = (song_key, shortlist.total_budget, *arrays)
 _FG_EFFECTIVE_TABLES_CACHE: dict = {"sig": None, "rank_id": None, "sig_id": None}
 
 
@@ -429,8 +428,6 @@ def ga_evaluate_prepared_population(
     gem_scale_fever: int = 3,
     song_slot: int = 0,
     flags,
-    max_ft_gems_global: int | None = None,
-    max_ff_gems_global: int | None = None,
 ) -> None:
     """
     Evaluate a population whose `genome_base_stats` were already aggregated.
@@ -462,16 +459,12 @@ def ga_evaluate_prepared_population(
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
-    max_ft_gems_i = int(total_budget_i) if max_ft_gems_global is None else int(max_ft_gems_global)
-    max_ff_gems_i = int(total_budget_i) if max_ff_gems_global is None else int(max_ff_gems_global)
-    max_ft_gems_i = max(0, min(int(total_budget_i), int(max_ft_gems_i)))
-    max_ff_gems_i = max(0, min(int(total_budget_i), int(max_ff_gems_i)))
     use_ga_evaluation_context((
-        total_budget_i, gem_scale_fever_i, song_slot_i, max_ft_gems_i, max_ff_gems_i,
+        total_budget_i, gem_scale_fever_i, song_slot_i,
         int(flags.is_p_ft), int(flags.is_s_ft), int(flags.is_p_ff), int(flags.is_s_ff), int(flags.is_p_pp), int(flags.is_s_pp),
         int(flags.is_p_cm), int(flags.is_s_cm), int(flags.is_p_fm), int(flags.is_s_fm), int(flags.is_p_ov), int(flags.is_s_ov),
     ))
-    _ensure_ftff_combo_tables(total_budget_i, max_ft_gems=max_ft_gems_i, max_ff_gems=max_ff_gems_i)
+    _ensure_ftff_combo_tables(total_budget_i)
     # Restore verified cache hits, then evaluate only unique uncached stat rows.
     # The pending count stays on-device and may be zero. Launch sizing uses the
     # host-known population bound, preserving dispatch limits without readbacks.
@@ -479,9 +472,9 @@ def ga_evaluate_prepared_population(
     kernels.ga_build_unique_slot_table_kernel(n_genomes)
     if _FTFF_SHORTLIST is None or _FTFF_SHORTLIST[0] != uploaded_timeline_song_key(song_slot_i):
         raise RuntimeError("the uploaded FT/FF shortlist is not the evaluated song's (ga_upload_ftff_shortlist)")
-    if _FTFF_SHORTLIST[1] != (total_budget_i, max_ft_gems_i, max_ff_gems_i):
-        raise RuntimeError(f"the uploaded FT/FF shortlist indexes the combo table {_FTFF_SHORTLIST[1]}, the evaluation "
-                           f"uses {(total_budget_i, max_ft_gems_i, max_ff_gems_i)}")
+    if _FTFF_SHORTLIST[1] != total_budget_i:
+        raise RuntimeError(f"the uploaded FT/FF shortlist indexes the combo table of {_FTFF_SHORTLIST[1]} gems, the "
+                           f"evaluation spends {total_budget_i}")
     kernels.ga_find_best_combo_warmstart_kernel(
         n_genomes, total_budget_i, gem_scale_fever_i, flags, song_slot_i, *_FTFF_SHORTLIST[2:]
     )

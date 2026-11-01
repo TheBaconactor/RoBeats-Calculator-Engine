@@ -25,8 +25,8 @@ def test_ga_evaluate_keeps_unique_count_on_device(monkeypatch) -> None:
     )
     monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
     monkeypatch.setattr(ga_operations, "kernels", fake_kernels)
-    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda *args, **kwargs: 5)
-    monkeypatch.setattr(ga_operations, "_FTFF_SHORTLIST", ("song", (90, 90, 90), "start", "count", "combos"))
+    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda _total_budget: 5)
+    monkeypatch.setattr(ga_operations, "_FTFF_SHORTLIST", ("song", 90, "start", "count", "combos"))
     monkeypatch.setattr(ga_operations, "uploaded_timeline_song_key", lambda song_slot: "song")
     monkeypatch.setattr(
         ga_operations.fields,

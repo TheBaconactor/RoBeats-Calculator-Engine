@@ -14,6 +14,7 @@ from tests.curves_support import synthetic_curves
 import numpy as np
 
 from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
+from gear_optimizer.solver.ftff_combos import reachable_ftff_keys
 import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
@@ -155,7 +156,10 @@ def real_ga_run():
         ensure_ready()
         prebuilt = build_or_load_timeline_frontier_payload(song, curves)
         precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
-        shortlist = ga_ftff_shortlist(prebuilt.payload, max_ft_gems=90, max_ff_gems=90, color_flags=color_flags)
+        shortlist = ga_ftff_shortlist(
+            prebuilt.payload, reach=reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed_stats_arr),
+            color_flags=color_flags,
+        )
 
         selected_payload = run_gpu_native_ga_runs_payload_prebuilt(
             song=song,

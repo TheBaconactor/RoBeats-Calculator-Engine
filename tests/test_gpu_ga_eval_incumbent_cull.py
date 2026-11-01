@@ -28,6 +28,7 @@ import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
+from gear_optimizer.solver.ftff_combos import reachable_ftff_keys
 from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.gamedata import Gear, SongMini, empty_stats
@@ -181,25 +182,27 @@ def _make_exhaustive_reference_kernel():
             local_c: ti.i32 = lane
             while local_c < n_combos:
                 combo_idx: ti.i32 = local_c
-                res_vec = solve_combo_warmstart_preloaded(
-                    genome_idx,
-                    combo_idx,
-                    total_budget,
-                    gem_scale_fever,
-                    flags,
-                    song_slot,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    base_p_val,
-                    base_s_val,
-                    base_ft_stat,
-                    base_ff_stat,
-                    max_ft_gems,
-                    max_ff_gems,
-                    0,
-                )
-                score = res_vec[0]
+                score: ti.i32 = -1
+                res_vec = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
+                # Every combo within the genome's gem limits (no gem past MAX_STAT), uncull'd.
+                if (kernels_helpers.ftff_combo_ft[combo_idx] <= max_ft_gems
+                        and kernels_helpers.ftff_combo_ff[combo_idx] <= max_ff_gems):
+                    res_vec = solve_combo_warmstart_preloaded(
+                        combo_idx,
+                        total_budget,
+                        gem_scale_fever,
+                        flags,
+                        song_slot,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        base_p_val,
+                        base_s_val,
+                        base_ft_stat,
+                        base_ff_stat,
+                        0,
+                    )
+                    score = res_vec[0]
                 if score >= 0:
                     key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
                     if key > local_best_key:
@@ -249,8 +252,10 @@ def eval_device_state():
         ensure_ready()
         prebuilt = build_or_load_timeline_frontier_payload(song, curves)
         precompute_timeline_gpu(song, curves, song_slot=_SONG_SLOT, prebuilt_frontier=prebuilt)
-        # The production eval below uses the uncapped combo table (no caps passed), as the exhaustive reference.
-        shortlist = ga_ftff_shortlist(prebuilt.payload, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET,
+        # The production eval below strides the shortlist of the keys the fixture pools reach; the reference scores
+        # the whole combo table.
+        reach = reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed_stats_arr)
+        shortlist = ga_ftff_shortlist(prebuilt.payload, reach=reach,
                                       color_flags=build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR))
         gpu_api.ga_upload_ftff_shortlist(shortlist, song_key=song.timeline_key)
         gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
@@ -330,9 +335,7 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
         # Exhaustive reference on the SAME device state: re-run prepare (which
         # re-aggregates the identical population and re-zeroes chunk_best + the
         # shared incumbent), then evaluate every combo with cull threshold 0.
-        n_combos = _ensure_ftff_combo_tables(
-            _TOTAL_BUDGET, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET
-        )
+        n_combos = _ensure_ftff_combo_tables(_TOTAL_BUDGET)
         assert int(n_combos) > 0
         gpu_api.ga_prepare_population_base_stats(
             _N_GENOMES,

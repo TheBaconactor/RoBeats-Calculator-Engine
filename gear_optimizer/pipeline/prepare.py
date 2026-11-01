@@ -19,7 +19,7 @@ from gear_optimizer.pipeline.song import (
     NativeSongRuntimeState,
 )
 from gear_optimizer.solver.base_stats import build_stats_array
-from gear_optimizer.solver.ftff_combos import FtffShortlist, ftff_shortlist
+from gear_optimizer.solver.ftff_combos import FtffShortlist, ftff_shortlist, reachable_ftff_keys
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, GEM_BUDGET, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
@@ -84,7 +84,7 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
 def prepare_native_song(task: SongTask) -> NativeSong:
     """The task's song ready for its GA: the GA inputs (the meta GA selects the song's primary element), the FG
     static preparation, and the timeline frontier payload built or loaded here, off the GPU owner thread."""
-    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE, _global_ftff_combo_caps
+    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.taichi_gem.fields import GA_INIT_HEURISTIC_K
 
@@ -140,21 +140,21 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     # the GA turn hits memory; a payload the startup cache lacks is built and persisted here, off the owner.
     gpu_inputs = song.gpu_inputs
     payload = build_or_load_timeline_frontier_payload(gpu_inputs.timed_song, gpu_inputs.curves).payload
-    max_ft, max_ff = _global_ftff_combo_caps(
+    reach = reachable_ftff_keys(
         gpu_inputs.item_stats, gpu_inputs.slot_start, gpu_inputs.slot_count, gpu_inputs.base_fixed_stats_arr
     )
-    gpu_inputs.ftff_shortlist = ga_ftff_shortlist(payload, max_ft_gems=max_ft, max_ff_gems=max_ff,
-                                                  color_flags=gpu_inputs.color_flags)
+    gpu_inputs.ftff_shortlist = ga_ftff_shortlist(payload, reach=reach, color_flags=gpu_inputs.color_flags)
     return song
 
 
-def ga_ftff_shortlist(payload, *, max_ft_gems: int, max_ff_gems: int, color_flags: dict) -> FtffShortlist:
-    """The FT/FF combo shortlist of the GA's gem search (ftff_combos.ftff_shortlist) for a song's timing frontier
-    payload, its color flags (build_color_flags) and the GA's combo table caps (GEM_BUDGET gems)."""
+def ga_ftff_shortlist(payload, *, reach: np.ndarray, color_flags: dict) -> FtffShortlist:
+    """The FT/FF combo shortlist of the GA's gem search (ftff_combos.ftff_shortlist, GEM_BUDGET gems) for a song's
+    timing frontier payload, the pre-gem keys its genomes can reach (ftff_combos.reachable_ftff_keys) and its color
+    flags (build_color_flags)."""
     gains = (
         STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ft"] + color_flags["is_s_ft"]),
         STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ff"] + color_flags["is_s_ff"]),
         ELEMENT_GEM_GAIN * (2 * color_flags["is_p_ov"] + color_flags["is_s_ov"]),
     )
-    return ftff_shortlist(payload, total_budget=GEM_BUDGET, max_ft_gems=max_ft_gems, max_ff_gems=max_ff_gems,
-                          gem_scale_fever=STAT_GEM_GAIN_FEVER, element_gains=gains)
+    return ftff_shortlist(payload, reach=reach, total_budget=GEM_BUDGET, gem_scale_fever=STAT_GEM_GAIN_FEVER,
+                          element_gains=gains)

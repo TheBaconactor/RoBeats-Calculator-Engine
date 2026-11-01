@@ -38,8 +38,8 @@ def ga_find_best_combo_warmstart_kernel(
     population size, so the dispatch-safety bound is unchanged.)
 
     Each (genome, lane) strides the combos of the genome's pre-gem (FT, FF) key in the song's shortlist
-    (ftff_combos.ftff_shortlist: the combos that can hold the key's winner, ascending) and stages its lane-local
-    winner in `ga_warmstart_lane_best_key/_results`; the separate
+    (ftff_combos.ftff_shortlist: the combos that can hold the key's winner, ascending, none past MAX_STAT) and stages
+    its lane-local winner in `ga_warmstart_lane_best_key/_results`; the separate
     `ga_finalize_warmstart_lane_best_kernel` then reduces lanes into
     `chunk_best_key` + `chunk_best_results` (no u64 atomics — MoltenVK/Metal
     rejects `atomic_fetch_max` on ulong, so the lane-array + reduce shape is
@@ -74,14 +74,6 @@ def ga_find_best_combo_warmstart_kernel(
         base_s_val: ti.i32 = stats[4]
         base_ft_stat: ti.i32 = stats[5]
         base_ff_stat: ti.i32 = stats[6]
-        remaining_ft: ti.i32 = MAX_STAT - base_ft_stat
-        remaining_ff: ti.i32 = MAX_STAT - base_ff_stat
-        max_ft_gems: ti.i32 = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
-        max_ff_gems: ti.i32 = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
-        if max_ft_gems > total_budget:
-            max_ft_gems = total_budget
-        if max_ff_gems > total_budget:
-            max_ff_gems = total_budget
         local_best_key = ti.u64(0)
         local_best_score: ti.i32 = 0
         local_best_pp: ti.i32 = 0
@@ -106,7 +98,6 @@ def ga_find_best_combo_warmstart_kernel(
                 kernels_helpers.ga_eval_incumbent_score[genome_idx],
             )
             res_vec = solve_combo_warmstart_preloaded(
-                genome_idx,
                 combo_idx,
                 total_budget,  # combo_budget
                 gem_scale_fever,
@@ -119,8 +110,6 @@ def ga_find_best_combo_warmstart_kernel(
                 base_s_val,
                 base_ft_stat,
                 base_ff_stat,
-                max_ft_gems,
-                max_ff_gems,
                 cull_threshold,
             )
             score = res_vec[0]

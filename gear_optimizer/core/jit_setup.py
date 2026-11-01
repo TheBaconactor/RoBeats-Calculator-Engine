@@ -23,8 +23,8 @@ import numba  # noqa: E402  (reads NUMBA_CACHE_DIR when first imported)
 numba.config.CACHE_DIR = _CACHE_DIR  # numba may have been imported before this module
 
 
-def jit(nopython: bool = True, cache: bool = True, nogil: bool = True, parallel: bool = False) -> Callable[[_F], _F]:
-    return numba.jit(nopython=nopython, cache=cache, nogil=nogil, parallel=parallel)
+def jit(nopython: bool = True, cache: bool = True, nogil: bool = True) -> Callable[[_F], _F]:
+    return numba.jit(nopython=nopython, cache=cache, nogil=nogil)
 
 
 __all__ = ["jit"]

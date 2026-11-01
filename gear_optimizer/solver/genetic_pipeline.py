@@ -1,12 +1,12 @@
 """The GPU GA: a song's runs on the GPU executor's thread, the 1-swap polish of each run's best, and the compact
-payload the FG stage reads; plus the host inputs it needs (FT/FF combo caps, heuristic seed items)."""
+payload the FG stage reads; plus the heuristic seed items it starts from."""
 
 import importlib
 
 import numpy as np
 
 from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
+from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX
 from gear_optimizer.solver.ftff_combos import FtffShortlist
 from gear_optimizer.solver.timing_envelope import TimedSong
@@ -22,18 +22,6 @@ GA_MUTATION_RATE = 0.35
 GA_ELITISM = 1
 GA_TOURNAMENT_K = 3
 GA_NOVELTY_REPAIR_ATTEMPTS = 2
-
-
-def _global_ftff_combo_caps(item_stats, slot_start, slot_count, base_fixed_stats_arr) -> tuple[int, int]:
-    """The most FT and FF gems any genome can use, (MAX_STAT - smallest pre-gem stat) // gem gain within the budget:
-    combos above them are impossible for every genome. The smallest stat adds each non-empty slot's minimum (the mini
-    slots share one pool, so it can be below any real loadout's: a safe cap)."""
-    min_ft, min_ff = int(base_fixed_stats_arr[3]), int(base_fixed_stats_arr[4])
-    for start, count in zip(slot_start, slot_count):
-        if count:
-            min_ft += int(item_stats[start : start + count, 3].min())
-            min_ff += int(item_stats[start : start + count, 4].min())
-    return tuple(max(0, min(GEM_BUDGET, (MAX_STAT - m) // STAT_GEM_GAIN_FEVER)) for m in (min_ft, min_ff))
 
 
 def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
@@ -115,7 +103,6 @@ def _polish_runs_best_one_swap(
     slot_start: "np.ndarray",
     slot_count: "np.ndarray",
     scoring: dict,
-    caps: dict,
     abort_requested=None,
 ) -> int:
     """Exact 1-swap local search on each run's tracked best (memetic finisher).
@@ -169,7 +156,7 @@ def _polish_runs_best_one_swap(
                 )
                 n_total = g_runs * k
                 gpu_api.ga_prepare_population_base_stats(n_genomes=n_total, n_slots=n_slots, flags=scoring["flags"])
-                gpu_api.ga_evaluate_prepared_population(n_genomes=n_total, n_slots=n_slots, **scoring, **caps)
+                gpu_api.ga_evaluate_prepared_population(n_genomes=n_total, n_slots=n_slots, **scoring)
                 gpu_api.ga_refresh_scores_and_update_runs_best(
                     run_idx_start=g0,
                     n_runs=g_runs,
@@ -261,14 +248,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     from .taichi_gem.kernels.kernels_helpers import gpu_color_flags
 
-    # The combo table the shortlist indexes (prep built it with these caps; evaluation checks the match).
-    max_ft_gems_global, max_ff_gems_global = ftff_shortlist.max_ft_gems, ftff_shortlist.max_ff_gems
     scoring = dict(
         total_budget=GEM_BUDGET, gem_scale_fever=STAT_GEM_GAIN_FEVER, song_slot=song_slot,
         flags=gpu_color_flags(color_flags),
     )
-    caps = dict(max_ft_gems_global=max_ft_gems_global, max_ff_gems_global=max_ff_gems_global)
-    gpu_api._ensure_ftff_combo_tables(GEM_BUDGET, max_ft_gems=max_ft_gems_global, max_ff_gems=max_ff_gems_global)
+    gpu_api._ensure_ftff_combo_tables(GEM_BUDGET)
     # The batch width is sized by genome capacity only: a genome's evaluation strides its key's FT/FF shortlist (tens
     # of combos), so one dispatch per generation stays short of the GPU watchdog (TDR).
     batch_runs = min(num_runs, _GPU_NATIVE_GA_BATCH_RUNS or max(1, gpu_fields.MAX_GENOMES // n_genomes))
@@ -293,7 +277,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                 for gen in range(n_generations):
                     check(f"before GPU-native GA generation {gen}")
                     gpu_api.ga_prepare_population_base_stats(n_genomes=n_total, n_slots=n_slots, flags=scoring["flags"])
-                    gpu_api.ga_evaluate_prepared_population(n_genomes=n_total, n_slots=n_slots, **scoring, **caps)
+                    gpu_api.ga_evaluate_prepared_population(n_genomes=n_total, n_slots=n_slots, **scoring)
                     check(f"after GPU-native GA evaluate generation {gen}")
                     # Selection scores stay exact every generation; the last one refreshes without breeding.
                     if gen < n_generations - 1:
@@ -338,7 +322,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         slot_start=slot_start,
         slot_count=slot_count,
         scoring=scoring,
-        caps=caps,
         abort_requested=abort_requested,
     )
     gpu_api.ga_refresh_fg_candidates_row0(
