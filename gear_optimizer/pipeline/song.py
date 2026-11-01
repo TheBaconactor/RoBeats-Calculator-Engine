@@ -7,7 +7,6 @@ from typing import Any, Optional
 
 import numpy as np
 
-from gear_optimizer.core.types import JsonDict
 from gear_optimizer.gamedata import SongMini, StatCurves
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.timing_envelope import TimedSong
@@ -29,7 +28,7 @@ class NativeSongGPUInputs:
     timed_song: TimedSong | None = None
     meta_primary_color: str = ""
     meta_secondary_color: str = ""
-    fixed_stats: JsonDict = field(default_factory=dict)
+    fixed_stats: dict[str, Any] = field(default_factory=dict)
     registry: ItemRegistry | None = None
     color_flags: dict[str, Any] = field(default_factory=dict)
     gens_per_run: int = 0
@@ -59,7 +58,7 @@ class NativeSongDBState:
     db_best_score: int = 0
     db_best_fg_score: int = 0
     db_baseline_valid: bool = False
-    record_info: Optional[JsonDict] = None
+    record_info: Optional[dict[str, Any]] = None
 
 
 @dataclass

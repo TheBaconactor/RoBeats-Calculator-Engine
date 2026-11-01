@@ -97,9 +97,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._stop_next_check_monotonic = now + self._stop_poll_interval_sec
         return False
 
-    def _install_signal_handlers(self) -> None:
-        return self._stop_control.install_signal_handlers()
-
     def _materialize_gpu_runtime_on_main_thread(self) -> None:
         """
         Materialize the Taichi/Vulkan GPU runtime once, on the OS main thread.
@@ -184,7 +181,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         1 when an iteration failed (a song or the pipeline), else 0."""
         multiprocessing.freeze_support()
         self._run_failed = False
-        self._install_signal_handlers()
+        self._stop_control.install_signal_handlers()
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(line_buffering=True)
         if hasattr(sys.stderr, "reconfigure"):
@@ -299,10 +296,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.info("LoopForever=FALSE; exiting after completing queue.")
             return False
 
-    def _fatal_gpu_errors_enabled(self) -> bool:
-        return settings.service_mode()
-
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
         from gear_optimizer.solver.gpu_executor import is_fatal_gpu_error
 
-        return self._fatal_gpu_errors_enabled() and is_fatal_gpu_error(exc)
+        return settings.service_mode() and is_fatal_gpu_error(exc)

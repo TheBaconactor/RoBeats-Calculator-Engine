@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from gear_optimizer.core.result_payloads import build_error_payload
 from gear_optimizer.pipeline.results import SolvedFg
 from gear_optimizer.pipeline.song import NativeSong, native_song_label
 
@@ -130,9 +129,18 @@ def evaluate_fg_progress_record_update(
 
 
 def song_error_payload(song: NativeSong, *, exc: Exception, trace: str) -> dict[str, Any]:
-    key = song.config.task_key
-    return build_error_payload(song_name=song.config.song_name, queue_key=key, queue_label=key, exc=exc, trace=trace)
+    return task_error_payload(song_name=song.config.song_name, queue_key=song.config.task_key, exc=exc, trace=trace)
 
 
 def task_error_payload(*, song_name: str, queue_key: str, exc: Exception, trace: str) -> dict[str, Any]:
-    return build_error_payload(song_name=song_name, queue_key=queue_key, queue_label=queue_key, exc=exc, trace=trace)
+    """The payload a failed task posts in place of its results: `song`, `_queue_key` and `_queue_label` label the
+    progress/error prints; `_error`, `_error_type` and `_trace` go to the logs."""
+    return {
+        "song": song_name,
+        "_song_name": song_name,
+        "_queue_key": queue_key,
+        "_queue_label": queue_key,
+        "_error": str(exc),
+        "_error_type": type(exc).__name__,
+        "_trace": trace,
+    }

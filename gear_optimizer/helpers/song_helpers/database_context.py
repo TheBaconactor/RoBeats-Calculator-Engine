@@ -12,11 +12,6 @@ from ...store.db import load_boards
 logger = logging.getLogger(__name__)
 
 
-def build_db_key(found_song_name: str) -> str:
-    """A song's DB key: its name (the timing mode is a key of its own)."""
-    return str(found_song_name or "").strip()
-
-
 @dataclass(frozen=True, slots=True)
 class SongDbBaseline:
     """A song's stored best meta and FG scores. `valid` is False when the database cannot be read (the app creates
@@ -31,7 +26,7 @@ class SongDbBaseline:
 def load_song_db_baseline(
     found_song_name: str, mode: str, *, team_buff: str = OPTIMIZER_BASELINE_TEAM_BUFF
 ) -> SongDbBaseline:
-    key = build_db_key(found_song_name)
+    key = found_song_name.strip()  # the timing mode is a key of its own
     path = paths().database
     try:
         conn = schema.connect(path)
