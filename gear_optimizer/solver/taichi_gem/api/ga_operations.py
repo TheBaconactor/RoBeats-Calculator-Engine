@@ -115,7 +115,6 @@ def warmup_ga_kernels_light() -> None:
         gem_scale_fever=gem_scale_fever,
         song_slot=song_slot,
         mutation_rate=0.0,
-        immigrant_rate=0.0,
         tournament_k=1,
         n_islands=1,
         elites_per_island=1,
@@ -561,7 +560,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     flags,
     song_slot: int = 0,
     mutation_rate: float = 0.02,
-    immigrant_rate: float = 0.0,
     tournament_k: int = 3,
     n_islands: int = 1,
     elites_per_island: int = 1,
@@ -594,7 +592,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         tournament_k = 1
     novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
     mr_fp = probability_to_u32_fp(float(mutation_rate))
-    ir_fp = probability_to_u32_fp(float(immigrant_rate))
     kernels.ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         int(run_idx_start),
         int(n_runs),
@@ -608,7 +605,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         int(elites_per_island),
         int(tournament_k),
         mr_fp,
-        ir_fp,
         int(novelty_repair_attempts),
     )
 def ga_init_runs_best(*, run_idx_start: int, n_runs: int, n_slots: int = 9) -> None:

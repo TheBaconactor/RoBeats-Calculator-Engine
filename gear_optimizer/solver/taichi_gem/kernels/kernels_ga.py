@@ -309,7 +309,6 @@ def _ga_next_generation_full_runs_impl(
     elites_per_island: ti.i32,
     tournament_k: ti.i32,
     mutation_rate_fp: ti.u32,
-    immigrant_rate_fp: ti.u32,
     novelty_repair_attempts: ti.i32,
 ):
     """Shared multi-run next-generation body used by standalone and fused transition kernels."""
@@ -446,18 +445,6 @@ def _ga_next_generation_full_runs_impl(
                 new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
                 kernels_helpers.population_next_indices[g, mut_slot] = new_item
         state = _repair_next_genome_minis(g, state)
-        if immigrant_rate_fp != ti.u32(0):
-            state = kernels_helpers._xorshift32(state)
-            if state < immigrant_rate_fp:
-                for s in range(n_slots):
-                    pool_start = kernels_helpers.slot_start[s]
-                    pool_count = kernels_helpers.slot_count[s]
-                    if pool_count > 0:
-                        state = kernels_helpers._xorshift32(state)
-                        new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
-                        kernels_helpers.population_next_indices[g, s] = new_item
-                state = _repair_next_genome_minis(g, state)
-                pa = -1
         if pa >= 0 and novelty_repair_attempts > 0:
             state = _repair_parent_clone_child(g, pa, pb, n_slots, state, novelty_repair_attempts)
         kernels_helpers.ga_rng_state[g] = state
@@ -476,7 +463,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     elites_per_island: ti.i32,
     tournament_k: ti.i32,
     mutation_rate_fp: ti.u32,
-    immigrant_rate_fp: ti.u32,
     novelty_repair_attempts: ti.i32,
 ):
     """
@@ -505,7 +491,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         elites_per_island,
         tournament_k,
         mutation_rate_fp,
-        immigrant_rate_fp,
         novelty_repair_attempts,
     )
     # FUSED population swap (absorbs the former standalone ga_swap_population_kernel launch):

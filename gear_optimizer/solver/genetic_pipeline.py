@@ -20,7 +20,6 @@ GA_POPULATION_SIZE = 352
 GA_MUTATION_RATE = 0.35
 GA_ELITISM = 1
 GA_TOURNAMENT_K = 3
-GA_IMMIGRANT_RATE = 0.0
 GA_NOVELTY_REPAIR_ATTEMPTS = 2
 
 
@@ -300,7 +299,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             **runs,
                             **scoring,
                             mutation_rate=GA_MUTATION_RATE,
-                            immigrant_rate=GA_IMMIGRANT_RATE,
                             tournament_k=GA_TOURNAMENT_K,
                             n_islands=1,
                             elites_per_island=GA_ELITISM,

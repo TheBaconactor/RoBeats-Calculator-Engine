@@ -20,7 +20,6 @@ def ga_next_generation_full_runs_kernel(
     elites_per_island: ti.i32,
     tournament_k: ti.i32,
     mutation_rate_fp: ti.u32,
-    immigrant_rate_fp: ti.u32,
     novelty_repair_attempts: ti.i32,
 ):
     """
@@ -39,7 +38,6 @@ def ga_next_generation_full_runs_kernel(
         elites_per_island,
         tournament_k,
         mutation_rate_fp,
-        immigrant_rate_fp,
         novelty_repair_attempts,
     )
     # FUSED population swap (absorbs the former standalone ga_swap_population_kernel launch):
@@ -59,7 +57,6 @@ def ga_next_generation_fused_runs(
     n_genomes_per_run: int,
     n_slots: int = 9,
     mutation_rate: float = 0.02,
-    immigrant_rate: float = 0.0,
     tournament_k: int = 3,
     n_islands: int = 1,
     elites_per_island: int = 1,
@@ -92,7 +89,6 @@ def ga_next_generation_fused_runs(
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
     mr_fp = probability_to_u32_fp(float(mutation_rate))
-    ir_fp = probability_to_u32_fp(float(immigrant_rate))
     ga_next_generation_full_runs_kernel(
         n_runs,
         n_genomes_per_run,
@@ -101,6 +97,5 @@ def ga_next_generation_fused_runs(
         elites_per_island,
         tournament_k,
         mr_fp,
-        ir_fp,
         int(novelty_repair_attempts),
     )
