@@ -30,5 +30,6 @@ def ga_payload(song: NativeSong) -> dict[str, Any]:
         "ga_seed": song.config.ga_seed,
         "fg_gear_name_rank": song.gpu_inputs.fg_gear_name_rank,
         "fg_mini_sig_id": song.gpu_inputs.fg_mini_sig_id,
+        "ftff_shortlist": song.gpu_inputs.ftff_shortlist,
         "fg_scoring_bundle": fg_scoring_bundle,
     }

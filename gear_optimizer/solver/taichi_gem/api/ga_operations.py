@@ -10,21 +10,22 @@ These functions are called from the GPU executor's native in-flight path.
 from __future__ import annotations
 import numpy as np
 from .. import fields
-from ..fields import MAX_EVALS_PER_DISPATCH
 from ..kernel_loader import get_kernels
 from ..runtime import on_hard_reset
 from .ga_eval_cache import reset_ga_evaluation_cache, use_ga_evaluation_context
 from .initialization import ensure_ready, _ensure_ftff_combo_tables
+from .timeline import uploaded_timeline_song_key
 from ..kernels.kernels_helpers import gpu_color_flags
 from gear_optimizer.chart import Chart
 from gear_optimizer.gamedata import stat_curves
+from gear_optimizer.rules import MAX_STAT
+from gear_optimizer.solver.ftff_combos import FtffShortlist
 from gear_optimizer.solver.timing_envelope import TimedSong
-from ..combo_chunking import compute_combo_chunk
 from .common_operations import compute_array_sig, probability_to_u32_fp
-_GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
-_GA_COMBO_CHUNK_MAX: int = 4096  # exact-combo dispatch chunk ceiling (TDR-safe)
-_GA_COMBO_TAIL_MERGE_MAX: int = 256  # merge a trailing remainder up to this size into the last chunk
 _GA_KERNELS_LIGHT_WARMED: bool = False
+# The uploaded FT/FF combo shortlist (ga_upload_ftff_shortlist): (song timeline key, (total budget, FT cap, FF cap)
+# of the combo table it indexes, start, count, combos ndarrays).
+_FTFF_SHORTLIST: tuple | None = None
 
 
 def _warmup_song() -> TimedSong:
@@ -71,7 +72,14 @@ def warmup_ga_kernels_light() -> None:
 
     curves = stat_curves()
     ensure_ready(curves)
-    precompute_timeline_gpu_for_warmup(_warmup_song(), curves, song_slot=song_slot)
+    warmup_song = _warmup_song()
+    precompute_timeline_gpu_for_warmup(warmup_song, curves, song_slot=song_slot)
+    keys = (MAX_STAT + 1) ** 2
+    ga_upload_ftff_shortlist(
+        FtffShortlist(np.zeros(keys, dtype=np.int32), np.zeros(keys, dtype=np.int32), np.zeros(0, dtype=np.int32),
+                      total_budget, total_budget, total_budget),
+        song_key=warmup_song.timeline_key,
+    )
 
     item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
     slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
@@ -133,10 +141,25 @@ def warmup_ga_kernels_light() -> None:
     _ = ga_download_fg_selected_payload(table_slot=song_slot, n_runs=int(n_runs), limit=1)
     ti.sync()
     _GA_KERNELS_LIGHT_WARMED = True
-def _ga_eval_budget() -> int:
-    # Per-dispatch exact-eval budget = the GPU TDR/memory chunking cap.
-    return int(MAX_EVALS_PER_DISPATCH)
 kernels = get_kernels()
+
+
+def ga_upload_ftff_shortlist(shortlist: FtffShortlist, *, song_key: tuple) -> None:
+    """Upload a song's FT/FF combo shortlist (ftff_combos.ftff_shortlist) for the eval kernel; `song_key` is the song's
+    timeline key. Evaluation checks it against the uploaded timeline and the shortlist's table against its own."""
+    global _FTFF_SHORTLIST
+    import taichi as ti
+
+    ensure_ready()
+    arrays = []
+    for values in (shortlist.start, shortlist.count, shortlist.combos):
+        values = np.ascontiguousarray(values, dtype=np.int32)
+        device = ti.ndarray(dtype=ti.i32, shape=(max(1, values.shape[0]),))
+        if values.shape[0]:
+            device.from_numpy(values)
+        arrays.append(device)
+    table = (shortlist.total_budget, shortlist.max_ft_gems, shortlist.max_ff_gems)
+    _FTFF_SHORTLIST = (song_key, table, *arrays)
 _FG_EFFECTIVE_TABLES_CACHE: dict = {"sig": None, "rank_id": None, "sig_id": None}
 
 
@@ -146,7 +169,9 @@ def reset_ga_upload_caches() -> None:
     global _FG_EFFECTIVE_TABLES_CACHE
     from .registry_upload import reset_registry_upload_cache
     reset_registry_upload_cache()
+    global _FTFF_SHORTLIST
     _FG_EFFECTIVE_TABLES_CACHE = {"sig": None, "rank_id": None, "sig_id": None}
+    _FTFF_SHORTLIST = None  # device arrays do not survive ti.reset(): the GA's state restore uploads it again
     reset_ga_evaluation_cache()
 def ga_upload_initial_populations(populations_np: np.ndarray, *, n_runs: int, n_genomes: int, n_slots: int = 9) -> None:
     """
@@ -446,48 +471,21 @@ def ga_evaluate_prepared_population(
         int(flags.is_p_ft), int(flags.is_s_ft), int(flags.is_p_ff), int(flags.is_s_ff), int(flags.is_p_pp), int(flags.is_s_pp),
         int(flags.is_p_cm), int(flags.is_s_cm), int(flags.is_p_fm), int(flags.is_s_fm), int(flags.is_p_ov), int(flags.is_s_ov),
     ))
-    n_combos = _ensure_ftff_combo_tables(
-        total_budget_i,
-        max_ft_gems=max_ft_gems_i,
-        max_ff_gems=max_ff_gems_i,
-    )
+    _ensure_ftff_combo_tables(total_budget_i, max_ft_gems=max_ft_gems_i, max_ff_gems=max_ff_gems_i)
     # Restore verified cache hits, then evaluate only unique uncached stat rows.
     # The pending count stays on-device and may be zero. Launch sizing uses the
     # host-known population bound, preserving dispatch limits without readbacks.
     kernels.ga_compute_exact_eval_rep_kernel(n_genomes)
     kernels.ga_build_unique_slot_table_kernel(n_genomes)
-    eval_budget = int(_ga_eval_budget())
-    max_evals = max(int(eval_budget), int(n_genomes))
-    combo_chunk = compute_combo_chunk(
-        n_genomes=n_genomes,
-        n_combos=n_combos,
-        max_evals=max_evals,
-        chunk_min=_GA_COMBO_CHUNK_MIN,
-        chunk_max=_GA_COMBO_CHUNK_MAX,
+    if _FTFF_SHORTLIST is None or _FTFF_SHORTLIST[0] != uploaded_timeline_song_key(song_slot_i):
+        raise RuntimeError("the uploaded FT/FF shortlist is not the evaluated song's (ga_upload_ftff_shortlist)")
+    if _FTFF_SHORTLIST[1] != (total_budget_i, max_ft_gems_i, max_ff_gems_i):
+        raise RuntimeError(f"the uploaded FT/FF shortlist indexes the combo table {_FTFF_SHORTLIST[1]}, the evaluation "
+                           f"uses {(total_budget_i, max_ft_gems_i, max_ff_gems_i)}")
+    kernels.ga_find_best_combo_warmstart_kernel(
+        n_genomes, total_budget_i, gem_scale_fever_i, flags, song_slot_i, *_FTFF_SHORTLIST[2:]
     )
-    if combo_chunk <= 0:
-        combo_chunk = int(n_combos)
-
-    offset = 0
-    while offset < n_combos:
-        chunk_len = int(min(combo_chunk, n_combos - offset))
-        if _GA_COMBO_TAIL_MERGE_MAX > 0:
-            rem = int(n_combos - (offset + chunk_len))
-            if 0 < rem <= int(_GA_COMBO_TAIL_MERGE_MAX):
-                merged = int(chunk_len + rem)
-                if int(n_genomes) * int(merged) <= int(max_evals):
-                    chunk_len = merged
-        kernels.ga_find_best_combo_warmstart_kernel(
-            n_genomes,
-            int(offset),
-            int(chunk_len),
-            total_budget_i,
-            gem_scale_fever_i,
-            flags,
-            song_slot_i,
-        )
-        kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
-        offset += int(chunk_len)
+    kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
 
     # Scatter each duplicate genome's winning key/results from its representative row.
     kernels.ga_scatter_dup_results_kernel(n_genomes)

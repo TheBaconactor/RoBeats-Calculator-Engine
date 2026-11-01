@@ -704,6 +704,11 @@ def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song
     )
 
 
+def uploaded_timeline_song_key(song_slot: int) -> tuple | None:
+    """The timeline key of the song whose frontier is uploaded in `song_slot` (None before any upload)."""
+    return _gpu_timeline_song_id_by_slot[int(song_slot)]
+
+
 @on_hard_reset
 def reset_timeline_state() -> None:
     """Reset module-level timeline upload caches after `ti.reset()`."""

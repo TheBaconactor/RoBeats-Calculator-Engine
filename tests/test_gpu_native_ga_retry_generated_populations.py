@@ -3,8 +3,14 @@ import sys
 import types
 
 import numpy as np
+
+from gear_optimizer.solver.ftff_combos import FtffShortlist
 import pytest
 from tests.songs_support import make_song
+
+
+_EMPTY_SHORTLIST = FtffShortlist(np.zeros(161 * 161, dtype=np.int32), np.zeros(161 * 161, dtype=np.int32),
+                                 np.zeros(0, dtype=np.int32), 90, 90, 90)
 
 
 class _FakeGpuApi:
@@ -15,6 +21,7 @@ class _FakeGpuApi:
         self.item_stats_upload_calls = 0
         self.base_fixed_stats_upload_calls = 0
         self.fg_effective_tables_upload_calls = 0
+        self.shortlist_upload_calls = 0
         self.reset_calls = 0
         self.evaluate_calls = 0
         self.fused_refresh_next_generation_calls = 0
@@ -50,6 +57,9 @@ class _FakeGpuApi:
     def ga_upload_fg_effective_tables(self, *_args, **_kwargs):
         self.fg_effective_tables_upload_calls += 1
         return None
+
+    def ga_upload_ftff_shortlist(self, *_args, **_kwargs):
+        self.shortlist_upload_calls += 1
 
     def ga_upload_init_heuristic_topk(self, *_args, **_kwargs):
         return None
@@ -147,7 +157,6 @@ def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
 
     fake_fields_module = types.ModuleType("gear_optimizer.solver.taichi_gem.fields")
     fake_fields_module.MAX_WORK_ITEMS = 1_000_000
-    fake_fields_module.MAX_EVALS_PER_DISPATCH = 1_000_000
     fake_fields_module.MAX_GENOMES = 1_000_000
     fake_fields_module.MAX_GA_RUNS = 64
     fake_fields_module.MAX_GA_RUN_GENOMES = 1_000_000
@@ -180,10 +189,12 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
         n_genomes=8,
         color_flags={},
         ga_seed=123,
+        ftff_shortlist=_EMPTY_SHORTLIST,
     )
 
     assert isinstance(out, np.ndarray)
     assert fake_gpu.reset_calls >= 1
+    assert fake_gpu.shortlist_upload_calls == 1 + fake_gpu.reset_calls
     assert fake_gpu.generate_calls == 2
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
     assert fake_gpu.upload_calls == 0
@@ -216,6 +227,7 @@ def test_gpu_native_ga_uploads_slot_timeline_and_global_static_in_request(monkey
         n_genomes=8,
         color_flags={},
         ga_seed=123,
+        ftff_shortlist=_EMPTY_SHORTLIST,
     )
 
     assert isinstance(out, np.ndarray)
@@ -247,6 +259,7 @@ def test_gpu_native_ga_batched_runs_use_indexed_seed_series(monkeypatch):
         n_genomes=8,
         color_flags={},
         ga_seed=123,
+        ftff_shortlist=_EMPTY_SHORTLIST,
     )
 
     assert isinstance(out, np.ndarray)
@@ -283,6 +296,7 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
         n_genomes=8,
         color_flags={},
         ga_seed=123,
+        ftff_shortlist=_EMPTY_SHORTLIST,
     )
 
     assert isinstance(out, np.ndarray)
@@ -314,6 +328,7 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
             n_genomes=8,
             color_flags={},
             ga_seed=123,
+            ftff_shortlist=_EMPTY_SHORTLIST,
             abort_requested=lambda: fake_gpu.evaluate_calls >= 1,
     )
 
@@ -344,6 +359,7 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
             n_genomes=8,
             color_flags={},
             ga_seed=123,
+            ftff_shortlist=_EMPTY_SHORTLIST,
             abort_requested=lambda: fake_gpu.evaluate_calls >= 1,
         )
 
@@ -382,6 +398,7 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
         n_genomes=8,
         color_flags={},
         ga_seed=123,
+        ftff_shortlist=_EMPTY_SHORTLIST,
     )
 
     assert isinstance(out, np.ndarray)

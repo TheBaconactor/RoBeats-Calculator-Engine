@@ -25,6 +25,8 @@ not exact and must not ship.
 from __future__ import annotations
 
 import numpy as np
+
+from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
 import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
@@ -170,6 +172,7 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
         ensure_ready()
         prebuilt = build_or_load_timeline_frontier_payload(song, curves)
         precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+        shortlist = ga_ftff_shortlist(prebuilt.payload, max_ft_gems=90, max_ff_gems=90, color_flags=color_flags)
 
         payload = run_gpu_native_ga_runs_payload_prebuilt(
             song=song,
@@ -184,6 +187,7 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
             n_genomes=_N_GENOMES,
             color_flags=color_flags,
             ga_seed=_GA_SEED,
+            ftff_shortlist=shortlist,
             fg_gear_name_rank=gear_name_rank,
             fg_mini_sig_id=mini_sig_id,
         )

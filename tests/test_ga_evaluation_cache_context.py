@@ -19,6 +19,7 @@ def test_every_scoring_argument_invalidates_cached_results(monkeypatch, change):
     clears = []
     monkeypatch.setattr(ga, "ensure_ready", lambda: None)
     monkeypatch.setattr(ga, "_ensure_ftff_combo_tables", lambda *_a, **_k: 1)
+    monkeypatch.setattr(ga, "uploaded_timeline_song_key", lambda _song_slot: "song")
     monkeypatch.setattr(ga_eval_cache, "_context", None)
     monkeypatch.setattr(ga.fields, "ga_eval_cache_key", SimpleNamespace(fill=lambda value: clears.append(value)))
     monkeypatch.setattr(ga, "kernels", SimpleNamespace(**{
@@ -28,9 +29,16 @@ def test_every_scoring_argument_invalidates_cached_results(monkeypatch, change):
             "ga_scatter_dup_results_kernel",
         )
     }))
+    def evaluate(**kwargs):
+        # The GA uploads each song's shortlist for the combo table it evaluates with.
+        budget = kwargs["total_budget"]
+        table = (budget, *(min(budget, kwargs.get(f"max_{s}_gems_global", budget)) for s in ("ft", "ff")))
+        monkeypatch.setattr(ga, "_FTFF_SHORTLIST", ("song", table, None, None, None))
+        ga.ga_evaluate_prepared_population(3, **kwargs)
+
     original = {"total_budget": 9, "flags": gpu_color_flags(None)}
-    ga.ga_evaluate_prepared_population(3, **original)
-    ga.ga_evaluate_prepared_population(3, **original)
+    evaluate(**original)
+    evaluate(**original)
     assert clears == [0]
-    ga.ga_evaluate_prepared_population(3, **(original | change))
+    evaluate(**(original | change))
     assert clears == [0, 0]

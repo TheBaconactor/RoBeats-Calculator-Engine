@@ -11,12 +11,13 @@ from ..warmstart_common import solve_combo_warmstart_preloaded
 @ti.kernel
 def ga_find_best_combo_warmstart_kernel(
     n_genomes_launch: ti.i32,
-    combo_offset: ti.i32,
-    combo_count: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
     flags: GpuColorFlags,
     song_slot: ti.i32,
+    shortlist_start: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    shortlist_count: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    shortlist_combos: ti.types.ndarray(dtype=ti.i32, ndim=1),
 ):
     """
     GPU-parallel exact per-(genome, FT/FF) evaluation over COMPACTED unique rows.
@@ -36,7 +37,8 @@ def ga_find_best_combo_warmstart_kernel(
     to [0, n_genomes] structurally, and the launch width is the host-validated
     population size, so the dispatch-safety bound is unchanged.)
 
-    Each (genome, lane) strides the chunk's combos and stages its lane-local
+    Each (genome, lane) strides the combos of the genome's pre-gem (FT, FF) key in the song's shortlist
+    (ftff_combos.ftff_shortlist: the combos that can hold the key's winner, ascending) and stages its lane-local
     winner in `ga_warmstart_lane_best_key/_results`; the separate
     `ga_finalize_warmstart_lane_best_kernel` then reduces lanes into
     `chunk_best_key` + `chunk_best_results` (no u64 atomics — MoltenVK/Metal
@@ -45,13 +47,12 @@ def ga_find_best_combo_warmstart_kernel(
     Args:
         n_genomes_launch: Host-known population width (launch bound; live slots
             are gated on-device by ga_exact_eval_unique_count[0])
-        n_combos: Total number of FT/FF combinations
-        combo_offset: Starting index in combo tables (for chunked processing)
-        combo_count: Number of combos in this chunk
         total_budget: Total gem budget
         gem_scale_fever: Gems per fever stat point
         flags: the song's color flags (GpuColorFlags)
         song_slot: Grid slot for batch coalescing
+        shortlist_start, shortlist_count, shortlist_combos: the shortlist; key ft * (MAX_STAT + 1) + ff owns
+            shortlist_combos[shortlist_start[key] : shortlist_start[key] + shortlist_count[key]]
     """
     block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
     total_threads = n_genomes_launch * block_dim
@@ -87,9 +88,12 @@ def ga_find_best_combo_warmstart_kernel(
         local_best_cm: ti.i32 = 0
         local_best_fm: ti.i32 = 0
         local_best_ov: ti.i32 = 0
+        stat_key: ti.i32 = ti.min(base_ft_stat, MAX_STAT) * (MAX_STAT + 1) + ti.min(base_ff_stat, MAX_STAT)
+        first: ti.i32 = shortlist_start[stat_key]
+        n_key_combos: ti.i32 = shortlist_count[stat_key]
         local_c: ti.i32 = lane
-        while local_c < combo_count:
-            combo_idx: ti.i32 = combo_offset + local_c
+        while local_c < n_key_combos:
+            combo_idx: ti.i32 = shortlist_combos[first + local_c]
             # Exact UB combo culling: skip the inner solve when even the relaxed
             # upper bound cannot reach the best exact score already found for
             # this genome (lane-local plus the cross-lane shared incumbent).

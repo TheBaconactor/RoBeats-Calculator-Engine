@@ -26,7 +26,6 @@ MAX_SONG_NOTES = 32768  # Max chart length for GPU timeline computation. Real-wo
 # notes -- beyond any conceivable chart). Sized down from 200000 (28x over); the ~7 per-note
 # (MAX_SONG_NOTES,) arrays scale with it. A chart exceeding this fails loud at
 # timeline.py (`Song has N notes, max is ...`), never silent truncation -- bump it if ever hit.
-MAX_EVALS_PER_DISPATCH = 8_388_608  # Upper bound used for chunking (genomes * FT/FF combos)
 MAX_TIMELINE_FRONTIER_SURFACES = 262144  # GPU frontier field-size cap (within [1, 1_048_576] VRAM bound)
 MAX_SONG_SLOTS = 8  # concurrent songs resident on the GPU (in-flight songs use all but one)
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables

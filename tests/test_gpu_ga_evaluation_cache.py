@@ -7,6 +7,10 @@ from tests.curves_support import synthetic_curves
 from tests.test_gpu_ga_eval_incumbent_cull import (
     _GPU_LOCK,
     _N_GENOMES,
+    _PRIMARY_COLOR,
+    _SECONDARY_COLOR,
+    _SELECTED_COLOR,
+    _TOTAL_BUDGET,
     _song,
     _curves,
     _run_production_eval,
@@ -49,16 +53,22 @@ def test_reference_reload_cannot_reuse_old_scores(eval_device_state):
 @pytest.mark.parametrize("timing_mode,n_notes", [("precise", 80), ("non-precise", 400)])
 def test_replacing_song_slot_or_timing_cannot_reuse_old_scores(eval_device_state, timing_mode, n_notes):
     from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
+    from gear_optimizer.core.color_flags import build_color_flags
+    from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
+    from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_upload_ftff_shortlist, reset_ga_evaluation_cache
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload, precompute_timeline_gpu,
     )
 
     def upload(mode, notes):
+        # As the GA's state restore: the song's timeline with its shortlist (the uncapped table the eval uses).
         song = _song(n_notes=notes, mode=mode)
         refs = _curves()
         payload = build_or_load_timeline_frontier_payload(song, refs)
         precompute_timeline_gpu(song, refs, song_slot=0, prebuilt_frontier=payload)
+        shortlist = ga_ftff_shortlist(payload.payload, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET,
+                                      color_flags=build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR))
+        ga_upload_ftff_shortlist(shortlist, song_key=song.timeline_key)
 
     with _GPU_LOCK:
         _run_production_eval(eval_device_state)
@@ -87,18 +97,35 @@ def test_loading_another_run_batch_discards_cached_winners(eval_device_state):
 
 def test_changed_budget_clears_live_winners_without_reaggregation(eval_device_state):
     from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.core.color_flags import build_color_flags
+    from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
+    from gear_optimizer.solver.ftff_combos import FtffShortlist
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
-        ga_evaluate_prepared_population, reset_ga_evaluation_cache,
+        ga_evaluate_prepared_population, ga_upload_ftff_shortlist, reset_ga_evaluation_cache,
     )
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
+    keys = 161 * 161
+    song = _song()
+    # With no gems the only combo is (0, 0), index 0: every key's shortlist.
+    no_gems = FtffShortlist(np.arange(keys, dtype=np.int32), np.ones(keys, dtype=np.int32),
+                            np.zeros(keys, dtype=np.int32), 0, 0, 0)
     with _GPU_LOCK:
         old = _run_production_eval(eval_device_state)
-        kwargs = dict(flags=eval_device_state, total_budget=0)
-        ga_evaluate_prepared_population(_N_GENOMES, **kwargs)
-        assert int(fields.ga_exact_eval_unique_count.to_numpy()[0]) > 0
-        actual = fields.chunk_best_key.to_numpy()[:_N_GENOMES]
-        assert not np.array_equal(actual, old[0])
-        reset_ga_evaluation_cache()
-        fields.chunk_best_key.fill(0)
-        ga_evaluate_prepared_population(_N_GENOMES, **kwargs)
-        np.testing.assert_array_equal(fields.chunk_best_key.to_numpy()[:_N_GENOMES], actual)
+        try:
+            ga_upload_ftff_shortlist(no_gems, song_key=song.timeline_key)
+            kwargs = dict(flags=eval_device_state, total_budget=0)
+            ga_evaluate_prepared_population(_N_GENOMES, **kwargs)
+            assert int(fields.ga_exact_eval_unique_count.to_numpy()[0]) > 0
+            actual = fields.chunk_best_key.to_numpy()[:_N_GENOMES]
+            assert not np.array_equal(actual, old[0])
+            reset_ga_evaluation_cache()
+            fields.chunk_best_key.fill(0)
+            ga_evaluate_prepared_population(_N_GENOMES, **kwargs)
+            np.testing.assert_array_equal(fields.chunk_best_key.to_numpy()[:_N_GENOMES], actual)
+        finally:
+            payload = build_or_load_timeline_frontier_payload(song, _curves()).payload
+            shortlist = ga_ftff_shortlist(payload, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET,
+                                          color_flags=build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR,
+                                                                        _SELECTED_COLOR))
+            ga_upload_ftff_shortlist(shortlist, song_key=song.timeline_key)

@@ -8,6 +8,7 @@ import numpy as np
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX
+from gear_optimizer.solver.ftff_combos import FtffShortlist
 from gear_optimizer.solver.timing_envelope import TimedSong
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 
@@ -203,6 +204,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     ga_seed: int,
     fg_gear_name_rank: "np.ndarray",
     fg_mini_sig_id: "np.ndarray",
+    ftff_shortlist: "FtffShortlist",
     abort_requested=None,
     on_generation=None,
 ) -> "np.ndarray":
@@ -230,6 +232,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     def restore_song_gpu_state() -> None:
         gpu_api.precompute_timeline_gpu(song, curves, song_slot=song_slot)
+        gpu_api.ga_upload_ftff_shortlist(ftff_shortlist, song_key=song.timeline_key)
         gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
         gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
         gpu_api.ga_upload_fg_effective_tables(fg_gear_name_rank, fg_mini_sig_id)
@@ -258,17 +261,16 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     from .taichi_gem.kernels.kernels_helpers import gpu_color_flags
 
-    max_ft_gems_global, max_ff_gems_global = _global_ftff_combo_caps(
-        item_stats, slot_start, slot_count, base_fixed_stats_arr
-    )
+    # The combo table the shortlist indexes (prep built it with these caps; evaluation checks the match).
+    max_ft_gems_global, max_ff_gems_global = ftff_shortlist.max_ft_gems, ftff_shortlist.max_ff_gems
     scoring = dict(
         total_budget=GEM_BUDGET, gem_scale_fever=STAT_GEM_GAIN_FEVER, song_slot=song_slot,
         flags=gpu_color_flags(color_flags),
     )
     caps = dict(max_ft_gems_global=max_ft_gems_global, max_ff_gems_global=max_ff_gems_global)
     gpu_api._ensure_ftff_combo_tables(GEM_BUDGET, max_ft_gems=max_ft_gems_global, max_ff_gems=max_ff_gems_global)
-    # The batch width is sized by genome capacity only: combo chunking inside the evaluation owns dispatch-length
-    # (TDR) safety and accumulates bit-exactly across chunks.
+    # The batch width is sized by genome capacity only: a genome's evaluation strides its key's FT/FF shortlist (tens
+    # of combos), so one dispatch per generation stays short of the GPU watchdog (TDR).
     batch_runs = min(num_runs, _GPU_NATIVE_GA_BATCH_RUNS or max(1, gpu_fields.MAX_GENOMES // n_genomes))
     if int(gpu_fields.MAX_GA_RUNS) < num_runs:
         raise RuntimeError(

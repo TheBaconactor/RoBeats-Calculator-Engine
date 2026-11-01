@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
+from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
 from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.gamedata import Gear, SongMini, empty_stats
@@ -248,6 +249,10 @@ def eval_device_state():
         ensure_ready()
         prebuilt = build_or_load_timeline_frontier_payload(song, curves)
         precompute_timeline_gpu(song, curves, song_slot=_SONG_SLOT, prebuilt_frontier=prebuilt)
+        # The production eval below uses the uncapped combo table (no caps passed), as the exhaustive reference.
+        shortlist = ga_ftff_shortlist(prebuilt.payload, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET,
+                                      color_flags=build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR))
+        gpu_api.ga_upload_ftff_shortlist(shortlist, song_key=song.timeline_key)
         gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
         gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
         gpu_api.ga_generate_initial_populations(

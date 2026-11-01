@@ -8,6 +8,7 @@ from typing import Any, Optional
 import numpy as np
 
 from gear_optimizer.gamedata import SongMini, StatCurves
+from gear_optimizer.solver.ftff_combos import FtffShortlist
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.timing_envelope import TimedSong
 
@@ -45,6 +46,8 @@ class NativeSongGPUInputs:
     # before the candidate select.
     fg_gear_name_rank: Optional[np.ndarray] = None
     fg_mini_sig_id: Optional[np.ndarray] = None
+    # The GA gem search's FT/FF combo shortlist (ftff_combos.ftff_shortlist), built at prep.
+    ftff_shortlist: Optional[FtffShortlist] = None
 
 
 @dataclass
