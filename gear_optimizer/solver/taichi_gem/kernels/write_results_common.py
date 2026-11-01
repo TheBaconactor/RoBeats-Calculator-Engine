@@ -100,6 +100,7 @@ def solve_best_combo_uncached(
         song_slot,
         ft_idx,
         ff_idx,
+        0,
     )
     score: ti.i32 = res_vec[0]
     if ti.static(rescore_result):

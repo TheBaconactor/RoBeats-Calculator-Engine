@@ -75,6 +75,7 @@ def solve_combo_warmstart_preloaded(
             song_slot,
             ft_idx,
             ff_idx,
+            score_cull_threshold,
         )
         if res_vec[0] >= 0:
             # The exact solver already maximized over every retained timing variant.

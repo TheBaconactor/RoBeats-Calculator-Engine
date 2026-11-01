@@ -68,6 +68,7 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
                 song_slot,
                 ft_idx,
                 ff_idx,
+                0,
             )
 
             out[None] = frontier[0]

@@ -1,22 +1,15 @@
-"""
-Taichi Kernels - Score Calculation and Greedy Optimization.
-
-This module contains score calculation functions and the exact-bound optimizer:
-- _calc_body_score: Body notes score (simple multiply)
-- _calc_head_factor: Combo ramp factor
-- calc_score_device: Main score calculation (work-item masks)
-- calc_score_with_grid_bits: Score calculation using bitpacked masks
-- calc_score_cached_device: Cached score calculation
-- optimize_core_device_exact_bound: exact bounded gem allocation
-
-The exact-bound optimizer is the core of GPU gem evaluation. It enumerates exact
-CM/FM surfaces, uses a PP/OV prefix table, and prunes with admissible bounds.
-"""
+"""Taichi scoring: exact scores of a gem allocation on a timeline frontier surface, and
+optimize_core_device_exact_bound, the GA's per-cell exact gem search: a greedy seed, then every (CM, FM) pair whose
+admissible bound can beat the best so far, bounded by rows and runs of _FM_RUN pairs first (PP from the PP/OV
+prefix-argmax table)."""
 
 import taichi as ti
 
 from . import kernels_helpers
-from .kernels_helpers import GpuColorFlags
+from .kernels_helpers import GpuColorFlags, TimelineFrontierRecord
+
+# FM gem counts per run bound in the exact search's pair loop.
+_FM_RUN = 8
 
 
 @ti.func
@@ -311,6 +304,38 @@ def _exact_bound_ub_for_cm_fm(budget: ti.i32, g_cm: ti.i32, g_fm: ti.i32, ctx: E
 
 
 @ti.func
+def _exact_bound_ub_for_fm_run(
+    budget: ti.i32, g_cm: ti.i32, fm_lo: ti.i32, fm_hi: ti.i32, ctx: ExactBoundContext
+) -> ti.f32:
+    """At least _exact_bound_ub_for_cm_fm(budget, g_cm, g_fm, ctx) for every g_fm in [fm_lo, fm_hi]: the bound is
+    non-decreasing in the base value and both multipliers, so it is taken at the run's largest of each (the fever
+    multiplier at fm_hi, the base's linear part at the better end, its PP part at the largest leftover, as the
+    prefix-argmax table's best never falls with more gems)."""
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+    most_pp: ti.i32 = ti.min(ctx.max_pp_gems, budget - g_cm - fm_lo)
+    g_pp: ti.i32 = ti.cast(kernels_helpers.exact_pp_best_gems_prefix[ctx.flags_idx, ctx.cur_pp_idx, most_pp], ti.i32)
+    fm_gain: ti.i32 = ctx.w_fm - ctx.w_ov
+    base_linear: ti.i32 = (
+        ctx.base_init + (g_cm * ctx.w_cm) + ((budget - g_cm) * ctx.w_ov) + ti.max(fm_lo * fm_gain, fm_hi * fm_gain)
+    )
+    pp_extra: ti.f32 = ti.cast(g_pp * ctx.delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(
+        ctx.cur_pp + (g_pp * GEM_SCALE_NORMAL)
+    )
+    return _semi_exact_upper_bound(
+        ti.cast(base_linear, ti.f32) + pp_extra,
+        kernels_helpers.lookup_ref_cm(ctx.cur_cm + (g_cm * GEM_SCALE_NORMAL)),
+        kernels_helpers.lookup_ref_fm(ctx.cur_fm + (fm_hi * GEM_SCALE_FEVER)),
+        ctx.count_fever,
+        ctx.count_normal,
+        ctx.n_hn,
+        ctx.n_hf,
+        ctx.sigma_hn,
+        ctx.sigma_hf,
+    )
+
+
+@ti.func
 def _optimize_core_device_exact_bound_preloaded_bits_impl(
     budget: ti.i32,
     cur_pp: ti.i32,
@@ -319,18 +344,15 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     cur_p_val: ti.i32,
     cur_s_val: ti.i32,
     flags: GpuColorFlags,
-    m0: ti.u32,
-    m1: ti.u32,
-    m2: ti.u32,
-    m3: ti.u32,
+    frontier: TimelineFrontierRecord,
     head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-    n_hn: ti.i32,
-    n_hf: ti.i32,
-    sigma_hn: ti.i32,
-    sigma_hf: ti.i32,
+    floor: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
+    """The best (score, PP, CM, FM, element gems, primary, secondary) on one frontier surface; a pair whose bound is
+    below `floor` (the caller's incumbent: a result under it cannot win) is not scored."""
+    m0, m1, m2, m3 = frontier.m0, frontier.m1, frontier.m2, frontier.m3
+    count_fever, count_normal = frontier.body_fever, frontier.body_normal
+    n_hn, n_hf, sigma_hn, sigma_hf = frontier.n_hn, frontier.n_hf, frontier.sigma_hn, frontier.sigma_hf
     GEM_SCALE_NORMAL: ti.i32 = 2
     GEM_SCALE_FEVER: ti.i32 = 3
     ELEMENTAL_GEM_SCALE: ti.i32 = 6
@@ -559,88 +581,99 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
         if max_fm_here > leftover_after_cm:
             max_fm_here = leftover_after_cm
 
+        # The row is bounded whole, then in runs of _FM_RUN pairs: a run whose bound cannot beat the best so far or
+        # reach the floor holds no pair the loop would score.
         g_fm: ti.i32 = 0
+        run_end: ti.i32 = max_fm_here
         while g_fm <= max_fm_here:
-            # Both seeds were already scored and compared with the same tie ordering.
-            if (g_cm == seed_best_cm[0] and g_fm == seed_best_fm[0]) or (
-                g_cm == seed_best_cm[1] and g_fm == seed_best_fm[1]
-            ):
-                g_fm += 1
+            run_ub = _exact_bound_ub_for_fm_run(budget, g_cm, g_fm, run_end, ub_ctx)
+            open_run = run_ub > ti.cast(best_score, ti.f32) and run_ub >= ti.cast(floor, ti.f32)
+            if open_run and run_end - g_fm >= _FM_RUN:
+                run_end = g_fm + _FM_RUN - 1
                 continue
+            while open_run and g_fm <= run_end:
+                # Both seeds were already scored and compared with the same tie ordering.
+                if (g_cm == seed_best_cm[0] and g_fm == seed_best_fm[0]) or (
+                    g_cm == seed_best_cm[1] and g_fm == seed_best_fm[1]
+                ):
+                    g_fm += 1
+                    continue
 
-            leftover: ti.i32 = budget - g_cm - g_fm
-            if leftover < 0:
-                break
+                leftover: ti.i32 = budget - g_cm - g_fm
 
-            fm_stat: ti.i32 = cur_fm + (g_fm * GEM_SCALE_FEVER)
-            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+                fm_stat: ti.i32 = cur_fm + (g_fm * GEM_SCALE_FEVER)
+                f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
 
-            max_pp_here: ti.i32 = max_pp_gems
-            if max_pp_here > leftover:
-                max_pp_here = leftover
+                max_pp_here: ti.i32 = max_pp_gems
+                if max_pp_here > leftover:
+                    max_pp_here = leftover
 
-            g_pp_best: ti.i32 = ti.cast(
-                kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
-                ti.i32,
-            )
-            pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
-            best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+                g_pp_best: ti.i32 = ti.cast(
+                    kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
+                    ti.i32,
+                )
+                pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+                best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(
+                    pp_stat
+                )
 
-            g_ov: ti.i32 = leftover - g_pp_best
-            base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
-            base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
-            ub = _semi_exact_upper_bound(
-                base_value,
-                c_mul,
-                f_mul,
-                count_fever,
-                count_normal,
-                n_hn,
-                n_hf,
-                sigma_hn,
-                sigma_hf,
-            )
-            if ub > ti.cast(best_score, ti.f32):
-                score = calc_score_cached_device(
+                g_ov: ti.i32 = leftover - g_pp_best
+                base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
+                base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
+                ub = _semi_exact_upper_bound(
                     base_value,
                     c_mul,
                     f_mul,
-                    head_len,
                     count_fever,
                     count_normal,
-                    m0,
-                    m1,
-                    m2,
-                    m3,
+                    n_hn,
+                    n_hf,
+                    sigma_hn,
+                    sigma_hf,
                 )
-                if score > best_score or (
-                    score == best_score
-                    and (
-                        (g_cm < best_cm)
-                        or (g_cm == best_cm and ((g_fm < best_fm) or (g_fm == best_fm and g_pp_best < best_pp)))
+                if ub > ti.cast(best_score, ti.f32):
+                    score = calc_score_cached_device(
+                        base_value,
+                        c_mul,
+                        f_mul,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        m0,
+                        m1,
+                        m2,
+                        m3,
                     )
-                ):
-                    best_score = score
-                    best_pp = g_pp_best
-                    best_cm = g_cm
-                    best_fm = g_fm
-                    best_ov = g_ov
-                    best_p = (
-                        cur_p_val
-                        + (g_pp_best * pp_p_delta)
-                        + (g_cm * cm_p_delta)
-                        + (g_fm * fm_p_delta)
-                        + (g_ov * ov_p_delta)
-                    )
-                    best_s = (
-                        cur_s_val
-                        + (g_pp_best * pp_s_delta)
-                        + (g_cm * cm_s_delta)
-                        + (g_fm * fm_s_delta)
-                        + (g_ov * ov_s_delta)
-                    )
+                    if score > best_score or (
+                        score == best_score
+                        and (
+                            (g_cm < best_cm)
+                            or (g_cm == best_cm and ((g_fm < best_fm) or (g_fm == best_fm and g_pp_best < best_pp)))
+                        )
+                    ):
+                        best_score = score
+                        best_pp = g_pp_best
+                        best_cm = g_cm
+                        best_fm = g_fm
+                        best_ov = g_ov
+                        best_p = (
+                            cur_p_val
+                            + (g_pp_best * pp_p_delta)
+                            + (g_cm * cm_p_delta)
+                            + (g_fm * fm_p_delta)
+                            + (g_ov * ov_p_delta)
+                        )
+                        best_s = (
+                            cur_s_val
+                            + (g_pp_best * pp_s_delta)
+                            + (g_cm * cm_s_delta)
+                            + (g_fm * fm_s_delta)
+                            + (g_ov * ov_s_delta)
+                        )
 
-            g_fm += 1
+                g_fm += 1
+            g_fm = run_end + 1
+            run_end = ti.min(g_fm + _FM_RUN - 1, max_fm_here)
         g_cm += 1
 
     return ti.Vector([best_score, best_pp, best_cm, best_fm, best_ov, best_p, best_s])
@@ -659,7 +692,10 @@ def optimize_core_device_exact_bound(
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
+    floor: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
+    """The best gem allocation over the cell's frontier surfaces (the first surface wins a tie); `floor`: as in
+    _optimize_core_device_exact_bound_preloaded_bits_impl (0 scores every pair a better one could be)."""
     frontier_count = ti.cast(kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx], ti.i32)
     result_vec = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
     variant_idx = ti.i32(0)
@@ -673,17 +709,9 @@ def optimize_core_device_exact_bound(
             cur_p_val,
             cur_s_val,
             flags,
-            frontier.m0,
-            frontier.m1,
-            frontier.m2,
-            frontier.m3,
+            frontier,
             head_len,
-            frontier.body_fever,
-            frontier.body_normal,
-            frontier.n_hn,
-            frontier.n_hf,
-            frontier.sigma_hn,
-            frontier.sigma_hf,
+            floor,
         )
         if cand_vec[0] > result_vec[0]:
             result_vec = cand_vec
