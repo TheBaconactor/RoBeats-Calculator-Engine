@@ -250,7 +250,6 @@ class ServiceSettings:
     solve_timeout_s: int
     repeats: int  # optimizer repeats per solve
     persistent_solver: bool  # official solves reuse one warm worker process
-    persistent_idle_exit_s: int
     run_dir: str  # per-solve workspaces; empty = the service's default
     catalog_data_dir: str  # official chart library; empty = <engine>/Data
     gear_source_dir: str  # game data copied into a persistent worker's data dir
@@ -268,7 +267,6 @@ def service_settings() -> ServiceSettings:
         solve_timeout_s=_env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60, minimum=1),
         repeats=_env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1, minimum=1),
         persistent_solver=_env_bool("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", True),
-        persistent_idle_exit_s=_env_int("ROBEATSMETA_OPTIMIZER_PERSISTENT_IDLE_EXIT_S", 15 * 60, minimum=60),
         run_dir=_env("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR"),
         catalog_data_dir=_env("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR"),
         gear_source_dir=_env("ROBEATSMETA_OPTIMIZER_GEAR_SOURCE_DIR"),

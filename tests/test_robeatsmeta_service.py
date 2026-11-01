@@ -206,7 +206,6 @@ def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch)
     monkeypatch.setattr(service.threading, "Thread", _Thread)
     monkeypatch.setattr(service, "_activate_last_complete_publication", lambda _state: True)
     monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
-    monkeypatch.setattr(service, "_reap_idle_persistent_worker_forever", lambda: None)
     monkeypatch.setattr(service, "_finish_server_code_update", lambda **_kwargs: None)
     monkeypatch.setattr(
         service.os, "execv", lambda _exe, args: executed.update(args=args, fd=os.environ[service._LISTENER_FD_ENV])
@@ -280,11 +279,10 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
     monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
     monkeypatch.setattr(service, "_CatalogBuilder", _CatalogBuilder)
     monkeypatch.setattr(service, "_activate_published_data", lambda root: calls.append(f"activate {root}"))
-    monkeypatch.setattr(service, "_reap_idle_persistent_worker_forever", lambda: calls.append("idle reaper"))
 
     assert service.main(["--host", "127.0.0.1", "--port", "0"]) == 0
 
-    assert calls == ["restore", "init", "maintain", "idle reaper", "serve", "stop", "close"]
+    assert calls == ["restore", "init", "maintain", "serve", "stop", "close"]
     # Publication prebuilds run in a child process, never on the service's maintenance thread.
     assert maintainer_kwargs["prebuild"] is service._prebuild_frontier_caches_isolated
 
@@ -1129,6 +1127,35 @@ def test_catalog_build_solves_described_official_charts_missing_from_the_catalog
     ]
     assert all(set(r) == {"jobId", "targetSongId", "timingMode"} for r in solved)
     assert len({r["jobId"] for r in solved}) == 2
+
+
+def test_a_catalog_pass_with_nothing_to_build_warms_the_persistent_solver_without_promoting(data_root, monkeypatch):
+    from gear_optimizer.store import db, schema
+
+    _write_chart(data_root, "Normal", "B by Artist", "b.txt")
+    _write_chart(data_root, "Hard", "A (Hard) by Artist", "a.txt")
+    _write_export(data_root, (1, "B", "Artist"), (2, "A (Hard)", "Artist"))
+    db_path = data_root / "evolution.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    conn = schema.connect(db_path, write=True)
+    for song in ("B by Artist", "A (Hard) by Artist"):
+        for mode in ("non-precise", "precise"):
+            db.store_results(conn, mode, song, "T5", [])
+    conn.close()
+    warmed: list[tuple] = []
+    monkeypatch.setattr(service, "_solve_persistent", lambda *args, **kwargs: warmed.append((args, kwargs)) or [])
+    service._AUTHORITATIVE_PUBLICATION_READY.set()
+
+    service.build_missing_catalog_songs()  # the fixture runs every solve isolated: no persistent solver to warm
+    assert warmed == []
+
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1")
+    service.build_missing_catalog_songs()
+
+    # One solve of the first official chart in the timing mode website jobs use, its results promoted nowhere.
+    (((job, chart, song, repeats, reasoning), kwargs),) = warmed
+    assert (job, song, repeats, reasoning, kwargs) == ("warmup", "A (Hard) by Artist", 1, "default", {})
+    assert "Timing Mode\tprecise\n" in chart
 
 
 def test_catalog_build_continues_past_a_failed_chart_and_yields_to_a_code_update(data_root, monkeypatch):

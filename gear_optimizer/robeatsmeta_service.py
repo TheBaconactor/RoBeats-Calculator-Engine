@@ -21,7 +21,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +31,7 @@ from urllib.parse import urlsplit
 from gear_optimizer.chart import read_header
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.settings import (
     DIFFICULTIES,
     REASONING_LEVELS,
@@ -203,10 +203,6 @@ _MAX_CUSTOM_CHART_EVENTS = service_settings().max_custom_chart_events
 # Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
 _SOLVE_TIMEOUT_S = service_settings().solve_timeout_s
-
-# An idle persistent solver still holds its whole Taichi device, prewarmed app and per-song caches
-# (~0.8 GB). Stop it after this long without a request; the next official solve respawns it cold.
-_PERSISTENT_WORKER_IDLE_EXIT_S = service_settings().persistent_idle_exit_s
 
 # Reasoning effort lets a host request a larger optimizer search budget (settings.reasoning_search).
 def _normalize_reasoning(value: Any) -> str:
@@ -832,7 +828,6 @@ class _PersistentSolveWorker:
         # (new gear, minis or ascension targets) must restart it, or official solves keep scoring
         # against the catalog that was active when the worker started.
         self._gear_source: Path | None = None
-        self._idle_since = time.monotonic()
 
     def _read_stdout(self, proc: subprocess.Popen[str], responses: queue.Queue[dict[str, Any]]) -> None:
         try:
@@ -924,47 +919,28 @@ class _PersistentSolveWorker:
 
     def request(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         with self._lock:
+            proc = self._proc
+            if proc is None or proc.poll() is not None or self._gear_source != GEAR_DIR:
+                self._stop_locked()
+                proc = self._start_locked()
             try:
-                proc = self._proc
-                if proc is None or proc.poll() is not None or self._gear_source != GEAR_DIR:
+                proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+                proc.stdin.flush()
+                response = self._responses.get(timeout=_SOLVE_TIMEOUT_S)
+            except queue.Empty as exc:
+                self._stop_locked()
+                raise RuntimeError(f"persistent optimizer timed out after {_SOLVE_TIMEOUT_S}s") from exc
+            except (BrokenPipeError, OSError) as exc:
+                self._stop_locked()
+                raise RuntimeError("persistent optimizer worker disconnected") from exc
+            if not bool(response.get("ok")):
+                if response.get("eof") or response.get("restart"):
                     self._stop_locked()
-                    proc = self._start_locked()
-                try:
-                    proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
-                    proc.stdin.flush()
-                    response = self._responses.get(timeout=_SOLVE_TIMEOUT_S)
-                except queue.Empty as exc:
-                    self._stop_locked()
-                    raise RuntimeError(f"persistent optimizer timed out after {_SOLVE_TIMEOUT_S}s") from exc
-                except (BrokenPipeError, OSError) as exc:
-                    self._stop_locked()
-                    raise RuntimeError("persistent optimizer worker disconnected") from exc
-                if not bool(response.get("ok")):
-                    if response.get("eof") or response.get("restart"):
-                        self._stop_locked()
-                    raise RuntimeError(str(response.get("error") or "persistent optimizer failed"))
-                loadouts = response.get("loadouts")
-                if not isinstance(loadouts, list):
-                    raise RuntimeError("persistent optimizer returned an invalid loadout payload")
-                return loadouts
-            finally:
-                self._idle_since = time.monotonic()
-
-    def reap_if_idle(self) -> bool:
-        """Stop the worker once it has sat idle past the timeout; never waits behind a solve."""
-        if not self._lock.acquire(blocking=False):
-            return False  # a solve is in flight
-        try:
-            idle_s = time.monotonic() - self._idle_since
-            if self._proc is None or idle_s < _PERSISTENT_WORKER_IDLE_EXIT_S:
-                return False
-            logger.info("stopping idle persistent solver after %ss", int(idle_s))
-            # SIGKILL like every publication and shutdown: a graceful stdin-EOF exit would tear
-            # Taichi down under the live daemon GPU-executor thread.
-            self._stop_locked()
-            return True
-        finally:
-            self._lock.release()
+                raise RuntimeError(str(response.get("error") or "persistent optimizer failed"))
+            loadouts = response.get("loadouts")
+            if not isinstance(loadouts, list):
+                raise RuntimeError("persistent optimizer returned an invalid loadout payload")
+            return loadouts
 
     def stop(self) -> None:
         with self._lock:
@@ -987,14 +963,6 @@ def _stop_persistent_solve_worker() -> None:
     _PERSISTENT_SOLVE_WORKER = None
     if worker is not None:
         worker.stop()
-
-
-def _reap_idle_persistent_worker_forever() -> None:
-    while True:
-        time.sleep(60)
-        worker = _PERSISTENT_SOLVE_WORKER
-        if worker is not None:
-            worker.reap_if_idle()
 
 
 def _solve_persistent(
@@ -1218,6 +1186,17 @@ def build_missing_catalog_songs() -> None:
             )
             continue
         print(f"[robeatsmeta-service] built catalog entry for {song_id} ({mode})", flush=True)
+    if not missing and service_settings().persistent_solver and _AUTHORITATIVE_PUBLICATION_READY.is_set():
+        _warm_persistent_solver()
+
+
+def _warm_persistent_solver() -> None:
+    """One official chart solved for nothing (no promotion): the persistent worker starts on the active catalog with
+    every kernel and cache a website job uses, so no job waits for a cold worker (12 s, a minute under load)."""
+    song = min(_official_song_catalog().paths_by_song_id)
+    chart = _normalize_chart(find_official_chart(song).read_text(encoding="utf-8"), song, PRECISE)
+    _solve_persistent("warmup", chart, song, service_settings().repeats, "default")
+    print(f"[robeatsmeta-service] persistent solver warm ({song})", flush=True)
 
 
 class _CatalogBuilder:
@@ -1470,11 +1449,6 @@ def main(argv: list[str] | None = None) -> int:
         daemon=True,
     )
     maintenance.start()
-    threading.Thread(
-        target=_reap_idle_persistent_worker_forever,
-        name="persistent-solver-idle-reaper",
-        daemon=True,
-    ).start()
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
         f" (pool={_SOLVE_POOL_SIZE}, timeline_cache={_TIMELINE_FRONTIER_CACHE_DIR},"
