@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import threading
-from collections import OrderedDict
 from types import SimpleNamespace
 
 import numpy as np
 
 from gear_optimizer.core import singleflight as singleflight_module
 from gear_optimizer.solver import fg_effective_dedup
-from gear_optimizer.pipeline import prepare as lifecycle_prepare
 
 
 def _track_waiter(monkeypatch):
@@ -23,97 +21,6 @@ def _track_waiter(monkeypatch):
 
     monkeypatch.setattr(singleflight_module, "Future", TrackingFuture)
     return waiter_joined
-
-
-def test_prep_cache_singleflight_builds_exact_key_once(monkeypatch):
-    waiter_joined = _track_waiter(monkeypatch)
-    cache = OrderedDict()
-    started = threading.Event()
-    release = threading.Event()
-    value = object()
-    build_calls = 0
-
-    def _build():
-        nonlocal build_calls
-        build_calls += 1
-        started.set()
-        assert release.wait(timeout=5.0)
-        return value
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        owner = executor.submit(
-            lifecycle_prepare._prep_cache_get_or_build,
-            cache,
-            ("same",),
-            _build,
-            cache_name="pools",
-            maxsize=2,
-        )
-        assert started.wait(timeout=5.0)
-        waiter = executor.submit(
-            lifecycle_prepare._prep_cache_get_or_build,
-            cache,
-            ("same",),
-            _build,
-            cache_name="pools",
-            maxsize=2,
-        )
-        assert waiter_joined.wait(timeout=5.0)
-        release.set()
-
-        assert owner.result(timeout=5.0) is value
-        assert waiter.result(timeout=5.0) is value
-
-    assert build_calls == 1
-
-
-def test_prep_cache_singleflight_shares_failure_and_clears_for_retry(monkeypatch):
-    waiter_joined = _track_waiter(monkeypatch)
-    cache = OrderedDict()
-    started = threading.Event()
-    release = threading.Event()
-    failure = RuntimeError("cold build failed")
-
-    def _fail():
-        started.set()
-        assert release.wait(timeout=5.0)
-        raise failure
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        owner = executor.submit(
-            lifecycle_prepare._prep_cache_get_or_build,
-            cache,
-            ("same",),
-            _fail,
-            cache_name="registry",
-            maxsize=2,
-        )
-        assert started.wait(timeout=5.0)
-        waiter = executor.submit(
-            lifecycle_prepare._prep_cache_get_or_build,
-            cache,
-            ("same",),
-            _fail,
-            cache_name="registry",
-            maxsize=2,
-        )
-        assert waiter_joined.wait(timeout=5.0)
-        release.set()
-
-        assert owner.exception(timeout=5.0) is failure
-        assert waiter.exception(timeout=5.0) is failure
-
-    retry_value = object()
-    assert (
-        lifecycle_prepare._prep_cache_get_or_build(
-            cache,
-            ("same",),
-            lambda: retry_value,
-            cache_name="registry",
-            maxsize=2,
-        )
-        is retry_value
-    )
 
 
 def test_fg_effective_tables_singleflight_builds_once_and_shares_arrays(monkeypatch):

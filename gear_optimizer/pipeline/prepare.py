@@ -4,13 +4,11 @@ catalog), and its GA-invariant FG preparation."""
 from __future__ import annotations
 
 import hashlib
-import threading
 from collections import OrderedDict
 
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.domain.jobs import SongTask
 from gear_optimizer.pipeline.fg import prepare_fg_static
 from gear_optimizer.pipeline.song import (
@@ -25,58 +23,10 @@ from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_contex
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 
-_POOL_CACHE_MAX = 32
-_REGISTRY_CACHE_MAX = 32
-_INIT_HEURISTIC_CACHE_MAX = 64
-_PREP_CACHE_LOCK = threading.Lock()
-_POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[list, list]]" = OrderedDict()
-_REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[ItemRegistry, dict]]" = OrderedDict()
-_INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...], tuple], int], np.ndarray]" = OrderedDict()
-_PREP_CACHE_SINGLEFLIGHT: SingleFlight[tuple[str, tuple], object] = SingleFlight()
-
-
-def _lru_get(cache: OrderedDict, key: tuple):
-    value = cache.get(key)
-    if value is not None:
-        cache.move_to_end(key)
-    return value
-
-
-def _lru_put(cache: OrderedDict, key: tuple, value, *, maxsize: int) -> None:
-    cache[key] = value
-    cache.move_to_end(key)
-    while len(cache) > int(maxsize):
-        cache.popitem(last=False)
-
-
-def _prep_cache_get_or_build(
-    cache: OrderedDict,
-    key: tuple,
-    builder,
-    *,
-    cache_name: str,
-    maxsize: int,
-):
-    with _PREP_CACHE_LOCK:
-        cached = _lru_get(cache, key)
-    if cached is not None:
-        return cached
-
-    def _build_and_cache():
-        # The prior owner may finish between the initial lookup and this caller
-        # becoming owner. Recheck so that race cannot trigger a duplicate build.
-        with _PREP_CACHE_LOCK:
-            existing = _lru_get(cache, key)
-        if existing is not None:
-            return existing
-        value = builder()
-        if value is None:
-            raise RuntimeError(f"{cache_name} cache builder returned None")
-        with _PREP_CACHE_LOCK:
-            _lru_put(cache, key, value, maxsize=maxsize)
-        return value
-
-    return _PREP_CACHE_SINGLEFLIGHT.run((str(cache_name), key), _build_and_cache)
+# Per pool key (_ga_registry): the item registry, its GPU arrays and the GA's initial-heuristic top-k. Bounded: a
+# long-lived worker adds one key per custom pool; the least recently used goes first.
+_PREP_CACHE_MAX = 32
+_PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray]]" = OrderedDict()
 
 
 def _catalog_digest(gears, song_minis) -> str:
@@ -104,24 +54,14 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
     # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
     targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
     pool_key = (primary, secondary, _SLOTS, targeting_minis, _catalog_digest(gears, song_minis))
-    gear_pool, mini_pool = _prep_cache_get_or_build(
-        _POOL_CACHE,
-        pool_key,
-        lambda: initialize_pools(gears, song_minis, primary, list(_SLOTS), s_color=secondary),
-        cache_name="pools",
-        maxsize=_POOL_CACHE_MAX,
-    )
-
-    def build_registry():
-        registry = ItemRegistry(gear_pool, mini_pool, list(_SLOTS))
-        return registry, registry.to_gpu_arrays()
-
-    registry, gpu_data = _prep_cache_get_or_build(
-        _REGISTRY_GPU_CACHE, pool_key, build_registry, cache_name="registry", maxsize=_REGISTRY_CACHE_MAX
-    )
-
-    def build_heuristic_topk():
-        built = build_ga_init_heuristic_topk(
+    if pool_key in _PREP_CACHE:
+        _PREP_CACHE.move_to_end(pool_key)
+        return _PREP_CACHE[pool_key]
+    gear_pool, mini_pool = initialize_pools(gears, song_minis, primary, list(_SLOTS), s_color=secondary)
+    registry = ItemRegistry(gear_pool, mini_pool, list(_SLOTS))
+    gpu_data = registry.to_gpu_arrays()
+    topk = np.asarray(
+        build_ga_init_heuristic_topk(
             item_stats=gpu_data["item_stats"],
             slot_start=gpu_data["slot_start"],
             slot_count=gpu_data["slot_count"],
@@ -129,17 +69,13 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
             secondary_color=secondary,
             heuristic_k=GA_INIT_HEURISTIC_K,
             n_slots=9,
-        )
-        return np.asarray(built, dtype=np.int32)
-
-    topk = _prep_cache_get_or_build(
-        _INIT_HEURISTIC_TOPK_CACHE,
-        (pool_key, GA_INIT_HEURISTIC_K),
-        build_heuristic_topk,
-        cache_name="heur",
-        maxsize=_INIT_HEURISTIC_CACHE_MAX,
+        ),
+        dtype=np.int32,
     )
-    return registry, gpu_data, topk
+    prepared = _PREP_CACHE[pool_key] = (registry, gpu_data, topk)
+    if len(_PREP_CACHE) > _PREP_CACHE_MAX:
+        _PREP_CACHE.popitem(last=False)
+    return prepared
 
 
 def prepare_native_song(task: SongTask) -> NativeSong:
