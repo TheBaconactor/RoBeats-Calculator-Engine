@@ -360,12 +360,12 @@ def test_checked_in_mini_song_targets_resolve_to_song_headers() -> None:
         linked_count += len(targets)
 
     payload = json.loads((repo_root / "Data" / "exported_game_data.json").read_text(encoding="utf-8"))
-    expected_linked_count = sum(
-        len(mini.get("ascension_songs") or [])
+    exported_minis = [
+        mini
         for entry in payload.get("minis", {}).values()
         if isinstance(entry, dict)
         for mini in entry.get("minis", [])
         if isinstance(mini, dict)
-    )
-    assert len(rows) == 91
-    assert linked_count == expected_linked_count
+    ]
+    assert len(rows) == len(exported_minis)
+    assert linked_count == sum(len(mini.get("ascension_songs") or []) for mini in exported_minis)
