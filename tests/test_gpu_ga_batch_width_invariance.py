@@ -13,10 +13,9 @@ batch width 6 (one batch-6 dispatch that engages combo chunking, since
 6*64*n_combos exceeds MAX_EVALS_PER_DISPATCH) -- and asserts the returned
 payloads are byte-identical.
 
-Batch width is forced through the REAL sizing function ``choose_ga_batch_runs``
-via its existing ``batch_runs_override`` input (no behavior flags): the test
-wraps the production callable so it returns a fixed batch width while every other
-production input flows through unchanged.
+Batch width is forced through ``_GPU_NATIVE_GA_BATCH_RUNS``, the width the
+production sizing reads (0 there: as many runs as the genome pool holds); every
+other production input flows through unchanged.
 
 If this fails, batch width is NOT schedule-only and the GA batch-width
 unification (genome-capacity-only sizing + combo chunking owning TDR safety) is
@@ -33,7 +32,6 @@ from gear_optimizer.solver import genetic_pipeline as genetic
 from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt
-from gear_optimizer.solver.gpu_tuning_policy import choose_ga_batch_runs
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.gamedata import Gear, SongMini, empty_stats
 from tests.items_support import make_gear, make_song_mini
@@ -136,20 +134,10 @@ def _song(*, n_notes: int = 400):
 def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int) -> np.ndarray:
     """Run the production GA entrypoint with batch width pinned to ``forced_batch_runs``.
 
-    The pin is injected through ``choose_ga_batch_runs``'s real ``batch_runs_override``
-    input -- the same production path that ``_GPU_NATIVE_GA_BATCH_RUNS`` uses -- so the
+    The pin is ``_GPU_NATIVE_GA_BATCH_RUNS``, which the production sizing reads, so the
     only thing that differs between the two runs is the run-batching schedule.
     """
-
-    def _forced_choose(*, n_genomes, num_runs, max_genomes, batch_runs_override=0):
-        return choose_ga_batch_runs(
-            n_genomes=n_genomes,
-            num_runs=num_runs,
-            max_genomes=max_genomes,
-            batch_runs_override=int(forced_batch_runs),
-        )
-
-    monkeypatch.setattr(genetic, "choose_ga_batch_runs", _forced_choose)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_BATCH_RUNS", forced_batch_runs)
 
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.api.timeline import (

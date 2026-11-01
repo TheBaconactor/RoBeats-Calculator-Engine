@@ -10,7 +10,6 @@ from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX
 from gear_optimizer.solver.timing_envelope import TimedSong
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
-from .gpu_tuning_policy import choose_ga_batch_runs
 
 
 # Runs fall into a song's basins independently, so more, smaller runs reach the best one more often: 5 runs of 352
@@ -49,7 +48,9 @@ def _raise_if_abort_requested(abort_requested, where: str) -> None:
 
 # The Vulkan retry count is a module constant (tests setattr it directly).
 _GPU_NATIVE_GA_VULKAN_RETRIES = 1
-_GPU_NATIVE_GA_BATCH_RUNS = 0  # auto: choose_ga_batch_runs decides (was GPU_NATIVE_GA_BATCH_RUNS)
+# Runs per GA dispatch; 0 = as many as the genome pool holds (tests pin a width to prove the payload does not depend on
+# it).
+_GPU_NATIVE_GA_BATCH_RUNS = 0
 
 
 def build_ga_init_heuristic_topk(
@@ -269,13 +270,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     gpu_api._ensure_ftff_combo_tables(GEM_BUDGET, max_ft_gems=max_ft_gems_global, max_ff_gems=max_ff_gems_global)
     # The batch width is sized by genome capacity only: combo chunking inside the evaluation owns dispatch-length
     # (TDR) safety and accumulates bit-exactly across chunks.
-    batch_runs = choose_ga_batch_runs(
-        n_genomes=n_genomes,
-        num_runs=num_runs,
-        max_genomes=int(gpu_fields.MAX_GENOMES),
-        batch_runs_override=_GPU_NATIVE_GA_BATCH_RUNS,
-    ).batch_runs
-    batch_runs = max(1, min(int(batch_runs), num_runs))
+    batch_runs = min(num_runs, _GPU_NATIVE_GA_BATCH_RUNS or max(1, gpu_fields.MAX_GENOMES // n_genomes))
     if int(gpu_fields.MAX_GA_RUNS) < num_runs:
         raise RuntimeError(
             f"Internal error: the GA buffers hold {int(gpu_fields.MAX_GA_RUNS)} runs, the song needs {num_runs}"
