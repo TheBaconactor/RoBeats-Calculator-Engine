@@ -95,10 +95,8 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None) -> Iterator
         if os.name == "nt":
             import msvcrt
 
-            handle.seek(0)
-            if not handle.read(1):
-                handle.write("0")
-                handle.flush()
+            # Every process locks byte 0 (Windows allows a lock past the end of the file) and never reads it: a
+            # read of a byte another process holds locked fails with PermissionError.
             handle.seek(0)
             while True:
                 try:
