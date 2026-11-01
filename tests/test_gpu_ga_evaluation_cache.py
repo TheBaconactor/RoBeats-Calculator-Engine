@@ -97,13 +97,10 @@ def test_loading_another_run_batch_discards_cached_winners(eval_device_state):
 
 def test_changed_budget_clears_live_winners_without_reaggregation(eval_device_state):
     from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.core.color_flags import build_color_flags
-    from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
     from gear_optimizer.solver.ftff_combos import FtffShortlist
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
         ga_evaluate_prepared_population, ga_upload_ftff_shortlist, reset_ga_evaluation_cache,
     )
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
     keys = 161 * 161
     song = _song()
@@ -124,8 +121,41 @@ def test_changed_budget_clears_live_winners_without_reaggregation(eval_device_st
             ga_evaluate_prepared_population(_N_GENOMES, **kwargs)
             np.testing.assert_array_equal(fields.chunk_best_key.to_numpy()[:_N_GENOMES], actual)
         finally:
-            payload = build_or_load_timeline_frontier_payload(song, _curves()).payload
-            shortlist = ga_ftff_shortlist(payload, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET,
-                                          color_flags=build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR,
-                                                                        _SELECTED_COLOR))
-            ga_upload_ftff_shortlist(shortlist, song_key=song.timeline_key)
+            _upload_fixture_shortlist()
+
+
+def _upload_fixture_shortlist():
+    """The fixture song's shortlist, for the uncapped combo table the eval uses."""
+    from gear_optimizer.core.color_flags import build_color_flags
+    from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
+    from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_upload_ftff_shortlist
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+
+    song = _song()
+    payload = build_or_load_timeline_frontier_payload(song, _curves()).payload
+    shortlist = ga_ftff_shortlist(payload, max_ft_gems=_TOTAL_BUDGET, max_ff_gems=_TOTAL_BUDGET,
+                                  color_flags=build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR))
+    ga_upload_ftff_shortlist(shortlist, song_key=song.timeline_key)
+
+
+def test_evaluation_refuses_a_shortlist_of_another_song_or_combo_table(eval_device_state):
+    from gear_optimizer.solver.ftff_combos import FtffShortlist
+    from gear_optimizer.solver.taichi_gem.api.ga_operations import (
+        ga_evaluate_prepared_population, ga_upload_ftff_shortlist,
+    )
+
+    keys = 161 * 161
+    with _GPU_LOCK:
+        with pytest.raises(RuntimeError, match="indexes the combo table"):
+            ga_evaluate_prepared_population(_N_GENOMES, flags=eval_device_state, total_budget=_TOTAL_BUDGET,
+                                            max_ft_gems_global=30)
+        try:
+            ga_upload_ftff_shortlist(
+                FtffShortlist(np.zeros(keys, dtype=np.int32), np.zeros(keys, dtype=np.int32),
+                              np.zeros(0, dtype=np.int32), _TOTAL_BUDGET, _TOTAL_BUDGET, _TOTAL_BUDGET),
+                song_key=("another song",),
+            )
+            with pytest.raises(RuntimeError, match="not the evaluated song's"):
+                ga_evaluate_prepared_population(_N_GENOMES, flags=eval_device_state, total_budget=_TOTAL_BUDGET)
+        finally:
+            _upload_fixture_shortlist()

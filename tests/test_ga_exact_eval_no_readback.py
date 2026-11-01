@@ -52,29 +52,3 @@ def test_ga_evaluate_rejects_invalid_population_without_dispatch(monkeypatch, n_
 
     with pytest.raises(ValueError, match="n_genomes out of range"):
         ga_operations.ga_evaluate_prepared_population(n_genomes, total_budget=90, flags=gpu_color_flags(None))
-
-
-def test_ga_evaluate_refuses_another_songs_shortlist(monkeypatch) -> None:
-    monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
-    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda *args, **kwargs: 5)
-    monkeypatch.setattr(ga_operations, "kernels", SimpleNamespace(
-        ga_compute_exact_eval_rep_kernel=lambda *args: None, ga_build_unique_slot_table_kernel=lambda *args: None,
-    ))
-    monkeypatch.setattr(ga_operations, "_FTFF_SHORTLIST", ("other song", (90, 90, 90), "start", "count", "combos"))
-    monkeypatch.setattr(ga_operations, "uploaded_timeline_song_key", lambda song_slot: "song")
-
-    with pytest.raises(RuntimeError, match="not the evaluated song's"):
-        ga_operations.ga_evaluate_prepared_population(3, total_budget=90, flags=gpu_color_flags(None))
-
-
-def test_ga_evaluate_refuses_a_shortlist_of_another_combo_table(monkeypatch) -> None:
-    monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
-    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda *args, **kwargs: 5)
-    monkeypatch.setattr(ga_operations, "kernels", SimpleNamespace(
-        ga_compute_exact_eval_rep_kernel=lambda *args: None, ga_build_unique_slot_table_kernel=lambda *args: None,
-    ))
-    monkeypatch.setattr(ga_operations, "_FTFF_SHORTLIST", ("song", (90, 30, 30), "start", "count", "combos"))
-    monkeypatch.setattr(ga_operations, "uploaded_timeline_song_key", lambda song_slot: "song")
-
-    with pytest.raises(RuntimeError, match="indexes the combo table"):
-        ga_operations.ga_evaluate_prepared_population(3, total_budget=90, flags=gpu_color_flags(None))

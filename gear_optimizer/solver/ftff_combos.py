@@ -128,10 +128,9 @@ def ftff_shortlist(
     side = MAX_STAT + 1
     keep_bits = np.zeros((side * side, (len(combo_ft) + 63) // 64), dtype=np.uint64)
     _shortlist_keep(
-        np.ascontiguousarray(combo_ft, dtype=np.int64), np.ascontiguousarray(combo_ff, dtype=np.int64),
-        int(total_budget), int(gem_scale_fever), cell_start, cell_count, np.concatenate(cell_surfaces),
-        np.ascontiguousarray(surfaces[:, :4]), np.ascontiguousarray(surfaces[:, 4]), *(int(g) for g in element_gains),
-        keep_bits,
+        np.stack([combo_ft, combo_ff]).astype(np.int64), int(total_budget), int(gem_scale_fever),
+        np.stack([cell_start, cell_count], axis=1), np.concatenate(cell_surfaces), np.ascontiguousarray(surfaces),
+        np.asarray(element_gains, dtype=np.int64), keep_bits,
     )
     start, count, combos = _decode_keep(keep_bits, len(combo_ft))
     return FtffShortlist(start, count, combos, int(total_budget), int(max_ft_gems), int(max_ff_gems))
@@ -162,10 +161,15 @@ def _decode_keep(keep_bits, n_combos):
 
 
 @jit(nopython=True, cache=True, nogil=True, parallel=True)
-def _shortlist_keep(combo_ft, combo_ff, budget, gem_scale, cell_start, cell_count, cell_surfaces, masks, body_fever,
-                    gain_ft, gain_ff, gain_element, keep_bits):
-    """Set keep_bits[key, c] (bit c % 64 of word c // 64) for every key's kept combos (keys in parallel)."""
+def _shortlist_keep(combos, budget, gem_scale, cell_ranges, cell_surfaces, surfaces, gains, keep_bits):
+    """Set keep_bits[key, c] (bit c % 64 of word c // 64) for every key's kept combos (keys in parallel).
+    combos: (2, n) FT and FF gems; cell_ranges: (cells, 2) start and count into cell_surfaces; surfaces: (n, 5) four
+    head fever words and the body fever count; gains: the Perfect base per FT, FF and element gem."""
     side = MAX_STAT + 1
+    combo_ft, combo_ff = combos[0], combos[1]
+    cell_start, cell_count = cell_ranges[:, 0], cell_ranges[:, 1]
+    masks, body_fever = surfaces[:, :4], surfaces[:, 4]
+    gain_ft, gain_ff, gain_element = gains[0], gains[1], gains[2]
     n_combos = combo_ft.shape[0]
     max_per_cell = cell_count.max()
     for key in prange(side * side):
