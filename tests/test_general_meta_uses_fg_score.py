@@ -20,7 +20,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "fg_score": 500,
             "gear": list(target_gears),
             "mini_groups": [[m] for m in target_minis],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
         {
             "song_name": "Song A",
@@ -29,7 +29,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "fg_score": 300,
             "gear": ["Hat X"],
             "mini_groups": [["Mini X"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
         {
             "song_name": "Song B",
@@ -38,7 +38,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "fg_score": 400,
             "gear": list(target_gears),
             "mini_groups": [[m] for m in target_minis],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
         {
             "song_name": "Song B",
@@ -47,7 +47,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "fg_score": 350,
             "gear": ["Hat Y"],
             "mini_groups": [["Mini Y"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
     ]
 

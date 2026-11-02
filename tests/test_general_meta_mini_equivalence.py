@@ -42,14 +42,14 @@ def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
             "score": 100,
             "gear": ["Gear1"],
             "mini_groups": [["MiniA"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
         {
             "song_name": "Song2",
             "score": 100,
             "gear": ["Gear1"],
             "mini_groups": [["MiniB"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
     ]
 
@@ -106,14 +106,14 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
             "score": 100,
             "gear": ["Gear1"],
             "mini_groups": [["MiniA"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
         {
             "song_name": "Song2",
             "score": 100,
             "gear": ["Gear1"],
             "mini_groups": [["MiniB"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
     ]
 
@@ -157,14 +157,14 @@ def test_general_meta_does_not_merge_minis_with_different_ascension_target_cover
             "score": 100,
             "gear": ["Gear1"],
             "mini_groups": [["MiniA"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
         {
             "song_name": "Song2",
             "score": 100,
             "gear": ["Gear1"],
             "mini_groups": [["MiniB"]],
-            "details_json": None,
+            "gems": (0, 0, 0, 0, 0, 0),
         },
     ]
 

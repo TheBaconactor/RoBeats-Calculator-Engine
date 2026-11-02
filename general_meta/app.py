@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import json
+import contextlib
+import sqlite3
 from datetime import datetime
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict
 
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     OPTIMIZER_BASELINE_TEAM_BUFF,
@@ -16,6 +18,9 @@ from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
 from gear_optimizer.gamedata import Gear, Mini, load_gears, load_minis
 from gear_optimizer.settings import paths
+from gear_optimizer.store.db import load_boards
+from gear_optimizer.store.legacy import served_rows
+from gear_optimizer.store.schema import connect
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -96,41 +101,31 @@ def _assert_known_mini_names(
     )
 
 
-def _song_rows(database: Path, song_name: str) -> list[dict]:
+def _song_rows(conn: sqlite3.Connection, song_name: str) -> list[dict]:
     """
-    The song's stored baseline-tier (T5) leaderboard as General Meta rows (item names, scores, details JSON).
+    The song's stored baseline-tier (T5) Precise leaderboard as General Meta rows: the rows the optimizer serves (the
+    meta board's best, then the FG board's best not already listed), each with the gems of the board it came from.
 
     Every TeamBuff tier of the snapshot is built from these same rows: the tier selector is cosmetic there, and the
     host application re-solves a tier's gems on demand when a user opens it. Real per-tier gems at build time would
     need the timeline + FG response frontier caches and ``build_team_buff_tier_db_batches`` per tier.
     """
-    from gear_optimizer.core.timing_modes import PRECISE
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import _flat_item_names
-    from gear_optimizer.store.legacy import read_best_loadouts
-
-    rows: list[dict] = []
-    # General Meta is built from the Precise boards.
-    for entry in read_best_loadouts(database, PRECISE, song_name, OPTIMIZER_BASELINE_TEAM_BUFF):
-        mini_names = _flat_item_names(entry.get("minis") or [])
-        details = entry.get("details")
-        rows.append(
-            {
-                "song_name": song_name,
-                "loadout_hash": str(entry.get("loadout_hash") or "").strip(),
-                "score": int(entry.get("score") or 0),
-                "fg_score": int(entry.get("fg_score") or 0),
-                "fg_base_score": int(entry.get("fg_base_score") or entry.get("score") or 0),
-                "gear": _flat_item_names(entry.get("gear") or []),
-                "mini_groups": normalize_minis_groups_for_display(entry.get("mini_groups") or [])
-                or normalize_minis_groups_for_display([[m] for m in mini_names if m]),
-                "minis": mini_names,
-                "details_json": json.dumps(details, separators=(",", ":"), ensure_ascii=False)
-                if isinstance(details, dict) and details
-                else None,
-                "team_buff": OPTIMIZER_BASELINE_TEAM_BUFF,
-            }
-        )
-    return rows
+    meta, fg = served_rows(load_boards(conn, PRECISE, song_name, OPTIMIZER_BASELINE_TEAM_BUFF))
+    listed = {x.loadout_hash for x in meta}
+    served = [(x, x.meta) for x in meta] + [(x, x.fg) for x in fg if x.loadout_hash not in listed]
+    return [
+        {
+            "song_name": song_name,
+            "loadout_hash": x.loadout_hash,
+            "score": x.score,
+            "fg_score": x.fg_score or 0,
+            "gear": list(x.gear),
+            "mini_groups": normalize_minis_groups_for_display([list(group) for group in x.minis]),
+            "gems": result.gems,
+            "team_buff": OPTIMIZER_BASELINE_TEAM_BUFF,
+        }
+        for x, result in served
+    ]
 
 
 def _build_loadout_entry(
@@ -182,7 +177,7 @@ def _category_result(
     secondary: str,
     songs: list[dict],
     team_buff_tiers: list[str],
-    database: Path,
+    conn: sqlite3.Connection,
     gears_by_name: Mapping[str, Gear],
     minis_by_name: Mapping[str, Mini],
 ) -> dict:
@@ -209,7 +204,7 @@ def _category_result(
     loadouts_by_song: dict[str, list[dict]] = {}
     for song in songs:
         song_name = str((song or {}).get("song_name") or "").strip()
-        if song_name and (rows := _song_rows(database, song_name)):
+        if song_name and (rows := _song_rows(conn, song_name)):
             loadouts_by_song[song_name] = rows
     ranked_sets = find_most_common_loadout(songs, loadouts_by_song, minis_by_name, gears_by_name=gears_by_name)
     for tier in team_buff_tiers:
@@ -246,18 +241,19 @@ def run_general_meta(database: Path) -> dict:
 
     canonical_combos = [(p, s) for p in _ELEMENT_ORDER for s in _ELEMENT_ORDER]
     extra_combos = sorted((c for c in songs_by_combo if c not in set(canonical_combos)), key=lambda c: (str(c[0]), str(c[1])))
-    results: Dict[str, Any] = {
-        f"{primary}/{secondary}": _category_result(
-            primary,
-            secondary,
-            songs_by_combo.get((primary, secondary), []),
-            team_buff_tiers,
-            database,
-            gears_by_name,
-            minis_by_name,
-        )
-        for primary, secondary in canonical_combos + extra_combos
-    }
+    with contextlib.closing(connect(database)) as conn:
+        results: Dict[str, Any] = {
+            f"{primary}/{secondary}": _category_result(
+                primary,
+                secondary,
+                songs_by_combo.get((primary, secondary), []),
+                team_buff_tiers,
+                conn,
+                gears_by_name,
+                minis_by_name,
+            )
+            for primary, secondary in canonical_combos + extra_combos
+        }
     return {
         "generated_at": datetime.now().isoformat(),
         "results": results,

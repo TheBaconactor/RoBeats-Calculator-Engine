@@ -9,13 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from collections.abc import Mapping
 
-from gear_optimizer.core.gem_defs import extract_gem_totals
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.gamedata import Gear, Mini, ascended_mini_stats
 
 _ELEMENT_ORDER: Tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 _GENERAL_META_EXCLUDED_RANK_DIFFICULTIES = frozenset({"Easy"})
-_GEM_KEYS = ("PP", "CM", "FM", "FT", "FF", "Element")  # the order of GemTotals.as_tuple()
+_GEM_KEYS = ("PP", "CM", "FM", "FT", "FF", "Element")  # the order of stats.GEM_KINDS: a row's stored "gems"
 
 
 def _scores(row: dict) -> tuple[int, int]:
@@ -260,8 +259,7 @@ def _set_summary(rank: int, key: tuple, won: _SetWins) -> dict:
     gears, signature = key
     gem_sums = dict.fromkeys(_GEM_KEYS, 0)
     for row in won.all_rows:
-        totals = extract_gem_totals(json.loads(row.get("details_json") or "{}"))
-        for gem, count in zip(_GEM_KEYS, totals.as_tuple()):
+        for gem, count in zip(_GEM_KEYS, row["gems"]):
             gem_sums[gem] += count
     denom = len(won.all_rows)
     peak_in_songs_meta = _peak_songs(won.rows, fg=False)

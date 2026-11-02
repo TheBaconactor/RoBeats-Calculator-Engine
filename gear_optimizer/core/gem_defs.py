@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
@@ -27,32 +26,6 @@ BASE_STAT_KEYS: tuple[str, ...] = (
     "Flow",
     "Chill",
 )
-
-@dataclass(frozen=True, slots=True)
-class GemTotals:
-    pp: int = 0
-    cm: int = 0
-    fm: int = 0
-    ft: int = 0
-    ff: int = 0
-    element: int = 0
-
-    def as_tuple(self) -> tuple[int, int, int, int, int, int]:
-        return (self.pp, self.cm, self.fm, self.ft, self.ff, self.element)
-
-
-def extract_gem_totals(details: Mapping[str, Any]) -> GemTotals:
-    """The gem allocation in a stored row's details, as the store writes it: GemCounts by stat name (PP, CM, FM,
-    Element) and the fever gems as FT/FF; missing counts are 0."""
-    gem_counts = details.get("GemCounts") or {}
-    return GemTotals(
-        pp=gem_counts.get(GemKey.PP.value, 0),
-        cm=gem_counts.get(GemKey.CM.value, 0),
-        fm=gem_counts.get(GemKey.FM.value, 0),
-        ft=details.get("FT", 0),
-        ff=details.get("FF", 0),
-        element=gem_counts.get(GemKey.ELEMENT.value, 0),
-    )
 
 
 def build_gem_counts(g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:

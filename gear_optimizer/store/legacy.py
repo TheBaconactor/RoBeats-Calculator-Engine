@@ -20,7 +20,7 @@ from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from ..gamedata import STATS, Gear, Mini
 from ..stats import GEM_KINDS
 from .boards import Row
-from .db import load_boards, load_traces, store_results
+from .db import Boards, load_boards, load_traces, store_results
 from .records import FgResult, Loadout, MetaResult, encode_trace
 from .schema import connect
 
@@ -37,11 +37,7 @@ def best_loadouts(
     gears: Mapping[str, Gear] | None = None,
     minis: Mapping[str, Mini] | None = None,
 ) -> list[dict[str, Any]]:
-    boards = load_boards(conn, mode, song, tier)
-    # The version 18 reader's orders (its query plans'): meta by score, then FG score, then entry; FG by FG
-    # score, then loadout hash.
-    meta = sorted(boards.meta, key=lambda x: (-x.score, -(x.fg_score or 0), x.meta.seq))[:limit]
-    fg = sorted(boards.fg, key=lambda x: (-x.fg_score, x.loadout_hash))[:limit]
+    meta, fg = served_rows(load_boards(conn, mode, song, tier), limit)
     traces = load_traces(conn, mode, song, tier, {x.loadout_hash for x in meta + fg})
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -61,6 +57,14 @@ def best_loadouts(
         entry["force"] = fg_payload(x, traces[x.loadout_hash].fg)
         out.append(entry)
     return out
+
+
+def served_rows(boards: Boards, limit: int = LOADOUTS_PER_SONG_LIMIT) -> tuple[list[Loadout], list[Loadout]]:
+    """The rows best_loadouts serves, in the version 18 reader's orders (its query plans'): the meta board's best
+    `limit` by score, then FG score, then entry; the FG board's best `limit` by FG score, then loadout hash."""
+    meta = sorted(boards.meta, key=lambda x: (-x.score, -(x.fg_score or 0), x.meta.seq))[:limit]
+    fg = sorted(boards.fg, key=lambda x: (-x.fg_score, x.loadout_hash))[:limit]
+    return meta, fg
 
 
 def read_best_loadouts(

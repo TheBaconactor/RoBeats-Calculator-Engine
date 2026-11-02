@@ -1,5 +1,3 @@
-import json
-
 from general_meta.analysis import find_most_common_loadout
 from tests.items_support import minis_from_dicts
 
@@ -11,18 +9,7 @@ def _row(song_name, gear, score, *, gems, mini="Mini", difficulty=None):
         "fg_score": 0,
         "gear": list(gear),
         "mini_groups": [[mini]],
-        "details_json": json.dumps(
-            {
-                "GemCounts": {
-                    "Perfect Points": gems.get("PP", 0),
-                    "Combo Multiplier": gems.get("CM", 0),
-                    "Fever Multiplier": gems.get("FM", 0),
-                    "Element": gems.get("Element", 0),
-                },
-                "FT": gems.get("FT", 0),
-                "FF": gems.get("FF", 0),
-            }
-        ),
+        "gems": tuple(gems.get(kind, 0) for kind in ("PP", "CM", "FM", "FT", "FF", "Element")),
         **({"difficulty": difficulty} if difficulty else {}),
     }
 
