@@ -294,30 +294,53 @@ def test_trace_edge_cache_rejects_cross_song_geometry_reuse():
         )
 
 
-def test_trace_edge_cache_bounds_retained_options_and_skips_oversized_states():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
+def test_trace_edge_cache_bounds_the_options_its_states_built():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        FgTraceEdgeOptionsCache,
+        _SectionOptionStream,
+    )
 
     cache = FgTraceEdgeOptionsCache()
     owner = object()
     cache.bind_owner(owner, note_count=1)
     option = {"surface": "sentinel"}
-    cache.put(("first",), (option,) * 5000)
-    cache.put(("second",), (option,) * 4000)
+
+    def read(count):
+        stream = _SectionOptionStream(iter((option,) * count))
+        assert len(list(stream)) == count
+        return stream
+
+    cache.put(("first",), read(5000))
+    cache.put(("second",), read(4000))
 
     assert cache.get(("first",)) is None
-    assert len(cache.get(("second",)) or ()) == 4000
-    assert cache.option_count == 4000
-
-    cache.put(("oversized",), (option,) * 8193)
-    assert cache.get(("oversized",)) is None
+    assert len(list(cache.get(("second",)))) == 4000
     assert cache.option_count == 4000
 
     empty_cache = FgTraceEdgeOptionsCache()
     empty_cache.bind_owner(owner, note_count=1)
     for index in range(300):
-        empty_cache.put(("empty", index), ())
+        empty_cache.put(("empty", index), _SectionOptionStream(iter(())))
     assert len(empty_cache) == 256
     assert empty_cache.option_count == 0
+
+
+def test_a_section_option_stream_builds_only_what_is_read_and_replays_it():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _SectionOptionStream
+
+    pulled = []
+
+    def source():
+        for index in range(3):
+            pulled.append(index)
+            yield {"surface": index}
+
+    stream = _SectionOptionStream(source())
+    assert next(iter(stream))["surface"] == 0
+    assert pulled == [0]
+    assert [option["surface"] for option in stream] == [0, 1, 2]
+    assert [option["surface"] for option in stream] == [0, 1, 2]
+    assert pulled == [0, 1, 2]
 
 
 def _words_from_indices(indices):

@@ -87,10 +87,18 @@ class FgTraceEdgeOptionsCache:
             raise RuntimeError("FG trace edge cache key was published twice")
         while self._entries and (
             len(self._entries) >= _TRACE_EDGE_OPTIONS_CACHE_MAX_STATES
-            or sum(len(entry.built) for entry in self._entries.values()) > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS
+            or self.option_count + len(options.built) > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS
         ):
             self._entries.pop(next(iter(self._entries)))
         self._entries[key] = options
+
+    @property
+    def option_count(self) -> int:
+        """The options the retained states have built (bounded at each insert, oldest state evicted first)."""
+        return sum(len(entry.built) for entry in self._entries.values())
+
+    def __len__(self) -> int:
+        return len(self._entries)
 
 
 @dataclass(frozen=True, slots=True)

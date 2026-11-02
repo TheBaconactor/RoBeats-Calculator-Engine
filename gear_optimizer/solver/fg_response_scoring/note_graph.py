@@ -1033,7 +1033,7 @@ def _assign_exact_input_order(
             raise ValueError(f"note_graph: note {index} has a non-finite input timing")
         event_times.append(event_time)
 
-    successors: list[set[int]] = [set() for _ in range(n)]
+    successors: dict[int, set[int]] = {}
     indegree = [0] * n
     for before_raw, after_raw in constraints:
         before = int(before_raw)
@@ -1045,8 +1045,9 @@ def _assign_exact_input_order(
                 "note_graph: exact input-order constraint moves backward in physical time "
                 f"({before} -> {after})"
             )
-        if after not in successors[before]:
-            successors[before].add(after)
+        targets = successors.setdefault(before, set())
+        if after not in targets:
+            targets.add(after)
             indegree[after] += 1
 
     # No constraint runs backward in time, so popping the earliest ready input yields a time-monotone order.
@@ -1056,7 +1057,7 @@ def _assign_exact_input_order(
     while ready:
         _event_time, index = heapq.heappop(ready)
         ordered.append(index)
-        for after in successors[index]:
+        for after in successors.get(index, ()):
             indegree[after] -= 1
             if indegree[after] == 0:
                 heapq.heappush(ready, (event_times[after], after))
