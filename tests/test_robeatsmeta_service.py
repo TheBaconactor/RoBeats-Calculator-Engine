@@ -122,7 +122,7 @@ def test_api_catalog_uses_configured_external_song_library(data_root, monkeypatc
         service.find_official_chart("Private Calculator Chart")
 
 
-def test_external_catalog_cache_invalidates_when_a_chart_is_added(data_root, monkeypatch):
+def test_a_frontier_refresh_rereads_the_chart_library_and_wakes_the_maintainer(data_root, monkeypatch):
     reference_data = data_root / "ReferenceClient" / "Data"
     for difficulty in ("Easy", "Normal", "Hard"):
         (reference_data / f"{difficulty} Songs").mkdir(parents=True)
@@ -132,14 +132,30 @@ def test_external_catalog_cache_invalidates_when_a_chart_is_added(data_root, mon
         encoding="utf-8",
     )
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(reference_data))
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_API_TOKEN", "secret")
+    calls: list[tuple[object, object]] = []
+
+    class _Maintainer:
+        def request_refresh(self):
+            calls.append(("wake", None))
+
+    handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
+    handler.path = "/frontiers/refresh"
+    handler.headers = {"Authorization": "Bearer secret"}
+    handler.server = type("Server", (), {"frontier_maintainer": _Maintainer()})()
+    monkeypatch.setattr(handler, "_send", lambda status, payload: calls.append((status, payload)))
 
     assert [song["songId"] for song in service.list_official_songs()] == ["First Imported Chart"]
-
     (normal_dir / "second.txt").write_text(
         "Song Name\tSecond Imported Chart\nSong Data\n1000\t0\t0\t1\n",
         encoding="utf-8",
     )
+    # Requests never stat the library: the chart appears once the publisher's refresh request arrives.
+    assert [song["songId"] for song in service.list_official_songs()] == ["First Imported Chart"]
 
+    handler.do_POST()
+
+    assert calls == [("wake", None), (service.HTTPStatus.ACCEPTED, {"queued": True})]
     assert [song["songId"] for song in service.list_official_songs()] == [
         "First Imported Chart",
         "Second Imported Chart",
@@ -289,25 +305,6 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
     # Every publication the maintainer activates builds the charts it made newly solvable.
     maintainer_kwargs["publication_ready"](Path("published"))
     assert calls[-2:] == ["activate published", "catalog build"]
-
-
-def test_frontier_refresh_endpoint_only_wakes_maintainer(data_root, monkeypatch):
-    calls: list[tuple[object, object]] = []
-
-    class _Maintainer:
-        def request_refresh(self):
-            calls.append(("wake", None))
-
-    handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
-    handler.path = "/frontiers/refresh"
-    handler.headers = {"Authorization": "Bearer secret"}
-    handler.server = type("Server", (), {"frontier_maintainer": _Maintainer()})()
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_API_TOKEN", "secret")
-    monkeypatch.setattr(handler, "_send", lambda status, payload: calls.append((status, payload)))
-
-    handler.do_POST()
-
-    assert calls == [("wake", None), (service.HTTPStatus.ACCEPTED, {"queued": True})]
 
 
 def test_find_official_chart_exact_match(data_root):

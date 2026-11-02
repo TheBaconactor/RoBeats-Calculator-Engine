@@ -57,7 +57,8 @@ logger = logging.getLogger(__name__)
 # The host application owns identity, quotas, sharing, and per-job persistence. This service owns
 # canonical catalog promotion because it is the process that can prove a solve used an official
 # chart and the untouched item catalog.
-#   GET  /songs     -> the official chart list (from Data/ headers)
+#   GET  /songs     -> the official chart list (from Data/ headers, read once per publication or refresh)
+#   POST /frontiers/refresh -> the song publisher wrote charts: re-read the list and wake the frontier maintainer
 #   POST /optimize  -> solve one chart (official `targetSongId` OR custom `chartText`) and return
 #                      its full T5 baseline leaderboard (top 51 base + 51 FG by hash), in the exact
 #                      shape store.legacy.best_loadouts yields for the catalog. A host may persist this
@@ -114,7 +115,6 @@ class _OfficialSongCatalog:
 
 
 _OFFICIAL_CATALOG_LOCK = threading.Lock()
-_OFFICIAL_CATALOG_CACHE_KEY: tuple[tuple[str, Path], ...] | None = None
 _OFFICIAL_CATALOG_CACHE: _OfficialSongCatalog | None = None
 
 
@@ -393,28 +393,13 @@ def _official_song_directories() -> tuple[tuple[str, Path], ...]:
     return directories
 
 
-def _official_catalog_cache_key() -> tuple[tuple[str, Path, tuple[tuple[str, int, int], ...]], ...]:
-    """Track chart-file state so an external catalog cannot stay stale after a song import."""
-    directories = _official_song_directories()
-    return tuple(
-        (
-            difficulty,
-            diff_dir,
-            tuple(
-                (chart.name, chart.stat().st_mtime_ns, chart.stat().st_size)
-                for chart in sorted(diff_dir.glob("*.txt"), key=lambda path: path.name)
-            ),
-        )
-        for difficulty, diff_dir in directories
-    )
-
-
 def clear_official_song_catalog_cache() -> None:
-    """Clear the process-local official song catalog cache used by tests and controlled reloads."""
-    global _OFFICIAL_CATALOG_CACHE, _OFFICIAL_CATALOG_CACHE_KEY
+    """The next catalog use re-reads every chart header. Called when a publication activates and when the song
+    publisher POSTs /frontiers/refresh after writing charts; requests never stat the chart library (on the HDD that
+    costs ~0.4 s once its metadata leaves the OS cache)."""
+    global _OFFICIAL_CATALOG_CACHE
     with _OFFICIAL_CATALOG_LOCK:
         _OFFICIAL_CATALOG_CACHE = None
-        _OFFICIAL_CATALOG_CACHE_KEY = None
 
 
 def _activate_published_data(data_root: Path) -> None:
@@ -506,15 +491,11 @@ def _build_official_song_catalog() -> _OfficialSongCatalog:
 
 
 def _official_song_catalog() -> _OfficialSongCatalog:
-    global _OFFICIAL_CATALOG_CACHE, _OFFICIAL_CATALOG_CACHE_KEY
-    cache_key = _official_catalog_cache_key()
+    global _OFFICIAL_CATALOG_CACHE
     with _OFFICIAL_CATALOG_LOCK:
-        if _OFFICIAL_CATALOG_CACHE is not None and _OFFICIAL_CATALOG_CACHE_KEY == cache_key:
-            return _OFFICIAL_CATALOG_CACHE
-        catalog = _build_official_song_catalog()
-        _OFFICIAL_CATALOG_CACHE = catalog
-        _OFFICIAL_CATALOG_CACHE_KEY = cache_key
-        return catalog
+        if _OFFICIAL_CATALOG_CACHE is None:
+            _OFFICIAL_CATALOG_CACHE = _build_official_song_catalog()
+        return _OFFICIAL_CATALOG_CACHE
 
 
 def list_official_songs() -> list[dict[str, str]]:
@@ -1311,11 +1292,8 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
         if path == "/frontiers/refresh":
-            maintainer = getattr(self.server, "frontier_maintainer", None)
-            if maintainer is None:
-                self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "frontier_maintainer_unavailable"})
-                return
-            maintainer.request_refresh()
+            clear_official_song_catalog_cache()
+            self.server.frontier_maintainer.request_refresh()  # type: ignore[attr-defined]  # main() sets it before serving
             self._send(HTTPStatus.ACCEPTED, {"queued": True})
             return
         if not _AUTHORITATIVE_PUBLICATION_READY.is_set():
