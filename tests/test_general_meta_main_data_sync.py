@@ -111,7 +111,7 @@ def test_run_general_meta_syncs_before_loading_gears(monkeypatch) -> None:
     )
 
     with pytest.raises(_StopAfterSync):
-        run_general_meta()
+        run_general_meta(Path("unused.db"))
 
     assert sync_calls == [False]
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Dict
 
 from gear_optimizer.core.team_buff import (
@@ -15,7 +15,7 @@ from gear_optimizer.core.team_buff import (
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
 from gear_optimizer.gamedata import Gear, Mini, load_gears, load_minis
-from gear_optimizer.settings import ENGINE_ROOT, paths
+from gear_optimizer.settings import paths
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -96,7 +96,7 @@ def _assert_known_mini_names(
     )
 
 
-def _song_rows(song_name: str) -> list[dict]:
+def _song_rows(database: Path, song_name: str) -> list[dict]:
     """
     The song's stored baseline-tier (T5) leaderboard as General Meta rows (item names, scores, details JSON).
 
@@ -110,7 +110,7 @@ def _song_rows(song_name: str) -> list[dict]:
 
     rows: list[dict] = []
     # General Meta is built from the Precise boards.
-    for entry in read_best_loadouts(paths().database, PRECISE, song_name, OPTIMIZER_BASELINE_TEAM_BUFF):
+    for entry in read_best_loadouts(database, PRECISE, song_name, OPTIMIZER_BASELINE_TEAM_BUFF):
         mini_names = _flat_item_names(entry.get("minis") or [])
         details = entry.get("details")
         rows.append(
@@ -177,43 +177,16 @@ def _build_loadout_entry(
     }
 
 
-def _print_category(top_loadouts: list[dict], team_buff_winners: dict[str, dict]) -> None:
-    for entry in top_loadouts:
-        gems = entry["gems"]
-        print(
-            f"  #{entry['rank']} loadout: {entry['win_frequency']} wins "
-            f"(stats averaged from {entry['songs_with_set']} entries)"
-        )
-        print(f"    Gear: {entry['gear']}")
-        print(f"    Minis: {sorted([min(g) for g in entry['mini_groups'] if g])}")
-        print(
-            f"    Avg Gems: PP={gems['PP']}, CM={gems['CM']}, FM={gems['FM']}, FT={gems['FT']}, "
-            f"FF={gems['FF']}, OV={gems['Element']}"
-        )
-        print(f"    Avg Score: {entry['avg_score']:,}")
-        if entry["peak_in_songs"]:
-            print(f"    Peak In Songs ({len(entry['peak_in_songs'])}): {', '.join(entry['peak_in_songs'])}")
-    winners = {label: tier for label, tier in team_buff_winners.items() if tier["winner"] is not None}
-    if winners:
-        print("  TeamBuff winners (build-time static tier replay):")
-    for label, tier in winners.items():
-        winner = tier["winner"]
-        print(f"    {label}: {winner['win_frequency']} wins (from {tier['songs_count_with_data']} songs)")
-        print(f"      Gear: {winner['gear']}")
-        print(f"      Minis: {sorted([min(g) for g in winner['mini_groups'] if g])}")
-
-
 def _category_result(
     primary: str,
     secondary: str,
     songs: list[dict],
     team_buff_tiers: list[str],
-    song_rows: dict[str, list[dict]],
+    database: Path,
     gears_by_name: Mapping[str, Gear],
     minis_by_name: Mapping[str, Mini],
 ) -> dict:
     """One elemental category (primary/secondary): its ranked sets at every TeamBuff tier."""
-    print(f"\n--- Processing {primary}/{secondary} ({len(songs)} songs) ---")
     loadouts_by_team_buff: dict[str, list[dict]] = {tier: [] for tier in team_buff_tiers}
     team_buff_winners = {tier: {"songs_count_with_data": 0, "winner": None} for tier in team_buff_tiers}
     result = {
@@ -231,18 +204,13 @@ def _category_result(
         "top_loadouts": [],
     }
     if not songs:
-        print("  No songs found for this category")
         return result
 
     loadouts_by_song: dict[str, list[dict]] = {}
     for song in songs:
         song_name = str((song or {}).get("song_name") or "").strip()
-        if not song_name:
-            continue
-        if song_name not in song_rows:
-            song_rows[song_name] = _song_rows(song_name)
-        if song_rows[song_name]:
-            loadouts_by_song[song_name] = song_rows[song_name]
+        if song_name and (rows := _song_rows(database, song_name)):
+            loadouts_by_song[song_name] = rows
     ranked_sets = find_most_common_loadout(songs, loadouts_by_song, minis_by_name, gears_by_name=gears_by_name)
     for tier in team_buff_tiers:
         entries = [
@@ -262,44 +230,29 @@ def _category_result(
         team_buff_winners[tier]["winner"] = entries[0] if entries else None
 
     top_loadouts = loadouts_by_team_buff.get(_DEFAULT_TIER_LABEL) or loadouts_by_team_buff.get(_BASELINE_TIER_LABEL)
-    if not top_loadouts:
-        print("  No loadouts found for this category")
-        return result
-    _print_category(top_loadouts, team_buff_winners)
-    result["top_loadouts"] = top_loadouts
+    if top_loadouts:
+        result["top_loadouts"] = top_loadouts
     return result
 
 
-def run_general_meta() -> dict:
-    """
-    Main entry point for GeneralMeta optimization.
-    """
-    print("\n" + "=" * 60)
-    print("GENERAL META - Cross-Song Optimization")
-    print("=" * 60)
-
+def run_general_meta(database: Path) -> dict:
+    """The General Meta of a results database: every elemental category's ranked sets at each TeamBuff tier."""
     sync_exported_game_data()
 
     gears_by_name = load_gears(paths().gears_csv)
     minis_by_name = load_minis(paths().minis_csv)
     team_buff_tiers = [team_buff_display_label(tier, default="NONE") for tier in DEFAULT_TEAM_BUFF_REPLAY_TIERS]
-
-    print("\nScanning songs by elemental combination...")
     songs_by_combo = get_songs_by_elemental_combo()
-    for combo, songs in songs_by_combo.items():
-        print(f"  {combo[0]}/{combo[1]}: {len(songs)} songs")
-    print(f"\nPreparing TeamBuff tier replay seed rows (baseline TeamBuff={_BASELINE_TIER_LABEL})...")
 
     canonical_combos = [(p, s) for p in _ELEMENT_ORDER for s in _ELEMENT_ORDER]
     extra_combos = sorted((c for c in songs_by_combo if c not in set(canonical_combos)), key=lambda c: (str(c[0]), str(c[1])))
-    song_rows: dict[str, list[dict]] = {}
     results: Dict[str, Any] = {
         f"{primary}/{secondary}": _category_result(
             primary,
             secondary,
             songs_by_combo.get((primary, secondary), []),
             team_buff_tiers,
-            song_rows,
+            database,
             gears_by_name,
             minis_by_name,
         )
@@ -311,16 +264,4 @@ def run_general_meta() -> dict:
     }
 
 
-def export_general_meta_json(results: dict, output_path: str | None = None) -> str:
-    if output_path is None:
-        output_path = str(ENGINE_ROOT / "artifacts" / "general_meta_results.json")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-
-    print(f"\nResults exported to: {output_path}")
-    return output_path
-
-
-__all__ = ["export_general_meta_json", "run_general_meta"]
+__all__ = ["run_general_meta"]

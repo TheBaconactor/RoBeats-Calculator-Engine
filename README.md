@@ -125,7 +125,6 @@ Press `Ctrl+C` once for a graceful shutdown or twice to force an exit. You can a
 ```bash
 python main.py                                # Run the optimizer
 python -m gear_optimizer.cli run              # Run through the module CLI
-python -m gear_optimizer.cli meta             # Run cross-song GeneralMeta analysis
 python -m gear_optimizer.cli sync-data        # Rebuild gear CSVs from exported game data
 python -m tools list                          # List maintained developer tools
 ```

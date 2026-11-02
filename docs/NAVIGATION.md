@@ -8,10 +8,10 @@ Use this page to find the current owner of a behavior. The
 - Optimizer executable: `main.py`
 - Module CLI: `gear_optimizer/cli.py`
   - `python -m gear_optimizer.cli run`
-  - `python -m gear_optimizer.cli meta`
   - `python -m gear_optimizer.cli sync-data`
 - HTTP service: `gear_optimizer/robeatsmeta_service.py`
-- GeneralMeta compatibility entry point: `general_meta_main.py`
+- GeneralMeta: `general_meta/app.py` (`run_general_meta`), which the website's data publish runs on its
+  `evolution.db` snapshot
 
 ## Runtime flow
 
