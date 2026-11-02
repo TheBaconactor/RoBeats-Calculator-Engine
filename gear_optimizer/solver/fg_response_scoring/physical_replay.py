@@ -35,11 +35,12 @@ class BasePhysicalReplay:
     fever_mask: tuple[bool, ...]
 
 
+# The judgment edges of a tap and of a held tail (twice as wide).
+_EDGES_BY_HELD_TAIL = {held: tuple(edge * (2.0 if held else 1.0) for edge in _TAP_EDGES) for held in (False, True)}
+
+
 def _judgment_at(delta_ms: float, *, held_tail: bool) -> str:
-    scale = 2.0 if held_tail else 1.0
-    okay_late, great_late, perfect_late, perfect_early, great_early, okay_early = (
-        edge * scale for edge in _TAP_EDGES
-    )
+    okay_late, great_late, perfect_late, perfect_early, great_early, okay_early = _EDGES_BY_HELD_TAIL[held_tail]
     delta = float(delta_ms)
     if delta > okay_late:
         return "Miss"
@@ -88,11 +89,12 @@ def _base_graph_physical_replay(
 
     event_times_ms = np.empty(n, dtype=np.float64)
     input_orders: list[int] = []
+    note_types_list, lanes_list = nt.tolist(), lane_arr.tolist()
     for index, note in enumerate(graph):
         delta = note.get("delta_ms")
         if delta is None:
             raise ValueError(f"Base physical replay note {index} has no canonical timing witness")
-        actual = _judgment_at(float(delta), held_tail=int(nt[index]) == _HELD_TAIL_TYPE)
+        actual = _judgment_at(float(delta), held_tail=note_types_list[index] == _HELD_TAIL_TYPE)
         if actual != "Perfect":
             raise ValueError(
                 f"Base physical replay note {index} judges {actual} at {float(delta):.6f}ms"
@@ -106,14 +108,14 @@ def _base_graph_physical_replay(
     # same-lane tail/head pair that _assign_exact_input_order deliberately ordered tail first.
     event_order = tuple(int(index) for index in sorted(range(n), key=input_orders.__getitem__))
     expected_by_lane: dict[int, list[int]] = {}
-    for index, lane_value in enumerate(lane_arr):
-        expected_by_lane.setdefault(int(lane_value), []).append(int(index))
+    for index, lane_value in enumerate(lanes_list):
+        expected_by_lane.setdefault(lane_value, []).append(index)
     lane_cursors = {lane: 0 for lane in expected_by_lane}
     for index in event_order:
-        lane = int(lane_arr[index])
-        cursor = int(lane_cursors[lane])
-        expected_index = int(expected_by_lane[lane][cursor])
-        if int(index) != expected_index:
+        lane = lanes_list[index]
+        cursor = lane_cursors[lane]
+        expected_index = expected_by_lane[lane][cursor]
+        if index != expected_index:
             raise ValueError(
                 f"Base physical replay lane {lane} matched note {expected_index}, not intended note {index}"
             )

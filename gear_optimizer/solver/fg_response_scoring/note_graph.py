@@ -52,6 +52,7 @@ so there is no candidate-dependent re-solve and no bulky per-note persistence.
 from __future__ import annotations
 
 import heapq
+import math
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator, Mapping, Sequence
@@ -379,30 +380,29 @@ def _bounded_judgment_delta_ms(
     max_delta_ms: float = np.inf,
 ) -> float:
     if result == "Perfect":
-        intervals = (_perfect_bounds_ms_at(note_types, j),)
+        intervals = _bounds_at(note_types, j)[:1]
     elif result == "Great":
-        early_lo, early_hi = _early_great_bounds_ms_at(note_types, j)
-        late_lo, late_hi = _late_great_bounds_ms_at(note_types, j)
-        intervals = ((early_lo, early_hi), (late_lo, late_hi))
+        intervals = _bounds_at(note_types, j)[1:]
     else:
         raise ValueError(f"note_graph: unsupported result {result!r} at note {j}")
 
+    preferred, floor, ceiling = float(preferred_delta_ms), float(min_delta_ms), float(max_delta_ms)
     candidates: list[float] = []
     for lo, hi in intervals:
-        feasible_lo = max(float(lo), float(min_delta_ms))
-        feasible_hi = min(float(hi), float(max_delta_ms))
+        feasible_lo = max(float(lo), floor)
+        feasible_hi = min(float(hi), ceiling)
         if feasible_lo <= feasible_hi:
-            candidates.append(min(max(float(preferred_delta_ms), feasible_lo), feasible_hi))
+            candidates.append(min(max(preferred, feasible_lo), feasible_hi))
     if not candidates:
         raise UnplayableTrace(
             "note_graph: exact input order has no legal bounded hit "
             f"for note {j}'s {result} judgment"
         )
-    if np.isposinf(preferred_delta_ms):
+    if preferred == np.inf:
         return max(candidates)
-    if np.isneginf(preferred_delta_ms):
+    if preferred == -np.inf:
         return min(candidates)
-    return min(candidates, key=lambda delta: (abs(delta - float(preferred_delta_ms)), delta))
+    return min(candidates, key=lambda delta: (abs(delta - preferred), delta))
 
 
 def _delta_at_or_after_ms(note_types: np.ndarray, j: int, result: str, min_delta_ms: float) -> float:
@@ -1029,7 +1029,7 @@ def _assign_exact_input_order(
     event_times: list[float] = []
     for index, note in enumerate(notes):
         event_time = float(note["hit_time_ms"]) + float(note["delta_ms"])
-        if not np.isfinite(event_time):
+        if not math.isfinite(event_time):
             raise ValueError(f"note_graph: note {index} has a non-finite input timing")
         event_times.append(event_time)
 

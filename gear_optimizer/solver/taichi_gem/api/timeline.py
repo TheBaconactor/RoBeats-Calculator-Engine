@@ -202,6 +202,9 @@ _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per s
 # The compressed .npz bytes (~20-90KB, the exact disk form) of recently used payloads, not the ~1.1MB decoded
 # payloads: a song prepared ahead of its GA turn is decoded (<1ms) from here instead of re-read from disk.
 _frontier_payload_memory: MemoryLru[bytes] = MemoryLru(40)
+# The last payload served, as (its memory-tier bytes, payload): a solve reads one song's payload once per scored
+# loadout (~50 times), every reader only reads it, so it is decoded once.
+_last_served_payload: tuple[bytes, TimelineFrontierGridPayload] | None = None
 # The timeline cache version: a hand-kept base version plus a fingerprint (an AST digest, see logic_fingerprint.py) of
 # the Base producer sources, so a logic change there rotates it by itself. The cache key hashes the song inputs and the
 # FT/FF axes, never the producer, so bump the base version when the payload changes in a way neither sees (e.g. a
@@ -359,17 +362,22 @@ def _save_frontier_payload(cache_key: tuple, raw: bytes) -> None:
 
 
 def _cached_frontier_payload(cache_key: tuple) -> tuple[TimelineFrontierGridPayload | None, str]:
+    global _last_served_payload
     raw = _frontier_payload_memory.get(cache_key)
     if raw is not None:
+        if _last_served_payload is not None and _last_served_payload[0] is raw:
+            return _last_served_payload[1], "memory"
         cached = _decode_frontier_payload_npz(raw)
         if cached is None:
             raise ValueError("timeline frontier memory cache holds an incompatible payload")
+        _last_served_payload = (raw, cached)
         return cached, "memory"
     loaded = _load_frontier_payload(cache_key)
     if loaded is None:
         return None, "missing"
     cached, raw = loaded
     _frontier_payload_memory.put(cache_key, raw)
+    _last_served_payload = (raw, cached)
     return cached, "disk"
 
 
