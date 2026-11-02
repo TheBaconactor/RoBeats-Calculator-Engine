@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, NamedTuple
@@ -24,14 +25,34 @@ class UnplayableTrace(ValueError):
 
 
 @dataclass(slots=True)
+class _SectionOptionStream:
+    """A section start's options in emission order, built only as far as a trace search reads them (the search stops at
+    the first option that completes its trace) and shared by every search of the song that reaches the state."""
+
+    source: Iterator[dict[str, Any]] | None
+    built: list[dict[str, Any]] = field(default_factory=list)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        index = 0
+        while True:
+            if index == len(self.built):
+                option = None if self.source is None else next(self.source, None)
+                if option is None:
+                    self.source = None
+                    return
+                self.built.append(option)
+            yield self.built[index]
+            index += 1
+
+
+@dataclass(slots=True)
 class FgTraceEdgeOptionsCache:
     """One-song ordered edge cache with enforced owner identity and bounded option count."""
 
-    _entries: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
+    _entries: dict[Any, _SectionOptionStream] = field(default_factory=dict)
     _owner_inputs: tuple[Any, ...] | None = None
     _owner_note_count: int = -1
     _explicit_owner: bool = False
-    _option_count: int = 0
 
     def bind_owner(self, owner: Any, *, note_count: int) -> None:
         if self._owner_inputs is None:
@@ -58,31 +79,18 @@ class FgTraceEdgeOptionsCache:
         ):
             raise ValueError("FG trace edge cache cannot be reused across song timing owners")
 
-    def get(self, key: tuple[Any, ...]) -> tuple[dict[str, Any], ...] | None:
+    def get(self, key: tuple[Any, ...]) -> _SectionOptionStream | None:
         return self._entries.get(key)
 
-    def put(self, key: tuple[Any, ...], options: tuple[dict[str, Any], ...]) -> None:
+    def put(self, key: tuple[Any, ...], options: _SectionOptionStream) -> None:
         if key in self._entries:
             raise RuntimeError("FG trace edge cache key was published twice")
-        option_count = len(options)
-        if option_count > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS:
-            return
         while self._entries and (
             len(self._entries) >= _TRACE_EDGE_OPTIONS_CACHE_MAX_STATES
-            or self._option_count + option_count > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS
+            or sum(len(entry.built) for entry in self._entries.values()) > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS
         ):
-            oldest_key = next(iter(self._entries))
-            old_options = self._entries.pop(oldest_key)
-            self._option_count -= len(old_options)
+            self._entries.pop(next(iter(self._entries)))
         self._entries[key] = options
-        self._option_count += option_count
-
-    @property
-    def option_count(self) -> int:
-        return int(self._option_count)
-
-    def __len__(self) -> int:
-        return len(self._entries)
 
 
 @dataclass(frozen=True, slots=True)
@@ -731,10 +739,11 @@ def _edge_surface_options(
     forced: list[int],
     real_fever_time: float,
     use_forced_great_timing: bool,
-) -> list[dict[str, Any]]:
+) -> Iterator[dict[str, Any]]:
     """Enumerate the candidate fever sections of the section start after state `i` (the first section when `first`)
     with their response-surface edges: per action of the frontier's action table (its `fills` and `forced` counts for
-    this kind of section), its Perfect activation, its late-Great activation and its region runs.
+    this kind of section), its Perfect activation, its late-Great activation and its region runs. Yields each action's
+    options as they are built, so a consumer that stops early builds no later action's.
 
     Witness timing fields are intentionally absent here: computing the centered activation witness
     (`_centered_hit_window_for_exit`) is the expensive part and only sections accepted into the final trace need it.
@@ -778,6 +787,7 @@ def _edge_surface_options(
             late_hit=float(act_late_hit[idx]), lg_prefix=int(act_lg_prefix[idx]), late_e=int(act_late_e[idx]),
             late_eg_e=int(act_late_eg_e[idx]),
         )
+        emitted = len(options.out)
         if action.perfect_reachable and (
             action.fill != prev_fill or (action.start_time != prev_start_time and action.e != prev_e)
         ):
@@ -789,8 +799,8 @@ def _edge_surface_options(
             _late_great_activation(options, action, section_start)
         if use_forced_great_timing and action.k > 0:
             _region_runs(options, action, section_start)
+        yield from options.out[emitted:]
         prev_fill, prev_start_time, prev_e = action.fill, action.start_time, action.e
-    return options.out
 
 
 def _perfect_activation(options: _SectionOptions, action: _ActionRow, section_start: int) -> None:
@@ -1191,7 +1201,7 @@ def reconstruct_force_greats_response_trace(
     target_words = tuple(int(value) for value in target_surface)
     # The ordered edge list is independent of the target surface. A materialization batch can
     # therefore reuse it across the up-to-51 exact surfaces for one song/stat geometry. Keep the
-    # cache song-local and bounded: eviction only regenerates an identical ordered tuple.
+    # cache song-local and bounded: eviction only regenerates an identical ordered stream.
     shared_edge_options = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
     shared_edge_options.bind_inputs(
         owner_inputs=(
@@ -1267,7 +1277,7 @@ def reconstruct_force_greats_response_trace(
         edge_cache_key = (*edge_cache_prefix, int(state), bool(first))
         options = shared_edge_options.get(edge_cache_key)
         if options is None:
-            options = tuple(
+            options = _SectionOptionStream(
                 _edge_surface_options(
                     context=_reachability_context(),
                     i=int(state),

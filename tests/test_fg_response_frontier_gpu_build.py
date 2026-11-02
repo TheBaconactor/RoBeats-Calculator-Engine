@@ -1500,7 +1500,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         fever_fill_denom=raw_fever_fill,
     )
 
-    options = _edge_surface_options(
+    options = list(_edge_surface_options(
         context=reachability_context,
         i=99,
         first=False,
@@ -1509,7 +1509,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         forced=later_forced,
         real_fever_time=1.0,
         use_forced_great_timing=True,
-    )
+    ))
 
     assert not any(
         int(option["activation_index"]) == 102
