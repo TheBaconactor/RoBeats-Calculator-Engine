@@ -4,7 +4,7 @@ Measures the HEAD parametric upper-envelope size of the early-Great frontier, to
 whether Route A (build-time head-envelope prune, GPU score path untouched) is viable, or
 whether we must fall back to Route B (per-theta head DP in the Vulkan kernel).
 
-Key fact exploited (see docs/FG_EARLY_GREAT_FRONTIER_MATH_PROBLEM.md S5):
+Key fact exploited (see docs/math/FG_EARLY_GREAT_FRONTIER_MATH_PROBLEM.md S5):
   head per-item floor-free value with sigma_i = 1 + (c-1)(i+1)/100 is a LINEAR functional of
   the 8-tuple (count, pos-sum) over each of the 4 (fever?, great?) classes. Two surfaces with
   the same 8-tuple have identical floor-free head value for EVERY theta. So

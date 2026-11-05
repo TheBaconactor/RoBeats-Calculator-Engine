@@ -4,7 +4,7 @@
 
 # RoBeats Calculator Engine
 
-**The #1 state-of-the-art RoBeats calculator—integer-exact scoring, exact timing frontiers, and GPU-native search.**
+**Finds the highest-scoring gear, Mini, gem and fever-timing build for any RoBeats chart.**
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -12,92 +12,69 @@
 [![Taichi](https://img.shields.io/badge/Taichi-Vulkan-000000)](https://www.taichi-lang.org/)
 [![Live on RoBeatsMeta](https://img.shields.io/badge/production-RoBeatsMeta-d97757)](https://robeatsmeta.net)
 
-[Try RoBeatsMeta](https://robeatsmeta.net) · [Getting started](#getting-started) · [Technical evidence](#technical-evidence) · [Governance](GOVERNANCE.md) · [Contributing](CONTRIBUTING.md)
+[RoBeatsMeta](https://robeatsmeta.net) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Repository layout](#repository-layout) · [Documentation](docs/README.md)
 
 </div>
 
 > [!NOTE]
-> RoBeats Calculator Engine is an independent community project. It is not affiliated with or endorsed by RoBeats, Roblox, or any game publisher. The “#1 state-of-the-art” claim is grounded in the modeled surfaces and verification standards documented below; it does not mean the outer genetic loadout search is exhaustive.
+> An independent community project, not affiliated with or endorsed by RoBeats, Roblox, or any game publisher.
 
-## Overview
+## What it does
 
-RoBeats Calculator Engine searches gear, Mini, gem, fever-timing, and Force Great strategies for a selected chart. It combines a GPU-native genetic search with exact scoring and timing models, then stores the best Base and Force Great results separately in SQLite.
+Given a chart, the engine searches six gear slots, three Mini slots, gems, fever timing and Force Great plays, scores
+each candidate with the game's integer arithmetic, and keeps the best builds on two leaderboards: Base and Force Great.
+It runs from the command line over a queue of charts or as an HTTP service, and it is the solver behind
+[RoBeatsMeta](https://robeatsmeta.net).
 
-This is production community infrastructure, not a showcase-only calculator. The engine supplies chart metadata and on-demand optimization to [RoBeatsMeta](https://robeatsmeta.net), while remaining independently runnable and auditable from a source checkout.
+| Stage | Method | Guarantee |
+|---|---|---|
+| Gear and Mini search | Multi-start genetic search on the GPU (Taichi on Vulkan) | Heuristic: bounded by its search budget, no optimality proof |
+| Fever timing | Non-dominated frontier of the reachable timelines | Exact |
+| Force Greats | Frontier of reachable response surfaces under lane, chart-order and timing limits | Exact |
+| Gems | Bounded search over the frontier surfaces a loadout reaches | Exact for that loadout |
+| Scoring | Per-note integer floors, combo order, fever membership, Great penalties | Exact |
 
-### Highlights
+**Limits:** the search covers Perfect and Great plays; deliberate Okay, Miss and combo-break strategies are out of
+scope. Plans use the base hit windows: the Perfect Time stat, which widens them on a few gears, is not modeled yet.
 
-| Area | What the optimizer provides |
-|---|---|
-| Loadout search | Multi-start GPU search across six gear slots and three Mini slots |
-| Exact score model | Integer floors, combo order, Fever membership, Great penalties, head-note masks, and body counts |
-| Fever timing | Exact non-dominated timing frontiers rather than a small set of guessed timelines |
-| Force Greats | Reachable response frontiers with lane, chart-order, and timing constraints |
-| Mini Ascension | Song-aware universal and elemental bonuses |
-| Persistence | Separate Base and Force Great leaderboards, warm starts, and compatible frontier caches |
-| Integration | CLI and HTTP service interfaces for official and custom charts |
+## Quick start
 
-> [!IMPORTANT]
-> Score evaluation, timing frontiers, ties, and witnesses are modeled exactly for supported actions. The outer loadout search is a genetic search, so a result is the best solution found within the configured search budget—not a proof that no better loadout exists.
-
-## Requirements
-
-- Python 3.11 or newer
-- A Vulkan-capable GPU with current graphics drivers
-- Git
-- Disk space for dependencies, JIT output, chart data, and frontier caches
-
-Production optimization is GPU-first through Taichi/Vulkan. CPU implementations are used for reference and verification, not as a production fallback.
-
-## Getting started
-
-### 1. Clone the repository
+You need Python 3.11 or newer, a Vulkan-capable GPU with current drivers, and disk space for frontier caches. The GPU
+is required for the search; CPU implementations exist for reference and verification.
 
 ```bash
 git clone https://github.com/TheBaconactor/RoBeats-Calculator-Engine.git
 cd RoBeats-Calculator-Engine
-```
-
-### 2. Create a virtual environment
-
-<details open>
-<summary><strong>macOS or Linux</strong></summary>
-
-```bash
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
+source .venv/bin/activate    # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
-</details>
+Choose charts in `config.ini` (the repository ships the catalog under [`Data/`](Data/README.md)):
+
+```ini
+[CalculateSong]
+Song_Name = Surf
+Difficulty = Hard
+```
+
+Then run the optimizer:
+
+```bash
+python main.py
+```
+
+The first run compiles the Numba and Taichi kernels and builds any missing frontiers; later runs reuse them from
+`bin/`. Results go to `evolution.db`, or to the path in `EVOLUTION_DB_PATH`. Press `Ctrl+C` once to stop gracefully and
+twice to force an exit, or create `bin/STOP`.
 
 <details>
-<summary><strong>Windows PowerShell</strong></summary>
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-</details>
-
-For development and testing, also install `requirements-dev.txt`:
-
-```bash
-python -m pip install -r requirements-dev.txt
-```
-
-### 3. Configure a chart
-
-The repository includes chart and gear data under [`Data/`](DATA.md). Set `Song_Name` and `Difficulty` in `config.ini`. Use `TargetPrimary` and `TargetSecondary` to narrow the queue when needed.
+<summary><strong>Every <code>config.ini</code> key</strong></summary>
 
 `config.ini` accepts exactly these keys; an unknown or removed key stops the run with an error that names it.
 
 | Section | Key | Default | Meaning |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | `[CalculateSong]` | `Song_Name` | empty (every chart) | Solve charts whose name contains this text |
 | | `Difficulty` | `All` | `Easy`, `Normal`, `Hard` or `All` |
 | | `TargetPrimary`, `TargetSecondary` | `All` | Colors to include, e.g. `Rush` or `Flow,Beat` |
@@ -110,175 +87,113 @@ The repository includes chart and gear data under [`Data/`](DATA.md). Set `Song_
 | | `MemorySoftLimitGB` | `0` (off) | The run's memory limit: a worker past its share (the limit / `Workers`) is replaced after its song |
 | | `MemorySoftLimitPercent` | platform default | The same limit as a share of physical memory (`0` disables) |
 
-### 4. Run the optimizer
+</details>
+
+### Commands
 
 ```bash
-python main.py
-```
-
-The first run may take longer while Numba and Taichi compile kernels and the optimizer builds missing frontiers. Later runs reuse compatible caches under `bin/`.
-
-Press `Ctrl+C` once for a graceful shutdown or twice to force an exit. You can also create `bin/STOP`.
-
-## Usage
-
-```bash
-python main.py                                # Run the optimizer
-python -m gear_optimizer.cli run              # Run through the module CLI
-python -m gear_optimizer.cli sync-data        # Rebuild gear CSVs from exported game data
-python -m tools list                          # List maintained developer tools
-```
-
-Generated results are stored in `evolution.db` by default. Override the
-location with `EVOLUTION_DB_PATH`.
-
-### HTTP service
-
-The service interface supports host-application integration and self-hosted deployments:
-
-```bash
-python -m gear_optimizer.robeatsmeta_service --host 127.0.0.1 --port 8765
+python main.py                                 # Run the optimizer over the config.ini queue
+python -m gear_optimizer.cli sync-data         # Rebuild the gear CSVs from the game export
+python -m gear_optimizer.robeatsmeta_service --host 127.0.0.1 --port 8765   # HTTP service
+python -m tools list                           # List the developer tools
 ```
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /songs` | Read official chart metadata from the published data snapshot |
+| `GET /songs` | Official chart metadata |
 | `POST /optimize` | Optimize an official chart or supplied chart text |
-| `GET /metafinder/v1/manifest` | Read the authenticated frontier-distribution manifest |
 
-Bind to loopback unless the service is behind a trusted boundary. Set `ROBEATSMETA_OPTIMIZER_API_TOKEN` before exposing it to a network.
-
-<details>
-<summary><strong>Managed frontier distribution</strong></summary>
-
-Managed deployments use one authoritative host to build and publish frontier bundles. Trusted clients authenticate to that host and install SHA-256-verified code, data, and frontier revisions.
-
-Community clones do not require frontier credentials. If `bin/frontier_client_credentials.json` is absent, hosted synchronization is skipped and the optimizer uses the local checkout and `Data/` tree.
-
-| Variable | Purpose |
-|---|---|
-| `METAFINDER_FRONTIER_SERVER_URL` | Hosted update origin |
-| `METAFINDER_FRONTIER_CREDENTIALS_FILE` | Per-installation client credential |
-| `ROBEATSMETA_OPTIMIZER_SERVICE_MODE` | Disable client-side sync on the authoritative host |
-| `ROBEATSMETA_FRONTIER_CLIENTS_FILE` | Host-side client registry |
-| `ROBEATSMETA_FRONTIER_GIT_REMOTE` / `ROBEATSMETA_FRONTIER_GIT_BRANCH` | Repository ref polled by the host |
-| `EVOLUTION_DB_PATH` | External results database path |
-
-Never commit client credentials, server registries, API tokens, or deployment secrets.
-
-</details>
-
-## Technical evidence
-
-The “state-of-the-art” position is tied to inspectable technical work:
-
-- Exact per-note integer scoring and canonical rescoring: [`gear_optimizer/solver/scoring/`](gear_optimizer/solver/scoring/)
-- Non-dominated fever-timing frontiers: [`docs/FEVER_TIMELINE_MATH.md`](docs/FEVER_TIMELINE_MATH.md)
-- Exact timing-envelope construction: [`docs/TIMING_ENVELOPE_EXACT_FRONTIER.md`](docs/TIMING_ENVELOPE_EXACT_FRONTIER.md)
-- Physically reachable Force Great response surfaces: [`docs/ANALYTICAL_FG_PROBLEM.md`](docs/ANALYTICAL_FG_PROBLEM.md)
-- GPU-native GA and frontier execution: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- Separate Base and Force Great persistence authority: [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md)
-- Reproducible research artifacts and reduction studies: [`docs/research/README.md`](docs/research/README.md)
-
-The exact components preserve integer floors, timing order, ties, witnesses, and supported reachability semantics. The outer gear/Mini genetic search remains budget-bounded and heuristic.
+Bind the service to loopback unless it sits behind a trusted boundary, and set `ROBEATSMETA_OPTIMIZER_API_TOKEN` before
+exposing it to a network. Every environment variable the engine reads is documented in
+[`gear_optimizer/settings.py`](gear_optimizer/settings.py).
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    A["Chart and inventory data"] --> B["Song-aware preparation"]
+    A["Chart and catalog data"] --> B["Song preparation"]
     B --> C["Exact fever-timing frontier"]
-    B --> D["Exact Force Great response frontier"]
-    C --> E["GPU-native loadout search"]
+    B --> D["Exact Force Great frontier"]
+    C --> E["GPU genetic search"]
     D --> E
-    E --> F["Gem allocation and exact rescore"]
+    E --> F["Exact gem search and rescore"]
     F --> G["Base leaderboard"]
     F --> H["Force Great leaderboard"]
     G --> I[("evolution.db")]
     H --> I
 ```
 
-1. Discover chart, gear, Mini, and Stats data in the local `Data/` tree.
-2. Materialize song-specific state, including Mini Ascension effects.
-3. Load or build compatible timing and Force Great frontier caches.
-4. Run the Taichi/Vulkan search while CPU preparation and persistence work overlap.
-5. Rescore canonical results and persist Base and Force Great leaderboards separately.
+1. **Prepare.** Read the chart, gear, Mini and stat data, and materialize song-specific state such as Mini Ascension.
+2. **Frontiers.** Load or build the fever-timing and Force Great frontiers: every non-dominated way to play the chart,
+   cached per chart and rebuilt only when the logic that produced them changes.
+3. **Search.** The genetic search runs on one GPU thread; its loadouts read the frontiers to score whole builds.
+4. **Finish.** An exact CPU search picks each surviving loadout's gems, an exact rescore settles its score, and the
+   winners go to the Base and Force Great leaderboards. A stored build keeps the replay witness that proves it is
+   playable, which later turns into a note-by-note plan.
 
-Deliberate Okay, Miss, and combo-break strategies are outside the supported search model.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the full flow, and [`docs/math/`](docs/math/) has the mathematics.
 
 ## Repository layout
 
 ```text
 RoBeats-Calculator-Engine/
-├── gear_optimizer/       # Optimizer, scoring, persistence, and service code
-├── general_meta/         # Cross-song analysis
-├── tests/                # CPU, GPU, parity, and regression coverage
-├── tools/                # Verification and maintenance tools
-├── docs/                 # Maintained architecture, math, and operations references
-├── Data/                 # Bundled charts and gear data
-├── config.ini            # Chart and queue selection
-└── main.py               # Primary entry point
+├── main.py                   # Optimizer entry point
+├── config.ini                # Chart and queue selection
+├── gear_optimizer/
+│   ├── pipeline/             # A solve end to end: queue, preparation, search, Force Greats, storing
+│   ├── solver/               # Search and exact scoring: GA pipeline, gem search, timing envelope, score tables
+│   ├── frontier/             # Exact timing and Force Great frontiers and their caches (CPU, Numba)
+│   ├── gpu/                  # Everything Taichi: runtime, kernels, GPU API and the GPU's owner thread
+│   ├── trace/                # Stored builds to playable note plans, and their physical replay checks
+│   ├── store/                # The results database: schema, boards, reads and writes
+│   ├── core/, data/, domain/, ui/   # Shared utilities, catalog sync, job and board rules, progress output
+│   ├── app.py, cli.py        # Run lifecycle and command line
+│   ├── robeatsmeta_service.py   # HTTP service
+│   └── frontier_*.py         # Frontier publication to trusted clients
+├── general_meta/             # Cross-song General Meta analysis
+├── tools/                    # Verification gates, game oracles and maintenance utilities
+├── tests/                    # CPU, GPU, parity and regression coverage
+├── docs/                     # Architecture, mathematics and research
+├── Data/                     # Charts, gear tables and the game export
+└── .github/                  # Contributing, governance, security, support and templates
 ```
 
-Runtime databases, caches, logs, credentials, and generated artifacts are intentionally excluded from version control. Keep secrets out of `config.ini`.
+Runtime databases, caches, logs and credentials stay out of version control.
+[`docs/NAVIGATION.md`](docs/NAVIGATION.md) maps each behavior to the file that owns it.
 
 ## Development
 
-Run the CPU/reference suite and linter before opening a pull request:
-
 ```bash
-python -m pytest -m "not gpu" tests/
+python -m pip install -r requirements-dev.txt
 python -m ruff check .
+python -m pytest -m "not gpu" tests/
+python -m pytest -m gpu tests/    # GPU, timing, cache or reachability changes
 ```
 
-Changes to GPU execution, timing, cache behavior, or reachability also require Vulkan-facing coverage:
+Tests guard behavior, but they are not ground truth: a wrong rule can be written into a test and then confirmed by it.
+Changes to scoring and timing are proved against independent references:
 
-```bash
-python -m pytest -m gpu tests/
-```
+| Tool | What it proves |
+|---|---|
+| [`tools/verify/gate.py`](tools/verify/gate.py) | A fixed chart set through every output: a lossless change must match a base tree byte for byte, with each solve stage priced side by side |
+| [`tools/verify/game_sim.py`](tools/verify/game_sim.py) | A frame-by-frame simulation of input matching, fever and score |
+| [`tools/verify/verify_fg_game_oracle.py`](tools/verify/verify_fg_game_oracle.py) | Stored Force Great winners rescored by a port of the game's score path |
+| [`tools/verify/reference_oracle/`](tools/verify/reference_oracle/README.md) | Note traces replayed through the reference score engine |
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for project conventions and pull-request expectations. Repository authority and protected assets are defined in [`GOVERNANCE.md`](GOVERNANCE.md).
-
-## Troubleshooting
-
-<details>
-<summary><strong>Data files are not found</strong></summary>
-
-Confirm that the local tree matches [`DATA.md`](DATA.md), and run the optimizer again.
-
-</details>
-
-<details>
-<summary><strong>Taichi cannot initialize Vulkan</strong></summary>
-
-Update the graphics driver, then verify Taichi directly:
-
-```bash
-python -c "import taichi as ti; ti.init(arch=ti.vulkan); print('Vulkan ready')"
-```
-
-</details>
-
-<details>
-<summary><strong>The first run is slow</strong></summary>
-
-Cold runs compile Numba and Taichi kernels and may build missing exact frontiers. Later runs reuse compatible caches under `bin/`.
-
-</details>
+See the [contribution guide](.github/CONTRIBUTING.md) before opening a pull request.
 
 ## Documentation
 
-- [`docs/README.md`](docs/README.md) — documentation index
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system architecture
-- [`docs/NAVIGATION.md`](docs/NAVIGATION.md) — file-level code map
-- [`docs/ENGINEERING_PRINCIPLES.md`](docs/ENGINEERING_PRINCIPLES.md) — engineering principles
-- [`DATA.md`](DATA.md) — data layout and deployment notes
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution guidelines
-- [`GOVERNANCE.md`](GOVERNANCE.md) — authority, roles, and change control
-- [`MAINTAINERS.md`](MAINTAINERS.md) — current maintainers and protected responsibilities
-- [`SUPPORT.md`](SUPPORT.md) — support boundaries
-- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — community standards
-- [`SECURITY.md`](SECURITY.md) — vulnerability reporting
+| Topic | Where |
+|---|---|
+| All documentation | [`docs/README.md`](docs/README.md) |
+| System design and file map | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/NAVIGATION.md`](docs/NAVIGATION.md) |
+| Formulas and exact timing | [`docs/math/`](docs/math/) |
+| Results database | [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md) |
+| Data layout and deployment | [`Data/README.md`](Data/README.md), [`docs/MAINTENANCE_PLAYBOOK.md`](docs/MAINTENANCE_PLAYBOOK.md) |
+| Help and troubleshooting | [`.github/SUPPORT.md`](.github/SUPPORT.md) |
+| Governance and maintainers | [`.github/GOVERNANCE.md`](.github/GOVERNANCE.md) |
+| Security reports | [`.github/SECURITY.md`](.github/SECURITY.md) |
 
 ## License
 

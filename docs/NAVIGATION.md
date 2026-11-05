@@ -64,8 +64,8 @@ not directly from kernel internals.
 - Exported-data synchronization:
   `gear_optimizer/data/exported_game_data_sync.py`
 - Results store: `gear_optimizer/store/` (typed rows in `records.py`, schema and
-  connections in `schema.py`, board rules in `boards.py`, reads and writes in
-  `db.py`, the version 18 migration in `v18.py`)
+  connections in `schema.py`, tables in `tables.py`, board rules in `boards.py`,
+  reads and writes in `db.py`, the version 19 migration in `v19.py`)
 - Service request isolation: `gear_optimizer/robeatsmeta_service.py`
 
 ## Tools
@@ -87,5 +87,5 @@ maintained `tools/` surface for documented workflows.
 - [Engineering principles](ENGINEERING_PRINCIPLES.md)
 - [Database schema](DATABASE_SCHEMA.md)
 - [Maintenance playbook](MAINTENANCE_PLAYBOOK.md)
-- [Fever timeline math](FEVER_TIMELINE_MATH.md)
-- [Exact timing-envelope frontier](TIMING_ENVELOPE_EXACT_FRONTIER.md)
+- [Fever timeline math](math/FEVER_TIMELINE_MATH.md)
+- [Exact timing-envelope frontier](math/TIMING_ENVELOPE_EXACT_FRONTIER.md)

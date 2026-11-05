@@ -1,7 +1,7 @@
 # Analytical HitSim Solution: Complete Specification
 
 This document is analytical background and historical design notes for an exact hit-timing solver.
-It targets the Analytical HitSim problem defined in `docs/ANALYTICAL_HITSIM_PROBLEM.md` and is written
+It targets the Analytical HitSim problem defined in `docs/math/ANALYTICAL_HITSIM_PROBLEM.md` and is written
 to match the repo’s timing/fever mechanics (chord grouping, monotonic event times, `side="left"`
 fever-end search).
 

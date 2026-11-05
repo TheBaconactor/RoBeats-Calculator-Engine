@@ -27,7 +27,7 @@ On Windows PowerShell, activate the environment with `.\.venv\Scripts\Activate.p
 
 ## Pull requests
 
-1. Read [`docs/ENGINEERING_PRINCIPLES.md`](docs/ENGINEERING_PRINCIPLES.md) and [`docs/NAVIGATION.md`](docs/NAVIGATION.md).
+1. Read [`docs/ENGINEERING_PRINCIPLES.md`](../docs/ENGINEERING_PRINCIPLES.md) and [`docs/NAVIGATION.md`](../docs/NAVIGATION.md).
 2. Open an issue before implementing a new feature, scoring-policy change, schema change, public API change, or architectural rewrite.
 3. Fix the owning invariant—no song-specific exceptions or silent fallbacks in optimizer logic.
 4. Keep Base and Force Great leaderboards separate (`songs.best_score` vs `songs.best_fg_score`).
@@ -72,4 +72,4 @@ Include the commands you ran and their results in the pull-request description.
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the [Apache License 2.0](LICENSE).
+By contributing, you agree that your contributions are licensed under the [Apache License 2.0](../LICENSE).

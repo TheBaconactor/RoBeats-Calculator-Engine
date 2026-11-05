@@ -3,10 +3,11 @@
 
 # Explicitly list high-risk surfaces for branch-protection readability.
 /gear_optimizer/solver/ @TheBaconactor
+/gear_optimizer/frontier/ @TheBaconactor
+/gear_optimizer/gpu/ @TheBaconactor
+/gear_optimizer/trace/ @TheBaconactor
+/gear_optimizer/store/ @TheBaconactor
 /gear_optimizer/data/ @TheBaconactor
 /gear_optimizer/robeatsmeta_service.py @TheBaconactor
 /Data/ @TheBaconactor
 /.github/ @TheBaconactor
-/GOVERNANCE.md @TheBaconactor
-/MAINTAINERS.md @TheBaconactor
-/SECURITY.md @TheBaconactor

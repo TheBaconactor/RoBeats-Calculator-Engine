@@ -3,7 +3,7 @@
 > [!NOTE]
 > This is a self-contained mathematical problem statement, not the current
 > runtime architecture. Production uses exact response frontiers and the
-> maintained implementation boundaries in [ARCHITECTURE.md](ARCHITECTURE.md).
+> maintained implementation boundaries in [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Problem Context
 

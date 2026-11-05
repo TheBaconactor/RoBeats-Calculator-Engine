@@ -10,9 +10,9 @@ or a historical line of investigation and are not runtime API contracts.
 - [Architecture](ARCHITECTURE.md) — runtime flow, subsystem boundaries, and
   correctness invariants.
 - [Navigation](NAVIGATION.md) — current entry points and file-level ownership.
-- [Data setup](../DATA.md) — bundled inputs, generated state, and database-path
+- [Data setup](../Data/README.md) — bundled inputs, generated state, and database-path
   configuration.
-- [Contributing](../CONTRIBUTING.md) — contribution workflow and validation
+- [Contributing](../.github/CONTRIBUTING.md) — contribution workflow and validation
   expectations.
 
 ## Maintained references
@@ -20,10 +20,10 @@ or a historical line of investigation and are not runtime API contracts.
 - [Engineering principles](ENGINEERING_PRINCIPLES.md)
 - [Database schema](DATABASE_SCHEMA.md)
 - [Maintenance playbook](MAINTENANCE_PLAYBOOK.md)
-- [Fever timeline math](FEVER_TIMELINE_MATH.md)
-- [Formula reference](FORMULA_REFERENCE.md)
-- [Exact timing-envelope frontier](TIMING_ENVELOPE_EXACT_FRONTIER.md)
-- [On-demand Team Buff tier scoring](ON_DEMAND_TEAM_BUFF_TIER_SCORING.md)
+- [Fever timeline math](math/FEVER_TIMELINE_MATH.md)
+- [Formula reference](math/FORMULA_REFERENCE.md)
+- [Exact timing-envelope frontier](math/TIMING_ENVELOPE_EXACT_FRONTIER.md)
+- [On-demand Team Buff tier scoring](math/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md)
 
 ## Analytical background
 
@@ -31,11 +31,11 @@ These documents define mathematical problems or preserve design analysis. They
 may use simplified models and should not be treated as descriptions of the
 current module layout.
 
-- [Analytical HitSim problem](ANALYTICAL_HITSIM_PROBLEM.md)
-- [Analytical HitSim solution notes](ANALYTICAL_HITSIM_SOLUTION.md)
-- [Analytical Force Greats problem](ANALYTICAL_FG_PROBLEM.md)
-- [Early-Great frontier problem](FG_EARLY_GREAT_FRONTIER_MATH_PROBLEM.md)
-- [Context-aware skyline paper](CONTEXT_AWARE_SKYLINE_OPTIMIZATION_PAPER.tex)
+- [Analytical HitSim problem](math/ANALYTICAL_HITSIM_PROBLEM.md)
+- [Analytical HitSim solution notes](math/ANALYTICAL_HITSIM_SOLUTION.md)
+- [Analytical Force Greats problem](math/ANALYTICAL_FG_PROBLEM.md)
+- [Early-Great frontier problem](math/FG_EARLY_GREAT_FRONTIER_MATH_PROBLEM.md)
+- [Context-aware skyline paper](math/CONTEXT_AWARE_SKYLINE_OPTIMIZATION_PAPER.tex)
 
 ## Research artifacts
 

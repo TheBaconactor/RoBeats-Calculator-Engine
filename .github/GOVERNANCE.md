@@ -12,11 +12,25 @@ Current lead maintainer: [@TheBaconactor](https://github.com/TheBaconactor).
 
 ### Maintainers
 
-Maintainers are explicitly appointed in [`MAINTAINERS.md`](MAINTAINERS.md) by the lead maintainer. They may review and merge only within their assigned scope. Repository activity, issue participation, prior contributions, or access to a fork does not create maintainer status.
+Maintainers are explicitly appointed by the lead maintainer (see [Current maintainers](#current-maintainers)). They may review and merge only within their assigned scope. Repository activity, issue participation, prior contributions, or access to a fork does not create maintainer status.
 
 ### Contributors
 
 Contributors may open issues, propose designs, submit pull requests, review public changes, and improve documentation. Contribution does not grant administrative, merge, release, deployment, credential, domain, or representational authority.
+
+## Current maintainers
+
+| Maintainer | Role | Scope |
+|---|---|---|
+| [@TheBaconactor](https://github.com/TheBaconactor) | Founder and lead maintainer | Final authority across code, data, releases, security, infrastructure, branding, and repository governance |
+
+No additional maintainers are currently appointed.
+
+Maintainers are appointed in writing by the lead maintainer through a pull request that updates this table. Appointment should follow a sustained record of technically correct contributions, respectful review, security awareness, and demonstrated stewardship of project invariants.
+
+Repository participation, commit count, issue activity, or contributor status does not automatically grant maintainer authority.
+
+The lead maintainer may narrow or revoke maintainer access to protect users, infrastructure, project direction, or security. Access is removed promptly when it is no longer required.
 
 ## Decision hierarchy
 

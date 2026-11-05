@@ -1,7 +1,7 @@
 """GA->FG effective-dedup equivalence tables + CPU reference selector (Slice 1).
 
 This module is the CPU-side specification for "Slice 1 - GPU effective-dedup"
-of the fused GA->FG handoff (docs/research/GA_FG_FUSED_HANDOFF_DESIGN_20260612.md).
+of the fused GA->FG handoff.
 
 The FG stage's host select (``gear_optimizer/pipeline/fg.py``, ``_selected_surface``)
 dedups GA candidates by an *effective loadout hash* that folds:

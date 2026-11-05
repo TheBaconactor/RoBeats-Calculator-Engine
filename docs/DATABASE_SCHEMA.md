@@ -1,16 +1,16 @@
 # Database Schema
 
 RoBeats Calculator Engine stores retained results in SQLite. `gear_optimizer/store` owns the format:
-`records` (typed rows), `schema` (the DDL, connections, migrations), `boards` (board order and the merge of
-new results), `db` (reads and writes), `v18` (the previous format's reader and the migration from it).
+`records` (typed rows), `tables` (the DDL, schema version 20), `schema` (connections, migration), `boards` (board
+order and the merge of new results), `db` (reads and writes), `v19` (the migration from the previous format).
 
 ## Path and lifecycle
 
 - `EVOLUTION_DB_PATH` overrides the database location for the current process; the default is
   `<engine>/evolution.db`.
-- `schema.connect(path, write=True)` enables WAL, creates schema version 19 on an empty database and
-  migrates a version 18 database (`store.v18.migrate`, one transaction). Any other version fails loudly.
-- `schema.connect(path)` opens a read-only connection and requires version 19.
+- `schema.connect(path, write=True)` enables WAL, creates schema version 20 on an empty database and
+  migrates a version 19 database (`store.v19.migrate`, one transaction). Any other version fails loudly.
+- `schema.connect(path)` opens a read-only connection and requires version 20.
 
 Runtime databases are generated state and must not be committed.
 
@@ -18,24 +18,27 @@ Runtime databases are generated state and must not be committed.
 
 ### `songs`
 
-One row per song the optimizer has processed (a run that stored nothing still marks the song).
+One row per song and timing mode the optimizer has processed (a run that stored nothing still marks the song).
 
 ```sql
 CREATE TABLE songs (
-    name TEXT PRIMARY KEY,
-    last_updated REAL NOT NULL
+    timing_mode TEXT NOT NULL,
+    name TEXT NOT NULL,
+    last_updated REAL NOT NULL,
+    PRIMARY KEY (timing_mode, name)
 ) STRICT;
 ```
 
 ### `loadouts`
 
-One row per loadout of a song and TeamBuff tier. A loadout keeps its results while it is stored: its meta
+One row per loadout of a song, timing mode and TeamBuff tier. A loadout keeps its results while it is stored: its meta
 result (the best gem allocation without Force Greats, scored `score`) and its Force Greats result (scored
 `fg_score`). Two boards list loadouts by those results; a loadout is stored while it is on at least one.
 
 ```sql
 CREATE TABLE loadouts (
-    song_name TEXT NOT NULL REFERENCES songs (name),
+    timing_mode TEXT NOT NULL,
+    song_name TEXT NOT NULL,
     team_buff TEXT NOT NULL,
     loadout_hash TEXT NOT NULL,
     gear TEXT NOT NULL,            -- JSON list of gear names, slot order
@@ -56,7 +59,8 @@ CREATE TABLE loadouts (
     meta_trace BLOB,               -- zlib JSON: the timeline frontier replay witness
     fg_trace BLOB,                 -- zlib JSON: the Force Greats replay witness (also kept without an FG
                                    -- result for loadouts whose FG row version 18 had pruned)
-    PRIMARY KEY (song_name, team_buff, loadout_hash),
+    PRIMARY KEY (timing_mode, song_name, team_buff, loadout_hash),
+    FOREIGN KEY (timing_mode, song_name) REFERENCES songs (timing_mode, name),
     ...
 ) STRICT;
 ```
@@ -76,15 +80,14 @@ The traces come last so board scans never read them; `store.db.load_traces` load
   results (an FG result off the FG board stays attached, and returns to the board when a place frees up).
 
 Two partial indexes cover the board orders (`loadouts_meta_board`, `loadouts_fg_board`); two more hold the
-entry numbers (`loadouts_meta_seq`, `loadouts_fg_seq`) so a write finds the next ones without a table scan (a
-writer adds them to a version 19 database created before them; no data changes).
+entry numbers (`loadouts_meta_seq`, `loadouts_fg_seq`) so a write finds the next ones without a table scan.
 
 ## Python API
 
 ```python
 from gear_optimizer.store import db, schema
 
-conn = schema.connect(path)                       # read-only, version 19
+conn = schema.connect(path)                       # read-only, version 20
 boards = db.load_boards(conn, song, "T5")         # typed Loadout lists in board order
 traces = db.load_traces(conn, song, "T5", [x.loadout_hash for x in boards.meta])
 for loadout in db.iter_board(conn, "fg", tier="T5"):  # catalog streams, song by song

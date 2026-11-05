@@ -1,7 +1,7 @@
 [project]
 name = "robeats-calculator-engine"
 version = "2.0.0"
-description = "State-of-the-art GPU-native RoBeats calculator with integer-exact score modeling"
+description = "GPU-native RoBeats build search with integer-exact score modeling"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -27,7 +27,7 @@ line-length = 120
 target-version = "py311"
 
 # Include all Python files
-include = ["gear_optimizer/**/*.py", "tests/**/*.py", "scripts/**/*.py", "tools/**/*.py", "*.py"]
+include = ["gear_optimizer/**/*.py", "tests/**/*.py", "tools/**/*.py", "*.py"]
 
 [tool.ruff.lint]
 # Start with a minimal safe set, expand as cleanup progresses
@@ -44,8 +44,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Relax rules for scripts and tools
-"scripts/**/*.py" = ["E", "W", "F"]
+# Relax rules for tools
 "tools/**/*.py" = ["E", "W", "F"]
 # Test files can have unused imports (fixtures) and assertions
 "tests/**/*.py" = ["F401", "F841"]
@@ -54,6 +53,14 @@ ignore = [
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
+
+[tool.pyright]
+include = ["gear_optimizer/core", "gear_optimizer/data", "gear_optimizer/pipeline"]
+exclude = ["tools", "Data", "bin", "artifacts"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = false
+reportMissingTypeStubs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
