@@ -126,7 +126,7 @@ def build_timeline_frontier_grid_payload(
     unique_real_times, time_inverse = np.unique(real_times, return_inverse=True)
 
     from .producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
 
     geometries = tuple(
@@ -134,7 +134,7 @@ def build_timeline_frontier_grid_payload(
         for real_time in unique_real_times.tolist()
         for fill_count in unique_fill_counts.tolist()
     )
-    physical_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
+    physical_frontiers = build_first_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         # Base has no Great judgments. Collapsing both Great envelopes onto Perfect prevents the

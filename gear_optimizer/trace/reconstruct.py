@@ -12,10 +12,11 @@ from .activation_witness import activation_schedule_witnesses, exact_label_hit_i
 from gear_optimizer.frontier.fill_crossing import server_fill_crossing_run
 from gear_optimizer.frontier import producer_kernels as _rb_numba
 from gear_optimizer.frontier.producer_batch import action_table, early_exit_min_fill, song_arrays
-from gear_optimizer.frontier.types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
+from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS
 
 
+_EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS = 8192
 _TRACE_EDGE_OPTIONS_CACHE_MAX_STATES = 256
 

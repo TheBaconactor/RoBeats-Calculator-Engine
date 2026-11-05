@@ -84,7 +84,6 @@ def _unpack_frontiers(arrays: dict[str, np.ndarray]) -> tuple[FgResponseFrontier
         out.append(
             FgResponseFrontierResult(
                 first_frontier=first_frontier,
-                state_frontiers={},
                 states_evaluated=row[0],
                 actions=row[1],
                 transitions_evaluated=row[2],
@@ -92,7 +91,6 @@ def _unpack_frontiers(arrays: dict[str, np.ndarray]) -> tuple[FgResponseFrontier
                 retained_surfaces_total=row[4],
                 max_state_frontier=row[5],
                 non_fever_base=row[6],
-                seconds=0.0,
             )
         )
     return tuple(out)

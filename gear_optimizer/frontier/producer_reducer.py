@@ -88,20 +88,6 @@ class _FirstFrontierStampWorkspace:
         self.bit_epoch = 0
         self.successor_epoch = 0
 
-    @property
-    def total_bytes(self) -> int:
-        return int(
-            self.pair_values.nbytes
-            + self.pair_stamps.nbytes
-            + self.pair_touched.nbytes
-            + self.bit_values.nbytes
-            + self.bit_stamps.nbytes
-            + self.perfect_successor.nbytes
-            + self.perfect_successor_stamps.nbytes
-            + self.late_successor.nbytes
-            + self.late_successor_stamps.nbytes
-        )
-
     def next_successor_epoch(self) -> int:
         self.successor_epoch += 1
         if int(self.successor_epoch) > _STAMP_EPOCH_RESET_LIMIT:
@@ -219,28 +205,22 @@ def _song_first_frontier_pair_mod_bound(
 
 
 class _FirstFrontierWorkspacePlan:
-    """Song-build-scoped sizing + accounting for the per-thread stamp workspaces.
+    """Song-build-scoped sizing of the per-thread stamp workspaces.
 
-    Built ONCE per batch entry (song build) from the provable pair_mod bound; every thread that
-    reduces geometries acquires its TLS workspace through the plan, so capacities are uniform,
-    allocations are counted exactly (telemetry), and an already-sufficient workspace from an
-    earlier song is reused without reallocation. Threads of the song's single reducer executor
-    live for the whole build, so their workspaces (and carried stamp epochs) persist across
-    every region-table group.
+    Built ONCE per song build from the provable pair_mod bound; every thread that reduces geometries acquires its TLS
+    workspace through the plan, so capacities are uniform and an already-sufficient workspace from an earlier song is
+    reused. Threads of the song's reducer executor live for the whole build, so their workspaces (and carried stamp
+    epochs) persist across every region-table group.
     """
 
-    __slots__ = ("n", "pair_mod_bound", "pair_capacity", "bit_capacity", "_lock", "allocations", "allocated_bytes")
+    __slots__ = ("n", "pair_capacity", "bit_capacity")
 
     def __init__(self, *, n: int, pair_mod_bound: int) -> None:
         if int(pair_mod_bound) < 1 or int(pair_mod_bound) > int(n) + 1:
             raise ValueError("FG first-frontier workspace plan pair_mod bound must be in [1, n + 1]")
         self.n = int(n)
-        self.pair_mod_bound = int(pair_mod_bound)
         self.pair_capacity = (int(n) + 1) * int(pair_mod_bound)
         self.bit_capacity = int(n) + 2
-        self._lock = threading.Lock()
-        self.allocations = 0
-        self.allocated_bytes = 0
 
     @property
     def bytes_per_thread(self) -> int:
@@ -268,9 +248,6 @@ class _FirstFrontierWorkspacePlan:
                 int(self.n) + 1,
             )
             _WORKSPACE_TLS.workspace = workspace
-            with self._lock:
-                self.allocations += 1
-                self.allocated_bytes += int(workspace.total_bytes)
         return workspace
 
 
@@ -402,7 +379,6 @@ def _first_frontier_result_from_precomputed_end_indices(
     workspace.store_epochs(int(pair_epoch), int(bit_epoch))
     return FgResponseFrontierResult(
         first_frontier=SurfaceRowsFirstFrontier(first_rows),
-        state_frontiers={},
         states_evaluated=int(states_evaluated),
         actions=int(later_fill.shape[0]),
         transitions_evaluated=0,
@@ -410,7 +386,6 @@ def _first_frontier_result_from_precomputed_end_indices(
         retained_surfaces_total=int(retained_total),
         max_state_frontier=int(max_state_frontier),
         non_fever_base=int(item[1]),
-        seconds=0.0,
     )
 
 

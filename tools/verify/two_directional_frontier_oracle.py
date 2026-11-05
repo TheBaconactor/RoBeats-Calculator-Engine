@@ -422,7 +422,7 @@ def production_surfaces(
     note_types: list[int] | None = None,
 ) -> set[tuple[int, int]]:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
     from gear_optimizer.solver.timing_envelope import precise_envelopes
 
@@ -432,7 +432,7 @@ def production_surfaces(
     # The exact production envelopes (per-note, held-tail-aware, despawn-capped) -- the same
     # builder time_song uses for the real FG build.
     env = precise_envelopes(ts, nt)
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=ts,
         perfect_candidate_timestamps=env.perfect_candidates,
         great_candidate_timestamps=env.great_candidates,

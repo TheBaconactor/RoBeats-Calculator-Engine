@@ -69,7 +69,7 @@ def _coeffs_for(pool: np.ndarray, *, total_notes: int) -> np.ndarray:
 
 def _build_payload(pool: np.ndarray, *, total_notes: int) -> FgResponseFrontierCachePayload:
     surfaces = _surfaces_from_pool(pool)
-    frontier = FgResponseFrontierResult(surface_frontier(*surfaces), {}, 1, 2, 3, 4, 5, 6, 7, 0.0)
+    frontier = FgResponseFrontierResult(surface_frontier(*surfaces), 1, 2, 3, 4, 5, 6, 7)
     return FgResponseFrontierCachePayload(
         frontier_by_key={(0, 0): frontier},
         raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),

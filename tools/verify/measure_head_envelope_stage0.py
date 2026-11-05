@@ -33,7 +33,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.solver.timing_envelope import precise_envelopes
 from gear_optimizer.frontier.producer_batch import (
-    build_force_greats_response_first_frontiers_gpu_batch,
+    build_first_frontiers,
 )
 
 
@@ -45,7 +45,7 @@ def _build_frontier(timestamps_sec, note_types, geometry):
     ts = np.ascontiguousarray(np.asarray(timestamps_sec, dtype=np.float32).reshape(-1))
     perfect_cand, perfect_floor, great_floor, great_cand, _late_great_floor = precise_envelopes(ts, note_types)
     t0 = time.perf_counter()
-    results = build_force_greats_response_first_frontiers_gpu_batch(
+    results = build_first_frontiers(
         timestamps=ts,
         perfect_candidate_timestamps=perfect_cand,
         great_candidate_timestamps=great_cand,

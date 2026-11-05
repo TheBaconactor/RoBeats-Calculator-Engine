@@ -22,8 +22,7 @@ class FgResponseSurface(NamedTuple):
 
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierResult:
-    first_frontier: tuple[FgResponseSurface, ...]
-    state_frontiers: dict[int, tuple[FgResponseSurface, ...]]
+    first_frontier: Any  # producer_surfaces.SurfaceRowsFirstFrontier
     states_evaluated: int
     actions: int
     transitions_evaluated: int
@@ -31,7 +30,6 @@ class FgResponseFrontierResult:
     retained_surfaces_total: int
     max_state_frontier: int
     non_fever_base: int
-    seconds: float
 
 
 class FrontierCounts(NamedTuple):
@@ -70,5 +68,3 @@ class SurfacePool:
     counts: np.ndarray
     head_coeffs: np.ndarray
 
-
-_EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)

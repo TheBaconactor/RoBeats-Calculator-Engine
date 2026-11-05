@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from tests.fg_cache_support import surface_frontier
+
 from gear_optimizer.gamedata import stat_curves
 
 from tests.curves_support import synthetic_curves
@@ -83,7 +85,7 @@ def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier
     )
     from gear_optimizer.frontier.types import FgResponseFrontierResult
 
-    frontiers = tuple(FgResponseFrontierResult((), {}, 0, 0, 0, 0, 0, 0, 0, 0.0) for _ in range(4))
+    frontiers = tuple(FgResponseFrontierResult((), 0, 0, 0, 0, 0, 0, 0) for _ in range(4))
     frontier_classes = (0, 0, 1, 2)
     class_by_frontier_id = {id(frontier): int(frontier_classes[idx]) for idx, frontier in enumerate(frontiers)}
     rows = [
@@ -510,8 +512,7 @@ def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
 
     def frontier():
         return FgResponseFrontierResult(
-            first_frontier=(surface,),
-            state_frontiers={},
+            first_frontier=surface_frontier(surface),
             states_evaluated=1,
             actions=1,
             transitions_evaluated=1,
@@ -519,7 +520,6 @@ def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
             retained_surfaces_total=1,
             max_state_frontier=1,
             non_fever_base=5,
-            seconds=0.0,
         )
 
     pack_a = frontier()
@@ -550,8 +550,7 @@ def test_response_frontier_ftff_antichain_matches_naive_dominance():
 
     def frontier():
         return FgResponseFrontierResult(
-            first_frontier=(surface,),
-            state_frontiers={},
+            first_frontier=surface_frontier(surface),
             states_evaluated=1,
             actions=1,
             transitions_evaluated=1,
@@ -559,7 +558,6 @@ def test_response_frontier_ftff_antichain_matches_naive_dominance():
             retained_surfaces_total=1,
             max_state_frontier=1,
             non_fever_base=5,
-            seconds=0.0,
         )
 
     pack_a = frontier()

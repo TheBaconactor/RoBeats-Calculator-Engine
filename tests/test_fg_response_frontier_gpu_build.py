@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fg_cache_support import surface_frontier
+
 import hashlib
 import os
 import threading
@@ -51,7 +53,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         _edge_end_at_hit,
         _edge_surface,
     )
-    from gear_optimizer.frontier.types import _EMPTY_SURFACE
+    from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
 
     n = int(timestamps.shape[0])
     lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
@@ -443,43 +445,6 @@ def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) ->
     assert len(calls) == 1
 
 
-def test_fg_response_region_group_admission_validates_exact_memory_bounds() -> None:
-    from gear_optimizer.frontier import producer_scheduler
-
-    assert producer_scheduler._validate_region_group_memory_bounds(
-        build_peak_bounds=(20, 40, 30),
-        retained_peak_bounds=(10, 20, 15),
-        legacy_single_peak_bound=70,
-    ) is None
-    assert producer_scheduler._validate_region_group_memory_bounds(
-        build_peak_bounds=(),
-        retained_peak_bounds=(),
-        legacy_single_peak_bound=0,
-    ) is None
-    with pytest.raises(ValueError, match="memory bounds must be nonnegative"):
-        producer_scheduler._validate_region_group_memory_bounds(
-            build_peak_bounds=(20, -1),
-            retained_peak_bounds=(10, 1),
-            legacy_single_peak_bound=70,
-        )
-    with pytest.raises(ValueError, match="must align"):
-        producer_scheduler._validate_region_group_memory_bounds(
-            build_peak_bounds=(20, 30),
-            retained_peak_bounds=(10,),
-            legacy_single_peak_bound=70,
-        )
-    with pytest.raises(ValueError, match="cannot exceed"):
-        producer_scheduler._validate_region_group_memory_bounds(
-            build_peak_bounds=(20,),
-            retained_peak_bounds=(21,),
-            legacy_single_peak_bound=70,
-        )
-    with pytest.raises(MemoryError, match="historical single-table peak bound"):
-        producer_scheduler._validate_region_group_memory_bounds(
-            build_peak_bounds=(71,),
-            retained_peak_bounds=(35,),
-            legacy_single_peak_bound=70,
-        )
 
 
 def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
@@ -521,20 +486,11 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
         4.0,
     )
     expected = (n + 2) * np.dtype(np.int64).itemsize + 2 * int(capacity) * 28
-    assert producer_scheduler._region_table_build_peak_bound_bytes(
-        n=n,
-        action_k=action_k,
-        raw_fever_fill=4.0,
-    ) == expected
-    assert producer_scheduler._region_table_retained_bound_bytes(
-        n=n,
-        action_k=action_k,
-        raw_fever_fill=4.0,
-    ) == (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 28
-    assert producer_scheduler._legacy_single_region_table_peak_bound_bytes(
-        n=n,
-        region_action_count=int(action_k.shape[0]),
-    ) == (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 28
+    group = ((4.0, 3), [(0, 3, 4.0, 1.0, action_k)])
+    assert producer_scheduler._region_table_bounds(n, group) == (
+        expected, (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 28
+    )
+    assert producer_scheduler._single_table_byte_budget(n, (group,)) == (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 28
 
 
 def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatch) -> None:
@@ -552,8 +508,7 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
     builder_ids: list[int] = []
     worker_ids: list[int] = []
     result = FgResponseFrontierResult(
-        (FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),),
-        {},
+        surface_frontier(*(FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),)),
         1,
         4,
         0,
@@ -561,7 +516,6 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         1,
         1,
         3,
-        0.0,
     )
 
     empty_table = (
@@ -585,26 +539,19 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         reduce_barrier.wait()
         return [(int(item[0]), result) for item in kwargs["group_items"]]
 
-    monkeypatch.setattr(producer_scheduler, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 200)
-    monkeypatch.setattr(producer_scheduler, "_region_table_retained_bound_bytes", lambda **_kwargs: 100)
-    monkeypatch.setattr(
-        producer_scheduler,
-        "_legacy_single_region_table_peak_bound_bytes",
-        lambda **_kwargs: 400,
-    )
+    monkeypatch.setattr(producer_scheduler, "_region_table_bounds", lambda *_args: (200, 100))
+    monkeypatch.setattr(producer_scheduler, "_single_table_byte_budget", lambda *_args: 400)
     monkeypatch.setattr(producer_scheduler._rb_numba, "_numba_build_region_core_table", _fake_build)
     monkeypatch.setattr(producer_scheduler, "_reduce_first_frontier_group", _fake_reduce)
     previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(2)
-    stats: dict = {}
     try:
-        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_first_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             lanes=np.arange(3, dtype=np.int32),
             geometries=((2.0, 3, 1.0), (3.0, 4, 1.0)),
             use_forced_great_timing=True,
-            stats_sink=stats,
         )
     finally:
         producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
@@ -613,11 +560,6 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
     assert caller_id not in builder_ids
     assert len(set(builder_ids)) == 2
     assert len(set(worker_ids)) == 2
-    assert stats["region_table_groups"] == 2
-    assert stats["region_table_parallelism"] == 2
-    assert stats["region_table_parallel_peak_bound_bytes"] == 400
-    assert stats["region_table_legacy_single_peak_bound_bytes"] == 400
-    assert stats["executor_creations"] == 2
 
 
 def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> None:
@@ -630,8 +572,7 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
     )
 
     result = FgResponseFrontierResult(
-        (FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),),
-        {},
+        surface_frontier(*(FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),)),
         1,
         4,
         0,
@@ -639,7 +580,6 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
         1,
         1,
         3,
-        0.0,
     )
     calls: list[tuple[int, int]] = []
 
@@ -651,25 +591,20 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
 
     monkeypatch.setattr(producer_scheduler, "_first_frontier_results_for_precomputed_range", _fake_range)
     previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(2)
-    stats: dict = {}
     try:
-        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_first_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             lanes=np.arange(3, dtype=np.int32),
             geometries=((2.0, 3, 1.0), (2.0, 3, 2.0)),
             use_forced_great_timing=False,
-            stats_sink=stats,
         )
     finally:
         producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert frontiers == (result, result)
     assert sorted(calls) == [(0, 1), (1, 2)]
-    assert stats["region_table_groups"] == 1
-    assert stats["region_table_parallelism"] == 1
-    assert stats["executor_creations"] == 1
 
 
 def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:
@@ -881,7 +816,7 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
     )
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    result = FgResponseFrontierResult((surface,), {}, 1, 4, 0, 1, 1, 1, 3, 0.0)
+    result = FgResponseFrontierResult(surface_frontier(surface), 1, 4, 0, 1, 1, 1, 3)
     calls: list[dict] = []
     previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(1)
 
@@ -895,7 +830,7 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
         _fake_first_frontier,
     )
     try:
-        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_first_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -922,7 +857,7 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
     )
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    result = FgResponseFrontierResult((surface,), {}, 1, 4, 0, 1, 1, 1, 3, 0.0)
+    result = FgResponseFrontierResult(surface_frontier(surface), 1, 4, 0, 1, 1, 1, 3)
     calls = 0
     real_precompute = producer_precompute._precompute_end_indices
     previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(1)
@@ -942,7 +877,7 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
         _fake_first_frontier,
     )
     try:
-        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_first_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -960,13 +895,13 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
 
 def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     great_candidates = np.asarray([0.0, 1.0, 2.5, 3.0, 4.0], dtype=np.float32)
 
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
@@ -981,7 +916,7 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
 
 def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
@@ -990,7 +925,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
 
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1145,7 +1080,7 @@ def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> 
 
 def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_same_end() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 3.4, 4.0], dtype=np.float32)
@@ -1154,7 +1089,7 @@ def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_sam
     great_candidates = timestamps.copy()
     great_candidates[2] = np.float32(2.5)
 
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1174,7 +1109,7 @@ def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_sam
 
 def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfect() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
@@ -1183,7 +1118,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 3.1, 3.4], dtype=np.float32)
     perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
 
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1228,14 +1163,14 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
 
 def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
 
     timestamps = np.asarray([float(idx) for idx in range(110)], dtype=np.float32)
     great_candidates = timestamps.copy()
     great_candidates[102] = np.float32(102.5)
 
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
@@ -1411,7 +1346,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
 
 def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
@@ -1423,7 +1358,7 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
     real_fever_time = 0.5
     lanes = _lanes_for(timestamps)
 
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1572,7 +1507,7 @@ def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() ->
 
 def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
 
     timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
@@ -1582,7 +1517,7 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
     great_floor = timestamps - np.float32(0.094)
     lanes = _lanes_for(timestamps)
 
-    numba_frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    numba_frontier = build_first_frontiers(
         timestamps=[timestamps],
         perfect_candidate_timestamps=[perfect_candidates],
         great_candidate_timestamps=[great_candidates],
@@ -1599,7 +1534,7 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
 
 def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
@@ -1622,7 +1557,7 @@ def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> Non
         real_fever_time=1.0,
         use_forced_great_timing=True,
     )
-    numba_frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    numba_frontier = build_first_frontiers(
         timestamps=[timestamps],
         perfect_candidate_timestamps=[perfect_candidates],
         great_candidate_timestamps=[great_candidates],
@@ -2039,7 +1974,7 @@ def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
     real_fever_time: float,
 ) -> None:
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
 
     perfect_candidates = timestamps + np.float32(0.04)
@@ -2058,7 +1993,7 @@ def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
         non_fever_base=non_fever_base,
         real_fever_time=real_fever_time,
     )
-    production = build_force_greats_response_first_frontiers_gpu_batch(
+    production = build_first_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -2104,7 +2039,7 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
 ) -> None:
     """Base mode may prune only surfaces that cannot win under any legal stat allocation."""
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
 
     perfect_candidates = timestamps + np.float32(0.04)
@@ -2127,7 +2062,7 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
         and int(surface.body_great) == 0
         and int(surface.body_fever_great) == 0
     )
-    production = build_force_greats_response_first_frontiers_gpu_batch(
+    production = build_first_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=perfect_candidates,
@@ -2157,7 +2092,7 @@ def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
@@ -2178,7 +2113,7 @@ def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
         real_fever_time=real_fever_time,
         use_forced_great_timing=False,
     )
-    production = build_force_greats_response_first_frontiers_gpu_batch(
+    production = build_first_frontiers(
         timestamps=[song_inputs.timestamps],
         perfect_candidate_timestamps=[song_inputs.perfect_candidates],
         great_candidate_timestamps=[song_inputs.perfect_candidates],
@@ -2356,7 +2291,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.frontier.producer_batch import (
-        build_force_greats_response_first_frontiers_gpu_batch,
+        build_first_frontiers,
     )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
@@ -2371,7 +2306,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     non_fever_base = int(non_fever_base_by_ff[67])
     real_fever_time = float(real_time_by_ft[51])
 
-    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+    frontier = build_first_frontiers(
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
@@ -2417,7 +2352,7 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
     great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(60)], dtype=np.float32)
     geometries = ((2.25, 7, 0.55),)
 
-    slim = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
+    slim = producer_batch.build_first_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
@@ -2429,15 +2364,14 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
 
     assert slim[0].first_frontier
     assert any(int(surface.fever0 | surface.fever1) != 0 for surface in slim[0].first_frontier)
-    assert not slim[0].state_frontiers
 
 
 @pytest.mark.gpu
 def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     from gear_optimizer.frontier import producer_batch
     from gear_optimizer.frontier.producer_batch import action_table
+    from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
     from gear_optimizer.trace.reconstruct import (
-        _EMPTY_SURFACE,
         _build_activation_reachability_context,
         _edge_surface_options,
         reconstruct_force_greats_response_trace,
@@ -2465,7 +2399,7 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     non_fever_base = 7
     real_fever_time = 0.55
     lanes = _lanes_for(timestamps)
-    slim = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
+    slim = producer_batch.build_first_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_candidate_timestamps=perfect_candidates,

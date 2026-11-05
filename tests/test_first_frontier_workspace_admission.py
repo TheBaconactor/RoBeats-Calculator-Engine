@@ -22,8 +22,6 @@ def test_workspace_admission_fails_before_impossible_allocation(monkeypatch) -> 
 
     with pytest.raises(MemoryError, match=r"rejected before allocation.*4 worker"):
         reducer._admit_first_frontier_workspace(plan, worker_count=4)
-    assert plan.allocations == 0
-    assert plan.allocated_bytes == 0
 
 
 def test_workspace_admission_accepts_exact_plan_with_system_headroom(monkeypatch) -> None:
@@ -32,4 +30,3 @@ def test_workspace_admission_accepts_exact_plan_with_system_headroom(monkeypatch
     monkeypatch.setattr(reducer, "_first_frontier_available_memory_bytes", lambda: required * 2)
 
     assert reducer._admit_first_frontier_workspace(plan, worker_count=2) == required
-    assert plan.allocations == 0

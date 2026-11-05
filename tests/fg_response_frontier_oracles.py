@@ -11,6 +11,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from gear_optimizer.solver.input_engine_breakpoints import INPUT_ORDER_EPS_SEC
+from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
 from gear_optimizer.frontier.fg_cache_patterns import EXPANDED_COEFF_COLUMNS, intern_surface_row_words, pack_surface_patterns
 
 from gear_optimizer.frontier.producer_batch import action_table
@@ -22,8 +23,7 @@ from gear_optimizer.trace.reconstruct import (
 from gear_optimizer.frontier.types import (
     FgResponseFrontierResult,
     FgResponseSurface,
-    _EMPTY_SURFACE,
-)
+    )
 
 
 def _combine_surfaces(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
@@ -308,7 +308,6 @@ def input_engine_rebuild_first_frontier(
     first_frontier = _frontier(0, True)
     return FgResponseFrontierResult(
         first_frontier=first_frontier,
-        state_frontiers={},
         states_evaluated=int(states_evaluated),
         actions=int(len(actions)),
         transitions_evaluated=int(generated_surfaces),
@@ -316,7 +315,6 @@ def input_engine_rebuild_first_frontier(
         retained_surfaces_total=int(retained_surfaces_total),
         max_state_frontier=int(max_state_frontier),
         non_fever_base=int(non_fever_base),
-        seconds=0.0,
     )
 
 
