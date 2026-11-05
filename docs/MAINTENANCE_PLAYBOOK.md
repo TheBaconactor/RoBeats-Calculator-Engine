@@ -82,4 +82,16 @@ GPU-marked suite on a Vulkan-capable machine:
 python -m pytest -m gpu tests/
 ```
 
+For any engine change, the proof gate runs a fixed set of official charts through
+every surface a player or the website sees and compares each output with a base
+tree's, then prices the solve's stages side by side:
+
+```bash
+python tools/verify/gate.py ab <base tree>
+```
+
+`tools/verify/gate.py` documents its `record` and `compare` steps. Identical outputs
+prove a change lossless without a game oracle run. An intended output change fails
+the gate and goes through the game oracles instead.
+
 Report exactly which checks ran and which hardware-dependent checks remain.

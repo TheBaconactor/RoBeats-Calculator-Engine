@@ -75,6 +75,7 @@ not directly from kernel internals.
 - Database inspection and repair: `tools/db/`
 - Development checks: `tools/dev/`
 - Verification: `tools/verify/`
+- Proof gate (every output against a base tree, stage costs): `tools/verify/gate.py`
 
 The `scripts/` tree contains narrower analysis and regression utilities. Use the
 maintained `tools/` surface for documented workflows.
