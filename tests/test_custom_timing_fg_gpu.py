@@ -69,27 +69,34 @@ def _song(baseline_offset=None):
     return time_song(make_chart(_TIMESTAMPS, name="pytest_custom_timing_fg"), "non-precise", baseline_offset)
 
 
+def _solve_with_fixed_gems(monkeypatch, stats, song, curves):
+    """The FG plan of already allocated stats: no gems left to spend."""
+    from gear_optimizer.frontier.fg_cache import scoring_bundle_covering
+    from gear_optimizer.solver.fg_scoring import fg_solve_results, required_response_stat_keys
+
+    monkeypatch.setattr("gear_optimizer.solver.gem_search.GEM_BUDGET", 0)
+    monkeypatch.setattr("gear_optimizer.solver.fg_scoring.GEM_BUDGET", 0)
+    bundle = scoring_bundle_covering(song, curves, required_response_stat_keys([stats]))
+    return fg_solve_results([stats], song=song, curves=curves, selected_color="Chill", scoring_bundle=bundle)[0]
+
+
 def test_zero_offset_matches_plain_non_precise_surface(tmp_path, monkeypatch):
     """An all-zero baseline offset reproduces the plain non-precise FG surface bit-for-bit."""
-    from gear_optimizer.trace.fixed_timing import _solve_fixed_timing_response_results
-
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     curves = _curves()
     stats = _fg_stats()
 
     _reset_fg_cache()
-    surf_plain = _solve_fixed_timing_response_results([stats], _song(), curves, "Chill")[0].surface
+    surf_plain = _solve_with_fixed_gems(monkeypatch, stats, _song(), curves).surface
 
     _reset_fg_cache()
-    song_zero_t = _song(np.zeros(9, dtype=np.float32))
-    surf_zero_t = _solve_fixed_timing_response_results([stats], song_zero_t, curves, "Chill")[0].surface
+    surf_zero_t = _solve_with_fixed_gems(monkeypatch, stats, _song(np.zeros(9, dtype=np.float32)), curves).surface
 
     assert tuple(surf_zero_t) == tuple(surf_plain)
 
 
 def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypatch):
     """A non-zero per-note baseline T yields a valid surface, scored exactly under chart + T."""
-    from gear_optimizer.trace.fixed_timing import _solve_fixed_timing_response_results
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
@@ -103,7 +110,7 @@ def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypa
 
     # The FG search reads the shifted hit timeline.
     np.testing.assert_allclose(song_t.fg_inputs.timestamps, _TIMESTAMPS + offset, atol=1e-6)
-    surf_t = _solve_fixed_timing_response_results([stats], song_t, curves, "Chill")[0].surface
+    surf_t = _solve_with_fixed_gems(monkeypatch, stats, song_t, curves).surface
     score_t = score_force_greats_response_surface_exact(stats, song_t, curves, surf_t)
     assert int(score_t) > 0
 
@@ -112,7 +119,7 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
     """End-to-end: a non-zero baseline T produces valid per-tier meta + FG leaderboards
     (replay AND optimize -- gems/greats re-solved, scores exact under chart + T)."""
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
@@ -166,16 +173,9 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
     # song, mirroring the on-demand path (the base gem re-solve needs it).
     build_or_load_timeline_frontier_payload(song, curves)
 
-    out = compute_team_buff_tier_leaderboards(
-        entries=[entry],
-        song=song,
-        curves=curves,
-    )
+    batches = build_team_buff_tier_db_batches(entries=[entry], song=song, curves=curves)
 
-    tiers = out["tiers"]
-    assert tiers, "custom-T tier replay produced no tiers"
-    for tier_name, tier in tiers.items():
-        assert tier["base_top51"], f"no base leaderboard for {tier_name}"
-        assert int(tier["base_top51"][0]["score"]) > 0
-        assert tier["fg_top51"], f"no FG leaderboard for {tier_name}"
-        assert int(tier["fg_top51"][0]["fg_score"]) > 0
+    assert batches, "custom-T tier replay produced no tiers"
+    for tier_name, (row,) in batches.items():
+        assert row["score"] > 0, f"no base leaderboard for {tier_name}"
+        assert row["fg_score"] > 0, f"no FG leaderboard for {tier_name}"

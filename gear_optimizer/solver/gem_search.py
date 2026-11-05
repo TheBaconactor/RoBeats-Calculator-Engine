@@ -23,6 +23,7 @@ import numba
 import numpy as np
 
 from gear_optimizer.core.jit_setup import jit
+from gear_optimizer.frontier.types import SurfacePool
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
@@ -44,20 +45,6 @@ _FG_CPU_SEARCH_CHUNKS_PER_WORKER = 4
 _FG_CPU_SEARCH_MIN_GROUPS_PER_CHUNK = 4
 _fg_cpu_search_pool: ThreadPoolExecutor | None = None
 _fg_cpu_search_pool_lock = threading.Lock()
-
-
-@dataclass(frozen=True, slots=True)
-class SurfacePool:
-    """The surfaces a gem search scores. Frontier f holds rows frontier_offsets[f] .. frontier_offsets[f] +
-    frontier_lengths[f]; row r is head pattern pattern_ids[r] (pattern_words: its 4 fever and 4 Great words over the
-    head notes; head_coeffs: its surface_head_coeffs) with body counts counts[r] (fever notes, Great notes, both)."""
-
-    frontier_offsets: np.ndarray
-    frontier_lengths: np.ndarray
-    pattern_ids: np.ndarray
-    pattern_words: np.ndarray
-    counts: np.ndarray
-    head_coeffs: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,11 +249,10 @@ def gem_groups(
     secondary_color: str,
     frontier_idx_by_stat: np.ndarray,
     total_notes: int,
-    total_budget: int,
 ) -> GemGroups:
     """The gem-search groups of a batch of loadouts (base_components rows: PP, CM, FM, primary, secondary, FT, FF) over
-    every FT/FF split of total_budget (FT gems raise Beat, FF gems Vibe)."""
-    ft_values, ff_values, residual_values = ftff_combo_arrays(int(total_budget))
+    every FT/FF split of the gem budget (FT gems raise Beat, FF gems Vibe)."""
+    ft_values, ff_values, residual_values = ftff_combo_arrays(GEM_BUDGET)
     ft_element, ff_element = STAT_GEMS["Fever Time"][1], STAT_GEMS["Fever Fill Rate"][1]
     primary_delta, secondary_delta = (
         np.asarray(

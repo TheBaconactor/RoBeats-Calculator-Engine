@@ -13,10 +13,9 @@ import pytest
 
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.frontier import fg_cache_store
-from gear_optimizer.frontier.fg_cache_patterns import expand_surface_rows
+from tests.fg_cache_support import expand_surface_rows, surface_frontier
 from gear_optimizer.frontier.fg_cache_store import (
     _save_payload,
-    gather_surface_patterns,
     read_compatible_bundle,
 )
 from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierCachePayload
@@ -70,7 +69,7 @@ def _coeffs_for(pool: np.ndarray, *, total_notes: int) -> np.ndarray:
 
 def _build_payload(pool: np.ndarray, *, total_notes: int) -> FgResponseFrontierCachePayload:
     surfaces = _surfaces_from_pool(pool)
-    frontier = FgResponseFrontierResult(surfaces, {}, 1, 2, 3, 4, 5, 6, 7, 0.0)
+    frontier = FgResponseFrontierResult(surface_frontier(*surfaces), {}, 1, 2, 3, 4, 5, 6, 7, 0.0)
     return FgResponseFrontierCachePayload(
         frontier_by_key={(0, 0): frontier},
         raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),
@@ -205,28 +204,6 @@ def test_surface_pattern_expansion_rejects_invalid_pattern_id() -> None:
         expand_surface_rows(row_refs, patterns)
 
 
-def test_compact_scoring_gather_preserves_range_order_and_pattern_sharing(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    fg_cache_store.reset_fg_response_frontier_payload_cache()
-    pool = _synthetic_pool(6)
-    pool[2, :8] = pool[0, :8]
-    pool[4, :8] = pool[0, :8]
-    cache_key = ("unit", "compact-scoring-loader")
-    _save_payload(cache_key, _build_payload(pool, total_notes=80))
-    ranges = ((4, 2), (0, 3))
-
-    pattern_ids, counts, pattern_words, pattern_coeffs = gather_surface_patterns(*_tables(cache_key), ranges)
-    expanded_rows, expanded_coeffs = _expanded(cache_key, ranges)
-
-    assert pattern_ids.shape == (5,)
-    assert counts.shape == (5, 3)
-    assert pattern_words.shape[0] < pattern_ids.shape[0]
-    np.testing.assert_array_equal(pattern_words[pattern_ids], expanded_rows[:, :8])
-    np.testing.assert_array_equal(counts, expanded_rows[:, 8:11].astype(np.int32))
-    np.testing.assert_array_equal(pattern_coeffs[pattern_ids], expanded_coeffs)
 
 
 def _shared_pattern_pool(row_count: int, pattern_count: int) -> np.ndarray:
@@ -255,47 +232,8 @@ def _retired_unique_compact_load(cache_key: tuple, ranges: tuple[tuple[int, int]
     )
 
 
-def test_compact_scoring_gather_matches_retired_unique_remap(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    fg_cache_store.reset_fg_response_frontier_payload_cache()
-    row_count = 300
-    pool = _shared_pattern_pool(row_count, 23)
-    cache_key = ("unit", "compact-loader-oracle")
-    _save_payload(cache_key, _build_payload(pool, total_notes=80))
-
-    for ranges in (
-        ((0, row_count),),
-        ((250, 50), (0, 40), (100, 1)),
-        ((10, 5), (12, 30), (299, 1)),
-        ((7, 1),),
-    ):
-        got = gather_surface_patterns(*_tables(cache_key), ranges)
-        want = _retired_unique_compact_load(cache_key, ranges)
-        for got_array, want_array in zip(got, want, strict=True):
-            assert got_array.dtype == want_array.dtype
-            assert got_array.shape == want_array.shape
-            np.testing.assert_array_equal(got_array, want_array)
 
 
-def test_compact_scoring_gather_rejects_invalid_pattern_ids_and_ranges(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    fg_cache_store.reset_fg_response_frontier_payload_cache()
-    pool = _shared_pattern_pool(6, 3)
-    cache_key = ("unit", "compact-gather-invalid")
-    _save_payload(cache_key, _build_payload(pool, total_notes=80))
-    rows, patterns = _tables(cache_key)
-
-    with pytest.raises(ValueError, match="outside the bundle's rows"):
-        gather_surface_patterns(rows, patterns, ((4, 3),))
-
-    for bad_id in (int(patterns.shape[1]), 2**31, 2**32 - 1):
-        bad_rows = rows.copy()
-        bad_rows[0, 3] = np.uint32(bad_id)
-        with pytest.raises(ValueError, match="invalid head-pattern ID"):
-            gather_surface_patterns(bad_rows, patterns, ((0, 6),))
-        # Ranges that skip the corrupt row still gather.
-        ids, _counts, _words, _coeffs = gather_surface_patterns(bad_rows, patterns, ((4, 2), (0, 3)))
-        assert ids.shape == (5,)
 
 
 @pytest.mark.parametrize("pattern_count", [1, 7, 101, 400_000])

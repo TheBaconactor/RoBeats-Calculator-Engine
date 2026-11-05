@@ -107,35 +107,3 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
     assert trace
     assert all(row["activation_judgment"] == "perfect" for row in trace)
     assert any(float(row["activation_hit_offset_ms"]) != 0.0 for row in trace)
-
-
-def test_team_buff_tier_replay_scores_with_the_float64_curves(monkeypatch):
-    """The tier replay's exact base scores read curves.f64 too (same boundary case as above)."""
-    from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver import team_buff_tiers as tbt
-    from tests.test_team_buff_tier_postprocess import _install_synthetic_tier_resolve
-
-    stats = _boundary_drift_stats()
-    entry = {
-        "score": 1,
-        "fg_score": 0,
-        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
-        "minis": ["M1", "M2", "M3"],
-        "details": {"Stats": stats},
-        "force": None,
-    }
-
-    def tier_score(curves, song_name: str) -> int:
-        # The per-tier base re-solve needs 6 gear + 3 mini stat-dicts and a GPU gem search; the
-        # synthetic resolve replaces it with a CPU-exact witness whose final step is
-        # score_stats_exact_batch, the function whose precision this test pins.
-        song = _mock_song(name=song_name)
-        _prebuild_timeline_frontier(song, curves)
-        _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
-        result = tbt.compute_team_buff_tier_leaderboards(entries=[entry], song=song, curves=curves, tiers=("NONE",))
-        return int(result["tiers"]["NONE"]["base_top51"][0]["score"])
-
-    exact_curves = _curves(MAX_STAT + 1, dtype=np.float64)
-    assert tier_score(exact_curves, "pytest_team_buff_float64") != tier_score(
-        _float32_rounded(exact_curves), "pytest_team_buff_float32_rounded"
-    )

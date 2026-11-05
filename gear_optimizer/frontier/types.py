@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+import numpy as np
+
 
 class FgResponseSurface(NamedTuple):
     fever0: int
@@ -32,19 +34,14 @@ class FgResponseFrontierResult:
     seconds: float
 
 
-@dataclass(frozen=True, slots=True)
-class FgResponseInnerResult:
-    best_score: int
-    surface_index: int
-    g_pp: int
-    g_cm: int
-    g_fm: int
-    g_ov: int
-    final_pp: int
-    final_cm: int
-    final_fm: int
-    final_primary: int
-    final_secondary: int
+class FrontierCounts(NamedTuple):
+    """What a materialized FG row reports of the frontier it was scored on."""
+
+    first_surfaces: int
+    states_evaluated: int
+    transitions_evaluated: int
+    max_state_frontier: int
+    non_fever_base: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,12 +52,23 @@ class FgResponseFrontierSolveResult:
     gem_counts: dict[str, int]
     stats: dict[str, Any]
     surface: FgResponseSurface
-    frontier: FgResponseFrontierResult
-    inner: FgResponseInnerResult
-    seconds: float
-    forced_counts: tuple[int, ...] = ()
-    raw_fever_fill: float = 0.0
-    real_fever_time: float = 0.0
+    frontier: FrontierCounts
+    raw_fever_fill: float
+    real_fever_time: float
+
+
+@dataclass(frozen=True, slots=True)
+class SurfacePool:
+    """The surfaces a gem search scores. Frontier f holds rows frontier_offsets[f] .. frontier_offsets[f] +
+    frontier_lengths[f]; row r is head pattern pattern_ids[r] (pattern_words: its 4 fever and 4 Great words over the
+    head notes; head_coeffs: its surface_head_coeffs) with body counts counts[r] (fever notes, Great notes, both)."""
+
+    frontier_offsets: np.ndarray
+    frontier_lengths: np.ndarray
+    pattern_ids: np.ndarray
+    pattern_words: np.ndarray
+    counts: np.ndarray
+    head_coeffs: np.ndarray
 
 
 _EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)

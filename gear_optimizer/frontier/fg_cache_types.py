@@ -3,14 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 
-from .types import FgResponseFrontierResult
+from .types import FgResponseFrontierResult, FrontierCounts, SurfacePool
 
 # The FG response-frontier cache version: a hand-kept base version plus a fingerprint (an AST digest, see
 # logic_fingerprint.py) of every module that co-determines the cached bundles (_FG_DP_SOURCES), so a logic change there
@@ -76,8 +75,10 @@ _BUNDLE_ARRAY_NAMES = frozenset(
 
 
 @lru_cache(maxsize=1)
-def all_response_stat_keys() -> tuple[tuple[int, int], ...]:
-    return tuple((int(ft), int(ff)) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1))
+def all_response_stat_keys() -> np.ndarray:
+    """Every (FT, FF) stat key, sorted, as an (n, 2) int32 array."""
+    axis = np.arange(MAX_STAT + 1, dtype=np.int32)
+    return np.stack((np.repeat(axis, axis.size), np.tile(axis, axis.size)), axis=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,16 +90,6 @@ class FgResponseFrontierCachePayload:
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool
-
-    def stats_key(self, *, ft_stat: int, ff_stat: int) -> tuple[int, int]:
-        return _normalize_stat_key((ft_stat, ff_stat))
-
-    def frontier_for_stats(self, *, ft_stat: int, ff_stat: int) -> FgResponseFrontierResult:
-        key = self.stats_key(ft_stat=ft_stat, ff_stat=ff_stat)
-        frontier = self.frontier_by_key.get(key)
-        if frontier is None:
-            raise ValueError(f"FG response frontier stat key was not loaded: {key}")
-        return frontier
 
     @property
     def frontiers(self) -> tuple[FgResponseFrontierResult, ...]:
@@ -113,63 +104,23 @@ class FgResponseFrontierCachePayload:
         return tuple(out)
 
 
-class _FrontierIdxByStatView:
-    """Read-only ``(ft, ff) -> frontier index`` lookup over a ``frontier_idx_by_stat`` grid
-    (``-1`` = stat key not loaded)."""
-
-    __slots__ = ("_grid",)
-
-    def __init__(self, grid: np.ndarray) -> None:
-        self._grid = grid
-
-    def get(self, key: tuple[int, int], default: int | None = None) -> int | None:
-        ft_stat, ff_stat = int(key[0]), int(key[1])
-        if not (0 <= ft_stat < int(self._grid.shape[0]) and 0 <= ff_stat < int(self._grid.shape[1])):
-            return default
-        frontier_idx = int(self._grid[ft_stat, ff_stat])
-        return frontier_idx if frontier_idx >= 0 else default
-
-
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierScoringBundle:
+    """A bundle file as the gem search reads it: `frontier_idx_by_stat` is -1 at a stat key the file does not hold, and
+    `pool` holds its surfaces, or only the rows a session prune kept."""
+
     cache_key: tuple
     frontier_idx_by_stat: np.ndarray
     raw_fill_by_ff: np.ndarray
     non_fever_base_by_ff: np.ndarray
     real_time_by_ft: np.ndarray
     frontier_meta: np.ndarray
-    surface_pattern_ids: np.ndarray
-    surface_pattern_words: np.ndarray
-    surface_counts: np.ndarray
-    surface_pattern_head_coeffs: np.ndarray
-    frontier_offsets: np.ndarray
-    frontier_lengths: np.ndarray
-    surface_row_count: int
+    pool: SurfacePool
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool
-    # The bundle's whole surface tables as (columns, rows) uint32: rows (4, n), patterns (10, m). The surface_* arrays
-    # above are filled only for an in-memory pool (a session-pruned bundle) and then hold that pool.
-    surface_rows: np.ndarray
-    surface_patterns: np.ndarray
 
-    @property
-    def frontier_idx_by_key(self) -> _FrontierIdxByStatView:
-        # The grid is the bundle's only key map (a per-key dict duplicated it at ~135 B/key). This
-        # view keeps the fingerprinted serde reader's ``frontier_idx_by_key.get`` unchanged.
-        return _FrontierIdxByStatView(self.frontier_idx_by_stat)
-
-
-def _normalize_stat_key(stat_key: tuple[int, int] | list[int]) -> tuple[int, int]:
-    if len(stat_key) != 2:
-        raise ValueError("FG response frontier stat keys must be (ft_stat, ff_stat)")
-    ft_stat = max(0, min(MAX_STAT, int(stat_key[0])))
-    ff_stat = max(0, min(MAX_STAT, int(stat_key[1])))
-    return int(ft_stat), int(ff_stat)
-
-
-def normalize_fg_response_stat_keys(stat_keys: Iterable[tuple[int, int]] | None) -> tuple[tuple[int, int], ...]:
-    keys = tuple(sorted({_normalize_stat_key(key) for key in (stat_keys or ())}))
-    if not keys:
-        raise ValueError("FG response frontier cache requires at least one FT/FF stat key")
-    return keys
+    def frontier_counts(self, ft_stat: int, ff_stat: int) -> FrontierCounts:
+        frontier = self.frontier_idx_by_stat[ft_stat, ff_stat]
+        states, _actions, transitions, _generated, _retained, max_state, non_fever_base = self.frontier_meta[frontier].tolist()
+        return FrontierCounts(int(self.pool.frontier_lengths[frontier]), states, transitions, max_state, non_fever_base)

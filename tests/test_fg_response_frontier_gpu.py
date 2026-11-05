@@ -1,3 +1,5 @@
+
+from tests.fg_cache_support import build_or_load_payload, ensure_cache, load_scoring_bundle
 from tests.curves_support import synthetic_curves
 from pathlib import Path
 
@@ -25,15 +27,12 @@ def _prepare_and_score_sync(
     song,
     curves,
     selected_color,
-    total_budget: int,
 ):
     from gear_optimizer.solver import fg_scoring as rf
-    from gear_optimizer.frontier.fg_cache import load_response_frontier_scoring_bundle
-    from gear_optimizer.frontier.fg_cache_types import all_response_stat_keys
 
-    bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=all_response_stat_keys())
+    bundle = load_scoring_bundle(song, curves)
     return rf.fg_solve_results(base_stats_list, song=song, curves=curves, selected_color=selected_color,
-                               scoring_bundle=bundle, total_budget=int(total_budget))
+                               scoring_bundle=bundle)
 
 
 def _solve_one_batch(
@@ -42,29 +41,25 @@ def _solve_one_batch(
     song,
     curves,
     selected_color,
-    total_budget: int,
 ):
     results = _prepare_and_score_sync(
         base_stats_list=[base_stats],
         song=song,
         curves=curves,
         selected_color=selected_color,
-        total_budget=int(total_budget),
     )
     if not results:
         raise ValueError("response frontier exact GPU batch produced no pair result")
     return results[0]
 
 
-def _prebuild_response_bundle(song, curves, base_stats_list, *, total_budget: int) -> None:
+def _prebuild_response_bundle(song, curves) -> None:
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.frontier.fg_cache import build_or_load_response_frontier_payload
     from gear_optimizer.frontier.fg_cache_store import reset_fg_response_frontier_payload_cache
 
-    _ = base_stats_list, total_budget
     reset_fg_response_frontier_payload_cache()
     full_stat_grid = tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1))
-    build_or_load_response_frontier_payload(song, curves, stat_keys=full_stat_grid)
+    build_or_load_payload(song, curves, stat_keys=full_stat_grid)
 
 
 def _replay_response_result_through_input_engine(*, song, final_stats, selected_color, result):
@@ -179,13 +174,12 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
     }
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    _prebuild_response_bundle(song, curves, [base_stats], total_budget=3)
+    _prebuild_response_bundle(song, curves)
     result = _solve_one_batch(
         base_stats=base_stats,
         song=song,
         curves=curves,
         selected_color="Rush",
-        total_budget=3,
     )
     exact_score = score_force_greats_response_surface_exact(result.stats, song, curves, result.surface)
 
@@ -197,10 +191,6 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     from gear_optimizer.chart import load_chart
     from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.frontier.fg_cache import (
-        build_or_load_response_frontier_payload,
-        load_response_frontier_scoring_bundle,
-    )
     from gear_optimizer.solver.fg_scoring import fg_solve_results
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "precise")
@@ -219,12 +209,14 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     }
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
+    # The fixed stats are the winner's: no gems left to spend.
+    monkeypatch.setattr("gear_optimizer.solver.gem_search.GEM_BUDGET", 0)
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    build_or_load_response_frontier_payload(song, curves, stat_keys=(stat_key,))
-    scoring_bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=(stat_key,))
+    build_or_load_payload(song, curves, stat_keys=(stat_key,))
+    scoring_bundle = load_scoring_bundle(song, curves, stat_keys=(stat_key,))
 
     result = fg_solve_results([final_stats], song=song, curves=curves, selected_color="Vibe",
-                              scoring_bundle=scoring_bundle, total_budget=0)[0]
+                              scoring_bundle=scoring_bundle)[0]
 
     assert int(result.best_score) == 29_340_273
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 6, 6)
@@ -275,13 +267,12 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
     base_b = {**base_a, "Rush": 25, "Flow": 10, "Combo Multiplier": 3}
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    _prebuild_response_bundle(song, curves, [base_a, base_b], total_budget=3)
+    _prebuild_response_bundle(song, curves)
     many = _prepare_and_score_sync(
         base_stats_list=[base_a, base_b],
         song=song,
         curves=curves,
         selected_color="Rush",
-        total_budget=3,
     )
     singles = [
         _solve_one_batch(
@@ -289,16 +280,15 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
             song=song,
             curves=curves,
             selected_color="Rush",
-            total_budget=3,
         )
         for base in (base_a, base_b)
     ]
 
     assert [
-        (result.best_score, result.ft, result.ff, result.gem_counts, result.forced_counts)
+        (result.best_score, result.ft, result.ff, result.gem_counts)
         for result in many
     ] == [
-        (result.best_score, result.ft, result.ff, result.gem_counts, result.forced_counts)
+        (result.best_score, result.ft, result.ff, result.gem_counts)
         for result in singles
     ]
 
@@ -317,10 +307,6 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     """
     from gear_optimizer.chart import load_chart
     from gear_optimizer.gamedata import stat_curves
-    from gear_optimizer.frontier.fg_cache import (
-        build_or_load_response_frontier_payload,
-        load_response_frontier_scoring_bundle,
-    )
     from gear_optimizer.solver.fg_scoring import fg_solve_results
     from gear_optimizer.solver.timing_envelope import time_song
 
@@ -340,11 +326,13 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     }
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
+    # The fixed stats are the winner's: no gems left to spend.
+    monkeypatch.setattr("gear_optimizer.solver.gem_search.GEM_BUDGET", 0)
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    build_or_load_response_frontier_payload(song, curves, stat_keys=(stat_key,))
-    scoring_bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=(stat_key,))
+    build_or_load_payload(song, curves, stat_keys=(stat_key,))
+    scoring_bundle = load_scoring_bundle(song, curves, stat_keys=(stat_key,))
     result = fg_solve_results([final_stats], song=song, curves=curves, selected_color="Chill",
-                              scoring_bundle=scoring_bundle, total_budget=0)[0]
+                              scoring_bundle=scoring_bundle)[0]
 
     assert int(result.best_score) == 47_502_676  # legal max; > the unreachable served 47,476,966
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 4095, 0, 0, 0, 1361, 5, 5)

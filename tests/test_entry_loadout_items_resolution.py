@@ -12,10 +12,7 @@ These exercise the real resolver against the live Gears.csv/Minis.csv -- no monk
 import pytest
 
 from gear_optimizer.gamedata import ASCENSION_PERFECT_POINTS, Gear, SongMini, load_gears, load_minis
-from gear_optimizer.solver.team_buff_tiers import (
-    _entry_loadout_items,
-    _representative_mini_names_from_any,
-)
+from gear_optimizer.solver.team_buff_tiers import _entry_loadout_items
 from gear_optimizer.settings import paths
 from tests.items_support import make_song_mini
 from tests.songs_support import make_chart
@@ -28,15 +25,7 @@ def _real_gear_and_mini_names():
     gears = load_gears(paths().gears_csv)
     minis = load_minis(paths().minis_csv)
     gear_names = list(gears)[:6]
-    # Pick mini names whose representative resolves back into the catalog (variant-group safe).
-    mini_names = []
-    for name in minis:
-        rep = _representative_mini_names_from_any([name])
-        if len(rep) == 1 and rep[0] in minis:
-            mini_names.append(name)
-        if len(mini_names) == 3:
-            break
-    return gear_names, mini_names
+    return gear_names, list(minis)[:3]
 
 
 def _assert_resolved(items, gear_names, mini_names):

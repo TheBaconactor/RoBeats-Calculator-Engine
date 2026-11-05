@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fg_cache_support import build_or_load_payload, ensure_cache, load_scoring_bundle
+
 import io
 import json
 import os
@@ -351,23 +353,11 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Cached Song", [1.0, 2.0]), encoding="utf-8")
-    cache_path = tmp_path / "cache.npz"
-    cache_path.write_text("cache", encoding="utf-8")
-
-    def _cache_info(_song, _curves, *, stat_keys):
-        return FrontierCacheInfo(cache_key=("cache",), disk_path=cache_path, cache_source="disk")
-
     def _unexpected_build(*_args, **_kwargs):
         raise AssertionError("valid startup cache hit must not rebuild")
 
-    monkeypatch.setattr(
-        "gear_optimizer.frontier.fg_cache.fg_response_frontier_payload_cache_info",
-        _cache_info,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.frontier.fg_cache.build_or_load_response_frontier_payload",
-        _unexpected_build,
-    )
+    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._payload_file_is_complete", lambda *_args: True)
+    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._build_response_frontier_cache_payload", _unexpected_build)
 
     result = build_frontier_cache_for_chart(
         str(song_path),
@@ -378,7 +368,6 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
 
     assert result.source == "disk"
     assert result.build_ms == 0.0
-    assert result.cache_file == str(cache_path)
 
 
 def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> None:
@@ -386,17 +375,11 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Missing Song", [1.0, 2.0, 3.0]), encoding="utf-8")
-    cache_path = tmp_path / "cache.npz"
-    monkeypatch.setattr(
-        "gear_optimizer.frontier.fg_cache.fg_response_frontier_payload_cache_info",
-        lambda *_args, **_kwargs: FrontierCacheInfo(
-            cache_key=("missing",), disk_path=cache_path, cache_source="missing"
-        ),
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.frontier.fg_cache.build_or_load_response_frontier_payload",
-        lambda *_args, **_kwargs: SimpleNamespace(cache_source="built", elapsed_ms=12.5, disk_path=cache_path),
-    )
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg"))
+    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._payload_file_is_complete", lambda *_args: False)
+    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._load_payload", lambda _key: None)
+    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._build_response_frontier_cache_payload", lambda *_args: object())
+    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._save_payload", lambda *_args: None)
 
     result = build_frontier_cache_for_chart(
         str(song_path),
@@ -406,7 +389,7 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
     )
 
     assert result.source == "built"
-    assert result.build_ms == 12.5
+    assert result.build_ms > 0.0
 
 
 def test_ram_guard_force_resumes_stalled_worker_below_resume_floor(monkeypatch):

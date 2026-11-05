@@ -1324,9 +1324,6 @@ def reconstruct_base_trace(
 ) -> tuple[dict, ...]:
     """The physical trace of a Base surface: the FG reconstruction of the same surface without Greats, so without
     forced-Great timing (and its late-Great floor)."""
-    from gear_optimizer.trace.reconstruct import reconstruct_force_greats_response_trace
-    from gear_optimizer.frontier.types import FgResponseSurface
-
     return reconstruct_force_greats_response_trace(
         inputs=replace(inputs, late_great_floor=None, use_forced_great_timing=False),
         non_fever_base=0,

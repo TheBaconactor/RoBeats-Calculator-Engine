@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -13,28 +13,11 @@ from gear_optimizer.frontier.cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.settings import paths
 
 from . import fg_cache_types
-from .fg_cache_types import (
-    _BUNDLE_KEY_MARKER,
-    _normalize_stat_key,
-    normalize_fg_response_stat_keys,
-)
-from .types import FgResponseSurface
+from .fg_cache_types import _BUNDLE_KEY_MARKER
 
 
 def _fg_response_cache_version() -> str:
     return str(fg_cache_types._FG_RESPONSE_CACHE_VERSION)
-
-
-def _surface_from_values_cached(
-    values: tuple[int, ...], cache: dict[tuple[int, ...], FgResponseSurface]
-) -> FgResponseSurface:
-    surface = cache.get(values)
-    if surface is None:
-        if len(values) != 11:
-            raise ValueError("FG response cache surface row must contain 11 values")
-        surface = FgResponseSurface(*values)
-        cache[values] = surface
-    return surface
 
 
 def fg_response_frontier_song_cache_key(song: TimedSong) -> tuple:
@@ -70,40 +53,12 @@ def _ref_axes_cache_key(curves: StatCurves) -> tuple[bytes, bytes]:
     return bytes(array_sig16(ref_ft)), bytes(array_sig16(ref_ff))
 
 
-def fg_response_frontier_payload_cache_key(
-    song: TimedSong,
-    curves: StatCurves,
-    stat_keys: Iterable[tuple[int, int]] | None,
-) -> tuple:
-    return (
-        _fg_response_cache_version(),
-        fg_response_frontier_song_cache_key(song),
-        *_ref_axes_cache_key(curves),
-        normalize_fg_response_stat_keys(stat_keys),
-    )
-
-
 def fg_response_frontier_bundle_cache_key(song: TimedSong, curves: StatCurves) -> tuple:
     return (
         _fg_response_cache_version(),
         fg_response_frontier_song_cache_key(song),
         *_ref_axes_cache_key(curves),
         _BUNDLE_KEY_MARKER,
-    )
-
-
-def fg_response_frontier_geometry_cache_key(
-    song: TimedSong,
-    curves: StatCurves,
-    *,
-    ft_stat: int,
-    ff_stat: int,
-) -> tuple:
-    return (
-        _fg_response_cache_version(),
-        fg_response_frontier_song_cache_key(song),
-        *_ref_axes_cache_key(curves),
-        _normalize_stat_key((ft_stat, ff_stat)),
     )
 
 

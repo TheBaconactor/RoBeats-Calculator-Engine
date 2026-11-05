@@ -196,41 +196,20 @@ def test_non_precise_singleton_payload_matches_fixed_timing_scorer_and_persists(
     assert uploads == [0]
 
 
-def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypatch):
+def test_fixed_timing_fg_asks_only_for_the_reachable_cells(monkeypatch):
     from gear_optimizer.trace import fixed_timing
-    from gear_optimizer.frontier import fg_cache
-    from gear_optimizer.solver import fg_scoring
 
     seen: dict[str, object] = {}
     bundle = object()
 
-    def _ensure(song, curves, *, stat_keys):
-        seen["ensure"] = tuple(stat_keys)
-
-    def _load(song, curves, *, stat_keys):
-        seen["load"] = tuple(stat_keys)
+    def _covering(song, curves, stat_keys):
+        seen["keys"] = stat_keys.tolist()
         return bundle
 
-    def _score(**kwargs):
-        seen["score_bundle"] = kwargs["scoring_bundle"]
-        return {tuple(row): "winner" for row in kwargs["base_components"].tolist()}
+    monkeypatch.setattr("gear_optimizer.solver.fg_scoring.GEM_BUDGET", 0)
+    monkeypatch.setattr(fixed_timing, "scoring_bundle_covering", _covering)
+    monkeypatch.setattr(fixed_timing, "fg_solve_results", lambda *_a, **kwargs: seen.update(bundle=kwargs["scoring_bundle"]) or [])
+    monkeypatch.setattr(fixed_timing, "score_base_exact_batch", lambda *_a: [])
 
-    monkeypatch.setattr(fg_cache, "ensure_response_frontier_cache_for_song", _ensure)
-    monkeypatch.setattr(fg_cache, "load_response_frontier_scoring_bundle", _load)
-    monkeypatch.setattr(fg_scoring, "score_fg_base_components", _score)
-    monkeypatch.setattr(fg_scoring, "fg_solve_result", lambda **_kwargs: SimpleNamespace(surface="exact-surface"))
-
-    results = fixed_timing._solve_fixed_timing_response_results(
-        [_stats()],
-        _song(),
-        _curves(),
-        "Rush",
-    )
-    surfaces = [result.surface for result in results]
-
-    assert surfaces == ["exact-surface"]
-    assert seen == {
-        "ensure": ((70, 90),),
-        "load": ((70, 90),),
-        "score_bundle": bundle,
-    }
+    assert fixed_timing.build_fixed_timing_fg_replays([_stats()], _song(), _curves(), "Rush", None) == []
+    assert seen == {"keys": [[70, 90]], "bundle": bundle}

@@ -186,14 +186,13 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
     )
     import gear_optimizer.trace.materialize as reducer_mod
     from gear_optimizer.frontier.types import (
-        FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
-        FgResponseInnerResult,
         FgResponseSurface,
+        FrontierCounts,
     )
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    scoring_frontier = FgResponseFrontierResult((surface,), {}, 1, 1, 1, 1, 1, 1, 7, 0.0)
+    scoring_frontier = FrontierCounts(1, 1, 1, 1, 7)
     result = FgResponseFrontierSolveResult(
         best_score=1234,
         ft=1,
@@ -202,9 +201,6 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         stats={"Fever Time": 12, "Fever Fill Rate": 34},
         surface=surface,
         frontier=scoring_frontier,
-        inner=FgResponseInnerResult(1234, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-        seconds=0.0,
-        forced_counts=(),
         raw_fever_fill=1.0,
         real_fever_time=2.0,
     )
@@ -278,10 +274,9 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     from gear_optimizer.trace.materialize import materialize_force_payload_from_response_frontier
     import gear_optimizer.trace.materialize as reducer_mod
     from gear_optimizer.frontier.types import (
-        FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
-        FgResponseInnerResult,
         FgResponseSurface,
+        FrontierCounts,
     )
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
@@ -292,10 +287,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         gem_counts={"Perfect Points": 0},
         stats={"Fever Time": 12, "Fever Fill Rate": 34},
         surface=surface,
-        frontier=FgResponseFrontierResult((surface,), {}, 1, 1, 1, 1, 1, 1, 7, 0.0),
-        inner=FgResponseInnerResult(1234, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-        seconds=0.0,
-        forced_counts=(),
+        frontier=FrontierCounts(1, 1, 1, 1, 7),
         raw_fever_fill=1.0,
         real_fever_time=2.0,
     )
@@ -333,9 +325,8 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     from gear_optimizer.frontier.producer_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
     from gear_optimizer.frontier.types import (
-        FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
-        FgResponseInnerResult,
+        FrontierCounts,
     )
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
@@ -372,18 +363,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         if row["activation_judgment"] == "late_great"
     )
     surface = target_option["surface"]
-    frontier = FgResponseFrontierResult(
-        first_frontier=(surface,),
-        state_frontiers={},
-        states_evaluated=1,
-        actions=len(actions),
-        transitions_evaluated=1,
-        generated_surfaces=1,
-        retained_surfaces_total=1,
-        max_state_frontier=1,
-        non_fever_base=non_fever_base,
-        seconds=0.0,
-    )
+    frontier = FrontierCounts(1, 1, 1, 1, non_fever_base)
     result = FgResponseFrontierSolveResult(
         best_score=4321,
         ft=1,
@@ -392,9 +372,6 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         stats={"Perfect Points": 1, "Rush": 10, "Fever Time": 3, "Fever Fill Rate": 4},
         surface=surface,
         frontier=frontier,
-        inner=FgResponseInnerResult(4321, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
-        seconds=0.0,
-        forced_counts=(),
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
     )
@@ -425,7 +402,6 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
 
     assert payload["BaseScore"] == 4000
     trace = payload["ForceGreats"]["frontier_trace"]
-    assert not frontier.state_frontiers
     assert [row["forced_count"] for row in trace] == [int(target_option["k"])]
     assert len(trace) == 1
     assert trace[0]["activation_judgment"] == "late_great"
@@ -525,10 +501,7 @@ def test_response_frontier_group_builder_matches_prune_reference():
 
 
 def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
-    from gear_optimizer.solver.fg_scoring import (
-        FgResponseFrontierResult,
-        FgResponseSurface,
-    )
+    from gear_optimizer.frontier.types import FgResponseFrontierResult, FgResponseSurface
     from tests.parity.response_ftff_prune import (
         prune_dominated_ftff_response_pairs,
     )
@@ -567,10 +540,7 @@ def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
 
 
 def test_response_frontier_ftff_antichain_matches_naive_dominance():
-    from gear_optimizer.solver.fg_scoring import (
-        FgResponseFrontierResult,
-        FgResponseSurface,
-    )
+    from gear_optimizer.frontier.types import FgResponseFrontierResult, FgResponseSurface
     from tests.parity.response_ftff_prune import (
         prune_dominated_ftff_response_pairs,
         response_pair_dominates,

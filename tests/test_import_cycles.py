@@ -1,6 +1,6 @@
 """S1: the engine's modules import one way. Function-level imports count: they only defer a cycle to call time.
 
-The remaining cycle is listed with the stage that removes it; a new cycle, or a listed one that grew, fails.
+A remaining cycle would be listed with the stage that removes it; a new cycle, or a listed one that grew, fails.
 """
 
 from __future__ import annotations
@@ -12,13 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-KNOWN_CYCLES = {
-    # R5 (FG frontier builder + scoring): these modules are FG cache fingerprint sources.
-    frozenset({
-        "gear_optimizer.frontier.fg_cache_serde",
-        "gear_optimizer.frontier.fg_cache_store",
-    }),
-}
+KNOWN_CYCLES: set[frozenset[str]] = set()
 
 
 def _modules() -> dict[str, Path]:

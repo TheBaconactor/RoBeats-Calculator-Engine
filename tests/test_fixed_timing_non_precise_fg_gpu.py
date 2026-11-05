@@ -59,7 +59,7 @@ def _loadout_items(name: str, **stats: int) -> list:
 
 def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
@@ -124,30 +124,17 @@ def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, mon
 
     build_or_load_timeline_frontier_payload(song, curves)
 
-    out = compute_team_buff_tier_leaderboards(
-        entries=[entry],
-        song=song,
-        curves=curves,
-    )
+    batches = build_team_buff_tier_db_batches(entries=[entry], song=song, curves=curves)
 
-    tiers = out["tiers"]
-    assert tiers, "tier replay produced no tiers"
-    for tier_name, tier in tiers.items():
-        assert tier["base_top51"], f"no base leaderboard for {tier_name}"
-        assert int(tier["base_top51"][0]["score"]) > 0
-        assert tier["fg_top51"], f"no FG leaderboard for {tier_name}"
-        assert int(tier["fg_top51"][0]["fg_score"]) > 0
+    assert batches, "tier replay produced no tiers"
+    for tier_name, (row,) in batches.items():
+        assert row["score"] > 0, f"no base leaderboard for {tier_name}"
+        assert row["fg_score"] > 0, f"no FG leaderboard for {tier_name}"
 
 
 def test_non_precise_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.team_buff_tiers import (
-        build_team_buff_tier_db_batches,
-        resolve_tier_base,
-        resolve_tier_base_batch,
-        resolve_tier_fg_force,
-        resolve_tier_fg_force_batch,
-    )
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_fixed_timing_exact
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
@@ -159,120 +146,46 @@ def test_non_precise_batch_resolves_match_single_loadout_paths(tmp_path, monkeyp
     song = make_song(timestamps, mode="non-precise", name="pytest_non_precise_batch_parity")
     build_or_load_timeline_frontier_payload(song, curves)
 
-    fixed_song_stats = {
-        "Perfect Points": 0,
-        "Combo Multiplier": 0,
-        "Fever Multiplier": 0,
-        "Fever Time": 0,
-        "Fever Fill Rate": 0,
-        "Rush": 0,
-        "Flow": 0,
-        "Chill": 0,
-        "Beat": 0,
-        "Vibe": 0,
-    }
-    loadouts = [
-        _loadout_items(
-            "A",
-            **{
-                "Perfect Points": 120,
-                "Combo Multiplier": 80,
-                "Fever Multiplier": 60,
-                "Fever Time": 80,
-                "Fever Fill Rate": 100,
-                "Rush": 200,
-                "Flow": 150,
-            },
-        ),
-        _loadout_items(
-            "B",
-            **{
-                "Perfect Points": 100,
-                "Combo Multiplier": 95,
-                "Fever Multiplier": 50,
-                "Fever Time": 90,
-                "Fever Fill Rate": 75,
-                "Rush": 180,
-                "Flow": 170,
-            },
-        ),
+    def entry(name: str, **stats: int) -> dict:
+        items = _loadout_items(name, **stats)
+        surface = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        return {
+            "loadout_hash": name,
+            "score": 1,
+            "fg_score": 1,
+            "gear": items[:6],
+            "minis": items[6:],
+            "details": {"Stats": {"Perfect Points": 1}},
+            "force": {"SelectedElement": "Rush", "response_surface": surface},
+        }
+
+    entries = [
+        entry("A", **{"Perfect Points": 120, "Combo Multiplier": 80, "Fever Multiplier": 60, "Fever Time": 80,
+                      "Fever Fill Rate": 100, "Rush": 200, "Flow": 150}),
+        entry("B", **{"Perfect Points": 100, "Combo Multiplier": 95, "Fever Multiplier": 50, "Fever Time": 90,
+                      "Fever Fill Rate": 75, "Rush": 180, "Flow": 170}),
     ]
 
-    base_singles = [
-        resolve_tier_base(
-            fixed_song_stats=fixed_song_stats,
-            loadout_items=loadout,
-            song=song,
-            curves=curves,
-            primary_color="Rush",
-            selected_color="Rush",
-        )
-        for loadout in loadouts
-    ]
-    base_batch = resolve_tier_base_batch(
-        fixed_song_stats=fixed_song_stats,
-        loadouts=loadouts,
-        song=song,
-        curves=curves,
-        primary_color="Rush",
-        selected_color="Rush",
-    )
+    def rows(chosen: list[dict]) -> dict[str, dict]:
+        batch = build_team_buff_tier_db_batches(entries=chosen, song=song, curves=curves, tiers=("T5",))["T5"]
+        return {row["loadout_hash"]: row for row in batch}
 
-    assert [score for _payload, score in base_batch] == [score for _payload, score in base_singles]
-    for (single_payload, _single_score), (batch_payload, _batch_score) in zip(base_singles, base_batch, strict=True):
-        assert batch_payload["GemCounts"] == single_payload["GemCounts"]
-        assert batch_payload["Stats"] == single_payload["Stats"]
-        assert batch_payload["FT"] == single_payload["FT"]
-        assert batch_payload["FF"] == single_payload["FF"]
+    together = rows(entries)
+    singles = {**rows(entries[:1]), **rows(entries[1:])}
+    assert together == singles
+    for row in together.values():
+        force = row["force"]
+        assert force["BaseStats"] == force["Stats"]
+        assert force["BaseScore"] == score_stats_fixed_timing_exact(force["BaseStats"], song, curves)
+        assert isinstance(force["ForceGreats"].get("frontier_trace"), list)
 
-    fg_singles = [
-        resolve_tier_fg_force(
-            fixed_song_stats=fixed_song_stats,
-            loadout_items=loadout,
-            song=song,
-            curves=curves,
-            selected_color="Rush",
-        )
-        for loadout in loadouts
-    ]
-    fg_batch = resolve_tier_fg_force_batch(
-        fixed_song_stats=fixed_song_stats,
-        loadouts=loadouts,
-        song=song,
-        curves=curves,
-        selected_color="Rush",
-    )
-
-    assert [force["Score"] for force in fg_batch] == [force["Score"] for force in fg_singles]
-    for single_force, batch_force in zip(fg_singles, fg_batch, strict=True):
-        assert batch_force["GemCounts"] == single_force["GemCounts"]
-        assert batch_force["Stats"] == single_force["Stats"]
-        assert batch_force["BaseStats"] == single_force["BaseStats"]
-        assert batch_force["BaseStats"] == batch_force["Stats"]
-        assert batch_force["BaseScore"] == score_stats_fixed_timing_exact(
-            batch_force["BaseStats"],
-            song,
-            curves,
-        )
-        assert isinstance(batch_force["ForceGreats"].get("frontier_trace"), list)
-        assert batch_force["ForceGreats"]["frontier_trace"] == single_force["ForceGreats"]["frontier_trace"]
-
-    entry = {
-        "loadout_hash": "pytest-zero-ms-fg-witness",
-        "score": 1,
-        "fg_score": 1,
-        "gear": loadouts[0][:6],
-        "minis": loadouts[0][6:],
-        "details": {"Stats": dict(fg_singles[0]["Stats"])},
-        "force": dict(fg_singles[0]),
-    }
+    entries[0]["force"] = dict(together["A"]["force"])
     batches = build_team_buff_tier_db_batches(
-        entries=[entry],
+        entries=entries[:1],
         song=song,
         curves=curves,
         limit=1,
         tiers=("T5",),
-        replay_surface="both",  # FG replay needs the meta surface: the paired base is the re-solved base
     )
     (fg_row,) = batches["T5"]
     assert fg_row["fg_base_score"] == fg_row["force"]["BaseScore"]

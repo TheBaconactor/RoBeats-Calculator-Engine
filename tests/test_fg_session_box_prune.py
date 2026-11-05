@@ -258,13 +258,10 @@ def test_session_head_dominance_box_reads_luts_and_fails_loud():
 
 
 def _bundle_with_tables(pattern_ids, counts, pattern_words, pattern_coeffs, *, offsets, lengths, head_len, cache_key):
-    """A loaded (unpruned) scoring bundle whose surface tables hold these rows and patterns."""
-    from gear_optimizer.frontier.fg_cache_patterns import pack_surface_patterns
+    """A loaded (unpruned) scoring bundle holding these rows and patterns."""
     from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierScoringBundle
+    from gear_optimizer.frontier.types import SurfacePool
 
-    rows = np.empty((4, int(pattern_ids.shape[0])), dtype=np.uint32)
-    rows[0] = pattern_ids
-    rows[1:4] = counts.T
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),
@@ -272,18 +269,11 @@ def _bundle_with_tables(pattern_ids, counts, pattern_words, pattern_coeffs, *, o
         non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
         real_time_by_ft=np.zeros(1),
         frontier_meta=np.zeros((int(offsets.shape[0]), 1), dtype=np.int32),
-        surface_pattern_ids=np.empty((0,), dtype=np.int32),
-        surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
-        surface_counts=np.empty((0, 3), dtype=np.int32),
-        surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
-        frontier_offsets=offsets,
-        frontier_lengths=lengths,
-        surface_row_count=int(pattern_ids.shape[0]),
+        pool=SurfacePool(offsets, lengths, pattern_ids.astype(np.int32), pattern_words, counts.astype(np.int32),
+                         pattern_coeffs.astype(np.int32)),
         total_notes=head_len,
         long_notes=0,
         use_forced_great_timing=True,
-        surface_rows=rows,
-        surface_patterns=np.ascontiguousarray(pack_surface_patterns(pattern_words, pattern_coeffs).T),
     )
 
 
@@ -312,8 +302,8 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     )
     curves = _span_curves((2.45, 2.72), (4.6, 5.48))
     v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = fg_cache.session_head_dominance_box(curves)
-    original_offsets = np.asarray(bundle.frontier_offsets, dtype=np.int32)
-    original_lengths = np.asarray(bundle.frontier_lengths, dtype=np.int32)
+    original_offsets = np.asarray(bundle.pool.frontier_offsets, dtype=np.int32)
+    original_lengths = np.asarray(bundle.pool.frontier_lengths, dtype=np.int32)
     expected_keep = np.asarray(
         _numba_session_box_keep_mask(
             pattern_ids,
@@ -336,20 +326,20 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     )
     expected_used_patterns, expected_pattern_ids = np.unique(pattern_ids[expected_keep], return_inverse=True)
     pruned = fg_cache.session_prune_scoring_bundle(bundle, curves)
-    assert int(pruned.surface_row_count) == int(pruned.surface_pattern_ids.shape[0])
-    assert int(pruned.surface_pattern_ids.shape[0]) <= 55
-    assert pruned.surface_counts.shape == (int(pruned.surface_row_count), 3)
-    assert np.array_equal(pruned.surface_pattern_ids, expected_pattern_ids.astype(np.int32))
-    assert np.array_equal(pruned.surface_counts, counts[expected_keep])
-    assert np.array_equal(pruned.surface_pattern_words, pattern_words[expected_used_patterns])
-    assert np.array_equal(pruned.surface_pattern_head_coeffs, pattern_coeffs[expected_used_patterns])
-    lengths = np.asarray(pruned.frontier_lengths, dtype=np.int64)
-    offsets = np.asarray(pruned.frontier_offsets, dtype=np.int64)
+    pool = pruned.pool
+    assert int(pool.pattern_ids.shape[0]) <= 55
+    assert pool.counts.shape == (int(pool.pattern_ids.shape[0]), 3)
+    assert np.array_equal(pool.pattern_ids, expected_pattern_ids.astype(np.int32))
+    assert np.array_equal(pool.counts, counts[expected_keep])
+    assert np.array_equal(pool.pattern_words, pattern_words[expected_used_patterns])
+    assert np.array_equal(pool.head_coeffs, pattern_coeffs[expected_used_patterns])
+    lengths = np.asarray(pool.frontier_lengths, dtype=np.int64)
+    offsets = np.asarray(pool.frontier_offsets, dtype=np.int64)
     assert bool(np.all(lengths >= 1))
     assert int(offsets[0]) == int(offsets[1]) == 0
     assert int(lengths[0]) == int(lengths[1])
     assert int(offsets[2]) == int(lengths[0])
-    assert int(lengths[0] + lengths[2]) == int(pruned.surface_row_count)
+    assert int(lengths[0] + lengths[2]) == int(pool.pattern_ids.shape[0])
     # unchanged metadata carried through
     assert pruned.total_notes == head_len and pruned.cache_key == ("test",)
     assert dataclasses.is_dataclass(pruned)
@@ -365,10 +355,10 @@ def _retired_session_prune_arrays(pattern_ids, counts, pattern_words, pattern_co
     np.cumsum(np.asarray(keep, dtype=np.int64), out=kept_prefix[1:])
     used_pattern_ids, pruned_pattern_ids = np.unique(pattern_ids[keep], return_inverse=True)
     return {
-        "surface_pattern_ids": np.ascontiguousarray(pruned_pattern_ids, dtype=np.int32),
-        "surface_pattern_words": np.ascontiguousarray(pattern_words[used_pattern_ids], dtype=np.uint32),
-        "surface_counts": np.ascontiguousarray(counts[keep], dtype=np.int32),
-        "surface_pattern_head_coeffs": np.ascontiguousarray(pattern_coeffs[used_pattern_ids], dtype=np.int32),
+        "pattern_ids": np.ascontiguousarray(pruned_pattern_ids, dtype=np.int32),
+        "pattern_words": np.ascontiguousarray(pattern_words[used_pattern_ids], dtype=np.uint32),
+        "counts": np.ascontiguousarray(counts[keep], dtype=np.int32),
+        "head_coeffs": np.ascontiguousarray(pattern_coeffs[used_pattern_ids], dtype=np.int32),
         "frontier_offsets": np.ascontiguousarray(kept_prefix[offsets_all], dtype=np.int32),
         "frontier_lengths": np.ascontiguousarray(kept_prefix[ends_all] - kept_prefix[offsets_all], dtype=np.int32),
     }
@@ -434,12 +424,12 @@ def test_session_prune_matches_retired_unique_remap(combo_box, fever_box):
     pruned = fg_cache.session_prune_scoring_bundle(bundle, curves)
 
     for name, want in expected.items():
-        got = getattr(pruned, name)
+        got = getattr(pruned.pool, name)
         assert got.dtype == want.dtype, name
         np.testing.assert_array_equal(got, want, err_msg=name)
-    assert int(pruned.surface_row_count) == int(np.count_nonzero(keep))
-    # The bundle's tables are read, never rewritten in place.
-    np.testing.assert_array_equal(bundle.surface_rows[0], pattern_ids_before)
+    assert int(pruned.pool.pattern_ids.shape[0]) == int(np.count_nonzero(keep))
+    # The bundle's pool is read, never rewritten in place.
+    np.testing.assert_array_equal(bundle.pool.pattern_ids, pattern_ids_before)
 
 
 def test_in_place_kept_prefix_equals_int64_copy_cumsum():

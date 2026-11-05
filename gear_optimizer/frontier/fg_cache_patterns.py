@@ -44,49 +44,22 @@ def surface_head_coeffs(pattern_words: np.ndarray, *, head_len: int) -> np.ndarr
     return coeffs
 
 
-def _intern_surface_row_words(
-    surface_rows: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return row references, exact unique words, and their first source indices.
-
-    ``np.unique(..., axis=0)`` remains the sole pattern-ID owner. Its lexicographic ordering is
-    therefore unchanged from the original V30 writer, while callers that derive coefficients from
-    head words can do that once per returned pattern instead of once per logical surface row.
-    """
+def intern_surface_row_words(surface_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Exact head words interned, every logical row kept in producer order: (row references, unique words).
+    ``np.unique(..., axis=0)`` owns the pattern IDs, so their lexicographic order is the persisted one."""
     rows = np.ascontiguousarray(np.asarray(surface_rows, dtype=np.uint32))
     if rows.ndim != 2 or rows.shape[1] != EXPANDED_SURFACE_COLUMNS:
         raise ValueError("FG response expanded surface rows must have shape (n, 11)")
     if int(rows.shape[0]) == 0:
-        return (
-            np.empty((0, SURFACE_ROW_COLUMNS), dtype=np.uint32),
-            np.empty((0, 8), dtype=np.uint32),
-            np.empty((0,), dtype=np.intp),
-        )
-
-    unique_words, first_indices, inverse = np.unique(
-        rows[:, :8],
-        axis=0,
-        return_index=True,
-        return_inverse=True,
-    )
+        return np.empty((0, SURFACE_ROW_COLUMNS), dtype=np.uint32), np.empty((0, 8), dtype=np.uint32)
+    unique_words, inverse = np.unique(rows[:, :8], axis=0, return_inverse=True)
     pattern_count = int(unique_words.shape[0])
     if pattern_count > int(np.iinfo(np.int32).max):
         raise ValueError("FG response surface head-pattern count exceeds scorer int32 ID capacity")
-
     row_refs = np.empty((int(rows.shape[0]), SURFACE_ROW_COLUMNS), dtype=np.uint32)
     row_refs[:, 0] = np.asarray(inverse, dtype=np.uint32)
     row_refs[:, 1:4] = rows[:, 8:11]
-    return (
-        np.ascontiguousarray(row_refs),
-        np.ascontiguousarray(unique_words, dtype=np.uint32),
-        np.ascontiguousarray(first_indices, dtype=np.intp),
-    )
-
-
-def intern_surface_row_words(surface_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Intern exact head words while retaining every logical row in producer order."""
-    row_refs, unique_words, _first_indices = _intern_surface_row_words(surface_rows)
-    return row_refs, unique_words
+    return np.ascontiguousarray(row_refs), np.ascontiguousarray(unique_words, dtype=np.uint32)
 
 
 def pack_surface_patterns(
@@ -133,30 +106,3 @@ def unpack_surface_patterns(patterns: np.ndarray) -> tuple[np.ndarray, np.ndarra
     coeffs[:, 2] = np.asarray(packed23 & np.uint32(0xFFFF), dtype=np.int32)
     coeffs[:, 3] = np.asarray(packed23 >> np.uint32(16), dtype=np.int32)
     return words, np.ascontiguousarray(coeffs)
-
-
-def expand_surface_rows(
-    row_refs: np.ndarray,
-    patterns: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Expand interned rows to the canonical scorer-facing arrays, preserving row order."""
-    refs = np.ascontiguousarray(np.asarray(row_refs, dtype=np.uint32))
-    pattern_rows = np.asarray(patterns, dtype=np.uint32)
-    if refs.ndim != 2 or refs.shape[1] != SURFACE_ROW_COLUMNS:
-        raise ValueError("FG response interned surface rows must have shape (n, 4)")
-    if pattern_rows.ndim != 2 or pattern_rows.shape[1] != SURFACE_PATTERN_COLUMNS:
-        raise ValueError("FG response surface patterns must have shape (n, 10)")
-    if int(refs.shape[0]) == 0:
-        return (
-            np.empty((0, EXPANDED_SURFACE_COLUMNS), dtype=np.uint32),
-            np.empty((0, EXPANDED_COEFF_COLUMNS), dtype=np.int32),
-        )
-    pattern_ids = np.asarray(refs[:, 0], dtype=np.uint64)
-    if int(pattern_rows.shape[0]) <= 0 or bool(np.any(pattern_ids >= int(pattern_rows.shape[0]))):
-        raise ValueError("FG response surface row references an invalid head-pattern ID")
-    selected = pattern_rows[np.asarray(pattern_ids, dtype=np.intp)]
-    rows = np.empty((int(refs.shape[0]), EXPANDED_SURFACE_COLUMNS), dtype=np.uint32)
-    rows[:, :8] = selected[:, :8]
-    rows[:, 8:11] = refs[:, 1:4]
-    _words, coeffs = unpack_surface_patterns(selected)
-    return np.ascontiguousarray(rows), coeffs

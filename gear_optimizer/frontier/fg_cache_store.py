@@ -15,13 +15,13 @@ import logging
 import threading
 import zipfile
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from numpy.lib import format as np_format
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.frontier.cache import FrontierCache, MemoryLru, write_atomically
+from gear_optimizer.rules import MAX_STAT
 
 from .fg_cache_keys import (
     _fg_response_disk_cache_dir,
@@ -29,32 +29,20 @@ from .fg_cache_keys import (
     _fg_response_cache_version,
     fg_response_frontier_bundle_cache_key,
 )
-from .fg_cache_patterns import (
-    intern_surface_row_words,
-    pack_surface_patterns,
-    surface_head_coeffs,
-    unpack_surface_patterns,
-)
+from .fg_cache_patterns import intern_surface_row_words, pack_surface_patterns, surface_head_coeffs
+from .fg_cache_serde import _pack_frontiers, _unpack_frontiers
 from .fg_cache_types import (
     _BUNDLE_ARRAY_NAMES,
     FgResponseFrontierCachePayload,
     FgResponseFrontierScoringBundle,
-    _normalize_stat_key,
     all_response_stat_keys,
-    normalize_fg_response_stat_keys,
 )
-from .types import FgResponseFrontierResult
 
 logger = logging.getLogger(__name__)
 
-# The memory tiers, keyed like the files (version, song key, FT/FF axes signatures, then a stat key, a stat-key tuple
-# or the bundle marker): frontiers materialized per stat key, merged bundles and request payloads of builds, and
-# scoring bundles (metadata plus the decoded surface tables: a few MB each, up to ~100 MB on the longest charts).
-_geometry_frontier_memory: MemoryLru[FgResponseFrontierResult] = MemoryLru(4096)
-_payload_memory: MemoryLru[FgResponseFrontierCachePayload] = MemoryLru(8)
+# Decoded scoring bundles, keyed like the files (a few MB each, up to ~100 MB on the longest charts).
 _scoring_bundle_memory: MemoryLru[FgResponseFrontierScoringBundle] = MemoryLru(8)
-_RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
-_response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
+_response_bundle_build_slot = threading.Lock()
 _NPZ_FAST_COMPRESS_LEVEL = 1
 _SURFACE_TABLES = ("surface_rows", "surface_patterns")
 # What reading a damaged or truncated bundle file raises (a bad CRC is a BadZipFile).
@@ -168,28 +156,6 @@ def _dense_rank_pattern_ids_inplace(ids: np.ndarray, pattern_count: int) -> np.n
     return np.flatnonzero(used)
 
 
-def gather_surface_patterns(
-    rows: np.ndarray, patterns: np.ndarray, ranges: Iterable[tuple[int, int]]
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """The compact scoring arrays of `ranges` of a bundle's surface rows (its (4, n) row and (10, m) pattern columns):
-    ``(surface_pattern_ids, surface_counts, pattern_words, pattern_coeffs)``. Pattern IDs are renumbered densely for
-    the gather but row order is untouched, so exact-score ties keep the producer's first-row priority."""
-    ranges = tuple((int(start), int(count)) for start, count in ranges)
-    row_count = sum(count for _start, count in ranges)
-    surface_pattern_ids = np.empty((row_count,), dtype=np.int32)
-    surface_counts = np.empty((row_count, 3), dtype=np.int32)
-    cursor = 0
-    for start, count in ranges:
-        if start < 0 or count <= 0 or start + count > int(rows.shape[1]):
-            raise ValueError("FG response surface range is outside the bundle's rows")
-        surface_pattern_ids[cursor : cursor + count] = rows[0, start : start + count]
-        surface_counts[cursor : cursor + count] = rows[1:4, start : start + count].T
-        cursor += count
-    used = _dense_rank_pattern_ids_inplace(surface_pattern_ids, int(patterns.shape[1]))
-    pattern_words, pattern_coeffs = unpack_surface_patterns(patterns[:, used].T)
-    return surface_pattern_ids, surface_counts, pattern_words, pattern_coeffs
-
-
 def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
     array = np.asarray(values)
     if array.size:
@@ -201,50 +167,17 @@ def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
     return np.asarray(array, dtype=np.uint8)
 
 
-def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
-    return _geometry_frontier_memory.get(cache_key)
-
-
-def _frontier_is_complete(frontier: FgResponseFrontierResult | None) -> bool:
-    return frontier is not None and bool(frontier.first_frontier)
-
-
-def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
-    if not frontier.first_frontier:
-        raise ValueError("FG response frontier cache requires first-frontier surfaces")
-    _geometry_frontier_memory.put(cache_key, frontier)
-
-
 def reset_fg_response_frontier_payload_cache() -> None:
-    for memory in (_geometry_frontier_memory, _payload_memory, _scoring_bundle_memory):
-        memory.clear()
+    _scoring_bundle_memory.clear()
 
 
-def release_fg_response_song_memory(bundle_key: tuple) -> int:
-    """Evict every in-memory cache entry for one song's response-frontier surfaces.
-
-    Called once a song's FG scoring is complete: the surface tables and frontiers it loaded are no longer needed for
-    the rest of this run, so drop them from every memory tier instead of letting them sit until the tier's
-    entry-count LRU evicts them (they would trip the memory guard after a few dozen songs). Lossless: any later
-    access reloads the bundle from disk.
-
-    Every cache keys its entries as ``(version, song_key, *ref_axes, <suffix>)`` (bundle marker, stat key, or stat-key
-    tuple); the shared per-song prefix is the bundle key without its trailing marker. Returns the number of entries
-    removed.
-    """
-    if not bundle_key:
-        return 0
-    prefix = tuple(bundle_key[:-1])
-    if not prefix:
-        return 0
-    return sum(
-        memory.pop_prefix(prefix) for memory in (_scoring_bundle_memory, _geometry_frontier_memory, _payload_memory)
-    )
+def release_fg_response_song_memory(bundle_key: tuple) -> None:
+    """Drop a song's decoded bundle once its FG scoring is done (the entry-count LRU alone would let them trip the memory
+    guard after a few dozen songs). Lossless: a later access reads the file again."""
+    _scoring_bundle_memory.pop(bundle_key)
 
 
 def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
-    from .fg_cache_serde import _pack_frontiers
-
     frontiers = payload.frontiers
     frontier_id_by_object = {id(frontier): idx for idx, frontier in enumerate(frontiers)}
     sorted_items = sorted(payload.frontier_by_key.items())
@@ -316,16 +249,14 @@ def read_compatible_bundle(cache_key: tuple) -> dict[str, np.ndarray] | None:
 
 def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     """The key's bundle as a payload; None when there is none. An unreadable file is deleted (it is rebuilt)."""
-    from .fg_cache_serde import _unpack_frontiers
-
     try:
         arrays = read_compatible_bundle(cache_key)
         if arrays is None:
             return None
         frontiers = _unpack_frontiers(arrays)
         frontier_by_key = {
-            _normalize_stat_key((int(key_row[0]), int(key_row[1]))): frontiers[int(frontier_idx)]
-            for key_row, frontier_idx in zip(np.asarray(arrays["stat_keys"], dtype=np.int32), arrays["frontier_ids"])
+            tuple(key): frontiers[frontier_idx]
+            for key, frontier_idx in zip(arrays["stat_keys"].tolist(), arrays["frontier_ids"].tolist(), strict=True)
         }
         return FgResponseFrontierCachePayload(
             frontier_by_key=frontier_by_key,
@@ -343,9 +274,8 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
         return None
 
 
-def _payload_file_is_complete(path: Path, keys: Iterable[tuple[int, int]]) -> bool:
+def _payload_file_is_complete(path: Path, keys: np.ndarray) -> bool:
     """A bundle of a compatible version with every member that covers `keys` (an unreadable file is deleted)."""
-    requested = set(normalize_fg_response_stat_keys(keys))
     if not path.exists():
         return False
     try:
@@ -354,12 +284,14 @@ def _payload_file_is_complete(path: Path, keys: Iterable[tuple[int, int]]) -> bo
                 return False
             if str(data["version"].item()) not in FG_RESPONSE_FRONTIER_CACHE.compatible_versions():
                 return False
-            stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
+            held = np.asarray(data["stat_keys"], dtype=np.intp)
     except _UNREADABLE:  # a damaged cache file is rebuilt, never served
         logger.warning("[FGResponseCache] unreadable bundle %s; it is deleted and rebuilt", path, exc_info=True)
         path.unlink(missing_ok=True)
         return False
-    return requested <= {_normalize_stat_key((int(row[0]), int(row[1]))) for row in stat_keys}
+    present = np.zeros((MAX_STAT + 1, MAX_STAT + 1), dtype=np.bool_)
+    present[held[:, 0], held[:, 1]] = True
+    return bool(present[keys[:, 0], keys[:, 1]].all())
 
 
 def fg_response_cache_file_is_complete(cache_file: str | Path) -> bool:
@@ -378,9 +310,5 @@ FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
     song_key=fg_response_frontier_bundle_cache_key,
     manifest_name="fg_response_manifest_v1.json",
     manifest_version_field="cache_version",
-    manifest_stat_signature=bytes(array_sig16(np.asarray(all_response_stat_keys(), dtype=np.int32).reshape(-1))).hex(),
+    manifest_stat_signature=bytes(array_sig16(all_response_stat_keys().reshape(-1))).hex(),
 )
-
-
-def _payload_disk_is_complete(cache_key: tuple, keys: Iterable[tuple[int, int]]) -> bool:
-    return _payload_file_is_complete(FG_RESPONSE_FRONTIER_CACHE.serving_path(cache_key), keys)

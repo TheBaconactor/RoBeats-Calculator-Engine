@@ -11,11 +11,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from gear_optimizer.solver.input_engine_breakpoints import INPUT_ORDER_EPS_SEC
-from gear_optimizer.frontier.fg_cache_patterns import (
-    EXPANDED_COEFF_COLUMNS,
-    _intern_surface_row_words,
-    pack_surface_patterns,
-)
+from gear_optimizer.frontier.fg_cache_patterns import EXPANDED_COEFF_COLUMNS, intern_surface_row_words, pack_surface_patterns
 
 from gear_optimizer.frontier.producer_batch import action_table
 from gear_optimizer.trace.reconstruct import (
@@ -382,7 +378,8 @@ def intern_surface_rows(
     words (``intern_surface_row_words`` + ``pack_surface_patterns``) so equal masks cannot compute inconsistent
     coefficients; this row-coefficient entry checks that. Both share the V30 ``np.unique`` pattern order.
     """
-    row_refs, unique_words, first_indices = _intern_surface_row_words(surface_rows)
+    row_refs, unique_words = intern_surface_row_words(surface_rows)
+    first_indices = np.unique(row_refs[:, 0], return_index=True)[1]
     coeffs = np.ascontiguousarray(np.asarray(surface_coeffs))
     if coeffs.ndim != 2 or coeffs.shape != (row_refs.shape[0], EXPANDED_COEFF_COLUMNS):
         raise ValueError("FG response surface coefficients must have shape (n, 4)")

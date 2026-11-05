@@ -33,7 +33,6 @@ from gear_optimizer.frontier.fg_cache import (
     session_prune_scoring_bundle,
 )
 from gear_optimizer.frontier.fg_cache_store import release_fg_response_song_memory
-from gear_optimizer.frontier.fg_cache_types import all_response_stat_keys
 from gear_optimizer.solver.fg_scoring import fg_solve_result, score_fg_base_components
 from gear_optimizer.stats import GEM_KINDS, apply_gems, gems
 
@@ -46,8 +45,7 @@ def prepare_fg_static(song: NativeSong) -> None:
     """The song's FG scoring bundle, loaded and session-pruned while nothing waits on it: rows no cell this inventory
     can reach could win are dropped (identical winners, fewer scored rows)."""
     gpu_inputs = song.gpu_inputs
-    bundle = load_response_frontier_scoring_bundle(gpu_inputs.timed_song, gpu_inputs.curves,
-                                                   stat_keys=all_response_stat_keys())
+    bundle = load_response_frontier_scoring_bundle(gpu_inputs.timed_song, gpu_inputs.curves)
     song.runtime.fg.fg_response_scoring_bundle = session_prune_scoring_bundle(bundle, gpu_inputs.curves)
 
 
@@ -167,7 +165,6 @@ def finish_fg(song: NativeSong, ga_result: dict) -> SongSolve:
         paired = score_stats_exact_batch(paired_stats, timed, curves)
         song_inputs = timed.fg_inputs
         solves: dict[tuple, Any] = {}
-        frontiers: dict[tuple[int, int], Any] = {}
         jobs = []
         for index, stats in enumerate(base_stats):
             key = tuple(sorted(stats.items()))
@@ -176,8 +173,7 @@ def finish_fg(song: NativeSong, ga_result: dict) -> SongSolve:
                     stats, None, primary_color=song_inputs.primary_color, secondary_color=song_inputs.secondary_color
                 )
                 solves[key] = fg_solve_result(score_row=fg_rows[totals], base_stats=stats, selected_color=selected,
-                                              song=timed, curves=curves, scoring_bundle=fg.fg_response_scoring_bundle,
-                                              frontier_by_stat_key=frontiers)
+                                              scoring_bundle=fg.fg_response_scoring_bundle)
             jobs.append((index, solves[key]))
         trace_cache = FgTraceMaterializationCache()
 

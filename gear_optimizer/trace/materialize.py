@@ -218,7 +218,7 @@ def materialize_force_payload_from_response_frontier(
         "raw_fever_fill": fever_fill_denominator,
         "real_fever_time": float(result.real_fever_time),
         "frontier_trace": list(frontier_trace),
-        "frontier_first_surfaces": int(len(frontier.first_frontier)),
+        "frontier_first_surfaces": int(frontier.first_surfaces),
         "frontier_states": int(frontier.states_evaluated),
         "frontier_max_state": int(frontier.max_state_frontier),
         "frontier_transitions": int(frontier.transitions_evaluated),
