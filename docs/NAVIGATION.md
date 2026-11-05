@@ -36,22 +36,22 @@ Use this page to find the current owner of a behavior. The
 - Scoring package: `gear_optimizer/solver/scoring/`
 - Fever timeline: `gear_optimizer/solver/fever_timeline.py`
 - Exact timing frontier:
-  `gear_optimizer/solver/timeline_exact_frontier.py`
+  `gear_optimizer/frontier/timeline_producer.py`
 - Timing envelope: `gear_optimizer/solver/timing_envelope.py`
 - Force Great planning and replay:
-  `gear_optimizer/solver/fg_response_scoring/`
+  `gear_optimizer/trace/`
 - Force Great device response frontier:
-  `gear_optimizer/solver/taichi_gem/force_greats/response_frontier.py`
+  `gear_optimizer/solver/fg_scoring.py`
 - Startup response-frontier cache build:
-  `gear_optimizer/solver/fg_response_frontier_cache_prebuild.py`
+  `gear_optimizer/frontier/fg_prebuild.py`
 
 ## GPU and Taichi
 
-- Single GPU owner (one thread runs every GPU call): `gear_optimizer/solver/gpu_executor.py`
-- Public Taichi API: `gear_optimizer/solver/taichi_gem/api/`
-- Kernels: `gear_optimizer/solver/taichi_gem/kernels/`
+- Single GPU owner (one thread runs every GPU call): `gear_optimizer/gpu/executor.py`
+- Public Taichi API: `gear_optimizer/gpu/api/`
+- Kernels: `gear_optimizer/gpu/kernels/`
 - GA evaluation and reduction:
-  `gear_optimizer/solver/taichi_gem/kernels/ga_eval/`
+  `gear_optimizer/gpu/kernels/ga_eval/`
 
 Production scoring should import through the public Taichi API or GPU executor,
 not directly from kernel internals.

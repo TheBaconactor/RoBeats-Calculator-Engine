@@ -19,7 +19,7 @@ def test_service_request_gate_preserves_each_supported_mode():
 
 
 def test_startup_prepares_both_frontier_cache_families_per_mode(monkeypatch):
-    from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.frontier import startup_prebuild
 
     calls: dict[str, list[dict]] = {"timeline": [], "fg": []}
 
@@ -31,13 +31,13 @@ def test_startup_prepares_both_frontier_cache_families_per_mode(monkeypatch):
         calls[{"timeline": "timeline", "fg_response": "fg"}[prebuild.cache.name]].append(kwargs["charts_by_mode"])
         return Summary()
 
-    monkeypatch.setattr(cpu_work_manager, "prebuild_frontier_cache", fake_prebuild)
+    monkeypatch.setattr(startup_prebuild, "prebuild_frontier_cache", fake_prebuild)
     charts_by_mode = {"precise": ["chart.txt"], "non-precise": ["chart.txt", "pinned.txt"]}
-    cpu_work_manager.run_startup_cpu_work(charts_by_mode=charts_by_mode, curves={}, announce_stream=io.StringIO())
+    startup_prebuild.run_startup_cpu_work(charts_by_mode=charts_by_mode, curves={}, announce_stream=io.StringIO())
     assert calls == {"timeline": [charts_by_mode], "fg": [charts_by_mode]}
 
 
 def test_gpu_warmup_songs_do_not_select_a_request_mode():
-    from gear_optimizer.solver.taichi_gem.api import ga_operations
+    from gear_optimizer.gpu.api import ga_operations
 
     assert "Timing Mode" not in ga_operations._warmup_song().chart.header

@@ -44,7 +44,7 @@ def _boundary_drift_stats() -> dict[str, int]:
 
 
 def _prebuild_timeline_frontier(song, curves) -> None:
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     build_or_load_timeline_frontier_payload(song, curves)
 
@@ -112,7 +112,7 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
 def test_team_buff_tier_replay_scores_with_the_float64_curves(monkeypatch):
     """The tier replay's exact base scores read curves.f64 too (same boundary case as above)."""
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
+    from gear_optimizer.solver import team_buff_tiers as tbt
     from tests.test_team_buff_tier_postprocess import _install_synthetic_tier_resolve
 
     stats = _boundary_drift_stats()

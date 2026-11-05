@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
+import threading
+
+_GPU_LOCK = threading.Lock()
 
 pytestmark = pytest.mark.gpu
 
@@ -10,8 +12,8 @@ pytestmark = pytest.mark.gpu
 def test_calc_score_with_grid_bits_preserves_large_integer_body_score() -> None:
     import taichi as ti
 
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
-    from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
+    from gear_optimizer.gpu.api.initialization import ensure_ready
+    from gear_optimizer.gpu.kernels import kernels_helpers
 
     with _GPU_LOCK:
         ensure_ready()
@@ -42,9 +44,9 @@ def test_base_gpu_rescore_uses_best_retained_physical_surface() -> None:
     """The legacy single-grid representative must never replace frontier maximization."""
     import taichi as ti
 
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import (
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api.initialization import ensure_ready
+    from gear_optimizer.gpu.kernels.kernels_scoring import (
         score_timeline_frontier_cached_device,
     )
 

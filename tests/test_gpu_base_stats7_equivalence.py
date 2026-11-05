@@ -28,7 +28,9 @@ from gear_optimizer.solver.genetic_pipeline import (
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.gamedata import Gear, SongMini
 from tests.items_support import make_gear, make_song_mini
-from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
+import threading
+
+_GPU_LOCK = threading.Lock()
 from tests.songs_support import make_song
 
 pytestmark = pytest.mark.gpu
@@ -124,11 +126,9 @@ def _song(*, n_notes: int = 400):
 def real_ga_run():
     """Run the production GPU-native GA once on Vulkan: (selected genome ids, their payload base_stats7, item stats,
     fixed stats)."""
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        precompute_timeline_gpu,
-    )
+    from gear_optimizer.gpu.api.initialization import ensure_ready
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
 
     registry = _build_registry()
     gpu_arrays = registry.to_gpu_arrays()
@@ -155,7 +155,7 @@ def real_ga_run():
     with _GPU_LOCK:
         ensure_ready()
         prebuilt = build_or_load_timeline_frontier_payload(song, curves)
-        precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+        precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_payload=prebuilt.payload)
         shortlist = ga_ftff_shortlist(
             prebuilt.payload, reach=reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed_stats_arr),
             color_flags=color_flags,

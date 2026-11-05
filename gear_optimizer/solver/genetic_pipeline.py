@@ -209,8 +209,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     seed_base = int(ga_seed) & 0xFFFFFFFF
     n_slots = 9
 
-    gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-    gpu_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.fields")
+    gpu_api = importlib.import_module("gear_optimizer.gpu.api")
+    gpu_fields = importlib.import_module("gear_optimizer.gpu.fields")
     # Size the multi-run GA buffers to this song; only takes effect before the first field allocation.
     gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=n_genomes)
 
@@ -246,7 +246,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             topk_ids=np.asarray(init_heuristic_topk, dtype=np.int32), heuristic_k=init_heuristic_k, n_slots=n_slots
         )
 
-    from .taichi_gem.kernels.kernels_helpers import gpu_color_flags
+    from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
 
     scoring = dict(
         total_budget=GEM_BUDGET, gem_scale_fever=STAT_GEM_GAIN_FEVER, song_slot=song_slot,

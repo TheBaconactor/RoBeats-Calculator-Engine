@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.taichi_gem.runtime import ti
+from gear_optimizer.gpu.runtime import ti
 
 
 EMPTY_I32 = np.zeros(0, dtype=np.int32)

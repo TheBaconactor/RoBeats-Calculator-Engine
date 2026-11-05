@@ -6,7 +6,7 @@ import pytest
 from gear_optimizer.chart import load_chart
 from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import time_song
 
 

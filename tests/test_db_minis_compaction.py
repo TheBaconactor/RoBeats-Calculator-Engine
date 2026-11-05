@@ -1,4 +1,4 @@
-from gear_optimizer.helpers.song_helpers.loadout_hashing import compact_mini_names
+from gear_optimizer.data.loadout_hashing import compact_mini_names
 from tests.items_support import make_song_mini
 
 

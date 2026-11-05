@@ -68,7 +68,7 @@ def retired_nested_action_reachability_prepass(
     great_floor_timestamps,
 ):
     """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         _numba_great_floor_extended_end_at_hit,
         _numba_late_edge_extends,
         _numba_mark_early_great_reachable_from_hit,

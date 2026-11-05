@@ -1,0 +1,165 @@
+"""Fixed-timing (0ms) FG response-surface build (issue #51).
+
+The re-optimized 0ms FG surface is produced by the canonical response-frontier builder fed a
+chart-only (zero-width-envelope) song -- building a second FG optimizer would violate the
+one-canonical-path rule. Gems are fixed (``total_budget=0``): only the FG/great placement is
+re-optimized for each loadout's stats at chart timing. Forcing greats still helps at 0ms (it
+changes the fill length, shifting where fever activates -- a count effect independent of
+hit-offset), so FG 0ms is NOT base 0ms and the surface genuinely re-optimizes.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Mapping
+
+from gear_optimizer.solver.timing_envelope import TimedSong
+from gear_optimizer.gamedata import StatCurves
+
+logger = logging.getLogger(__name__)
+
+
+def _solve_fixed_timing_response_results(
+    stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    song: TimedSong,
+    curves: StatCurves,
+    selected_color: str,
+    *,
+    total_budget: int = 0,
+) -> list[Any]:
+    """Solve the song's FG response frontier (one result per stats row).
+
+    ``total_budget`` selects the semantic shape (a required-hardware-boundary input, not a
+    toggle): ``0`` = gems fixed, re-optimize only FG placement from already allocated stats;
+    ``>0`` = re-solve the gem allocation, so the input rows must be pre-gem stats. Passing
+    already allocated stats with a positive budget would count gems twice. The gem search runs
+    on the GPU owner whose kernel is fp-gated (f32 on MoltenVK / f64 on AMD), so this is exact
+    on macOS too; the served score is the CPU-f64 exact rescore in the materializer.
+    """
+    rows = [dict(stats) for stats in (stats_list or [])]
+    if not rows:
+        return []
+
+    total_budget = int(total_budget)
+    from gear_optimizer.frontier.fg_cache import (
+        ensure_response_frontier_cache_for_song,
+        load_response_frontier_scoring_bundle,
+    )
+    from gear_optimizer.solver.fg_scoring import (
+        fg_solve_results,
+        required_response_stat_keys_for_scoring_batch,
+    )
+
+    # The chart-only bundle is distinct from precise and is prebuilt for the catalog at
+    # optimizer startup. Build only the FT/FF cells this exact batch can address: base FT/FF plus
+    # every legal gem pair, clipped by the same stat bounds as the canonical group builder. This is
+    # complete reachability, not a score prune, so tier/buff changes still evaluate every legal
+    # candidate losslessly; a missing cache remains a valid recovery path.
+    required_stat_keys = required_response_stat_keys_for_scoring_batch(
+        base_stats_list=rows,
+        total_budget=total_budget,
+    )
+    ensure_response_frontier_cache_for_song(
+        song,
+        curves,
+        stat_keys=required_stat_keys,
+    )
+    scoring_bundle = load_response_frontier_scoring_bundle(
+        song,
+        curves,
+        stat_keys=required_stat_keys,
+    )
+    return fg_solve_results(rows, song=song, curves=curves, selected_color=str(selected_color or ""),
+                            scoring_bundle=scoring_bundle, total_budget=total_budget)
+
+
+def build_fixed_timing_fg_replays(
+    *,
+    fg_stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    base_stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    song: TimedSong,
+    curves: StatCurves,
+    selected_color: str,
+    total_budget: int = 0,
+) -> list[dict[str, Any]]:
+    """FG replay per loadout: surface + full ``force`` payload, at the ``song`` timing.
+
+    ``total_budget==0`` (default) keeps gems fixed (re-optimize FG placement only) and expects
+    already allocated ``fg_stats_list``. ``total_budget>0`` re-solves the gem allocation at 0ms
+    and must be fed pre-gem ``fg_stats_list``/``base_stats_list``. Passing already allocated
+    stats with a positive budget would count gems twice.
+
+    Returns one ``{"surface": FgResponseSurface, "force": <payload>}`` per stats row, in
+    order. The ``force`` payload is produced by the single canonical FG materializer
+    (``materialize_force_payload_from_response_frontier``) so its shape is identical to a
+    persisted FG row -- it carries the chart-fixed ``ForceGreats.frontier_trace`` (the 0ms
+    note-graph witness), the rebuilt ``response_surface``/forced-count ``config``, and the
+    re-derived ``Stats``. ``fg_stats_list`` is the FG-evaluated stats batch (the surface
+    solve input); ``base_stats_list`` is the paired non-FG base stats for each loadout (its
+    0ms base score is the materializer's required paired base).
+    """
+    fg_rows = [dict(stats) for stats in (fg_stats_list or [])]
+    base_rows = [dict(stats) for stats in (base_stats_list or [])]
+    if not fg_rows:
+        return []
+    if len(base_rows) != len(fg_rows):
+        raise ValueError(
+            "build_fixed_timing_fg_replays: base_stats_list and fg_stats_list lengths differ "
+            f"({len(base_rows)} != {len(fg_rows)})"
+        )
+
+    from gear_optimizer.solver.scoring.exact_rescore import score_base_exact_batch
+    from gear_optimizer.frontier.fg_cache_store import release_fg_response_song_memory
+    from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key
+    from .reconstruct import UnplayableTrace
+    from .materialize import FgTraceMaterializationCache, materialize_force_payload_from_response_frontier
+
+    # Same key inputs as the solve's bundle loads.
+    bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
+
+    try:
+        results = _solve_fixed_timing_response_results(
+            fg_rows, song, curves, selected_color, total_budget=int(total_budget)
+        )
+        # Paired base = each loadout's NON-FG base score under the same timeline; the materializer
+        # requires it (>0) as the FG row's source base score. For a gem re-solve (total_budget>0) the
+        # gems change, so the paired base is the non-FG score at the RE-SOLVED stats (result.stats), not
+        # the pre-gem search input.
+        if int(total_budget) > 0:
+            paired_base_rows = [dict(getattr(result, "stats", None) or {}) for result in results]
+            paired_base_scores = score_base_exact_batch(paired_base_rows, song, curves)
+        else:
+            paired_base_rows = base_rows
+            paired_base_scores = score_base_exact_batch(base_rows, song, curves)
+
+        replays: list[dict[str, Any]] = []
+        # Batch-shared trace memo: loadouts in one replay batch commonly share the FG surface +
+        # fill inputs, and the reconstruct DFS is the dominant materialize cost (same memo the
+        # fused owner path uses; key completeness incl. raw_fever_fill/non_fever_base lives in
+        # the reducer).
+        trace_cache = FgTraceMaterializationCache()
+        for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
+            try:
+                force = materialize_force_payload_from_response_frontier(
+                    base_stats=dict(base_stats),
+                    paired_base_score=int(paired_base),
+                    selected_element=str(selected_color or ""),
+                    result=result,
+                    song=song,
+                    curves=curves,
+                    trace_cache=trace_cache,
+                )
+            except UnplayableTrace as exc:
+                # As the solver's materializer: a loadout whose plan no hit timing plays (non-precise: a held tail's Great
+                # between its chord's presses) has no FG
+                # result, rather than failing the song.
+                logger.warning("%s: no FG result for a loadout, its plan is unplayable: %s", song.chart.name, exc)
+                force = None
+            replays.append({"surface": result.surface, "force": force})
+        return replays
+    finally:
+        # Same contract as fg_cache.ensure_response_frontier_cache_for_song:
+        # drop this song's scoring-bundle, slim-metadata, lazy-frontier and cold-miss payload memo
+        # tiers (long-lived ranked/API processes never sweep them otherwise); the next access
+        # re-opens them from disk.
+        release_fg_response_song_memory(bundle_key)

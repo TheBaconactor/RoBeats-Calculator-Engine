@@ -2,7 +2,7 @@ import numpy as np
 
 
 def test_ensure_ftff_combo_tables_order_and_cache(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.api import initialization as init
+    from gear_optimizer.gpu.api import initialization as init
 
     monkeypatch.setattr(init, "ensure_ready", lambda *args, **kwargs: None)
 

@@ -13,8 +13,8 @@ import random
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.fg_response_scoring import physical_replay as pr
-from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+from gear_optimizer.trace import physical_replay as pr
+from gear_optimizer.trace.physical_replay import (
     _GREAT_CODE,
     _HELD_TAIL_TYPE,
     _JUDGMENT_NAME,
@@ -34,7 +34,7 @@ from gear_optimizer.solver.fg_response_scoring.physical_replay import (
     validate_force_greats_physical_replay,
 )
 from gear_optimizer.score import HEAD_NOTES
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+from gear_optimizer.frontier.types import FgResponseSurface
 
 
 def _reference_fever_walk(event_order, event_times, judgments, denom, duration):

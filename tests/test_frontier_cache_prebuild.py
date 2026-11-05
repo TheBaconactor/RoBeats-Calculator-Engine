@@ -10,8 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
-from gear_optimizer.solver import frontier_cache
-from gear_optimizer.solver.frontier_cache import (
+from gear_optimizer.frontier import cache as frontier_cache
+from gear_optimizer.frontier.cache import (
     FrontierCache,
     FrontierCacheBuildResult,
     FrontierCachePrebuild,

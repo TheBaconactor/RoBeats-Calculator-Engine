@@ -146,7 +146,7 @@ def _curves() -> dict[str, np.ndarray]:
 
 
 def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
-    fake_api_module = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
+    fake_api_module = types.ModuleType("gear_optimizer.gpu.api")
     fake_api_module.load_curves = lambda _curves: None
     fake_api_module.ensure_ready = lambda _curves=None, **_kwargs: b""
     fake_api_module.precompute_timeline_gpu = lambda _song, _curves, song_slot=0: int(song_slot)
@@ -155,15 +155,15 @@ def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
             if not name.startswith("_") or name == "_ensure_ftff_combo_tables":
                 setattr(fake_api_module, name, getattr(gpu_api, name))
 
-    fake_fields_module = types.ModuleType("gear_optimizer.solver.taichi_gem.fields")
+    fake_fields_module = types.ModuleType("gear_optimizer.gpu.fields")
     fake_fields_module.MAX_WORK_ITEMS = 1_000_000
     fake_fields_module.MAX_GENOMES = 1_000_000
     fake_fields_module.MAX_GA_RUNS = 64
     fake_fields_module.MAX_GA_RUN_GENOMES = 1_000_000
     fake_fields_module.configure_ga_run_buffers = lambda max_runs, max_genomes: (int(max_runs), int(max_genomes))
 
-    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem.api", fake_api_module)
-    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem.fields", fake_fields_module)
+    monkeypatch.setitem(sys.modules, "gear_optimizer.gpu.api", fake_api_module)
+    monkeypatch.setitem(sys.modules, "gear_optimizer.gpu.fields", fake_fields_module)
 
 
 def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch):

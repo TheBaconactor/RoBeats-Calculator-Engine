@@ -2,8 +2,8 @@ import threading
 
 import pytest
 
-from gear_optimizer.solver import gpu_executor
-from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuFatalError, GpuServiceTimeoutError, is_fatal_gpu_error
+from gear_optimizer.gpu import executor as gpu_executor
+from gear_optimizer.gpu.executor import GpuExecutor, GpuFatalError, GpuServiceTimeoutError, is_fatal_gpu_error
 
 
 @pytest.fixture
@@ -113,7 +113,7 @@ def test_starting_the_gpu_sizes_the_ga_buffers_and_starts_the_executor(monkeypat
     import sys
     import types
 
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.gpu import fields as gpu_fields
 
     started = []
     # No real GPU: a started executor would keep initializing Taichi after the test, racing later tests' resets.

@@ -3,25 +3,25 @@ from __future__ import annotations
 import os
 
 # `configure_timeline_pair_build_threads` now delegates to the shared lane-aware reducer, so the
-# effective count lives in `response_build_gpu_reducer._FIRST_ONLY_REDUCER_THREADS`; the old
-# `timeline_exact_frontier._TIMELINE_PAIR_BUILD_THREADS` global went away with that move. The setter
+# effective count lives in `producer_reducer._FIRST_ONLY_REDUCER_THREADS`; the old
+# `timeline_producer._TIMELINE_PAIR_BUILD_THREADS` global went away with that move. The setter
 # clamps to os.cpu_count(), so assert the clamped value rather than a bare literal.
 
 
 def _effective_threads() -> int:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
+    from gear_optimizer.frontier import producer_reducer
 
-    return int(response_build_gpu_reducer._FIRST_ONLY_REDUCER_THREADS)
+    return int(producer_reducer._FIRST_ONLY_REDUCER_THREADS)
 
 
 def test_service_mode_configures_timeline_pair_build_threads(monkeypatch) -> None:
     from gear_optimizer import cli
     from gear_optimizer.core import cpu_affinity
-    from gear_optimizer.solver import timeline_exact_frontier
+    from gear_optimizer.frontier import timeline_producer
 
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
     monkeypatch.setattr(cpu_affinity, "frontier_prebuild_cpu_count", lambda: 7)
-    timeline_exact_frontier.configure_timeline_pair_build_threads(1)
+    timeline_producer.configure_timeline_pair_build_threads(1)
 
     cli._apply_service_mode_frontier_threads()
 
@@ -30,10 +30,10 @@ def test_service_mode_configures_timeline_pair_build_threads(monkeypatch) -> Non
 
 def test_standalone_mode_does_not_reconfigure_timeline_pair_build_threads(monkeypatch) -> None:
     from gear_optimizer import cli
-    from gear_optimizer.solver import timeline_exact_frontier
+    from gear_optimizer.frontier import timeline_producer
 
     monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", raising=False)
-    timeline_exact_frontier.configure_timeline_pair_build_threads(3)
+    timeline_producer.configure_timeline_pair_build_threads(3)
 
     cli._apply_service_mode_frontier_threads()
 

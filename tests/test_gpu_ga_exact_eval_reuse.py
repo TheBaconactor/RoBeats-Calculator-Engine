@@ -11,8 +11,8 @@ pytestmark = pytest.mark.gpu
 
 
 def _stage_population(population: np.ndarray, *, n_slots: int = 9) -> None:
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api import ensure_ready
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api import ensure_ready
 
     ensure_ready()
     src = np.asarray(population, dtype=np.int32)
@@ -22,13 +22,12 @@ def _stage_population(population: np.ndarray, *, n_slots: int = 9) -> None:
 
 
 def test_ga_aggregate_genome_stats_kernel_always_aggregates_every_genome():
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api import ensure_ready
-    from gear_optimizer.solver.taichi_gem.kernel_loader import get_kernels
+    from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api import ensure_ready
+    from gear_optimizer.gpu import kernels
 
     ensure_ready()
-    kernels = get_kernels()
 
     _stage_population(np.asarray([[1], [2]], dtype=np.int32), n_slots=1)
 

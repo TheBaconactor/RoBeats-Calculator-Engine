@@ -872,7 +872,7 @@ the canonical description of the shipped timing implementation.
 
 In production this algorithm would be implemented as a Taichi Vulkan kernel, following the
 exact parallelization pattern of the existing `compute_timeline_grid_kernel` in
-`gear_optimizer/solver/taichi_gem/kernels/kernels_timeline.py`.
+`gear_optimizer/gpu/kernels/kernels_timeline.py`.
 
 **Parallelism axis:** one thread per `(ft_idx, ff_idx)` cell — 25,921 threads total, same as
 the existing kernel. Each thread independently runs the sequential carry-state scan for its

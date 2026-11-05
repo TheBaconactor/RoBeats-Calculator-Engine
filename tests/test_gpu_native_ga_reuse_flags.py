@@ -9,8 +9,8 @@ def test_ga_prepare_population_never_builds_exact_reuse_map(monkeypatch) -> None
     (host_fraction ~65.8% -> ~0.9% once disabled). The opt-in env vars are gone,
     so setting them must have NO effect and the reuse kernels must never dispatch.
     """
-    from gear_optimizer.solver.taichi_gem.api import ga_operations
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
+    from gear_optimizer.gpu.api import ga_operations
+    from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
 
     calls: list[str] = []
     fake_kernels = SimpleNamespace(

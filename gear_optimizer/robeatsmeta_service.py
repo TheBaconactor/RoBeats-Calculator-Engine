@@ -256,7 +256,7 @@ def _prebuild_frontier_caches(
     in a child process and adds the active publication's files for an incremental build.
     """
     from gear_optimizer.gamedata import stat_curves
-    from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
+    from gear_optimizer.frontier.startup_prebuild import run_startup_cpu_work
 
     curves = stat_curves()
     song_paths = (
@@ -276,8 +276,8 @@ def _prebuild_frontier_caches(
         build_missing=True,
         authorize_destructive_rotation=True,
     )
-    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
+    from gear_optimizer.frontier.timeline_cache import TIMELINE_FRONTIER_CACHE
+    from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
     def recorded_files(cache, cache_root: Path) -> set[str]:
         """The files of every chart in every timing mode (the prebuild built them all)."""

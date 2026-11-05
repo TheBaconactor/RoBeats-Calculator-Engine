@@ -19,7 +19,7 @@ from ..core.timing_modes import TIMING_MODES
 from ..gamedata import ELEMENTS, STATS
 from ..stats import GEM_KINDS
 
-# FgResponseSurface has 11 fields (solver/taichi_gem/force_greats/response_types.py; importing it loads Taichi).
+# FgResponseSurface has 11 fields (frontier/types.py).
 SURFACE_SIZE = 11
 
 

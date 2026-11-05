@@ -10,11 +10,12 @@ pytestmark = pytest.mark.gpu
 def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
     import taichi as ti
 
-    from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import optimize_core_device_exact_bound
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
+    import threading
+    _GPU_LOCK = threading.Lock()
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api.initialization import ensure_ready
+    from gear_optimizer.gpu.kernels.kernels_scoring import optimize_core_device_exact_bound
+    from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
 
     curves = synthetic_curves({
         "Perfect Points": np.full((161,), 10_000.0, dtype=np.float32),

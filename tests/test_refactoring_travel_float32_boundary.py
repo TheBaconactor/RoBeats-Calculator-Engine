@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 from gear_optimizer.chart import load_chart
-from gear_optimizer.solver.taichi_gem.api.timeline import reconstruct_base_trace
-from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+from gear_optimizer.trace.reconstruct import reconstruct_base_trace
+from gear_optimizer.trace.reconstruct import (
     UnplayableTrace,
     reconstruct_force_greats_response_trace,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import time_song
 
 CHART = Path(__file__).resolve().parents[1] / "Data" / "Normal" / "Refactoring Travel by t+pazolite feat Nanahira.txt"

@@ -12,7 +12,7 @@ dedups GA candidates by an *effective loadout hash* that folds:
 
 The GPU select kernel
 (``ga_select_top_base_fg_candidate_coords_kernel``,
-``solver/taichi_gem/kernels/ga_eval/payload.py:467``) currently dedups by *raw
+``gpu/kernels/ga_eval/payload.py:467``) currently dedups by *raw
 item-id* keys, so id-distinct-but-effective-duplicate genomes survive and can
 displace loadouts the host would have kept -> ``best_fg_score`` would not be
 bit-exact after fusing.
@@ -25,7 +25,7 @@ kernel must match.
 Equivalence semantics replicated (file:line of the host source matched):
 
 - gear name equivalence: ``loadout_hashing.effective_loadout_hash_from_names``
-  (gear_optimizer/helpers/song_helpers/loadout_hashing.py:23) sorts/joins gear
+  (gear_optimizer/data/loadout_hashing.py:23) sorts/joins gear
   NAMES, so name-equality is the gear equivalence relation.
 - mini signature: ``loadout_equivalence.effective_mini_signature`` /
   ``effective_mini_signature_for_name``

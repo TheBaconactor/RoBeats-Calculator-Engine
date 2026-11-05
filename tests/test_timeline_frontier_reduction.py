@@ -16,12 +16,12 @@ def _load_case(chart_path: Path):
 
 def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) -> None:
     """Issue #154: physical engine semantics must own the surface before Pareto reduction."""
-    from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
-    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+    from gear_optimizer.trace.note_graph import timeline_frontier_note_graph
+    from gear_optimizer.trace.physical_replay import (
         validate_base_physical_replay,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
-    from gear_optimizer.solver.taichi_gem.api.timeline import reset_timeline_state
+    from gear_optimizer.gpu.api.timeline import reset_timeline_state
     from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
@@ -125,11 +125,11 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
 
 def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatch, tmp_path) -> None:
     """A physically exact producer retains the true combo-scaled head mask."""
-    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+    from gear_optimizer.trace.physical_replay import (
         validate_base_physical_replay,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
-    from gear_optimizer.solver.taichi_gem.api.timeline import reset_timeline_state
+    from gear_optimizer.gpu.api.timeline import reset_timeline_state
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
     reset_timeline_state()
@@ -181,11 +181,11 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
     monkeypatch, tmp_path
 ) -> None:
     """Issue #161: replay must consume the producer's canonical input order."""
-    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+    from gear_optimizer.trace.physical_replay import (
         validate_base_physical_replay,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
-    from gear_optimizer.solver.taichi_gem.api.timeline import reset_timeline_state
+    from gear_optimizer.gpu.api.timeline import reset_timeline_state
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
     reset_timeline_state()

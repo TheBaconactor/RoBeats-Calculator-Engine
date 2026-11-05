@@ -37,21 +37,21 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     non_fever_base: int,
     real_fever_time: float,
 ):
-    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+    from gear_optimizer.trace.activation_witness import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import server_fill_crossing_run
+    from gear_optimizer.frontier.fill_crossing import server_fill_crossing_run
     from tests.fg_response_frontier_oracles import (
         _combine_surfaces,
         _reduce_surfaces,
         latest_activation_hit_for_contiguous_great_run,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.trace.reconstruct import (
         _edge_end_at_hit,
         _edge_surface,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import _EMPTY_SURFACE
+    from gear_optimizer.frontier.types import _EMPTY_SURFACE
 
     n = int(timestamps.shape[0])
     lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
@@ -320,7 +320,7 @@ def _missing_pg_oracle_surfaces(production_surfaces, oracle_surfaces) -> list[tu
 
 
 def test_fg_response_first_frontier_region_groups_partition_in_canonical_order() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_precompute
+    from gear_optimizer.frontier import producer_precompute
 
     action_row = np.asarray([1, 2, 3, 4], dtype=np.int32)
 
@@ -329,7 +329,7 @@ def test_fg_response_first_frontier_region_groups_partition_in_canonical_order()
 
     items = [_item(0, 3, 2.5), _item(1, 3, 2.5), _item(2, 4, 2.5), _item(3, 3, 2.5), _item(4, 4, 7.0)]
 
-    groups = response_build_gpu_precompute._first_only_region_groups(items)
+    groups = producer_precompute._first_only_region_groups(items)
 
     # Keys keep first-appearance order and items keep canonical order within each independent
     # table group; concurrent completion therefore cannot change returned geometry order.
@@ -338,63 +338,63 @@ def test_fg_response_first_frontier_region_groups_partition_in_canonical_order()
     assert groups[(2.5, 4)] == [items[2]]
     assert groups[(7.0, 4)] == [items[4]]
     # Fills with the same half-unit count share a table, keyed by the first one's fill.
-    shared = response_build_gpu_precompute._first_only_region_groups([_item(5, 3, 2.2), _item(6, 3, 2.4), _item(7, 3, 2.6)])
+    shared = producer_precompute._first_only_region_groups([_item(5, 3, 2.2), _item(6, 3, 2.4), _item(7, 3, 2.6)])
     assert list(shared.keys()) == [(2.2, 3), (2.6, 3)]
     assert [item[0] for item in shared[(2.2, 3)]] == [5, 6]
     # The pre-song-context chunk machinery is gone: one canonical grouped route only.
-    assert not hasattr(response_build_gpu_precompute, "_first_only_chunks")
-    assert not hasattr(response_build_gpu_precompute, "_batch_chunk_size")
-    assert not hasattr(response_build_gpu_precompute, "_FIRST_ONLY_REDUCER_BATCH_MAX_BYTES")
+    assert not hasattr(producer_precompute, "_first_only_chunks")
+    assert not hasattr(producer_precompute, "_batch_chunk_size")
+    assert not hasattr(producer_precompute, "_FIRST_ONLY_REDUCER_BATCH_MAX_BYTES")
 
 
 def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
+    from gear_optimizer.frontier import producer_reducer
 
-    previous = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(9999)
+    previous = producer_reducer.configure_force_greats_response_first_frontier_threads(9999)
     try:
         cpu_count = max(1, int(os.cpu_count() or 1))
-        assert 1 <= response_build_gpu_reducer._resolve_first_only_reducer_threads(9999) <= cpu_count
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(0)
-        assert response_build_gpu_reducer._resolve_first_only_reducer_threads(9999) == 1
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(4)
-        assert response_build_gpu_reducer._resolve_first_only_reducer_threads(2) == 2
+        assert 1 <= producer_reducer._resolve_first_only_reducer_threads(9999) <= cpu_count
+        producer_reducer.configure_force_greats_response_first_frontier_threads(0)
+        assert producer_reducer._resolve_first_only_reducer_threads(9999) == 1
+        producer_reducer.configure_force_greats_response_first_frontier_threads(4)
+        assert producer_reducer._resolve_first_only_reducer_threads(2) == 2
     finally:
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous)
+        producer_reducer.configure_force_greats_response_first_frontier_threads(previous)
 
 
 def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba
+    from gear_optimizer.frontier import producer_kernels
 
     timestamps = np.arange(12, dtype=np.float32) * np.float32(0.1)
     perfect_hi = timestamps + np.float32(0.04)
     great_hi = timestamps + np.float32(0.09)
     action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
-    capacity = response_build_gpu_numba._numba_region_core_candidate_capacity(
+    capacity = producer_kernels._numba_region_core_candidate_capacity(
         12,
         4,
         action_k,
         4.0,
     )
     brute_capacity = 0
-    region_stop = response_build_gpu_numba._numba_region2_k_scan_stop(4, 4.0)
+    region_stop = producer_kernels._numba_region2_k_scan_stop(4, 4.0)
     for section_start in range(13):
-        shifted = 1 if response_build_gpu_numba._numba_has_shifted_head_region(section_start, 4.0) else -1
+        shifted = 1 if producer_kernels._numba_has_shifted_head_region(section_start, 4.0) else -1
         for action_idx, k in enumerate(action_k):
             region = -1
             if action_idx < region_stop:
-                region = response_build_gpu_numba._numba_region2_offset_for_count(
+                region = producer_kernels._numba_region2_offset_for_count(
                     section_start, int(k), 4.0, 12
                 )
             brute_capacity += int(region >= 1)
             brute_capacity += int(shifted >= 1 and shifted != region)
     assert capacity == brute_capacity
-    table = response_build_gpu_numba._numba_build_region_core_table(
+    table = producer_kernels._numba_build_region_core_table(
         12,
         4,
         action_k,
         4.0,
         timestamps,
-        response_build_gpu_numba.HitTimes(
+        producer_kernels.HitTimes(
             timestamps - np.float32(0.04), perfect_hi, timestamps - np.float32(0.09),
             great_hi, perfect_hi + np.float32(0.001),
         ),
@@ -420,7 +420,7 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
 
 
 def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
+    from gear_optimizer.frontier import producer_kernels as rb
 
     n = 120
     empty = np.empty(0, dtype=np.int32)
@@ -444,38 +444,38 @@ def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) ->
 
 
 def test_fg_response_region_group_admission_validates_exact_memory_bounds() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_scheduler
+    from gear_optimizer.frontier import producer_scheduler
 
-    assert response_build_gpu_scheduler._validate_region_group_memory_bounds(
+    assert producer_scheduler._validate_region_group_memory_bounds(
         build_peak_bounds=(20, 40, 30),
         retained_peak_bounds=(10, 20, 15),
         legacy_single_peak_bound=70,
     ) is None
-    assert response_build_gpu_scheduler._validate_region_group_memory_bounds(
+    assert producer_scheduler._validate_region_group_memory_bounds(
         build_peak_bounds=(),
         retained_peak_bounds=(),
         legacy_single_peak_bound=0,
     ) is None
     with pytest.raises(ValueError, match="memory bounds must be nonnegative"):
-        response_build_gpu_scheduler._validate_region_group_memory_bounds(
+        producer_scheduler._validate_region_group_memory_bounds(
             build_peak_bounds=(20, -1),
             retained_peak_bounds=(10, 1),
             legacy_single_peak_bound=70,
         )
     with pytest.raises(ValueError, match="must align"):
-        response_build_gpu_scheduler._validate_region_group_memory_bounds(
+        producer_scheduler._validate_region_group_memory_bounds(
             build_peak_bounds=(20, 30),
             retained_peak_bounds=(10,),
             legacy_single_peak_bound=70,
         )
     with pytest.raises(ValueError, match="cannot exceed"):
-        response_build_gpu_scheduler._validate_region_group_memory_bounds(
+        producer_scheduler._validate_region_group_memory_bounds(
             build_peak_bounds=(20,),
             retained_peak_bounds=(21,),
             legacy_single_peak_bound=70,
         )
     with pytest.raises(MemoryError, match="historical single-table peak bound"):
-        response_build_gpu_scheduler._validate_region_group_memory_bounds(
+        producer_scheduler._validate_region_group_memory_bounds(
             build_peak_bounds=(71,),
             retained_peak_bounds=(35,),
             legacy_single_peak_bound=70,
@@ -483,19 +483,19 @@ def test_fg_response_region_group_admission_validates_exact_memory_bounds() -> N
 
 
 def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_types
+    from gear_optimizer.frontier import fg_cache_types
 
-    assert "response_build_gpu_scheduler.py" in {
-        source.name for source in response_cache_types._FG_DP_SOURCES
+    assert "producer_scheduler.py" in {
+        source.name for source in fg_cache_types._FG_DP_SOURCES
     }
 
 
 def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_types
+    from gear_optimizer.frontier import fg_cache_types
 
     fingerprinted = {
-        source.relative_to(response_cache_types._SOLVER_DIR.parent).as_posix()
-        for source in response_cache_types._FG_DP_SOURCES
+        source.relative_to(fg_cache_types._ENGINE).as_posix()
+        for source in fg_cache_types._FG_DP_SOURCES
     }
     # The game-engine inputs of the bundle build (timing, input order, lane reachability, fever) must rotate the FG
     # cache. Witnesses are reconstructed from a result after a bundle is read, so the note graph is not one of them.
@@ -509,43 +509,39 @@ def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
 
 
 def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_numba,
-        response_build_gpu_scheduler,
-    )
+    from gear_optimizer.frontier import producer_kernels
+    from gear_optimizer.frontier import producer_scheduler
 
     n = 12
     action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
-    capacity = response_build_gpu_numba._numba_region_core_candidate_capacity(
+    capacity = producer_kernels._numba_region_core_candidate_capacity(
         n,
         int(action_k.shape[0]),
         action_k,
         4.0,
     )
     expected = (n + 2) * np.dtype(np.int64).itemsize + 2 * int(capacity) * 28
-    assert response_build_gpu_scheduler._region_table_build_peak_bound_bytes(
+    assert producer_scheduler._region_table_build_peak_bound_bytes(
         n=n,
         action_k=action_k,
         raw_fever_fill=4.0,
     ) == expected
-    assert response_build_gpu_scheduler._region_table_retained_bound_bytes(
+    assert producer_scheduler._region_table_retained_bound_bytes(
         n=n,
         action_k=action_k,
         raw_fever_fill=4.0,
     ) == (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 28
-    assert response_build_gpu_scheduler._legacy_single_region_table_peak_bound_bytes(
+    assert producer_scheduler._legacy_single_region_table_peak_bound_bytes(
         n=n,
         region_action_count=int(action_k.shape[0]),
     ) == (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 28
 
 
 def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_batch,
-        response_build_gpu_reducer,
-        response_build_gpu_scheduler,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    from gear_optimizer.frontier import producer_batch
+    from gear_optimizer.frontier import producer_reducer
+    from gear_optimizer.frontier import producer_scheduler
+    from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseSurface,
     )
@@ -589,19 +585,19 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         reduce_barrier.wait()
         return [(int(item[0]), result) for item in kwargs["group_items"]]
 
-    monkeypatch.setattr(response_build_gpu_scheduler, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 200)
-    monkeypatch.setattr(response_build_gpu_scheduler, "_region_table_retained_bound_bytes", lambda **_kwargs: 100)
+    monkeypatch.setattr(producer_scheduler, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 200)
+    monkeypatch.setattr(producer_scheduler, "_region_table_retained_bound_bytes", lambda **_kwargs: 100)
     monkeypatch.setattr(
-        response_build_gpu_scheduler,
+        producer_scheduler,
         "_legacy_single_region_table_peak_bound_bytes",
         lambda **_kwargs: 400,
     )
-    monkeypatch.setattr(response_build_gpu_scheduler._rb_numba, "_numba_build_region_core_table", _fake_build)
-    monkeypatch.setattr(response_build_gpu_scheduler, "_reduce_first_frontier_group", _fake_reduce)
-    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(2)
+    monkeypatch.setattr(producer_scheduler._rb_numba, "_numba_build_region_core_table", _fake_build)
+    monkeypatch.setattr(producer_scheduler, "_reduce_first_frontier_group", _fake_reduce)
+    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(2)
     stats: dict = {}
     try:
-        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -611,7 +607,7 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
             stats_sink=stats,
         )
     finally:
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert frontiers == (result, result)
     assert caller_id not in builder_ids
@@ -625,12 +621,10 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
 
 
 def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_batch,
-        response_build_gpu_reducer,
-        response_build_gpu_scheduler,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    from gear_optimizer.frontier import producer_batch
+    from gear_optimizer.frontier import producer_reducer
+    from gear_optimizer.frontier import producer_scheduler
+    from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseSurface,
     )
@@ -655,11 +649,11 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
         calls.append((start, stop))
         return [(int(kwargs["chunk"][idx][0]), result) for idx in range(start, stop)]
 
-    monkeypatch.setattr(response_build_gpu_scheduler, "_first_frontier_results_for_precomputed_range", _fake_range)
-    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(2)
+    monkeypatch.setattr(producer_scheduler, "_first_frontier_results_for_precomputed_range", _fake_range)
+    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(2)
     stats: dict = {}
     try:
-        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -669,7 +663,7 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
             stats_sink=stats,
         )
     finally:
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert frontiers == (result, result)
     assert sorted(calls) == [(0, 1), (1, 2)]
@@ -679,7 +673,7 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
 
 
 def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
+    from gear_optimizer.frontier import producer_reducer
 
     calls: list[int] = []
 
@@ -696,22 +690,22 @@ def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority
         def __exit__(self, *_args):
             return False
 
-    monkeypatch.setattr(response_build_gpu_reducer.concurrent.futures, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(producer_reducer.concurrent.futures, "ThreadPoolExecutor", FakeExecutor)
 
-    with response_build_gpu_reducer._first_frontier_reducer_executor(3):
+    with producer_reducer._first_frontier_reducer_executor(3):
         pass
 
     assert calls == [3]
 
 
 def test_fg_response_first_frontier_reducer_has_no_public_warmup_route() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
+    from gear_optimizer.frontier import producer_reducer
 
-    assert not hasattr(response_build_gpu_reducer, "warm_force_greats_response_first_frontier_reducer")
+    assert not hasattr(producer_reducer, "warm_force_greats_response_first_frontier_reducer")
 
 
 def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
+    from gear_optimizer.frontier import producer_kernels as rb
 
     timestamps = np.asarray([0.000, 0.018, 0.041, 0.060, 0.083, 0.140, 0.161, 0.184], dtype=np.float32)
     perfect_hi = np.asarray([0.040, 0.058, 0.081, 0.100, 0.123, 0.180, 0.201, 0.224], dtype=np.float32)
@@ -785,11 +779,9 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
 
 
 def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_numba as rb,
-        response_build_gpu_precompute,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
+    from gear_optimizer.frontier import producer_kernels as rb
+    from gear_optimizer.frontier import producer_precompute
+    from gear_optimizer.frontier.producer_batch import action_table
 
     timestamps = np.asarray([idx * 0.071 for idx in range(180)], dtype=np.float32)
     timestamps[28:31] = timestamps[28]
@@ -881,8 +873,9 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
 
 
 def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch, response_build_gpu_reducer
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    from gear_optimizer.frontier import producer_batch
+    from gear_optimizer.frontier import producer_reducer
+    from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseSurface,
     )
@@ -890,19 +883,19 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     result = FgResponseFrontierResult((surface,), {}, 1, 4, 0, 1, 1, 1, 3, 0.0)
     calls: list[dict] = []
-    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(1)
+    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(1)
 
     def _fake_first_frontier(**kwargs):
         calls.append(dict(kwargs))
         return result
 
     monkeypatch.setattr(
-        response_build_gpu_reducer,
+        producer_reducer,
         "_first_frontier_result_from_precomputed_end_indices",
         _fake_first_frontier,
     )
     try:
-        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -912,7 +905,7 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
             use_forced_great_timing=True,
         )
     finally:
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert len(calls) == 1
     assert len(frontiers) == 2
@@ -920,12 +913,10 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
 
 
 def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_batch,
-        response_build_gpu_precompute,
-        response_build_gpu_reducer,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    from gear_optimizer.frontier import producer_batch
+    from gear_optimizer.frontier import producer_precompute
+    from gear_optimizer.frontier import producer_reducer
+    from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseSurface,
     )
@@ -933,8 +924,8 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     result = FgResponseFrontierResult((surface,), {}, 1, 4, 0, 1, 1, 1, 3, 0.0)
     calls = 0
-    real_precompute = response_build_gpu_precompute._precompute_end_indices
-    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(1)
+    real_precompute = producer_precompute._precompute_end_indices
+    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(1)
 
     def _record_precompute(**kwargs):
         nonlocal calls
@@ -944,14 +935,14 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
     def _fake_first_frontier(**_kwargs):
         return result
 
-    monkeypatch.setattr(response_build_gpu_precompute, "_precompute_end_indices", _record_precompute)
+    monkeypatch.setattr(producer_precompute, "_precompute_end_indices", _record_precompute)
     monkeypatch.setattr(
-        response_build_gpu_reducer,
+        producer_reducer,
         "_first_frontier_result_from_precomputed_end_indices",
         _fake_first_frontier,
     )
     try:
-        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -961,14 +952,14 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
             use_forced_great_timing=True,
         )
     finally:
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert calls == 1
     assert len(frontiers) == 2
 
 
 def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
 
@@ -989,10 +980,10 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
 
 
 def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
 
@@ -1049,7 +1040,7 @@ def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
     body_fever_great, every distinct (normal_great, fever_great) -- including the high fever-great
     counts the early-Great band produces -- must get its OWN slot and decode back exactly, with no
     aliasing onto a phantom cell."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
         _numba_touch_body_candidate,
     )
@@ -1095,7 +1086,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
     breaks trace reconstruction. The build must FAIL LOUD instead. The chosen pair_idx (3*5+11 = 26)
     stays inside pair_size (205), so the pre-existing pair-size guard does NOT catch it -- only the
     dedicated radix guard does."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
         _numba_touch_body_candidate,
     )
@@ -1125,7 +1116,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
 
 
 def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.trace.reconstruct import (
         _centered_hit_window_for_exit,
         _lower_bound_from,
     )
@@ -1153,7 +1144,7 @@ def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> 
 
 
 def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_same_end() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
 
@@ -1182,10 +1173,10 @@ def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_sam
 
 
 def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfect() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
 
@@ -1236,7 +1227,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
 
 
 def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
 
@@ -1286,14 +1277,14 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
     from tests.fg_response_frontier_oracles import edge_end_oracle
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import _precompute_end_indices
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
+    from gear_optimizer.frontier.producer_precompute import _precompute_end_indices
+    from gear_optimizer.frontier.fg_cache_keys import _response_axes
 
     song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
     curves = stat_curves()
     song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     real_fever_time = float(real_time_by_ft[51])
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
+    from gear_optimizer.frontier import producer_kernels as rb
 
     prefix_perfect_hit, _prefix_perfect_valid, prefix_late_hit, _prefix_late_valid = (
         rb._numba_build_prefix_activation_hit_tables(
@@ -1379,8 +1370,8 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
 
 
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.frontier.producer_batch import action_table
+    from gear_optimizer.trace.reconstruct import (
         _build_activation_reachability_context,
         _edge_surface_options,
     )
@@ -1419,10 +1410,10 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
 
 
 def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
 
@@ -1471,8 +1462,8 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
 
 
 def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.frontier.producer_batch import action_table
+    from gear_optimizer.trace.reconstruct import (
         _build_activation_reachability_context,
         _edge_surface_options,
     )
@@ -1531,7 +1522,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
 
 
 def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
+    from gear_optimizer.frontier.producer_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
 
     timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
@@ -1580,7 +1571,7 @@ def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() ->
 
 
 def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
 
@@ -1607,7 +1598,7 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
 
 
 def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
@@ -1673,7 +1664,7 @@ def test_fg_response_exact_fill_runs_preserve_arbitrary_membership(
     expected_starts: list[int],
     expected_ends: list[int],
 ) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+    from gear_optimizer.frontier.producer_reducer import (
         _exact_action_fill_runs,
     )
 
@@ -1686,7 +1677,7 @@ def test_fg_response_exact_fill_runs_preserve_arbitrary_membership(
 
 
 def test_fg_response_exact_fill_runs_reject_negative_offsets() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+    from gear_optimizer.frontier.producer_reducer import (
         _exact_action_fill_runs,
     )
 
@@ -1697,7 +1688,7 @@ def test_fg_response_exact_fill_runs_reject_negative_offsets() -> None:
 
 
 def test_fg_response_interval_successor_skips_removed_indices() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
         _numba_successor_find,
         _numba_successor_remove,
@@ -1723,17 +1714,17 @@ def test_fg_response_interval_successor_skips_removed_indices() -> None:
 
 
 def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         ActivationEnds,
         HitTimes,
         RegionTables,
         _numba_build_prefix_activation_hit_tables,
         _numba_first_frontier_reachability_prepass,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import (
+    from gear_optimizer.frontier.producer_precompute import (
         _precompute_end_indices,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+    from gear_optimizer.frontier.producer_reducer import (
         _exact_action_fill_runs,
     )
     from tests.retired_fg_frontier_semantics import (
@@ -1881,11 +1872,11 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
 
 
 def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+    from gear_optimizer.trace.activation_witness import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
         _numba_activation_reachable_contiguous_run,
         _numba_region2_k_scan_stop,
@@ -2047,7 +2038,7 @@ def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
     non_fever_base: int,
     real_fever_time: float,
 ) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
 
@@ -2112,7 +2103,7 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
     real_fever_time: float,
 ) -> None:
     """Base mode may prune only surfaces that cannot win under any legal stat allocation."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
 
@@ -2165,7 +2156,7 @@ def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
     """A body-only Base chart must not bypass capped activation ownership."""
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
@@ -2209,7 +2200,7 @@ def _ordered_rows_digest(value) -> str:
 
 class _BodyReducerDifferentialHarness:
     def __init__(self, *, pair_mod: int = 33, normal_great_capacity: int = 65) -> None:
-        from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        from gear_optimizer.frontier.producer_kernels import (
             HitTimes,
             _numba_reduce_touched_body_pairs,
             _numba_touch_body_candidate,
@@ -2364,14 +2355,14 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+    from gear_optimizer.frontier.fg_cache_keys import _response_axes
+    from gear_optimizer.frontier.types import FgResponseSurface
 
     song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
     curves = stat_curves()
@@ -2420,13 +2411,13 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
 
 @pytest.mark.gpu
 def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
+    from gear_optimizer.frontier import producer_batch
 
     timestamps = np.asarray([float(idx) * 0.11 for idx in range(60)], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(60)], dtype=np.float32)
     geometries = ((2.25, 7, 0.55),)
 
-    slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+    slim = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
@@ -2443,15 +2434,15 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
 
 @pytest.mark.gpu
 def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    from gear_optimizer.frontier import producer_batch
+    from gear_optimizer.frontier.producer_batch import action_table
+    from gear_optimizer.trace.reconstruct import (
         _EMPTY_SURFACE,
         _build_activation_reachability_context,
         _edge_surface_options,
         reconstruct_force_greats_response_trace,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+    from gear_optimizer.frontier.types import FgResponseSurface
 
     def _combine_surface(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
         return FgResponseSurface(
@@ -2474,7 +2465,7 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     non_fever_base = 7
     real_fever_time = 0.55
     lanes = _lanes_for(timestamps)
-    slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+    slim = producer_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_candidate_timestamps=perfect_candidates,

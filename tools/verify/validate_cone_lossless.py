@@ -16,7 +16,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba as B
+import gear_optimizer.frontier.producer_kernels as B
 from tools.verify.measure_head_envelope_stage0 import _build_frontier, _unpack_masks, HEAD_LIMIT
 
 

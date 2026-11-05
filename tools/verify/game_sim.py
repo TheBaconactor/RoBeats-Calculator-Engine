@@ -831,7 +831,7 @@ def _build_aurora_intended():
 
     from gear_optimizer.core.gem_defs import element_gem_count
     from gear_optimizer.chart import load_chart, read_header
-    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+    from gear_optimizer.trace.note_graph import force_greats_note_graph
     from gear_optimizer.stats import apply_gems, gems
 
     from tools.verify.loadout_oracle_replay import _load_loadout

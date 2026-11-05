@@ -12,16 +12,16 @@ import numpy as np
 import pytest
 
 from gear_optimizer.rules import MAX_STAT
-from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import expand_surface_rows
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+from gear_optimizer.frontier import fg_cache_store
+from gear_optimizer.frontier.fg_cache_patterns import expand_surface_rows
+from gear_optimizer.frontier.fg_cache_store import (
     _save_payload,
     gather_surface_patterns,
     read_compatible_bundle,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
+from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierCachePayload
+from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
+from gear_optimizer.frontier.types import FgResponseFrontierResult, FgResponseSurface
 from tests.fg_response_frontier_oracles import intern_surface_rows
 
 pytestmark = pytest.mark.filterwarnings("ignore")
@@ -100,7 +100,7 @@ def _range_sweep(row_count: int) -> tuple[tuple[tuple[int, int], ...], ...]:
 # --------------------------------------------------------------------------------------------------
 def test_saved_surfaces_expand_back_to_the_producer_rows_over_a_range_sweep(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache_store.reset_fg_response_frontier_payload_cache()
+    fg_cache_store.reset_fg_response_frontier_payload_cache()
     total_notes = 80
     row_count = 70
     pool = _synthetic_pool(row_count)
@@ -118,7 +118,7 @@ def test_saved_surfaces_expand_back_to_the_producer_rows_over_a_range_sweep(tmp_
 
 def test_saved_surfaces_roundtrip_a_large_pool(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache_store.reset_fg_response_frontier_payload_cache()
+    fg_cache_store.reset_fg_response_frontier_payload_cache()
     total_notes = 60
     row_count = 32773
     pool = _synthetic_pool(row_count)
@@ -163,7 +163,7 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache_store.reset_fg_response_frontier_payload_cache()
+    fg_cache_store.reset_fg_response_frontier_payload_cache()
 
     total_notes = 80
     pool = _synthetic_pool(8)
@@ -172,14 +172,14 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
     pool[7, :8] = pool[1, :8]
     expected_pattern_words = np.unique(pool[:, :8], axis=0)
     expected_coeffs = _coeffs_for(pool, total_notes=total_notes).astype(np.int32)
-    real_precompute = response_cache_store.surface_head_coeffs
+    real_precompute = fg_cache_store.surface_head_coeffs
     precompute_inputs: list[np.ndarray] = []
 
     def _track_pattern_precompute(surface_words: np.ndarray, *, head_len: int) -> np.ndarray:
         precompute_inputs.append(np.asarray(surface_words).copy())
         return real_precompute(surface_words, head_len=int(head_len))
 
-    monkeypatch.setattr(response_cache_store, "surface_head_coeffs", _track_pattern_precompute)
+    monkeypatch.setattr(fg_cache_store, "surface_head_coeffs", _track_pattern_precompute)
     cache_key = ("unit", "issue116-pattern-coeff-owner")
     _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
 
@@ -210,7 +210,7 @@ def test_compact_scoring_gather_preserves_range_order_and_pattern_sharing(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache_store.reset_fg_response_frontier_payload_cache()
+    fg_cache_store.reset_fg_response_frontier_payload_cache()
     pool = _synthetic_pool(6)
     pool[2, :8] = pool[0, :8]
     pool[4, :8] = pool[0, :8]
@@ -240,7 +240,7 @@ def _shared_pattern_pool(row_count: int, pattern_count: int) -> np.ndarray:
 
 def _retired_unique_compact_load(cache_key: tuple, ranges: tuple[tuple[int, int], ...]):
     """The retired N-row np.unique remap over the saved tables, kept as the gather oracle."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import unpack_surface_patterns
+    from gear_optimizer.frontier.fg_cache_patterns import unpack_surface_patterns
 
     rows, patterns = _tables(cache_key)
     row_refs_all, patterns_all = rows.T, patterns.T
@@ -257,7 +257,7 @@ def _retired_unique_compact_load(cache_key: tuple, ranges: tuple[tuple[int, int]
 
 def test_compact_scoring_gather_matches_retired_unique_remap(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache_store.reset_fg_response_frontier_payload_cache()
+    fg_cache_store.reset_fg_response_frontier_payload_cache()
     row_count = 300
     pool = _shared_pattern_pool(row_count, 23)
     cache_key = ("unit", "compact-loader-oracle")
@@ -279,7 +279,7 @@ def test_compact_scoring_gather_matches_retired_unique_remap(tmp_path: Path, mon
 
 def test_compact_scoring_gather_rejects_invalid_pattern_ids_and_ranges(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache_store.reset_fg_response_frontier_payload_cache()
+    fg_cache_store.reset_fg_response_frontier_payload_cache()
     pool = _shared_pattern_pool(6, 3)
     cache_key = ("unit", "compact-gather-invalid")
     _save_payload(cache_key, _build_payload(pool, total_notes=80))
@@ -300,7 +300,7 @@ def test_compact_scoring_gather_rejects_invalid_pattern_ids_and_ranges(tmp_path:
 
 @pytest.mark.parametrize("pattern_count", [1, 7, 101, 400_000])
 def test_dense_rank_pattern_ids_matches_np_unique_inverse(pattern_count: int) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+    from gear_optimizer.frontier.fg_cache_store import (
         _DENSE_RANK_BLOCK_ROWS,
         _dense_rank_pattern_ids_inplace,
     )
@@ -326,7 +326,7 @@ def test_dense_rank_pattern_ids_matches_np_unique_inverse(pattern_count: int) ->
 
 
 def test_dense_rank_pattern_ids_rejects_out_of_range_ids() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _dense_rank_pattern_ids_inplace
+    from gear_optimizer.frontier.fg_cache_store import _dense_rank_pattern_ids_inplace
 
     for bad in (np.asarray([0, 3], dtype=np.int32), np.asarray([-1, 0], dtype=np.int32)):
         with pytest.raises(ValueError, match="invalid head-pattern ID"):

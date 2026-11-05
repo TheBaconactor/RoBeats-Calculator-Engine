@@ -11,19 +11,19 @@ from typing import Any, Sequence
 import numpy as np
 
 from gear_optimizer.solver.input_engine_breakpoints import INPUT_ORDER_EPS_SEC
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
+from gear_optimizer.frontier.fg_cache_patterns import (
     EXPANDED_COEFF_COLUMNS,
     _intern_surface_row_words,
     pack_surface_patterns,
 )
 
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
-from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+from gear_optimizer.frontier.producer_batch import action_table
+from gear_optimizer.trace.reconstruct import (
     _build_activation_reachability_context,
     _edge_surface_options,
     _option_with_witness,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+from gear_optimizer.frontier.types import (
     FgResponseFrontierResult,
     FgResponseSurface,
     _EMPTY_SURFACE,
@@ -116,7 +116,7 @@ def _head_envelope_reduce_surfaces(
 ) -> tuple[FgResponseSurface, ...]:
     if not surfaces:
         return (_EMPTY_SURFACE,)
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         _HEAD_FILTER_MIN_SURFACES,
         _numba_head_envelope_filter,
     )
@@ -338,7 +338,7 @@ def latest_activation_hit_for_contiguous_great_run(
     lanes: Sequence[int] | np.ndarray | None = None,
     epsilon: float = INPUT_ORDER_EPS_SEC,
 ) -> float | None:
-    """Latest activation hit when scored Greats form one contiguous run (the reference of response_builder's
+    """Latest activation hit when scored Greats form one contiguous run (the reference of reconstruct's
     numba twin for the lanes=None, epsilon=INPUT_ORDER_EPS_SEC form its DFS uses)."""
     a = int(activation_index)
     ts = np.asarray(chart_timestamps).reshape(-1)

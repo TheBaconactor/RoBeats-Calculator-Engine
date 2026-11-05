@@ -81,7 +81,7 @@ def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier
         prune_dominated_ftff_response_pairs,
         prune_dominated_ftff_response_positions,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult
+    from gear_optimizer.frontier.types import FgResponseFrontierResult
 
     frontiers = tuple(FgResponseFrontierResult((), {}, 0, 0, 0, 0, 0, 0, 0, 0.0) for _ in range(4))
     frontier_classes = (0, 0, 1, 2)
@@ -180,12 +180,12 @@ def test_ftff_response_position_prune_matches_bruteforce_randomized():
 def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.solver.fg_response_scoring.reducer import (
+    from gear_optimizer.trace.materialize import (
         FgTraceMaterializationCache,
         materialize_force_payload_from_response_frontier,
     )
-    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    import gear_optimizer.trace.materialize as reducer_mod
+    from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
         FgResponseInnerResult,
@@ -275,9 +275,9 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
 def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
-    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    from gear_optimizer.trace.materialize import materialize_force_payload_from_response_frontier
+    import gear_optimizer.trace.materialize as reducer_mod
+    from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
         FgResponseInnerResult,
@@ -328,11 +328,11 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
 
 
 def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
-    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
-    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
+    from gear_optimizer.trace.materialize import materialize_force_payload_from_response_frontier
+    import gear_optimizer.trace.materialize as reducer_mod
+    from gear_optimizer.frontier.producer_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
         FgResponseInnerResult,
@@ -525,7 +525,7 @@ def test_response_frontier_group_builder_matches_prune_reference():
 
 
 def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+    from gear_optimizer.solver.fg_scoring import (
         FgResponseFrontierResult,
         FgResponseSurface,
     )
@@ -567,7 +567,7 @@ def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
 
 
 def test_response_frontier_ftff_antichain_matches_naive_dominance():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+    from gear_optimizer.solver.fg_scoring import (
         FgResponseFrontierResult,
         FgResponseSurface,
     )

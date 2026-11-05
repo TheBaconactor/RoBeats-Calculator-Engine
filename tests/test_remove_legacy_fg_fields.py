@@ -1,4 +1,4 @@
-from gear_optimizer.helpers.song_helpers.fg_payload import strip_retired_fg_fields
+from gear_optimizer.store.fg_payload import strip_retired_fg_fields
 
 
 def test_clean_payload_removes_only_retired_fg_fields():

@@ -33,7 +33,9 @@ from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.gamedata import Gear, SongMini, empty_stats
 from tests.items_support import make_gear, make_song_mini
-from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
+import threading
+
+_GPU_LOCK = threading.Lock()
 
 pytestmark = pytest.mark.gpu
 
@@ -133,9 +135,9 @@ def _make_exhaustive_reference_kernel():
     """
     import taichi as ti
 
-    from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import GpuColorFlags
-    from gear_optimizer.solver.taichi_gem.kernels.warmstart_common import (
+    from gear_optimizer.gpu.kernels import kernels_helpers
+    from gear_optimizer.gpu.kernels.kernels_helpers import GpuColorFlags
+    from gear_optimizer.gpu.kernels.warmstart_common import (
         MAX_STAT,
         solve_combo_warmstart_preloaded,
     )
@@ -227,14 +229,12 @@ def eval_device_state():
     """Upload real GA device state (timeline, items, seeded population) once."""
     import importlib
 
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        precompute_timeline_gpu,
-    )
+    from gear_optimizer.gpu.api.initialization import ensure_ready
+    from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
 
-    gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
+    gpu_api = importlib.import_module("gear_optimizer.gpu.api")
 
     registry = _build_registry()
     gpu_arrays = registry.to_gpu_arrays()
@@ -251,7 +251,7 @@ def eval_device_state():
     with _GPU_LOCK:
         ensure_ready()
         prebuilt = build_or_load_timeline_frontier_payload(song, curves)
-        precompute_timeline_gpu(song, curves, song_slot=_SONG_SLOT, prebuilt_frontier=prebuilt)
+        precompute_timeline_gpu(song, curves, song_slot=_SONG_SLOT, prebuilt_payload=prebuilt.payload)
         # The production eval below strides the shortlist of the keys the fixture pools reach; the reference scores
         # the whole combo table.
         reach = reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed_stats_arr)
@@ -287,8 +287,8 @@ def eval_device_state():
 def _run_production_eval(flags) -> tuple[np.ndarray, np.ndarray]:
     import importlib
 
-    gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-    from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
+    gpu_api = importlib.import_module("gear_optimizer.gpu.api")
+    from gear_optimizer.gpu.kernels import kernels_helpers
 
     gpu_api.ga_prepare_population_base_stats(
         _N_GENOMES,
@@ -312,12 +312,12 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
     flags = eval_device_state
     import importlib
 
-    gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import (
+    gpu_api = importlib.import_module("gear_optimizer.gpu.api")
+    from gear_optimizer.gpu.api.ga_operations import (
         _ensure_ftff_combo_tables,
     )
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.kernels import (
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.kernels import (
         ga_build_unique_slot_table_kernel,
         ga_compute_exact_eval_rep_kernel,
         ga_finalize_warmstart_lane_best_kernel,
@@ -357,7 +357,7 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
         # reference evaluated every row, so rep rows carry the same lane data the
         # compacted production path produced for them.
         # The exhaustive oracle must not consume production memoized winners.
-        from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
+        from gear_optimizer.gpu.api.ga_operations import reset_ga_evaluation_cache
 
         reset_ga_evaluation_cache()
         ga_compute_exact_eval_rep_kernel(_N_GENOMES)
@@ -367,7 +367,7 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
         ga_finalize_warmstart_lane_best_kernel(_ref_n_unique)
         ga_scatter_dup_results_kernel(_N_GENOMES)
 
-        from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
+        from gear_optimizer.gpu.kernels import kernels_helpers
 
         ref_keys = kernels_helpers.chunk_best_key.to_numpy()[:_N_GENOMES].copy()
         ref_results = kernels_helpers.chunk_best_results.to_numpy()[:_N_GENOMES].copy()

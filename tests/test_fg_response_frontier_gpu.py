@@ -27,9 +27,9 @@ def _prepare_and_score_sync(
     selected_color,
     total_budget: int,
 ):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier as rf
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import load_response_frontier_scoring_bundle
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
+    from gear_optimizer.solver import fg_scoring as rf
+    from gear_optimizer.frontier.fg_cache import load_response_frontier_scoring_bundle
+    from gear_optimizer.frontier.fg_cache_types import all_response_stat_keys
 
     bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=all_response_stat_keys())
     return rf.fg_solve_results(base_stats_list, song=song, curves=curves, selected_color=selected_color,
@@ -58,8 +58,8 @@ def _solve_one_batch(
 
 def _prebuild_response_bundle(song, curves, base_stats_list, *, total_budget: int) -> None:
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import build_or_load_response_frontier_payload
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
+    from gear_optimizer.frontier.fg_cache import build_or_load_response_frontier_payload
+    from gear_optimizer.frontier.fg_cache_store import reset_fg_response_frontier_payload_cache
 
     _ = base_stats_list, total_budget
     reset_fg_response_frontier_payload_cache()
@@ -68,11 +68,11 @@ def _prebuild_response_bundle(song, curves, base_stats_list, *, total_budget: in
 
 
 def _replay_response_result_through_input_engine(*, song, final_stats, selected_color, result):
-    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+    from gear_optimizer.trace.note_graph import (
         force_greats_note_graph,
         reconcile_force_greats_note_graph,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats import reconstruct_force_greats_response_trace
+    from gear_optimizer.trace.reconstruct import reconstruct_force_greats_response_trace
     from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
 
     song_inputs = song.fg_inputs
@@ -197,11 +197,11 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     from gear_optimizer.chart import load_chart
     from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+    from gear_optimizer.frontier.fg_cache import (
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import fg_solve_results
+    from gear_optimizer.solver.fg_scoring import fg_solve_results
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "precise")
     curves = stat_curves()
@@ -240,7 +240,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
 
     # The persisted plan replays against the game's fill denominator of the final FF stat (58), not of the FF gem
     # count (0 here): materialization fails loud if the replay's fever window differs from the surface's.
-    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
+    from gear_optimizer.trace.materialize import materialize_force_payload_from_response_frontier
 
     payload = materialize_force_payload_from_response_frontier(
         base_stats=final_stats, paired_base_score=1, selected_element="Vibe", result=result, song=song, curves=curves
@@ -317,11 +317,11 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     """
     from gear_optimizer.chart import load_chart
     from gear_optimizer.gamedata import stat_curves
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+    from gear_optimizer.frontier.fg_cache import (
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import fg_solve_results
+    from gear_optimizer.solver.fg_scoring import fg_solve_results
     from gear_optimizer.solver.timing_envelope import time_song
 
     song = time_song(load_chart(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), "precise")

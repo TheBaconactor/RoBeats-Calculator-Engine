@@ -6,7 +6,7 @@ from pathlib import Path
 
 from gear_optimizer.chart import load_chart
 from gear_optimizer.gamedata import Mini, SongMini, song_minis
-from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
+from gear_optimizer.solver.song_config import baseline_fixed_stats
 from gear_optimizer.solver.timing_envelope import TimedSong, time_song
 
 

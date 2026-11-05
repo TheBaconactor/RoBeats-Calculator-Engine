@@ -7,8 +7,9 @@ import pytest
 
 @pytest.mark.gpu
 def test_alternating_uploads_and_in_place_edits_reach_the_registry_fields():
-    from gear_optimizer.solver.taichi_gem import api, fields
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_upload_caches
+    from gear_optimizer.gpu import api
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api.ga_operations import reset_ga_upload_caches
     api.ensure_ready()
     reset_ga_upload_caches()
     a = np.arange(20, dtype=np.int32).reshape(2, 10)

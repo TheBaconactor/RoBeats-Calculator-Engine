@@ -3,7 +3,7 @@ import time
 import numpy as np
 
 from tests.parity.skyline_grid_gpu import OWNER_SENTINEL, fill_i32, layer_offsets, suffix_max_cm_fm_gpu
-from gear_optimizer.solver.taichi_gem.runtime import init_taichi, ti
+from gear_optimizer.gpu.runtime import init_taichi, ti
 
 
 @ti.kernel

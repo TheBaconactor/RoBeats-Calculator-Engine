@@ -25,12 +25,10 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
     verify representative cells expose retained fever surfaces.
     """
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        precompute_timeline_gpu,
-    )
-    from gear_optimizer.solver.taichi_gem.runtime import init_taichi
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.gpu.runtime import init_taichi
+    from gear_optimizer.gpu import fields as gpu_fields
 
     init_taichi()
 
@@ -82,7 +80,7 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
     prebuilt = build_or_load_timeline_frontier_payload(song, curves)
     assert int(prebuilt.payload.frontier_pool_used) > 0
 
-    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_payload=prebuilt.payload)
     total_fever = _read_total_fever()
     frontier_count_grid = np.asarray(gpu_fields.grid_frontier_count.to_numpy()[0], dtype=np.int32)
 

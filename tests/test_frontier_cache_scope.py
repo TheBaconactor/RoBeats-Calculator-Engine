@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from gear_optimizer.solver.frontier_cache_scope import (
+from gear_optimizer.frontier.cache_scope import (
     frontier_cache_is_ephemeral,
     scoped_frontier_cache_dir,
     temporary_frontier_cache_scope,
@@ -33,8 +33,8 @@ def test_temporary_frontier_scope_is_context_local_and_resets(tmp_path: Path) ->
 
 
 def test_temporary_frontier_scope_owns_both_real_disk_cache_paths(tmp_path: Path) -> None:
-    from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+    from gear_optimizer.frontier.timeline_cache import _frontier_disk_cache_dir
+    from gear_optimizer.frontier.fg_cache_keys import (
         _fg_response_disk_cache_dir,
     )
 

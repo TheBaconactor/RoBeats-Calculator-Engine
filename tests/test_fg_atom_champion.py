@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
+from gear_optimizer.frontier.types import FgResponseSurface
 from tests.parity.force_greats.fg_atom_champion import prove_single_frontier_champions
 from tests.songs_support import make_song
 

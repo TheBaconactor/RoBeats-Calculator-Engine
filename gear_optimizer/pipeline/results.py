@@ -13,8 +13,8 @@ from typing import Any
 from ..core.gem_defs import element_gem_count
 from ..core.utils import get_selected_element
 from ..gamedata import ELEMENTS, STATS, StatCurves
-from ..helpers.song_helpers.fg_payload import require_response_surface, strip_retired_fg_fields
-from ..helpers.song_helpers.force_greats.result_application import read_visible_stats
+from gear_optimizer.store.fg_payload import require_response_surface, strip_retired_fg_fields
+from .result_application import read_visible_stats
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, gems
 

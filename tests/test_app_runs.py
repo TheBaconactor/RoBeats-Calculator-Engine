@@ -6,7 +6,7 @@ from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.domain.jobs import SharedRunContext, SongTask
 from gear_optimizer.settings import RunSettings
-from gear_optimizer.solver.gpu_executor import GpuFatalError, GpuServiceTimeoutError
+from gear_optimizer.gpu.executor import GpuFatalError, GpuServiceTimeoutError
 
 
 def _app() -> GearOptimizerApp:
@@ -83,7 +83,7 @@ def test_ga_buffer_config_restores_defaults_and_clears_request_on_reset():
     # record, so a stale session size never silently re-applies after a hard_reset_taichi
     # (CPU-level mirror of the gpu-marked test_gpu_ga_run_buffer_config_restores_defaults_
     # after_hard_reset). The GA recovery paths re-call configure_ga_run_buffers() to re-size.
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.gpu import fields as gpu_fields
 
     gpu_fields.reset_fields_state()
     try:

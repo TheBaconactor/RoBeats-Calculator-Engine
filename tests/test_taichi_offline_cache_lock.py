@@ -4,7 +4,7 @@ never reads the byte the holder has locked, a read that fails with PermissionErr
 import multiprocessing
 import time
 
-from gear_optimizer.solver.taichi_gem import runtime
+from gear_optimizer.gpu import runtime
 
 
 def _hold(held, release) -> None:

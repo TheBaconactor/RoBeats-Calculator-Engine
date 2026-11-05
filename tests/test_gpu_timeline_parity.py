@@ -22,7 +22,7 @@ pytestmark = pytest.mark.gpu
 @pytest.fixture(scope="module", autouse=True)
 def _taichi_ready():
     try:
-        from gear_optimizer.solver.taichi_gem.runtime import init_taichi
+        from gear_optimizer.gpu.runtime import init_taichi
 
         init_taichi()
     except Exception as exc:
@@ -52,11 +52,9 @@ def _create_mock_song(*, n_notes: int = 750):
 
 
 def test_gpu_timeline_matches_cpu_gap_and_activations(monkeypatch, tmp_path):
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        precompute_timeline_gpu,
-    )
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.gpu import fields as gpu_fields
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline_frontier_cache"))
     song = _create_mock_song()
@@ -66,7 +64,7 @@ def test_gpu_timeline_matches_cpu_gap_and_activations(monkeypatch, tmp_path):
     cpu_gap = np.asarray(prebuilt_frontier.payload.grid_gap[0], dtype=np.int32)
     cpu_fevact = np.asarray(prebuilt_frontier.payload.grid_fever_activations[0], dtype=np.int32)
 
-    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt_frontier)
+    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_payload=prebuilt_frontier.payload)
     gpu_gap = np.asarray(gpu_fields.grid_gap.to_numpy()[0], dtype=np.int32)
     gpu_fevact = np.asarray(gpu_fields.grid_fever_activations.to_numpy()[0], dtype=np.int32)
 

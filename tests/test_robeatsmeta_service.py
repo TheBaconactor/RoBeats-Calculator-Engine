@@ -1226,7 +1226,7 @@ def test_persistent_worker_restarts_when_a_new_catalog_activates(data_root, monk
 
 def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root, monkeypatch):
     from gear_optimizer import gamedata
-    from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.frontier import startup_prebuild
     from gear_optimizer.solver.timing_envelope import TIMING_MODES
 
     _write_chart(data_root, "Normal", "Old by Artist", "old.txt")
@@ -1242,7 +1242,7 @@ def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root,
         queued.append(kwargs["charts_by_mode"])
         raise _Stop
 
-    monkeypatch.setattr(cpu_work_manager, "run_startup_cpu_work", capture)
+    monkeypatch.setattr(startup_prebuild, "run_startup_cpu_work", capture)
 
     with pytest.raises(_Stop):
         service._prebuild_frontier_caches(data_root / "Data", (changed,))

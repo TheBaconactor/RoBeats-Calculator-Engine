@@ -101,7 +101,7 @@ _CFG = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
 
 def test_failed_per_tier_recompute_drops_stale_baseline_timeline_frontier() -> None:
-    from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
+    from gear_optimizer.solver import team_buff_tiers as tbt
 
     with patch.object(tbt, "compute_team_buff_tier_leaderboards", _fake_leaderboards), patch(
         "gear_optimizer.solver.scoring.exact_rescore.score_stats_exact_with_timeline_trace",
@@ -121,7 +121,7 @@ def test_failed_per_tier_recompute_drops_stale_baseline_timeline_frontier() -> N
 
 
 def test_successful_per_tier_recompute_replaces_baseline_trace() -> None:
-    from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
+    from gear_optimizer.solver import team_buff_tiers as tbt
 
     fresh = {"TimelineFrontier": {"frontier_trace": [{"section": 0, "fresh": True}]}}
     with patch.object(tbt, "compute_team_buff_tier_leaderboards", _fake_leaderboards), patch(

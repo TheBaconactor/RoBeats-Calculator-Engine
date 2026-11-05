@@ -12,7 +12,7 @@ These exercise the real resolver against the live Gears.csv/Minis.csv -- no monk
 import pytest
 
 from gear_optimizer.gamedata import ASCENSION_PERFECT_POINTS, Gear, SongMini, load_gears, load_minis
-from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+from gear_optimizer.solver.team_buff_tiers import (
     _entry_loadout_items,
     _representative_mini_names_from_any,
 )

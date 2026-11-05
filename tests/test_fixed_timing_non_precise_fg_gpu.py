@@ -26,7 +26,7 @@ def _reset_fg_cache() -> None:
     # The bundle memory cache is process-global and keyed by song timing/ref, not by the
     # per-test FG_RESPONSE_FRONTIER_CACHE_DIR. Reset it so each test rebuilds against its own
     # tmp cache dir (otherwise a sibling test's in-memory bundle points at a stale sidecar path).
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
+    from gear_optimizer.frontier.fg_cache_store import reset_fg_response_frontier_payload_cache
 
     reset_fg_response_frontier_payload_cache()
 
@@ -59,7 +59,7 @@ def _loadout_items(name: str, **stats: int) -> list:
 
 def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
@@ -120,7 +120,7 @@ def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, mon
 
     # non-precise now re-solves the BASE gems too (GPU exhaustive search), which needs the
     # candidate-independent timeline-frontier cache built first -- mirror the on-demand path.
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     build_or_load_timeline_frontier_payload(song, curves)
 
@@ -141,7 +141,7 @@ def test_non_precise_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, mon
 
 def test_non_precise_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+    from gear_optimizer.solver.team_buff_tiers import (
         build_team_buff_tier_db_batches,
         resolve_tier_base,
         resolve_tier_base_batch,
@@ -149,7 +149,7 @@ def test_non_precise_batch_resolves_match_single_loadout_paths(tmp_path, monkeyp
         resolve_tier_fg_force_batch,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_fixed_timing_exact
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()

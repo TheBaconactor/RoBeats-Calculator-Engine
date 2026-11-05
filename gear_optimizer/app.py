@@ -13,7 +13,7 @@ from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
 from gear_optimizer.client_update import update_and_restart_client
 from gear_optimizer.frontier_client import sync_frontiers_from_server
-from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
+from gear_optimizer.frontier.startup_prebuild import run_startup_cpu_work
 from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.ui.progress import (
     ProgressUI as _ProgressUI,
@@ -210,6 +210,6 @@ class GearOptimizerApp(RuntimeUiMixin):
             raise RuntimeError(f"{len(failed)} song(s) failed in this run (see the [Workers] errors)")
 
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
-        from gear_optimizer.solver.gpu_executor import is_fatal_gpu_error
+        from gear_optimizer.gpu.executor import is_fatal_gpu_error
 
         return settings.service_mode() and is_fatal_gpu_error(exc)

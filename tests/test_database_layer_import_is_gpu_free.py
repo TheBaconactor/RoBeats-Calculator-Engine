@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _PROBE = (
     "import sys, gear_optimizer.store.legacy; "
     "heavy = sorted(m for m in sys.modules if m.split('.')[0] in {'taichi', 'numba', 'llvmlite'} "
-    "or m.startswith('gear_optimizer.solver.taichi_gem')); "
+    "or m.startswith('gear_optimizer.gpu')); "
     "assert not heavy, heavy"
 )
 

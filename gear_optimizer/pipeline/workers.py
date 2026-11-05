@@ -18,7 +18,7 @@ from collections.abc import Callable
 from multiprocessing.connection import wait
 
 from gear_optimizer.domain.jobs import SongTask
-from gear_optimizer.solver.gpu_executor import GpuFatalError
+from gear_optimizer.gpu.executor import GpuFatalError
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
     from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
     from gear_optimizer.pipeline.solve import solve_song
     from gear_optimizer.pipeline.storing import store_solve
-    from gear_optimizer.solver.gpu_executor import is_stop_abort_exception, start_gpu_executor
+    from gear_optimizer.gpu.executor import is_stop_abort_exception, start_gpu_executor
     from gear_optimizer.store import schema
 
     # Ctrl+C reaches every process of the console: the parent turns it into the stop event the worker watches.

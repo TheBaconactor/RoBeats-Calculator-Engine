@@ -154,10 +154,11 @@ def test_fixed_timing_base_scorer_batch_matches_single():
 
 
 def test_non_precise_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_path, monkeypatch):
-    from gear_optimizer.solver.taichi_gem.api import timeline
+    from gear_optimizer.frontier import timeline_cache
+    from gear_optimizer.gpu.api import timeline
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
-    timeline.reset_timeline_state()
+    timeline_cache._frontier_payload_memory.clear()
     song = _song()
     ref = _curves()
     stats_rows = [
@@ -167,7 +168,7 @@ def test_non_precise_singleton_payload_matches_fixed_timing_scorer_and_persists(
         {**_stats(), "Fever Time": 17, "Fever Fill Rate": 143, "Combo Multiplier": 160},
     ]
 
-    loaded = timeline.build_or_load_timeline_frontier_payload(song, ref)
+    loaded = timeline_cache.build_or_load_timeline_frontier_payload(song, ref)
 
     assert loaded.cache_source == "built"
     assert loaded.payload.frontier_pool_used > 0
@@ -175,29 +176,30 @@ def test_non_precise_singleton_payload_matches_fixed_timing_scorer_and_persists(
     cache_files = list(tmp_path.glob("*.npz"))
     assert len(cache_files) == 1
 
-    timeline.reset_timeline_state()
-    loaded_again = timeline.build_or_load_timeline_frontier_payload(song, ref)
+    timeline_cache._frontier_payload_memory.clear()
+    loaded_again = timeline_cache.build_or_load_timeline_frontier_payload(song, ref)
     assert loaded_again.cache_source == "disk"
     assert score_stats_exact_batch(stats_rows, song, ref) == score_stats_fixed_timing_exact_batch(
         stats_rows, song, ref
     )
 
-    uploads: list[tuple[int, int]] = []
+    uploads: list[int] = []
     monkeypatch.setattr(timeline, "ensure_ready", lambda *_args, **_kwargs: b"")
     monkeypatch.setattr(
         timeline,
         "_upload_timeline_frontier_payload_slot",
-        lambda _payload, song_slot, *, source_slot_i: uploads.append((song_slot, source_slot_i)),
+        lambda _payload, song_slot: uploads.append(song_slot),
     )
 
-    timeline.precompute_timeline_gpu(song, ref, song_slot=0, prebuilt_frontier=loaded)
+    timeline.precompute_timeline_gpu(song, ref, song_slot=0, prebuilt_payload=loaded.payload)
 
-    assert uploads == [(0, 0)]
+    assert uploads == [0]
 
 
 def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypatch):
-    from gear_optimizer.solver.fg_response_scoring import fixed_timing
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_frontier
+    from gear_optimizer.trace import fixed_timing
+    from gear_optimizer.frontier import fg_cache
+    from gear_optimizer.solver import fg_scoring
 
     seen: dict[str, object] = {}
     bundle = object()
@@ -213,10 +215,10 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
         seen["score_bundle"] = kwargs["scoring_bundle"]
         return {tuple(row): "winner" for row in kwargs["base_components"].tolist()}
 
-    monkeypatch.setattr(response_cache, "ensure_response_frontier_cache_for_song", _ensure)
-    monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _load)
-    monkeypatch.setattr(response_frontier, "score_fg_base_components", _score)
-    monkeypatch.setattr(response_frontier, "fg_solve_result", lambda **_kwargs: SimpleNamespace(surface="exact-surface"))
+    monkeypatch.setattr(fg_cache, "ensure_response_frontier_cache_for_song", _ensure)
+    monkeypatch.setattr(fg_cache, "load_response_frontier_scoring_bundle", _load)
+    monkeypatch.setattr(fg_scoring, "score_fg_base_components", _score)
+    monkeypatch.setattr(fg_scoring, "fg_solve_result", lambda **_kwargs: SimpleNamespace(surface="exact-surface"))
 
     results = fixed_timing._solve_fixed_timing_response_results(
         [_stats()],

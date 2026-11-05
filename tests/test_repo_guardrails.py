@@ -7,14 +7,14 @@ production scoring code importing through the intended public GPU modules.
 Rationale:
 - Removed GPU APIs (old batch gem solver) were expensive (host transfers + VRAM) and
   easy to accidentally re-wire back into production.
-- Scoring orchestration should not import `taichi_gem` internals directly; it should
-  go through `gear_optimizer.solver.taichi_gem.api` and/or the GPU executor.
+- The CPU layers (frontiers, traces, scoring, the store) work without Taichi: only the GA's GPU path loads it.
 """
 
 from __future__ import annotations
 
-import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -201,57 +201,13 @@ def test_maintained_documentation_does_not_reference_retired_surfaces() -> None:
 
 
 def test_taichi_api_package_imports_fail_loudly() -> None:
-    api_init = (_REPO_ROOT / "gear_optimizer" / "solver" / "taichi_gem" / "api" / "__init__.py").read_text(
-        encoding="utf-8"
-    )
+    api_init = (_REPO_ROOT / "gear_optimizer" / "gpu" / "api" / "__init__.py").read_text(encoding="utf-8")
 
     assert "except ImportError" not in api_init
 
 
-def _is_disallowed_taichi_gem_import(module: str) -> bool:
-    # The public GPU API surface is the `taichi_gem.api` package (INCLUDING its
-    # submodules, e.g. `taichi_gem.api.timeline`), plus `taichi_gem.runtime`.
-    # Scoring may import from those. Everything DEEPER -- kernels, fields,
-    # force_greats internals, the bare taichi_gem package -- remains forbidden.
-    allowed_prefixes = (
-        "gear_optimizer.solver.taichi_gem.api",
-        "gear_optimizer.solver.taichi_gem.runtime",
-        "taichi_gem.api",
-        "taichi_gem.runtime",
-    )
-    for prefix in allowed_prefixes:
-        if module == prefix or module.startswith(prefix + "."):
-            return False
-    if module == "gear_optimizer.solver.taichi_gem" or module.startswith("gear_optimizer.solver.taichi_gem."):
-        return True
-    if module == "taichi_gem" or module.startswith("taichi_gem."):
-        return True
-    return False
-
-
-def test_scoring_does_not_import_taichi_gem_internals() -> None:
-    scoring_root = _REPO_ROOT / "gear_optimizer" / "solver" / "scoring"
-    assert scoring_root.exists(), f"Expected scoring root at {scoring_root}"
-
-    offenders: list[str] = []
-    for path in scoring_root.rglob("*.py"):
-        txt = path.read_text(encoding="utf-8", errors="ignore")
-        tree = ast.parse(txt, filename=str(path))
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if _is_disallowed_taichi_gem_import(alias.name):
-                        rel = path.relative_to(_REPO_ROOT)
-                        offenders.append(f"{rel}:{node.lineno} import {alias.name}")
-            elif isinstance(node, ast.ImportFrom):
-                if node.module is None:
-                    continue
-                if _is_disallowed_taichi_gem_import(node.module):
-                    rel = path.relative_to(_REPO_ROOT)
-                    offenders.append(f"{rel}:{node.lineno} from {node.module} import ...")
-
-    assert not offenders, (
-        "Scoring code must import GPU functionality via taichi_gem.api/gpu_executor, "
-        "not taichi_gem internals:\n" + "\n".join(offenders)
-    )
+def test_the_cpu_layers_never_load_taichi() -> None:
+    imports = "import gear_optimizer.trace.note_graph, gear_optimizer.frontier.timeline_cache, gear_optimizer.store.legacy"
+    tiers = "import gear_optimizer.solver.team_buff_tiers, gear_optimizer.solver.scoring.exact_rescore"
+    code = f"{imports}; {tiers}; import sys; assert 'taichi' not in sys.modules"
+    subprocess.run([sys.executable, "-c", code], cwd=_REPO_ROOT, check=True)

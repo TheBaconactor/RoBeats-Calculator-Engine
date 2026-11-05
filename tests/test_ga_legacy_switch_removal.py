@@ -5,7 +5,7 @@ def test_ga_kernel_decorators_attach_only_to_kernel_defs():
     """
     from pathlib import Path
 
-    path = Path("gear_optimizer/solver/taichi_gem/kernels/kernels_ga.py")
+    path = Path("gear_optimizer/gpu/kernels/kernels_ga.py")
     lines = path.read_text(encoding="utf-8").splitlines()
 
     offenders = []

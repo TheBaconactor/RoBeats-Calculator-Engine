@@ -3,15 +3,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+from gear_optimizer.trace.activation_witness import (
     LabelHitIntervals,
     activation_schedule_witnesses,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+from gear_optimizer.frontier.producer_kernels import (
     HitTimes,
     _numba_activation_reachable_contiguous_run,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+from gear_optimizer.trace.reconstruct import (
     _activation_reachable,
     _build_activation_reachability_context,
 )
@@ -480,10 +480,8 @@ def _retired_boolean_region_core_for_offset(
 
 
 def test_region_core_table_preserves_exact_schedule_stream() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_numba as rb,
-        response_build_gpu_precompute,
-    )
+    from gear_optimizer.frontier import producer_kernels as rb
+    from gear_optimizer.frontier import producer_precompute
 
     n = 48
     timestamps = np.arange(n, dtype=np.float32) * np.float32(0.071)
@@ -579,7 +577,7 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
 
 
 def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversion() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
+    from gear_optimizer.frontier import producer_kernels as rb
 
     n = 12
     denom = float(np.finfo(np.float64).max)

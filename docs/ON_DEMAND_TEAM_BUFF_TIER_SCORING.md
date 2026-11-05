@@ -9,7 +9,7 @@ the normal optimizer run.
 
 ## Scoring contract
 
-`gear_optimizer.helpers.song_helpers.team_buff_tiers` owns the recomputation:
+`gear_optimizer.solver.team_buff_tiers` owns the recomputation:
 
 - the loadout set comes from persisted baseline candidates;
 - gem allocation is solved again for each tier and selected Team Color;
@@ -28,7 +28,7 @@ from pathlib import Path
 from gear_optimizer.chart import load_chart
 from gear_optimizer.store.legacy import read_best_loadouts
 from gear_optimizer.gamedata import stat_curves
-from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+from gear_optimizer.solver.team_buff_tiers import (
     compute_team_buff_tier_leaderboards,
 )
 from gear_optimizer.settings import paths

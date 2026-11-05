@@ -18,7 +18,7 @@ from ...stats import GEM_KINDS, apply_gems
 from ..base_stats import STAT_NAMES
 from ..force_greats_common import response_frontier_base_components_row
 from ..gem_search import SurfacePool, gem_groups, gem_winners
-from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 from ..timing_envelope import TimedSong
 
 

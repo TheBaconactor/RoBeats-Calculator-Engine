@@ -38,7 +38,9 @@ from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payloa
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.gamedata import Gear, SongMini, empty_stats
 from tests.items_support import make_gear, make_song_mini
-from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
+import threading
+
+_GPU_LOCK = threading.Lock()
 from tests.curves_support import synthetic_curves
 from tests.songs_support import make_song
 
@@ -142,11 +144,9 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
     """
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_BATCH_RUNS", forced_batch_runs)
 
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        precompute_timeline_gpu,
-    )
+    from gear_optimizer.gpu.api.initialization import ensure_ready
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
 
     registry = _build_registry()
     gpu_arrays = registry.to_gpu_arrays()
@@ -172,7 +172,7 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
     with _GPU_LOCK:
         ensure_ready()
         prebuilt = build_or_load_timeline_frontier_payload(song, curves)
-        precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+        precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_payload=prebuilt.payload)
         shortlist = ga_ftff_shortlist(
             prebuilt.payload, reach=reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed_stats_arr),
             color_flags=color_flags,
@@ -204,7 +204,7 @@ def test_gpu_ga_batch_width_invariant_batch2x3_equals_batch6(monkeypatch):
     # the eval budget (no combo chunking) while batch-6 exceeds it (combo chunking
     # accumulates across chunks). If they were not distinct schedules the proof
     # would be vacuous.
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.gpu import fields as gpu_fields
 
     assert _NUM_RUNS * _N_GENOMES <= int(gpu_fields.MAX_GENOMES), (
         "test geometry must fit a full batch-6 in the MAX_GENOMES pool"

@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from gear_optimizer.solver import frontier_cache_build_lock as lock_mod
-from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock, _LOCK_FILE_NAME
+from gear_optimizer.frontier import build_lock as lock_mod
+from gear_optimizer.frontier.build_lock import FrontierBuildLock, _LOCK_FILE_NAME
 
 
 def test_two_threads_racing_the_lock_never_hold_it_concurrently(tmp_path: Path) -> None:

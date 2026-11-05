@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gear_optimizer.solver.frontier_cache import FrontierCache, FrontierCacheBuildResult, content_addressed_path
+from gear_optimizer.frontier.cache import FrontierCache, FrontierCacheBuildResult, content_addressed_path
 from tests.curves_support import synthetic_curves
 
 CURVES = synthetic_curves({"Fever Time": np.ones(161, np.float32) * 0.15, "Fever Fill Rate": np.ones(161, np.float32) * 0.333})
@@ -231,8 +231,8 @@ def test_a_manifest_of_another_version_is_ignored(tmp_path: Path) -> None:
 
 
 def test_both_caches_record_an_incomplete_file_as_a_miss(tmp_path: Path, monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
+    from gear_optimizer.frontier.timeline_cache import TIMELINE_FRONTIER_CACHE
+    from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg"))

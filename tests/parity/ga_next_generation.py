@@ -4,11 +4,11 @@ generation with kernels_ga._ga_next_generation_full_runs_impl."""
 
 import taichi as ti
 
-from gear_optimizer.solver.taichi_gem import fields
-from gear_optimizer.solver.taichi_gem.api.common_operations import probability_to_u32_fp
-from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
-from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
-from gear_optimizer.solver.taichi_gem.kernels.kernels_ga import _ga_next_generation_full_runs_impl
+from gear_optimizer.gpu import fields
+from gear_optimizer.gpu.api.common_operations import probability_to_u32_fp
+from gear_optimizer.gpu.api.initialization import ensure_ready
+from gear_optimizer.gpu.kernels import kernels_helpers
+from gear_optimizer.gpu.kernels.kernels_ga import _ga_next_generation_full_runs_impl
 
 
 @ti.kernel

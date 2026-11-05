@@ -4,7 +4,7 @@ Every mini ascends at level 10. The in-game fixtures below (issue #127) pin the 
 """
 
 from gear_optimizer.gamedata import ascended_mini_stats, ascension_element_bonus, load_minis, song_minis
-from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
+from gear_optimizer.pipeline.pools import initialize_pools
 from gear_optimizer.settings import paths
 from tests.items_support import make_gear, make_mini
 

@@ -12,13 +12,13 @@ pytestmark = pytest.mark.gpu
 
 
 def _ensure_ga_ready() -> None:
-    from gear_optimizer.solver.taichi_gem.api import ensure_ready
+    from gear_optimizer.gpu.api import ensure_ready
 
     ensure_ready()
 
 
 def _upload_population_indices(population: np.ndarray, *, n_slots: int = 9) -> None:
-    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.gpu import fields
 
     _ensure_ga_ready()
     src = np.asarray(population, dtype=np.int32)
@@ -28,7 +28,7 @@ def _upload_population_indices(population: np.ndarray, *, n_slots: int = 9) -> N
 
 
 def _set_scores(scores: np.ndarray, *, n_genomes: int) -> None:
-    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.gpu import fields
 
     _ensure_ga_ready()
     buf = np.zeros((int(fields.MAX_GENOMES),), dtype=np.int32)
@@ -37,14 +37,14 @@ def _set_scores(scores: np.ndarray, *, n_genomes: int) -> None:
 
 
 def _download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:
-    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.gpu import fields
 
     _ensure_ga_ready()
     return np.asarray(fields.population_indices.to_numpy()[: int(n_genomes), : int(n_slots)], dtype=np.int32)
 
 
 def test_gpu_ga_load_initial_populations_batch_roundtrip():
-    from gear_optimizer.solver.taichi_gem.api import (
+    from gear_optimizer.gpu.api import (
         ga_upload_initial_populations,
         ga_load_initial_populations_batch,
     )
@@ -66,8 +66,8 @@ def test_gpu_ga_load_initial_populations_batch_roundtrip():
 
 
 def test_gpu_ga_run_buffer_config_restores_defaults_after_hard_reset():
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready, hard_reset_taichi
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api.initialization import ensure_ready, hard_reset_taichi
 
     default_runs = int(fields.DEFAULT_MAX_GA_RUNS)
     default_genomes = int(fields.DEFAULT_MAX_GA_RUN_GENOMES)
@@ -91,7 +91,7 @@ def test_gpu_ga_run_buffer_config_restores_defaults_after_hard_reset():
 
 
 def test_gpu_ga_next_generation_fused_runs_matches_sequential():
-    from gear_optimizer.solver.taichi_gem.api import (
+    from gear_optimizer.gpu.api import (
         ga_seed_rng_runs,
     )
     from tests.parity.ga_next_generation import ga_next_generation_fused_runs
@@ -161,7 +161,7 @@ def test_gpu_ga_next_generation_fused_runs_matches_sequential():
 
 
 def test_gpu_ga_indexed_seed_batched_runs_match_sequential_seed_series():
-    from gear_optimizer.solver.taichi_gem.api import (
+    from gear_optimizer.gpu.api import (
         ga_seed_rng_runs,
         ga_seed_rng_runs_indexed,
     )
@@ -225,7 +225,7 @@ def test_gpu_ga_indexed_seed_batched_runs_match_sequential_seed_series():
 
 
 def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
-    from gear_optimizer.solver.taichi_gem.api import (
+    from gear_optimizer.gpu.api import (
         ga_seed_rng_runs,
         ga_upload_item_stats,
     )
@@ -262,15 +262,15 @@ def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
 
 
 def test_gpu_ga_refresh_next_fused_runs_matches_separate_transition():
-    from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api import (
+    from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api import (
         ga_refresh_scores_and_update_runs_best,
         ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
         ga_seed_rng_runs,
     )
     from tests.parity.ga_next_generation import ga_next_generation_fused_runs
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+    from gear_optimizer.gpu.api.initialization import ensure_ready
 
     ensure_ready()
     if fields.chunk_best_key is None:

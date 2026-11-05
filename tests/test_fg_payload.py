@@ -1,6 +1,6 @@
 import pytest
 
-from gear_optimizer.helpers.song_helpers.fg_payload import (
+from gear_optimizer.store.fg_payload import (
     require_response_surface,
     strip_retired_fg_fields,
 )

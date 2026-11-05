@@ -3,9 +3,10 @@
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.taichi_gem import fields, kernels
-from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
-from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+from gear_optimizer.gpu import fields
+from gear_optimizer.gpu import kernels
+from gear_optimizer.gpu.api.ga_operations import reset_ga_evaluation_cache
+from gear_optimizer.gpu.api.initialization import ensure_ready
 
 pytestmark = pytest.mark.gpu
 
@@ -101,7 +102,7 @@ def test_full_population_collisions_keep_keys_and_gems_together():
 
 
 def test_runtime_reset_discards_cached_winners():
-    from gear_optimizer.solver.taichi_gem.api.initialization import hard_reset_taichi
+    from gear_optimizer.gpu.api.initialization import hard_reset_taichi
 
     _prepare([[0] * 7])
     _publish(1)

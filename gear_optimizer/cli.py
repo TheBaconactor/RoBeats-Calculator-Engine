@@ -21,7 +21,7 @@ def _apply_service_mode_frontier_threads() -> None:
     if not settings.service_mode():
         return
     from gear_optimizer.core.cpu_affinity import frontier_prebuild_cpu_count
-    from gear_optimizer.solver.timeline_exact_frontier import configure_timeline_pair_build_threads
+    from gear_optimizer.frontier.timeline_producer import configure_timeline_pair_build_threads
 
     configure_timeline_pair_build_threads(frontier_prebuild_cpu_count())
 

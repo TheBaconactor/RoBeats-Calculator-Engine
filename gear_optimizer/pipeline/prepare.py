@@ -50,9 +50,9 @@ _SLOTS = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
 def _ga_registry(gears, song_minis, primary: str, secondary: str):
     """The song's item registry, its GPU arrays, the GA's initial-heuristic top-k items and the FG effective-loadout
     tables (gear name rank, mini signature id; the GA selects the primary element), cached per pool key."""
-    from gear_optimizer.helpers.ga_helpers import initialize_pools
+    from gear_optimizer.pipeline.pools import initialize_pools
     from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
-    from gear_optimizer.solver.taichi_gem.fields import GA_INIT_HEURISTIC_K
+    from gear_optimizer.gpu.fields import GA_INIT_HEURISTIC_K
 
     # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
     targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
@@ -84,8 +84,8 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     """The task's song ready for its GA: the GA inputs (the meta GA selects the song's primary element), the FG
     static preparation, and the timeline frontier payload built or loaded here, off the GPU owner thread."""
     from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.taichi_gem.fields import GA_INIT_HEURISTIC_K
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.fields import GA_INIT_HEURISTIC_K
 
     context = task.context
     core = build_prepared_song_core(

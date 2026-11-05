@@ -48,13 +48,13 @@ Ties and non-dominated witnesses remain in a stable canonical order.
 
 - `gear_optimizer/solver/timing_envelope.py` constructs or applies the selected
   hit-timing model.
-- `gear_optimizer/solver/timeline_exact_frontier.py` builds and reduces exact
+- `gear_optimizer/frontier/timeline_producer.py` builds and reduces exact
   symbolic surfaces.
-- `gear_optimizer/solver/taichi_gem/api/timeline.py` owns cache identity,
+- `gear_optimizer/gpu/api/timeline.py` owns cache identity,
   serialization, and GPU upload.
-- `gear_optimizer/solver/taichi_gem/kernels/kernels_helpers.py` exposes the
+- `gear_optimizer/gpu/kernels/kernels_helpers.py` exposes the
   device-side frontier reader.
-- `gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py` evaluates every
+- `gear_optimizer/gpu/kernels/kernels_scoring.py` evaluates every
   retained surface for the active reference cell.
 
 The packed payload records a count and offset per cell, followed by shared

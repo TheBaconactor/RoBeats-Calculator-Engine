@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from numba import njit
 
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+from gear_optimizer.frontier.producer_kernels import (
     _HEAD_DOM_C,
     _HEAD_DOM_F,
     _HEAD_DOM_G,
@@ -246,7 +246,7 @@ def test_compact_pattern_basis_matches_expanded_row_survivor_snapshot():
 
 
 def test_session_head_dominance_box_reads_luts_and_fails_loud():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import session_head_dominance_box
+    from gear_optimizer.frontier.fg_cache import session_head_dominance_box
 
     box = session_head_dominance_box(_span_curves((2.4, 2.7), (4.4, 5.0)))
     assert box[2] == pytest.approx(2.4) and box[3] == pytest.approx(2.7)
@@ -259,8 +259,8 @@ def test_session_head_dominance_box_reads_luts_and_fails_loud():
 
 def _bundle_with_tables(pattern_ids, counts, pattern_words, pattern_coeffs, *, offsets, lengths, head_len, cache_key):
     """A loaded (unpruned) scoring bundle whose surface tables hold these rows and patterns."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import pack_surface_patterns
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierScoringBundle
+    from gear_optimizer.frontier.fg_cache_patterns import pack_surface_patterns
+    from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierScoringBundle
 
     rows = np.empty((4, int(pattern_ids.shape[0])), dtype=np.uint32)
     rows[0] = pattern_ids
@@ -288,7 +288,7 @@ def _bundle_with_tables(pattern_ids, counts, pattern_words, pattern_coeffs, *, o
 
 
 def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_table():
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.frontier import fg_cache
 
     rng = np.random.default_rng(11)
     head_len = 20
@@ -311,7 +311,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
         cache_key=("test",),
     )
     curves = _span_curves((2.45, 2.72), (4.6, 5.48))
-    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = response_cache.session_head_dominance_box(curves)
+    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = fg_cache.session_head_dominance_box(curves)
     original_offsets = np.asarray(bundle.frontier_offsets, dtype=np.int32)
     original_lengths = np.asarray(bundle.frontier_lengths, dtype=np.int32)
     expected_keep = np.asarray(
@@ -335,7 +335,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
         dtype=bool,
     )
     expected_used_patterns, expected_pattern_ids = np.unique(pattern_ids[expected_keep], return_inverse=True)
-    pruned = response_cache.session_prune_scoring_bundle(bundle, curves)
+    pruned = fg_cache.session_prune_scoring_bundle(bundle, curves)
     assert int(pruned.surface_row_count) == int(pruned.surface_pattern_ids.shape[0])
     assert int(pruned.surface_pattern_ids.shape[0]) <= 55
     assert pruned.surface_counts.shape == (int(pruned.surface_row_count), 3)
@@ -382,7 +382,7 @@ def _retired_session_prune_arrays(pattern_ids, counts, pattern_words, pattern_co
     ],
 )
 def test_session_prune_matches_retired_unique_remap(combo_box, fever_box):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.frontier import fg_cache
 
     rng = np.random.default_rng(20260927)
     head_len = 40
@@ -422,7 +422,7 @@ def test_session_prune_matches_retired_unique_remap(combo_box, fever_box):
     )
     curves = _span_curves(combo_box, fever_box)
     pattern_ids_before = pattern_ids.copy()
-    box = response_cache.session_head_dominance_box(curves)
+    box = fg_cache.session_head_dominance_box(curves)
     keep = np.asarray(
         _numba_session_box_keep_mask(
             pattern_ids, pattern_words, counts, offsets, lengths, 0, head_len, *box
@@ -431,7 +431,7 @@ def test_session_prune_matches_retired_unique_remap(combo_box, fever_box):
     )
     expected = _retired_session_prune_arrays(pattern_ids, counts, pattern_words, pattern_coeffs, offsets, lengths, keep)
 
-    pruned = response_cache.session_prune_scoring_bundle(bundle, curves)
+    pruned = fg_cache.session_prune_scoring_bundle(bundle, curves)
 
     for name, want in expected.items():
         got = getattr(pruned, name)

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gear_optimizer.solver.taichi_gem.api import ga_operations
-from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
+from gear_optimizer.gpu.api import ga_operations
+from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
 
 
 class _NoHostReadback:

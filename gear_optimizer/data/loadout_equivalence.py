@@ -255,7 +255,7 @@ def effective_loadout_hash_from_names(
     gear_names: List[str],
     mini_sigs: List[tuple[Any, ...]],
 ) -> str:
-    from ..helpers.song_helpers.loadout_hashing import (
+    from .loadout_hashing import (
         effective_loadout_hash_from_names as _impl,
     )
 

@@ -8,7 +8,7 @@ pytestmark = pytest.mark.gpu
 
 
 def _cpu_frontier_payload(song, curves):
-    from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
+    from gear_optimizer.frontier.timeline_producer import build_timeline_frontier_grid_payload
     from gear_optimizer.solver.timing_envelope import fever_axes
 
     durations, thresholds = fever_axes(song.chart.total_notes, song.chart.long_notes, song.chart.last_note_time, curves)
@@ -28,12 +28,10 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
     Ensure the uploaded GPU fields match the exact CPU frontier payload on a synthetic chart.
     """
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        precompute_timeline_gpu,
-    )
-    from gear_optimizer.solver.taichi_gem.runtime import init_taichi
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.gpu.runtime import init_taichi
+    from gear_optimizer.gpu import fields as gpu_fields
 
     init_taichi()
 
@@ -60,7 +58,7 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
     cells = [(10, 10), (80, 80), (160, 40), (120, 30)]
 
     _prebuilt = build_or_load_timeline_frontier_payload(song, curves)
-    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
+    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_payload=_prebuilt.payload)
     cpu_payload = _cpu_frontier_payload(song, curves)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
@@ -106,12 +104,10 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
     repeated requests of the same song and reference arrays.
     """
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload,
-        precompute_timeline_gpu,
-    )
-    from gear_optimizer.solver.taichi_gem.runtime import init_taichi
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.gpu.runtime import init_taichi
+    from gear_optimizer.gpu import fields as gpu_fields
 
     init_taichi()
 
@@ -136,8 +132,8 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
     })
 
     _prebuilt = build_or_load_timeline_frontier_payload(song, curves)
-    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
-    precompute_timeline_gpu(song, curves, song_slot=1, prebuilt_frontier=_prebuilt)
+    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_payload=_prebuilt.payload)
+    precompute_timeline_gpu(song, curves, song_slot=1, prebuilt_payload=_prebuilt.payload)
 
     def _eq(field) -> bool:
         arr = field.to_numpy()

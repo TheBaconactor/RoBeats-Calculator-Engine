@@ -65,7 +65,7 @@ def score_stats_exact_with_timeline_trace(
     song: TimedSong,
     curves: StatCurves,
 ) -> dict[str, Any]:
-    from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     total_notes = song.chart.total_notes
     frontier_result = build_or_load_timeline_frontier_payload(song, curves)
@@ -102,7 +102,7 @@ def score_stats_exact_batch(
     """Exact Perfect-window base scores: the best surface of each row's timing frontier cell."""
     if not stats_rows:
         return []
-    from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     total_notes = song.chart.total_notes
     payload = build_or_load_timeline_frontier_payload(song, curves).payload
@@ -199,8 +199,8 @@ def _timeline_trace_for_payload_surface(
     song: TimedSong,
     curves: StatCurves,
 ) -> dict[str, Any]:
-    from ..fg_response_scoring.physical_replay import validate_base_physical_replay
-    from ..taichi_gem.api.timeline import reconstruct_base_trace
+    from gear_optimizer.trace.physical_replay import validate_base_physical_replay
+    from gear_optimizer.trace.reconstruct import reconstruct_base_trace
 
     pool_idx_i = int(pool_idx)
     if pool_idx_i < 0 or pool_idx_i >= int(payload.frontier_pool_used):

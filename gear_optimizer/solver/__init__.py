@@ -1,8 +1,3 @@
-"""
-Solver package: GA, scoring orchestration, and GPU execution.
-
-New performance-sensitive algorithm work should land under this package rather than
-pipeline/app layers to keep compute code centralized.
-"""
+"""The search: the GA's host side, the exact gem search, the FG search and scoring, and the TeamBuff tier replays."""
 
 __all__: list[str] = []

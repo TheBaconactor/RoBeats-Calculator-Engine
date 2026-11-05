@@ -8,14 +8,14 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.solver.timing_envelope import precise_envelopes
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import action_table
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+from gear_optimizer.frontier.producer_batch import action_table
+from gear_optimizer.frontier.producer_batch import (
     _compact_first_frontier_action_arrays,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import (
+from gear_optimizer.frontier.producer_precompute import (
     _precompute_end_indices,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+from gear_optimizer.frontier.producer_kernels import (
     _numba_build_prefix_activation_hit_tables,
 )
 

@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
+from gear_optimizer.frontier.timeline_producer import build_timeline_frontier_grid_payload
 from gear_optimizer.solver.timing_envelope import fever_durations, fever_fill_denominators, fever_fill_thresholds
-from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
+from gear_optimizer.frontier import timeline_cache as timeline_api
 from tests.songs_support import make_song
 
 
@@ -18,14 +18,14 @@ def test_timeline_cache_fingerprint_covers_shared_frontier_producer() -> None:
     sources = {path.name for path in timeline_api._TIMELINE_DP_SOURCES}
 
     assert {
-        "timeline_exact_frontier.py",
+        "timeline_producer.py",
         "timing_envelope.py",
         "fill_crossing.py",
-        "response_build_gpu_batch.py",
-        "response_build_gpu_numba.py",
+        "producer_batch.py",
+        "producer_kernels.py",
     }.issubset(sources)
     # Neither the FG scoring policy nor the trace reconstruction determines a cached payload.
-    assert not {"fg_policy.py", "response_builder.py", "activation_witness.py"} & sources
+    assert not {"fg_policy.py", "reconstruct.py", "activation_witness.py"} & sources
 
 
 def _build_small_payload():
@@ -125,14 +125,14 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload
 ) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     song = make_song([0.0, 0.2, 0.4, 0.6], name="Warm Disk Timeline", difficulty="Easy", last_note_time=0.6)
     curves = _curves()
 
     first = timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     assert first.cache_source == "built"
 
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     second = timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     assert second.cache_source == "disk"
 
@@ -175,12 +175,12 @@ def test_frontier_payload_memory_hit_serves_the_built_and_disk_payload(tmp_path:
     the pool rows below frontier_pool_used), so the memory tier cannot change a score."""
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     song = _warm_disk_timeline_song("Memory Tier Timeline")
 
     first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     third = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
 
     assert (first.cache_source, second.cache_source, third.cache_source) == ("built", "memory", "disk")
@@ -192,7 +192,7 @@ def test_frontier_payload_memory_hit_serves_the_built_and_disk_payload(tmp_path:
 def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     song = _warm_disk_timeline_song("Compressed Memory Tier Timeline")
 
     first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
@@ -213,7 +213,7 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
         second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert second.cache_source == "memory"
 
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     third = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert third.cache_source == "disk"
     assert timeline_api._frontier_payload_memory.get(third.cache_key) == cached
@@ -232,7 +232,7 @@ def test_frontier_payload_memory_tier_survives_failed_disk_write(tmp_path: Path,
     before the write, so the next lookup is still a memory hit."""
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     song = _warm_disk_timeline_song("Failed Write Timeline")
 
     with monkeypatch.context() as failing_replace:
@@ -264,7 +264,7 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
     monkeypatch.setitem(
         timeline_api._EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS, current, ("exact-frontier-test+logic-older",)
     )
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     song = make_song([0.0, 0.2, 0.4, 0.6], name="Predecessor Info Timeline", difficulty="Easy", last_note_time=0.6)
     curves = _curves()
 
@@ -282,7 +282,7 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
     assert predecessor_path.exists()
     current_path.unlink()
 
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     info = timeline_api.timeline_frontier_payload_cache_info(song, curves)
     assert info.cache_source == "disk"
     assert Path(info.disk_path) == predecessor_path
@@ -293,7 +293,7 @@ def test_build_or_load_timeline_frontier_payload_reuses_old_disk_cache_without_t
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     monkeypatch.setenv("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "1800")
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     song = make_song([0.0, 0.2, 0.4, 0.6], name="Stale Disk Timeline", difficulty="Easy", last_note_time=0.6)
 
     first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
@@ -301,7 +301,7 @@ def test_build_or_load_timeline_frontier_payload_reuses_old_disk_cache_without_t
     stale_ts = time.time() - 3700.0
     os.utime(first.disk_path, (stale_ts, stale_ts))
 
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert second.cache_source == "disk"
     assert second.disk_path.exists()
@@ -313,13 +313,13 @@ def test_build_or_load_timeline_frontier_payload_builds_and_persists_live_cache_
 ) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     song = make_song([0.0, 0.2, 0.4, 0.6], name="Runtime Missing Timeline", difficulty="Easy", last_note_time=0.6)
 
     built = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert built.cache_source == "built"
     assert built.disk_path.exists()
-    timeline_api.reset_timeline_state()
+    timeline_api._frontier_payload_memory.clear()
     loaded = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert loaded.cache_source == "disk"
 

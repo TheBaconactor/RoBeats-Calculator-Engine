@@ -32,7 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.solver.timing_envelope import precise_envelopes
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+from gear_optimizer.frontier.producer_batch import (
     build_force_greats_response_first_frontiers_gpu_batch,
 )
 

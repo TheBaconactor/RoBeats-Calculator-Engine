@@ -8,7 +8,7 @@ import pytest
 
 from gear_optimizer import robeatsmeta_service as service
 from gear_optimizer import service_worker as worker
-from gear_optimizer.solver.gpu_executor import GpuServiceTimeoutError
+from gear_optimizer.gpu.executor import GpuServiceTimeoutError
 
 
 def test_persistent_worker_reuses_one_process(monkeypatch):
@@ -112,7 +112,7 @@ def test_service_worker_marks_daemon_before_native_startup(monkeypatch):
 
 
 def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch, tmp_path):
-    from gear_optimizer.solver import gpu_executor
+    from gear_optimizer.gpu import executor as gpu_executor
 
     events: list[str] = []
     monkeypatch.setattr(gpu_executor, "start_gpu_executor", lambda multi_start: events.append(f"native_prewarm:{multi_start}"))

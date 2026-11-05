@@ -17,7 +17,7 @@ def _fg_test_surface() -> list[int]:
 
 def _expected_fg_surface_score(stats: dict, song, curves) -> int:
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+    from gear_optimizer.frontier.types import FgResponseSurface
 
     return int(
         score_force_greats_response_surface_exact(stats, song, curves, FgResponseSurface(*_FG_TEST_SURFACE))
@@ -25,7 +25,7 @@ def _expected_fg_surface_score(stats: dict, song, curves) -> int:
 
 
 def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
-    from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
+    from gear_optimizer.pipeline.result_application import read_visible_stats
 
     if not isinstance(force_obj, dict) or not force_obj:
         return fallback_stats if isinstance(fallback_stats, dict) else {}
@@ -36,7 +36,7 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
 # GPU exact-replay tests need the timeline frontier prebuilt (same as production startup).
 # Isolated GPU unit tests do not run the full app prebuild; call this before real scoring.
 def _prebuild_timeline_frontier(song, curves) -> None:
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     build_or_load_timeline_frontier_payload(song, curves)
 
@@ -93,7 +93,7 @@ def _install_synthetic_tier_resolve(monkeypatch, *, song, curves) -> None:
     frozen response surface exactly at the tier-shifted FG stats, matching the persisted-surface
     replay the FG-visibility tests assert.
     """
-    import gear_optimizer.helpers.song_helpers.team_buff_tiers as tbt
+    import gear_optimizer.solver.team_buff_tiers as tbt
     from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
 
@@ -178,7 +178,7 @@ def _install_synthetic_tier_resolve(monkeypatch, *, song, curves) -> None:
 
 def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     song = _mock_song(name="pytest_team_buff_tiers", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -247,7 +247,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatc
 
 def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     # Primary/secondary determine scoring contribution; TeamColor should follow Primary in auto mode.
     song = _mock_song(name="pytest_team_buff_auto_mode", n_notes=12, duration=10.0, primary="Vibe")
@@ -294,7 +294,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
 
 def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_minis(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_batches", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -348,7 +348,7 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
 
 def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_and_fg_rows(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_row_order", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -442,7 +442,7 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
         }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        "gear_optimizer.solver.team_buff_tiers.compute_team_buff_tier_leaderboards",
         fake_compute_team_buff_tier_leaderboards,
     )
 
@@ -459,7 +459,7 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
 
 def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_gear_minis(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_hash_collision", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -559,7 +559,7 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
         }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        "gear_optimizer.solver.team_buff_tiers.compute_team_buff_tier_leaderboards",
         _fake_compute_team_buff_tier_leaderboards,
     )
 
@@ -583,7 +583,7 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
 
 def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_missing_base_effect", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -640,7 +640,7 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
 
 def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_color_modes", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -708,7 +708,7 @@ def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
 
 def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     song = _mock_song(name="pytest_team_buff_fg_tiered", n_notes=24)
     curves = _curves(MAX_STAT + 1)
@@ -765,7 +765,7 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
 
 def test_team_buff_tier_replay_requires_persisted_response_surface():
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     song = _mock_song(name="pytest_team_buff_missing_surface", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -795,7 +795,7 @@ def test_team_buff_tier_replay_requires_persisted_response_surface():
 
 def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
@@ -862,7 +862,7 @@ def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monk
     would have RANKED that row from its freshly recomputed force Score. Since the carry does not
     recompute, it must fail loud on the inconsistency rather than silently drop."""
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     song = _mock_song(name="pytest_carry_stale_fg_score", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -917,7 +917,7 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
     ``force['BaseStats']`` is deliberately gemless; ``fg_base_score`` must still equal the loadout's
     base leaderboard score."""
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     song = _mock_song(name="pytest_fg_paired_base_gemless_guard", n_notes=12)
@@ -981,7 +981,7 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
 def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_base_score(monkeypatch, tier_name: str):
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.core.team_buff import team_buff_effect
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     song = _mock_song(name=f"pytest_team_buff_derived_fg_visibility_{tier_name}", n_notes=12)
@@ -1047,7 +1047,7 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
 
 def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_rows(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_fg_batch_ctx", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -1128,7 +1128,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
         }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        "gear_optimizer.solver.team_buff_tiers.compute_team_buff_tier_leaderboards",
         _fake_compute_team_buff_tier_leaderboards,
     )
 
@@ -1151,7 +1151,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
 
 def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_top_rows(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_fg_source_meta", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -1220,7 +1220,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
         }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        "gear_optimizer.solver.team_buff_tiers.compute_team_buff_tier_leaderboards",
         _fake_compute_team_buff_tier_leaderboards,
     )
 
@@ -1240,7 +1240,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
 
 def test_build_team_buff_tier_db_batches_non_precise_fg_preserves_persisted_loadout_identity(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_non_precise_fg_identity", n_notes=12, mode="non-precise")
     curves = _curves(MAX_STAT + 1)
@@ -1340,7 +1340,7 @@ def test_build_team_buff_tier_db_batches_non_precise_fg_preserves_persisted_load
         }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        "gear_optimizer.solver.team_buff_tiers.compute_team_buff_tier_leaderboards",
         _fake_compute_team_buff_tier_leaderboards,
     )
 
@@ -1376,7 +1376,7 @@ def test_build_team_buff_tier_db_batches_non_precise_fg_preserves_persisted_load
 def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_target_team_color(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.core.team_buff import team_buff_effect
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_strict_sanity", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -1510,7 +1510,7 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
         }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        "gear_optimizer.solver.team_buff_tiers.compute_team_buff_tier_leaderboards",
         _fake_compute_team_buff_tier_leaderboards,
     )
 
@@ -1559,7 +1559,7 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
 
 def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appends_fg_only_rows(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
 
     song = _mock_song(name="pytest_team_buff_batch_order", n_notes=12)
     curves = _curves(MAX_STAT + 1)
@@ -1653,7 +1653,7 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
         }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        "gear_optimizer.solver.team_buff_tiers.compute_team_buff_tier_leaderboards",
         _fake_compute_team_buff_tier_leaderboards,
     )
 
@@ -1687,7 +1687,7 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
     """
     from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.settings import paths
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     curves = stat_curves()

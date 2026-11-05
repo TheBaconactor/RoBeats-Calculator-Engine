@@ -70,7 +70,7 @@ class PersistentOptimizerSession:
         self._gears = load_gears(paths().gears_csv)
         self._minis = load_minis(paths().minis_csv)
 
-        from gear_optimizer.solver.gpu_executor import start_gpu_executor
+        from gear_optimizer.gpu.executor import start_gpu_executor
 
         # Size the GA run buffers for the largest multi-start a request can ask for; the executor keeps Taichi and
         # the kernels warm between requests.
@@ -126,7 +126,7 @@ class PersistentOptimizerSession:
         """Each task (a song repeat) solved in this process and stored into the result database."""
         from gear_optimizer.pipeline.solve import solve_song
         from gear_optimizer.pipeline.storing import store_solve
-        from gear_optimizer.solver.gpu_executor import get_gpu_executor
+        from gear_optimizer.gpu.executor import get_gpu_executor
 
         executor = get_gpu_executor()
         conn = schema.connect(self._result_db, write=True)
@@ -157,7 +157,7 @@ def main() -> int:
             _apply_service_mode_frontier_threads()
             reassert_process_background_only()
             session = PersistentOptimizerSession()
-            from gear_optimizer.solver.gpu_executor import is_fatal_gpu_error
+            from gear_optimizer.gpu.executor import is_fatal_gpu_error
 
             for raw_line in sys.stdin:
                 line = raw_line.strip()

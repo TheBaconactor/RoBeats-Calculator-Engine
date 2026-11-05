@@ -78,7 +78,7 @@ The main execution owners are:
 - `gear_optimizer/pipeline/fg.py` for Force Great preparation, planning and
   results;
 - `gear_optimizer/pipeline/storing.py` for storing a solved song;
-- `gear_optimizer/solver/gpu_executor.py` for all GPU execution: in each
+- `gear_optimizer/gpu/executor.py` for all GPU execution: in each
   worker one owner thread initializes Taichi and runs every GPU call.
 
 Force Great payload materialization is CPU-only and runs on the worker's main
@@ -90,8 +90,8 @@ thread; it never initializes or accesses the GPU.
 
 - `gear_optimizer/solver/genetic_pipeline.py` constructs native GA requests; the
   FG stage (`gear_optimizer/pipeline/fg.py`) reads the selected payload it returns.
-- `gear_optimizer/solver/taichi_gem/api/` is the public Taichi solver surface.
-- `gear_optimizer/solver/taichi_gem/kernels/` contains device kernels.
+- `gear_optimizer/gpu/api/` is the public Taichi solver surface.
+- `gear_optimizer/gpu/kernels/` contains device kernels.
 
 Production scoring imports through the public Taichi API or GPU service rather
 than reaching into kernel internals.
@@ -101,7 +101,7 @@ than reaching into kernel internals.
 - `gear_optimizer/solver/scoring/` owns integer score evaluation and canonical
   rescore.
 - `gear_optimizer/solver/fever_timeline.py` owns Fever timeline semantics.
-- `gear_optimizer/solver/timeline_exact_frontier.py` constructs exact,
+- `gear_optimizer/frontier/timeline_producer.py` constructs exact,
   non-dominated timing surfaces.
 - `gear_optimizer/solver/timing_envelope.py` applies the selected timing model:
   `non-precise` (the default: Perfects at chart time, early Greats only to order tied notes) or `precise`
@@ -118,11 +118,11 @@ oracle. It is not a silent recovery path for failed GPU execution.
 
 Force Great behavior is split by responsibility:
 
-- `gear_optimizer/solver/fg_response_scoring/` owns high-level planning,
+- `gear_optimizer/trace/` owns high-level planning,
   reduction, replay, and service contracts;
-- `gear_optimizer/solver/taichi_gem/force_greats/response_frontier.py` owns the
+- `gear_optimizer/solver/fg_scoring.py` owns the
   device response-frontier implementation and related response modules;
-- `gear_optimizer/solver/fg_response_frontier_cache_prebuild.py` owns startup
+- `gear_optimizer/frontier/fg_prebuild.py` owns startup
   cache construction; and
 - `gear_optimizer/solver/scoring/` owns canonical exact rescore of retained
   Force Great results.

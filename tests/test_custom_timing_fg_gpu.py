@@ -21,7 +21,7 @@ pytestmark = pytest.mark.gpu
 
 
 def _reset_fg_cache() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import reset_fg_response_frontier_payload_cache
+    from gear_optimizer.frontier.fg_cache_store import reset_fg_response_frontier_payload_cache
 
     reset_fg_response_frontier_payload_cache()
 
@@ -71,7 +71,7 @@ def _song(baseline_offset=None):
 
 def test_zero_offset_matches_plain_non_precise_surface(tmp_path, monkeypatch):
     """An all-zero baseline offset reproduces the plain non-precise FG surface bit-for-bit."""
-    from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
+    from gear_optimizer.trace.fixed_timing import _solve_fixed_timing_response_results
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     curves = _curves()
@@ -89,7 +89,7 @@ def test_zero_offset_matches_plain_non_precise_surface(tmp_path, monkeypatch):
 
 def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypatch):
     """A non-zero per-note baseline T yields a valid surface, scored exactly under chart + T."""
-    from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
+    from gear_optimizer.trace.fixed_timing import _solve_fixed_timing_response_results
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
@@ -112,8 +112,8 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
     """End-to-end: a non-zero baseline T produces valid per-tier meta + FG leaderboards
     (replay AND optimize -- gems/greats re-solved, scores exact under chart + T)."""
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()

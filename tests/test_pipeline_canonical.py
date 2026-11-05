@@ -11,7 +11,7 @@ from gear_optimizer.pipeline.canonical import canonical_rows, loadout_identity, 
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, SongSolve
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.fever_solver import GemSolve
-from gear_optimizer.solver.taichi_gem.force_greats.response_builder import UnplayableTrace
+from gear_optimizer.trace.reconstruct import UnplayableTrace
 from gear_optimizer.stats import GEM_KINDS, gems, named_loadout_stats
 from gear_optimizer.store.records import decode_trace
 from tests.items_support import make_gear, make_mini
@@ -173,7 +173,7 @@ def test_real_song_base_result_is_the_exhaustive_gem_optimum_scored_by_exact_rep
     """Be Right There (Hard), T5: the canonical meta result of a frozen loadout (the old persistence contract)."""
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     frozen = json.loads(
         (Path(__file__).parent / "fixtures" / "persistence_authority_be_right_there_t5.json").read_text()

@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from gear_optimizer.solver.taichi_gem.api import ga_eval_cache
-from gear_optimizer.solver.taichi_gem.api import ga_operations as ga
-from gear_optimizer.solver.taichi_gem.kernels.kernels_helpers import gpu_color_flags
+from gear_optimizer.gpu.api import ga_eval_cache
+from gear_optimizer.gpu.api import ga_operations as ga
+from gear_optimizer.gpu.kernels.kernels_helpers import gpu_color_flags
 
 
 @pytest.mark.parametrize("change", [

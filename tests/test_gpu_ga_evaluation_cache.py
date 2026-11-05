@@ -21,7 +21,7 @@ pytestmark = pytest.mark.gpu
 
 
 def test_repeated_generation_reuses_complete_winners(eval_device_state):
-    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.gpu import fields
 
     with _GPU_LOCK:
         first = _run_production_eval(eval_device_state)
@@ -32,8 +32,8 @@ def test_repeated_generation_reuses_complete_winners(eval_device_state):
 
 
 def test_reference_reload_cannot_reuse_old_scores(eval_device_state):
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
-    from gear_optimizer.solver.taichi_gem.api.initialization import load_curves
+    from gear_optimizer.gpu.api.ga_operations import reset_ga_evaluation_cache
+    from gear_optimizer.gpu.api.initialization import load_curves
 
     with _GPU_LOCK:
         original = _run_production_eval(eval_device_state)
@@ -52,20 +52,19 @@ def test_reference_reload_cannot_reuse_old_scores(eval_device_state):
 
 @pytest.mark.parametrize("timing_mode,n_notes", [("precise", 80), ("non-precise", 400)])
 def test_replacing_song_slot_or_timing_cannot_reuse_old_scores(eval_device_state, timing_mode, n_notes):
-    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.gpu import fields
     from gear_optimizer.core.color_flags import build_color_flags
     from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_upload_ftff_shortlist, reset_ga_evaluation_cache
-    from gear_optimizer.solver.taichi_gem.api.timeline import (
-        build_or_load_timeline_frontier_payload, precompute_timeline_gpu,
-    )
+    from gear_optimizer.gpu.api.ga_operations import ga_upload_ftff_shortlist, reset_ga_evaluation_cache
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.timeline import precompute_timeline_gpu
 
     def upload(mode, notes):
         # As the GA's state restore: the song's timeline with its shortlist (every key).
         song = _song(n_notes=notes, mode=mode)
         refs = _curves()
         payload = build_or_load_timeline_frontier_payload(song, refs)
-        precompute_timeline_gpu(song, refs, song_slot=0, prebuilt_frontier=payload)
+        precompute_timeline_gpu(song, refs, song_slot=0, prebuilt_payload=payload.payload)
         shortlist = ga_ftff_shortlist(payload.payload, reach=np.ones((161, 161), dtype=bool),
                                       color_flags=build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR))
         ga_upload_ftff_shortlist(shortlist, song_key=song.timeline_key)
@@ -85,8 +84,8 @@ def test_replacing_song_slot_or_timing_cannot_reuse_old_scores(eval_device_state
 
 
 def test_loading_another_run_batch_discards_cached_winners(eval_device_state):
-    from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_load_initial_populations_batch
+    from gear_optimizer.gpu import fields
+    from gear_optimizer.gpu.api.ga_operations import ga_load_initial_populations_batch
 
     with _GPU_LOCK:
         _run_production_eval(eval_device_state)
@@ -96,9 +95,9 @@ def test_loading_another_run_batch_discards_cached_winners(eval_device_state):
 
 
 def test_changed_budget_clears_live_winners_without_reaggregation(eval_device_state):
-    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.gpu import fields
     from gear_optimizer.solver.ftff_combos import FtffShortlist
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import (
+    from gear_optimizer.gpu.api.ga_operations import (
         ga_evaluate_prepared_population, ga_upload_ftff_shortlist, reset_ga_evaluation_cache,
     )
 
@@ -128,8 +127,8 @@ def _upload_fixture_shortlist():
     """The fixture song's shortlist (every key)."""
     from gear_optimizer.core.color_flags import build_color_flags
     from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_upload_ftff_shortlist
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.gpu.api.ga_operations import ga_upload_ftff_shortlist
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     song = _song()
     payload = build_or_load_timeline_frontier_payload(song, _curves()).payload
@@ -140,7 +139,7 @@ def _upload_fixture_shortlist():
 
 def test_evaluation_refuses_a_shortlist_of_another_song_or_combo_table(eval_device_state):
     from gear_optimizer.solver.ftff_combos import FtffShortlist
-    from gear_optimizer.solver.taichi_gem.api.ga_operations import (
+    from gear_optimizer.gpu.api.ga_operations import (
         ga_evaluate_prepared_population, ga_upload_ftff_shortlist,
     )
 

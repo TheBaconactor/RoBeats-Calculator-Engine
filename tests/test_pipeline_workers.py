@@ -8,7 +8,7 @@ import pytest
 from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.domain.jobs import SharedRunContext, SongTask
 from gear_optimizer.pipeline import workers
-from gear_optimizer.solver.gpu_executor import GpuFatalError
+from gear_optimizer.gpu.executor import GpuFatalError
 
 
 def _scripted_worker(worker, workers_total, pending, events, stop, memory_limit_bytes):

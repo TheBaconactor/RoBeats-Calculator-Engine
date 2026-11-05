@@ -9,7 +9,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from gear_optimizer.solver.scoring import exact_rescore
-from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
+from gear_optimizer.frontier import timeline_cache as timeline_api
 from tests.songs_support import make_song
 
 

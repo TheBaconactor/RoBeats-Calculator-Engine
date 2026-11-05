@@ -20,7 +20,7 @@ import random
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+from gear_optimizer.frontier.fill_crossing import (
     late_great_activation_prefix,
     late_great_prefix_is_legal,
     perfect_fill_crossing_offset,
@@ -336,7 +336,7 @@ def test_weighted_reachability_discrete_fill_grid_fractional_denom():
     # dodges every integer -- the old scalar check over-accepted exactly there.
     import numpy as np
 
-    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+    from gear_optimizer.trace.activation_witness import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
@@ -373,7 +373,7 @@ def test_weighted_reachability_discrete_fill_respects_forced_offset():
     # misses, half-grid hits.
     import numpy as np
 
-    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+    from gear_optimizer.trace.activation_witness import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
@@ -408,7 +408,7 @@ def test_weighted_reachability_same_lane_optional_prefix_closure():
     # a window needing exactly +0.5 must be infeasible.
     import numpy as np
 
-    from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+    from gear_optimizer.trace.activation_witness import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )

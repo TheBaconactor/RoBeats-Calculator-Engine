@@ -47,7 +47,7 @@ from gear_optimizer.core.time_quantize import quantize_to_int_ms
 from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import time_song
 from gear_optimizer.core.timing_modes import TIMING_MODES
 from gear_optimizer.store import schema

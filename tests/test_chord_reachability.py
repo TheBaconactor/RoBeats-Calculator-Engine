@@ -7,7 +7,7 @@ rejecting the same-lane preemption cases that make an activation unreachable (no
 import numpy as np
 
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
-from gear_optimizer.solver.taichi_gem.force_greats.activation_witness import (
+from gear_optimizer.trace.activation_witness import (
     LabelHitIntervals,
     activation_schedule_witnesses,
     exact_label_hit_intervals,

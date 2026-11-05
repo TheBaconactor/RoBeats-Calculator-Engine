@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer as reducer
+from gear_optimizer.frontier import producer_reducer as reducer
 
 
 def test_workspace_plan_reports_exact_numpy_allocation_bytes() -> None:

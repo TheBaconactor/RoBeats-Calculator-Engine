@@ -273,7 +273,7 @@ def _note_value(i, base_value, combo_mul, fever_mul, *, is_fever, is_great, grea
 
 
 def _body_hull_filter_reference(points):
-    """Pure-Python mirror of `_numba_hull_filter_body_pairs` (response_build_gpu_numba.py): within
+    """Pure-Python mirror of `_numba_hull_filter_body_pairs` (producer_kernels.py): within
     each normal_great level, keep the 2-D upper hull in (body_fever, -fever_great). Points are
     (body_fever, body_great, body_fever_great)."""
     if len(points) <= 2:
@@ -364,7 +364,7 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
     stat cell (the best_fg_score criterion) -- EXACTLY, by the 16-corner proof, not probe sampling."""
     import random
 
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    from gear_optimizer.frontier.producer_kernels import (
         _numba_head_envelope_filter,
         _HEAD_DOM_C,
         _HEAD_DOM_F,

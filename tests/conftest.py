@@ -103,7 +103,7 @@ def prebuild_timeline_frontier():
     """
 
     def _run(song, curves) -> None:
-        from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+        from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
         build_or_load_timeline_frontier_payload(song, curves)
 
@@ -153,7 +153,7 @@ def _taichi_module_isolation(request):
         return
 
     try:
-        from gear_optimizer.solver.taichi_gem.api import hard_reset_taichi
+        from gear_optimizer.gpu.api import hard_reset_taichi
 
         hard_reset_taichi(reason=f"pytest module isolation (setup): {test_path}")
         yield

@@ -39,18 +39,18 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from gear_optimizer.chart import load_chart, read_header  # noqa: E402
-from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats  # noqa: E402
-from gear_optimizer.solver.fg_response_scoring.note_graph import (  # noqa: E402
+from gear_optimizer.pipeline.result_application import read_visible_stats  # noqa: E402
+from gear_optimizer.trace.note_graph import (  # noqa: E402
     force_greats_note_graph,
 )
-from gear_optimizer.solver.fg_response_scoring.physical_replay import (  # noqa: E402
+from gear_optimizer.trace.physical_replay import (  # noqa: E402
     validate_force_greats_physical_replay,
 )
 from gear_optimizer.solver.timing_envelope import fever_fill_thresholds, time_song  # noqa: E402
-from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (  # noqa: E402
+from gear_optimizer.trace.reconstruct import (  # noqa: E402
     reconstruct_force_greats_response_trace,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_types import (  # noqa: E402
+from gear_optimizer.frontier.types import (  # noqa: E402
     FgResponseSurface,
 )
 from tools.verify.game_sim import _synth_offset  # noqa: E402

@@ -37,8 +37,8 @@ if __name__ == "__main__":
         frontier_prebuild_worker_count,
         logical_core_count,
     )
-    from gear_optimizer.solver.frontier_cache import init_prebuild_worker
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+    from gear_optimizer.frontier.cache import init_prebuild_worker
+    from gear_optimizer.frontier.producer_reducer import (
         configure_force_greats_response_first_frontier_threads,
     )
 

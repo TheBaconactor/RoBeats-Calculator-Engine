@@ -7,58 +7,28 @@ from tests.songs_support import make_song
 def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypatch) -> None:
     """Warmup must ensure-ready, build, then upload the BUILT payload by value.
 
-    Carrying the payload by value (prebuilt_frontier) is what makes the warmup robust to a
+    Carrying the payload by value (prebuilt_payload) is what makes the warmup robust to a
     frontier-cache clear/eviction between build and upload (the MissingFrontierCacheError this
     wrapper exists to prevent). The earlier test only asserted call order with both functions
     stubbed, so it could not catch a regression back to the fragile re-load-from-cache form.
     """
-    from gear_optimizer.solver.taichi_gem.api import timeline
+    from gear_optimizer.gpu.api import timeline
 
     calls: list[str] = []
     sentinel = object()
 
-    def _ensure(*_args, **_kwargs):
-        calls.append("ensure")
-
-    def _lookup(song, curves, ref_sig=None):
-        del ref_sig
-        calls.append("lookup")
-        assert song.chart.name == "warmup"
-        assert curves["Fever Time"] == [1.0]
-        return {
-            "song_key": ("warmup",),
-            "total_notes": 1,
-            "fever_durations": np.array([1.0]),
-            "fill_thresholds": np.array([1.0]),
-            "timestamps": np.array([0.0], dtype=np.float32),
-            "perfect_candidates": np.array([0.0], dtype=np.float32),
-            "perfect_floor": np.array([0.0], dtype=np.float32),
-            "exit_ceiling": np.array([0.0], dtype=np.float32),
-            "lanes": np.array([0], dtype=np.int32),
-            "ref_ft": np.array([1.0], dtype=np.float32),
-            "ref_ff": np.array([1.0], dtype=np.float32),
-        }
-
-    def _build(**kwargs):
+    def _build(song, curves):
         calls.append("build")
-        assert kwargs["total_notes"] == 1
+        assert song.chart.name == "warmup"
         return sentinel
 
-    def _upload(song, curves, *, song_slot=0, prebuilt_frontier=None):
+    def _upload(song, curves, *, song_slot=0, prebuilt_payload=None):
         calls.append(f"upload:{song_slot}")
-        # The fix: the warmup hands the built payload straight to the upload, so the upload
-        # never re-reads the clearable in-memory frontier cache.
-        assert prebuilt_frontier.payload is sentinel
-        assert prebuilt_frontier.cache_source == "warmup_disposable"
+        # The warmup hands the built payload straight to the upload, which then never reads the cache.
+        assert prebuilt_payload is sentinel
 
-    monkeypatch.setattr(timeline, "ensure_ready", _ensure)
-    monkeypatch.setattr(timeline, "_timeline_payload_lookup_context", _lookup)
-    monkeypatch.setattr(timeline, "build_timeline_frontier_grid_payload", _build)
-    monkeypatch.setattr(
-        timeline,
-        "_save_frontier_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("warmup must not persist")),
-    )
+    monkeypatch.setattr(timeline, "ensure_ready", lambda *_args, **_kwargs: calls.append("ensure"))
+    monkeypatch.setattr(timeline, "build_timeline_payload", _build)
     monkeypatch.setattr(timeline, "precompute_timeline_gpu", _upload)
 
     timeline.precompute_timeline_gpu_for_warmup(
@@ -67,11 +37,11 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
         song_slot=3,
     )
 
-    assert calls == ["ensure", "lookup", "build", "upload:3"]
+    assert calls == ["ensure", "build", "upload:3"]
 
 
 def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypatch) -> None:
-    """With prebuilt_frontier provided, the upload must NOT re-load from the frontier cache.
+    """With prebuilt_payload provided, the upload must NOT re-load from the frontier cache.
 
     This is the core of the warmup fix: even if reset_timeline_state()/LRU eviction wiped the
     in-memory cache between build and upload, a prebuilt payload is uploaded by value and the
@@ -79,24 +49,18 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
     """
     import numpy as np
     from types import SimpleNamespace
-    from gear_optimizer.solver.taichi_gem.api import timeline
+    from gear_optimizer.gpu.api import timeline
 
     total_rows = int(timeline.MAX_STAT)
     fake_payload = SimpleNamespace(
         grid_frontier_count=np.zeros((1, total_rows + 1, total_rows + 1), dtype=np.int32),
         frontier_pool_used=0,
     )
-    fake_result = SimpleNamespace(payload=fake_payload, cache_source="prebuilt")
 
     def _load_must_not_run(*_args, **_kwargs):
-        raise AssertionError("build_or_load_timeline_frontier_payload must not run when prebuilt_frontier is provided")
+        raise AssertionError("build_or_load_timeline_frontier_payload must not run when prebuilt_payload is provided")
 
     monkeypatch.setattr(timeline, "ensure_ready", lambda *_a, **_k: b"")
-    monkeypatch.setattr(
-        timeline,
-        "_timeline_payload_lookup_context",
-        lambda _cs, _ra, ref_sig=None: {"song_key": ("warmup",), "total_notes": 1, "long_notes": 0},
-    )
     monkeypatch.setattr(timeline, "build_or_load_timeline_frontier_payload", _load_must_not_run)
     monkeypatch.setattr(timeline, "_upload_timeline_frontier_payload_slot", lambda *_a, **_k: None)
     # Make sure the per-slot short-circuit does not skip the upload path.
@@ -107,20 +71,20 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
         make_song([0.0]),
         {"Fever Time": [1.0]},
         song_slot=0,
-        prebuilt_frontier=fake_result,
+        prebuilt_payload=fake_payload,
     )
 
 
 def test_synthetic_gpu_warmups_use_warmup_timeline_wrapper() -> None:
     root = Path(__file__).resolve().parents[1]
-    ga_source = (root / "gear_optimizer/solver/taichi_gem/api/ga_operations.py").read_text(encoding="utf-8")
+    ga_source = (root / "gear_optimizer/gpu/api/ga_operations.py").read_text(encoding="utf-8")
 
     assert "precompute_timeline_gpu_for_warmup" in ga_source
     assert "precompute_timeline_gpu(_warmup_song()" not in ga_source
 
 
 def test_synthetic_gpu_warmup_charts_own_canonical_timeline_inputs() -> None:
-    from gear_optimizer.solver.taichi_gem.api import ga_operations
+    from gear_optimizer.gpu.api import ga_operations
 
     song = ga_operations._warmup_song()
     timestamps = song.chart.timestamps

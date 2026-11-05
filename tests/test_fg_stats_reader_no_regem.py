@@ -9,7 +9,7 @@ guarantees the reader's "BaseStats is post-gem" contract holds on disk.
 
 from __future__ import annotations
 
-from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+from gear_optimizer.pipeline.result_application import (
     read_visible_stats,
 )
 from gear_optimizer.stats import apply_gems, gems

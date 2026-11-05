@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-from gear_optimizer.solver.frontier_cache import FrontierCacheManifestPlan
+from gear_optimizer.frontier import fg_prebuild as prebuild
+from gear_optimizer.frontier.cache import FrontierCacheManifestPlan
 
 
 @pytest.mark.parametrize(
@@ -38,7 +38,7 @@ def test_maintenance_runs_before_builds_and_authorized_rotations(
 
 
 def test_timeline_maintenance_removes_interrupted_writes_on_every_lock_entry(monkeypatch, tmp_path: Path):
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TIMELINE_FRONTIER_PREBUILD
+    from gear_optimizer.frontier.timeline_prebuild import TIMELINE_FRONTIER_PREBUILD
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     interrupted_write = tmp_path / "payload.123.456.tmp.npz"

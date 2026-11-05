@@ -6,12 +6,12 @@ import taichi as ti
 
 from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.settings import paths
-from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers as fields
-from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import (
+from gear_optimizer.gpu.kernels import kernels_helpers as fields
+from gear_optimizer.gpu.kernels.kernels_scoring import (
     calc_score_cached_device,
     score_solution_from_gems_frontier,
 )
-from gear_optimizer.solver.taichi_gem.kernels.warmstart_common import solve_combo_warmstart_preloaded
+from gear_optimizer.gpu.kernels.warmstart_common import solve_combo_warmstart_preloaded
 
 pytestmark = pytest.mark.gpu
 
@@ -140,7 +140,7 @@ def _compare(
 
 
 def test_warmstart_reuses_exact_score_and_preserves_seed_ties():
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+    from gear_optimizer.gpu.api.initialization import ensure_ready
 
     ensure_ready(stat_curves())
     rng = np.random.default_rng(735)

@@ -1,6 +1,6 @@
 """RoBeats game rules that scores and the cached timing/FG frontiers depend on.
 
-This module is part of the frontier cache fingerprint (response_cache_types / taichi_gem.api.timeline):
+This module is part of the frontier cache fingerprint (fg_cache_types / timeline_cache):
 changing anything here rotates every cache version. Keep it to game rules.
 """
 

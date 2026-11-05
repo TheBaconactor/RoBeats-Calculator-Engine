@@ -3,7 +3,7 @@ from tests.songs_support import make_song
 
 
 def test_timeline_slot_cache_key_is_tuple_and_stable():
-    from gear_optimizer.solver.taichi_gem.api.initialization import _curves_sig
+    from gear_optimizer.gpu.api.initialization import _curves_sig
 
     def _timeline_slot_key(song, curves) -> tuple:
         return song.timeline_key + (bytes(_curves_sig(curves)),)

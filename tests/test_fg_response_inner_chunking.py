@@ -6,7 +6,7 @@ import pytest
 
 
 def test_response_surface_head_coeffs_match_bruteforce():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
+    from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
 
     surface_words = np.asarray(
         [
@@ -35,7 +35,7 @@ def test_response_surface_head_coeffs_match_bruteforce():
 
 def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import surface_head_coeffs
+    from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
     from gear_optimizer.solver.gem_search import GemGroups, SurfacePool, gem_winners
 
     pattern_a = np.zeros((8,), dtype=np.uint32)

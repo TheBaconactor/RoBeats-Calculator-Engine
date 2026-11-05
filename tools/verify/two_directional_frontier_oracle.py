@@ -421,7 +421,7 @@ def production_surfaces(
     rt: float,
     note_types: list[int] | None = None,
 ) -> set[tuple[int, int]]:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from gear_optimizer.frontier.producer_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
     from gear_optimizer.solver.timing_envelope import precise_envelopes

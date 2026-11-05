@@ -10,11 +10,11 @@ import pytest
 
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
+from gear_optimizer.frontier.fg_cache_patterns import (
     pack_surface_patterns,
     surface_head_coeffs,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import score_fg_base_components
+from gear_optimizer.solver.fg_scoring import score_fg_base_components
 
 _IDX = np.arange(MAX_STAT + 1, dtype=np.float64)
 _CURVES = StatCurves.from_mapping({

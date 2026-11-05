@@ -3,15 +3,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
-from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_download_fg_selected_payload
+import threading
+
+_GPU_LOCK = threading.Lock()
+from gear_optimizer.gpu import fields as gpu_fields
+from gear_optimizer.gpu.api.ga_operations import ga_download_fg_selected_payload
 
 pytestmark = pytest.mark.gpu
 
 
 def test_gpu_ga_fg_selected_payload_header_uses_selected_top_base_row() -> None:
-    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+    from gear_optimizer.gpu.api.initialization import ensure_ready
 
     table_slot = 0
     with _GPU_LOCK:

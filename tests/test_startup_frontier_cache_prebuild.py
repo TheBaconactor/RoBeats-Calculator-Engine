@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from gear_optimizer.solver.frontier_cache import (
+from gear_optimizer.frontier.cache import (
     FrontierCacheBuildResult,
     FrontierCacheInfo,
     build_frontier_cache_for_chart,
@@ -16,19 +16,19 @@ from tests.curves_support import synthetic_curves
 
 
 def _fake_prebuilds(monkeypatch, *, timeline, fg) -> None:
-    """cpu_work_manager's two prebuilds, faked per cache."""
-    from gear_optimizer.solver import cpu_work_manager
+    """startup_prebuild's two prebuilds, faked per cache."""
+    from gear_optimizer.frontier import startup_prebuild
 
     monkeypatch.setattr(
-        cpu_work_manager,
+        startup_prebuild,
         "prebuild_frontier_cache",
         lambda prebuild, **kwargs: {"timeline": timeline, "fg_response": fg}[prebuild.cache.name](**kwargs),
     )
 
 
 def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.frontier_cache import FrontierCachePrebuildSummary
+    from gear_optimizer.frontier import startup_prebuild
+    from gear_optimizer.frontier.cache import FrontierCachePrebuildSummary
 
     calls: list[str] = []
 
@@ -45,7 +45,7 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
 
     _fake_prebuilds(monkeypatch, timeline=_timeline, fg=_fg)
 
-    cpu_work_manager.run_startup_cpu_work(charts_by_mode={"precise": ["Data/Easy/Fake.txt"]}, curves={})
+    startup_prebuild.run_startup_cpu_work(charts_by_mode={"precise": ["Data/Easy/Fake.txt"]}, curves={})
 
     assert calls == ["timeline_start", "timeline_end", "fg_start", "fg_end"]
 
@@ -53,8 +53,8 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
 def test_cpu_work_manager_reports_each_cache_and_fails_loud(monkeypatch) -> None:
     import pytest
 
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.frontier_cache import FrontierCachePrebuildSummary
+    from gear_optimizer.frontier import startup_prebuild
+    from gear_optimizer.frontier.cache import FrontierCachePrebuildSummary
 
     _fake_prebuilds(
         monkeypatch,
@@ -64,7 +64,7 @@ def test_cpu_work_manager_reports_each_cache_and_fails_loud(monkeypatch) -> None
 
     stream = io.StringIO()
     with pytest.raises(RuntimeError, match="FG response-frontier cache': 1"):
-        cpu_work_manager.run_startup_cpu_work(
+        startup_prebuild.run_startup_cpu_work(
             charts_by_mode={"precise": ["a.txt"], "non-precise": ["A.TXT"]}, curves={}, announce_stream=stream
         )
 
@@ -75,7 +75,7 @@ def test_cpu_work_manager_reports_each_cache_and_fails_loud(monkeypatch) -> None
 
 
 def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+    from gear_optimizer.frontier import timeline_prebuild as prebuild
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text("fake", encoding="utf-8")
@@ -101,7 +101,7 @@ def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path:
 
 
 def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatch) -> None:
-    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+    from gear_optimizer.frontier import timeline_prebuild as prebuild
 
     captured_kwargs = {}
 
@@ -135,7 +135,7 @@ def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatc
 def test_timeline_multi_prebuild_counts_broken_worker_future_per_path(monkeypatch) -> None:
     from concurrent.futures.process import BrokenProcessPool
 
-    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+    from gear_optimizer.frontier import timeline_prebuild as prebuild
 
     class _FakeExecutor:
         def __init__(self, **_kwargs):
@@ -169,7 +169,7 @@ def test_timeline_multi_prebuild_counts_broken_worker_future_per_path(monkeypatc
 
 
 def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.frontier import fg_prebuild as prebuild
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text("fake", encoding="utf-8")
@@ -203,7 +203,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     """The admission scheduler must (a) never let the sum of in-flight memory weights exceed the
     RAM budget -- the invariant whose absence crashed the machine on 2026-07-09 -- while (b) still
     completing every song (progress guarantee: one build is always admitted)."""
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.frontier import fg_prebuild as prebuild
 
     # 26 GB available -> budget 20 GB: one ~12 GB giant at a time, light charts backfill.
     monkeypatch.setattr(prebuild, "_fg_prebuild_available_ram_gb", lambda: 26.0)
@@ -266,7 +266,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
 
 def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch) -> None:
     """After the first one-worker task drains, the final popped song is still one workload unit."""
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.frontier import fg_prebuild as prebuild
 
     items = [("first.txt", 100), ("last.txt", 100)]
     monkeypatch.setattr(prebuild, "_fg_prebuild_available_ram_gb", lambda: 64.0)
@@ -347,7 +347,7 @@ def _chart_text(name: str, timestamps: list[float]) -> str:
 
 
 def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import ensure_response_frontier_cache_for_song
+    from gear_optimizer.frontier.fg_cache import ensure_response_frontier_cache_for_song
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Cached Song", [1.0, 2.0]), encoding="utf-8")
@@ -361,11 +361,11 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
         raise AssertionError("valid startup cache hit must not rebuild")
 
     monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.fg_response_frontier_payload_cache_info",
+        "gear_optimizer.frontier.fg_cache.fg_response_frontier_payload_cache_info",
         _cache_info,
     )
     monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.build_or_load_response_frontier_payload",
+        "gear_optimizer.frontier.fg_cache.build_or_load_response_frontier_payload",
         _unexpected_build,
     )
 
@@ -382,19 +382,19 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
 
 
 def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import ensure_response_frontier_cache_for_song
+    from gear_optimizer.frontier.fg_cache import ensure_response_frontier_cache_for_song
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Missing Song", [1.0, 2.0, 3.0]), encoding="utf-8")
     cache_path = tmp_path / "cache.npz"
     monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.fg_response_frontier_payload_cache_info",
+        "gear_optimizer.frontier.fg_cache.fg_response_frontier_payload_cache_info",
         lambda *_args, **_kwargs: FrontierCacheInfo(
             cache_key=("missing",), disk_path=cache_path, cache_source="missing"
         ),
     )
     monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.build_or_load_response_frontier_payload",
+        "gear_optimizer.frontier.fg_cache.build_or_load_response_frontier_payload",
         lambda *_args, **_kwargs: SimpleNamespace(cache_source="built", elapsed_ms=12.5, disk_path=cache_path),
     )
 
@@ -415,7 +415,7 @@ def test_ram_guard_force_resumes_stalled_worker_below_resume_floor(monkeypatch):
     holding the single-builder lock (the 2026-07-11 optimizer lock-up)."""
     import time
 
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as pb
+    from gear_optimizer.frontier import fg_prebuild as pb
 
     monkeypatch.setattr(pb, "_FG_PREBUILD_GUARD_POLL_SECONDS", 0.005)
     monkeypatch.setattr(pb, "_FG_PREBUILD_RESUME_STALL_POLLS", 2)

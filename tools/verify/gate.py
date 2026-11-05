@@ -152,8 +152,8 @@ def _save(run: Path, step: str, outputs: dict[str, str], clock: _Clock | None = 
 
 def versions(run: Path) -> None:
     """The tree's frontier cache versions."""
-    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
+    from gear_optimizer.frontier.timeline_cache import TIMELINE_FRONTIER_CACHE
+    from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
     (run / "versions.json").write_text(json.dumps([TIMELINE_FRONTIER_CACHE.version(), FG_RESPONSE_FRONTIER_CACHE.version()]))
 
@@ -168,7 +168,7 @@ def profile(run: Path) -> None:
         from gear_optimizer.pipeline import fg, prepare, solve
         from gear_optimizer.pipeline.queue import build_queue
         from gear_optimizer.pipeline.storing import store_solve
-        from gear_optimizer.solver.gpu_executor import start_gpu_executor
+        from gear_optimizer.gpu.executor import start_gpu_executor
         from gear_optimizer.store import schema
 
         run_settings, paths = settings.read_run_settings(), settings.paths()
@@ -195,8 +195,8 @@ def profile(run: Path) -> None:
 
 def _frontier_outputs(chart_path: Path, mode: str, curves: Any) -> dict[str, str]:
     """Every array of the chart's frontier files in `mode` (a Non-Precise song has no timeline file)."""
-    from gear_optimizer.solver.taichi_gem.api.timeline import TIMELINE_FRONTIER_CACHE
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import FG_RESPONSE_FRONTIER_CACHE
+    from gear_optimizer.frontier.timeline_cache import TIMELINE_FRONTIER_CACHE
+    from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE
 
     outputs = {}
     for cache in (TIMELINE_FRONTIER_CACHE, FG_RESPONSE_FRONTIER_CACHE):
@@ -212,10 +212,10 @@ def _frontier_outputs(chart_path: Path, mode: str, curves: Any) -> dict[str, str
 def _graph_outputs(key: str, entry: dict, chart: Any, song: Any, curves: Any) -> dict[str, str]:
     """The entry's note graphs and exact scores, called as the website calls them."""
     from gear_optimizer.core.timing_modes import NON_PRECISE, PRECISE
-    from gear_optimizer.helpers.song_helpers.fg_payload import require_response_surface
+    from gear_optimizer.store.fg_payload import require_response_surface
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
-    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+    from gear_optimizer.trace.note_graph import (
         base_note_graph,
         force_greats_note_graph,
         timeline_frontier_note_graph,
@@ -263,9 +263,9 @@ def surfaces(run: Path) -> None:
     from gear_optimizer.chart import load_chart
     from gear_optimizer.core.timing_modes import PRECISE, TIMING_MODES
     from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+    from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
     from gear_optimizer.settings import paths
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.store import legacy
     from general_meta import run_general_meta

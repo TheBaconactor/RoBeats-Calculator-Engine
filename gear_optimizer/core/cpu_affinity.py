@@ -259,7 +259,7 @@ def pin_frontier_prebuild_worker() -> None:
 # and uniformly (~1.5 GB/worker), plus a system reserve: sizing by every available byte let late heavy
 # charts fail allocations on a 64 GB host without a pagefile. The FG response-frontier cold build is
 # not sized this way (its per-song peak spans ~1.7-8 GB): its memory-weighted admission scheduler in
-# fg_response_frontier_cache_prebuild.py sizes it per song.
+# fg_prebuild.py sizes it per song.
 TIMELINE_PREBUILD_GB_PER_WORKER = 1.75
 TIMELINE_PREBUILD_SYSTEM_RESERVE_GB = 8.0
 

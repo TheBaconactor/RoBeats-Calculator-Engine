@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from gear_optimizer.gamedata import load_gears, load_minis, stat_curves, song_minis
-from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
+from gear_optimizer.solver.song_config import baseline_fixed_stats
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
 from gear_optimizer.stats import GEM_KINDS, apply_gems, gems, total
@@ -16,7 +16,7 @@ def test_real_song_gem_search_finds_the_exact_optimum_past_a_float32_near_tie():
     66,023,473); the exact optimum moves one element gem to Fever Fill Rate (66,024,847)."""
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     song = time_song(load_chart(Path(__file__).resolve().parents[1] / "Data" / "Hard" / "Kanpai (Hard) by Kagi.txt"), "precise")
     curves = stat_curves()

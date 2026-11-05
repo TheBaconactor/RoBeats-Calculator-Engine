@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_song_cache_key
+from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_song_cache_key
 from tests.songs_support import make_song
 
 

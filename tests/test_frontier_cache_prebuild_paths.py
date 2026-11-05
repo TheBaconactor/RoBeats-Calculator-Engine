@@ -9,13 +9,13 @@ import pytest
     ("module_name", "resolver_name", "override_name", "cache_leaf"),
     (
         (
-            "gear_optimizer.solver.taichi_gem.api.timeline",
+            "gear_optimizer.frontier.timeline_cache",
             "_frontier_disk_cache_dir",
             "TIMELINE_FRONTIER_CACHE_DIR",
             "timeline_frontier_cache",
         ),
         (
-            "gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys",
+            "gear_optimizer.frontier.fg_cache_keys",
             "_fg_response_disk_cache_dir",
             "FG_RESPONSE_FRONTIER_CACHE_DIR",
             "fg_response_frontier_cache",
@@ -44,12 +44,12 @@ def test_frontier_cache_default_follows_runtime_bin_dir(
     ("module_name", "resolver_name", "override_name"),
     (
         (
-            "gear_optimizer.solver.taichi_gem.api.timeline",
+            "gear_optimizer.frontier.timeline_cache",
             "_frontier_disk_cache_dir",
             "TIMELINE_FRONTIER_CACHE_DIR",
         ),
         (
-            "gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys",
+            "gear_optimizer.frontier.fg_cache_keys",
             "_fg_response_disk_cache_dir",
             "FG_RESPONSE_FRONTIER_CACHE_DIR",
         ),

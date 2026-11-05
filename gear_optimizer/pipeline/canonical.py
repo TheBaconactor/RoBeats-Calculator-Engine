@@ -29,10 +29,10 @@ from ..data.loadout_equivalence import (
     rotate_mini_groups_for_slot_display,
 )
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
-from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names
-from ..helpers.song_helpers.song_config import baseline_fixed_stats
+from gear_optimizer.data.loadout_hashing import compact_gear_names, compact_mini_names
+from gear_optimizer.solver.song_config import baseline_fixed_stats
 from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
-from ..solver.taichi_gem.force_greats.response_builder import UnplayableTrace
+from gear_optimizer.trace.reconstruct import UnplayableTrace
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats, total
 from ..store.boards import Row

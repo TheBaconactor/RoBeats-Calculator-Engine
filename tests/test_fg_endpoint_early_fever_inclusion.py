@@ -8,8 +8,8 @@ fever end can be pulled INTO fever by a legal EARLY hit, subject to monotonic hi
 order. The base frontier models this (carry-aware offset-band exit enumeration).
 
 The FG fever-extent model does NOT: the response endpoint oracle -- mirrored
-bit-for-bit by the production GPU builder (`response_build_gpu_precompute` /
-`response_build_gpu_numba`, confirmed) -- decides the boundary with a single
+bit-for-bit by the production GPU builder (`producer_precompute` /
+`producer_kernels`, confirmed) -- decides the boundary with a single
 `searchsorted(chart_timestamps, perfect_candidate[a] + real_fever_time)`, i.e. the
 boundary note is tested at offset 0. So FG UNDER-counts fever notes near a section
 end whenever a boundary note is within the early-hit reach of the cutoff.

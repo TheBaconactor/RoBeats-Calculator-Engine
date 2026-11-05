@@ -1,0 +1,123 @@
+"""Taichi Kernels - Materialize GA run-best rows from packed keys."""
+import taichi as ti
+from gear_optimizer.gpu.kernels import kernels_helpers
+from gear_optimizer.gpu.kernels.kernels_helpers import GpuColorFlags
+from gear_optimizer.gpu.kernels.write_results_common import solve_best_combo_uncached
+@ti.func
+def _best_combo_idx_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
+    out_idx = ti.i32(-1)
+    best_key = kernels_helpers.chunk_best_key[genome_idx]
+    if best_key != ti.u64(0):
+        out_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
+    return out_idx
+@ti.func
+def _best_score_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
+    out_score = ti.i32(-1)
+    best_key = kernels_helpers.chunk_best_key[genome_idx]
+    if best_key != ti.u64(0):
+        out_score = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
+    return out_score
+@ti.func
+def _materialize_best_combo_stats(
+    genome_idx: ti.i32,
+    combo_idx: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    flags: GpuColorFlags,
+    song_slot: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
+    ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
+    uncached = solve_best_combo_uncached(
+        genome_idx,
+        ft,
+        ff,
+        total_budget,
+        gem_scale_fever,
+        flags,
+        song_slot,
+        True,
+    )
+    score: ti.i32 = uncached[0]
+    pp_gems: ti.i32 = uncached[1]
+    cm_gems: ti.i32 = uncached[2]
+    fm_gems: ti.i32 = uncached[3]
+    ov_gems: ti.i32 = uncached[4]
+    return ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
+@ti.func
+def _refresh_live_score_from_chunk_state(genome_idx: ti.i32):
+    combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
+    if combo_idx < 0:
+        kernels_helpers.ga_scores[genome_idx] = -1
+    else:
+        kernels_helpers.ga_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
+@ti.func
+def _write_run_best_payload_row(
+    run_idx: ti.i32,
+    n_slots: ti.i32,
+    best_g: ti.i32,
+    result_stats: ti.types.vector(7, ti.i32),
+):
+    kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = result_stats[0]
+    for s in range(n_slots):
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.population_indices[best_g, s]
+    for j in ti.static(range(7)):
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + j] = result_stats[j]
+@ti.func
+def refresh_scores_and_update_runs_best(
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    flags: GpuColorFlags,
+    song_slot: ti.i32,
+):
+    """
+    Lightweight live-score refresh:
+    - keep `ga_scores` exact from the reduction state
+    - refresh per-run row 0 with exact materialization only when improved
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    n_total = n_runs * n_genomes_per_run
+    for genome_idx in range(n_total):
+        _refresh_live_score_from_chunk_state(genome_idx)
+    for r in range(n_runs):
+        start_offset: ti.i32 = r * n_genomes_per_run
+        best_score: ti.i32 = -1
+        best_g: ti.i32 = start_offset
+        for local_g in range(n_genomes_per_run):
+            g = start_offset + local_g
+            score = kernels_helpers.ga_scores[g]
+            if score > best_score:
+                best_score = score
+                best_g = g
+        run_idx = run_idx_start + r
+        prev_best: ti.i32 = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0]
+        if best_score > prev_best:
+            combo_idx = _best_combo_idx_from_chunk_state(best_g)
+            if combo_idx >= 0:
+                result_stats = _materialize_best_combo_stats(
+                    best_g,
+                    combo_idx,
+                    total_budget,
+                    gem_scale_fever,
+                    flags,
+                    song_slot,
+                )
+                _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)
+@ti.kernel
+def ga_refresh_scores_and_update_runs_best_kernel(
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    flags: GpuColorFlags,
+    song_slot: ti.i32,
+):
+    refresh_scores_and_update_runs_best(
+        run_idx_start, n_runs, n_genomes_per_run, n_slots, total_budget, gem_scale_fever, flags, song_slot
+    )

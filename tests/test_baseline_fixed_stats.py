@@ -1,6 +1,6 @@
 import pytest
 
-from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
+from gear_optimizer.solver.song_config import baseline_fixed_stats
 from tests.songs_support import make_chart
 
 _ELEMENTS = ("Chill", "Flow", "Rush", "Beat", "Vibe")
