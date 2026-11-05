@@ -546,20 +546,18 @@ def _normalize_timing_mode(value: Any) -> str:
 
 
 def _normalize_chart(chart_text: str, song_name: str, timing_mode: str) -> str:
-    """Force Song Name, Difficulty, and timing mode so the isolated chart matches the request.
+    """Force Song Name and timing mode so the isolated chart matches the request.
 
-    The file name is the unique job slug. The Song Name header is the semantic song identity:
-    Mini Ascension song targets and the output DB rows key off it.
+    The file name is the unique job slug. The Song Name header is the semantic song identity: Mini Ascension song
+    targets and the output DB rows key off it. Every other header stays as it is: the timeline cache key reads them, so
+    an official chart's job finds the catalog's frontier file.
     """
     out: list[str] = []
-    have_name = have_diff = have_timing_mode = False
+    have_name = have_timing_mode = False
     for line in chart_text.splitlines():
         if line.startswith("Song Name\t") and not have_name:
             out.append(f"Song Name\t{song_name}")
             have_name = True
-        elif line.startswith("Difficulty\t") and not have_diff:
-            out.append("Difficulty\tHard")
-            have_diff = True
         elif line.startswith("Timing Mode\t") and not have_timing_mode:
             out.append(f"Timing Mode\t{timing_mode}")
             have_timing_mode = True
@@ -568,8 +566,6 @@ def _normalize_chart(chart_text: str, song_name: str, timing_mode: str) -> str:
     prefix: list[str] = []
     if not have_name:
         prefix.append(f"Song Name\t{song_name}")
-    if not have_diff:
-        prefix.append("Difficulty\tHard")
     if not have_timing_mode:
         prefix.append(f"Timing Mode\t{timing_mode}")
     return "\n".join(prefix + out) + "\n"
