@@ -15,8 +15,7 @@ import numpy as np
 from ...gamedata import Stats, StatCurves
 from ...rules import MAX_STAT
 from ...stats import GEM_KINDS, apply_gems
-from ..base_stats import STAT_NAMES
-from ..force_greats_common import response_frontier_base_components_row
+from ..base_stats import STAT_NAMES, loadout_totals
 from ..gem_search import gem_groups, gem_winners
 from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 from gear_optimizer.frontier.timeline_producer import TimelineFrontierGridPayload
@@ -46,15 +45,7 @@ def solve_best_fever_combination_batch(
     if not rows:
         return []
     chart = song.chart
-    components = np.asarray(
-        [
-            response_frontier_base_components_row(
-                row, None, primary_color=chart.primary, secondary_color=chart.secondary
-            )
-            for row in rows
-        ],
-        dtype=np.int32,
-    )
+    components = np.asarray([loadout_totals(row, chart.primary, chart.secondary) for row in rows], dtype=np.int32)
     frontier_idx_by_stat, pool = _base_surface_pool(song, curves)
     groups = gem_groups(
         components,

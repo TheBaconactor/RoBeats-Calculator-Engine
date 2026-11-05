@@ -69,21 +69,6 @@ def _assert_darwin_main_thread_materialization() -> None:
     )
 
 
-def taichi_runtime_lock() -> threading.RLock:
-    """The lock that serializes access to Taichi's global runtime state.
-
-    Anything that allocates SNode trees or launches kernels against the module-level scratch
-    fields is global state: two threads inside it interleave FieldsBuilder placement
-    (``TaichiRuntimeError: Field builder ... is not finalized``) and, worse, share per-candidate
-    scratch, so a surviving pair of requests can read each other's rows. Callers outside the
-    optimizer's own single-GPU-thread executor -- including host applications that call FG
-    scoring through a thread pool -- must hold this while they are the owner.
-
-    Reentrant on purpose: Vulkan recovery calls ``reset_taichi`` from inside owner work.
-    """
-    return _ti_lock
-
-
 @contextmanager
 def _file_lock(lock_path: Path, *, timeout_sec: float | None = None) -> Iterator[None]:
     """Cross-process exclusive file lock (Windows + POSIX); waits forever when `timeout_sec` is None."""

@@ -39,7 +39,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from gear_optimizer.chart import load_chart, read_header  # noqa: E402
-from gear_optimizer.pipeline.result_application import read_visible_stats  # noqa: E402
 from gear_optimizer.trace.note_graph import (  # noqa: E402
     force_greats_note_graph,
 )
@@ -126,7 +125,7 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
 
 def _visible_stats(fd: dict) -> tuple[dict, str]:
     """Read the persisted post-gem visible stats exactly once. Returns (stats, selected color)."""
-    stats = read_visible_stats(fd)
+    stats = dict(fd.get("Stats") or fd.get("BaseStats") or {})
     if not stats:
         raise SystemExit("loadout missing visible Stats/BaseStats")
     sel = str(fd.get("Selected Element") or fd.get("SelectedElement") or "")

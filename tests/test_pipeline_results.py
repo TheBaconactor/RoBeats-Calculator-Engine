@@ -21,8 +21,6 @@ def _payload(score=1500):
             "final_score": score,
             "frontier_trace": [{"next_state": 2}],
             "raw_fever_fill": 1.5,
-            "forced_counts": [1, 2],
-            "config": {"old": True},
         },
         "_ga_gpu_run_idx": 0,
     }
@@ -33,7 +31,7 @@ def test_an_fg_payload_is_read_as_the_result_it_describes():
     assert (fg.element, fg.score, fg.paired, fg.surface) == ("Flow", 1500, 1000, tuple(range(11)))
     assert fg.gems == (1, 9, 11, 5, 2, 60)  # stats.GEM_KINDS: PP, CM, FM, FT, FF, Element
     assert fg.stats == tuple(FG_STATS[s] for s in STATS)
-    # The replay witness without its score and the retired FG configuration fields.
+    # The replay witness without its score.
     assert fg.trace == {"frontier_trace": [{"next_state": 2}], "raw_fever_fill": 1.5}
     # A payload that names no element is the song's primary element.
     unnamed = {k: v for k, v in _payload().items() if k != "Selected Element"}

@@ -20,7 +20,6 @@ Environment variables the engine reads (every one of them):
     METAFINDER_PROGRESS                 1 forces the progress bar on, 0 off; unset = on in an interactive terminal
     ROBEATSMETA_OPTIMIZER_SERVICE_MODE  running under the :8765 service (no self-update, GPU request timeouts,
                                         GPU runtime failures stop the process)
-    ROBEATSMETA_OPTIMIZER_PERSISTENT_WORKER  keep the GPU executor alive between service solves
   :8765 service (see ServiceSettings) and MetaFinder distribution (see MetaFinderSettings).
 """
 
@@ -230,10 +229,6 @@ def progress() -> bool | None:
 
 def service_mode() -> bool:
     return _env_bool("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", False)
-
-
-def persistent_worker() -> bool:
-    return _env_bool("ROBEATSMETA_OPTIMIZER_PERSISTENT_WORKER", False)
 
 
 @dataclass(frozen=True, slots=True)

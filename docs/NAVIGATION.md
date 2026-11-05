@@ -40,8 +40,9 @@ Use this page to find the current owner of a behavior. The
 - Timing envelope: `gear_optimizer/solver/timing_envelope.py`
 - Force Great planning and replay:
   `gear_optimizer/trace/`
-- Force Great device response frontier:
-  `gear_optimizer/solver/fg_scoring.py`
+- Force Great scoring over a song's bundle: `gear_optimizer/solver/fg_scoring.py`
+- Exact frontier producer and caches (CPU numba, no Taichi): `gear_optimizer/frontier/`
+- TeamBuff tier replays: `gear_optimizer/solver/team_buff_tiers.py`
 - Startup response-frontier cache build:
   `gear_optimizer/frontier/fg_prebuild.py`
 

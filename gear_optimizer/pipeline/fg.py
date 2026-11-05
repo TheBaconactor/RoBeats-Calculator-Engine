@@ -18,13 +18,12 @@ from gear_optimizer.data.loadout_equivalence import effective_loadout_hash_from_
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.pipeline.results import SolvedLoadout, SongSolve, solved_fg
 from gear_optimizer.pipeline.song import NativeSong
-from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX, build_stats_dict
+from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX, build_stats_dict, loadout_totals
 from gear_optimizer.solver.fg_search import search_fg_loadouts
 from gear_optimizer.trace.materialize import (
     FgTraceMaterializationCache,
     materialize_force_payload_from_response_frontier,
 )
-from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
 from gear_optimizer.trace.reconstruct import UnplayableTrace
@@ -119,10 +118,7 @@ def _selected_surface(song: NativeSong, payload: np.ndarray, fg_rows: dict) -> l
             best[key] = (genome, score, results, names, pre_gem)
 
     def fg_score(loadout: tuple) -> int:
-        totals = response_frontier_base_components_row(
-            loadout[4], None, primary_color=song_inputs.primary_color, secondary_color=song_inputs.secondary_color
-        )
-        row = fg_rows.get(totals)
+        row = fg_rows.get(loadout_totals(loadout[4], song_inputs.primary_color, song_inputs.secondary_color))
         return -1 if row is None else row.inner_row[0]
 
     meta = sorted(best.items(), key=lambda item: (item[1][1], item[0]), reverse=True)[:LOADOUTS_PER_SONG_LIMIT]
@@ -169,9 +165,7 @@ def finish_fg(song: NativeSong, ga_result: dict) -> SongSolve:
         for index, stats in enumerate(base_stats):
             key = tuple(sorted(stats.items()))
             if key not in solves:
-                totals = response_frontier_base_components_row(
-                    stats, None, primary_color=song_inputs.primary_color, secondary_color=song_inputs.secondary_color
-                )
+                totals = loadout_totals(stats, song_inputs.primary_color, song_inputs.secondary_color)
                 solves[key] = fg_solve_result(score_row=fg_rows[totals], base_stats=stats, selected_color=selected,
                                               scoring_bundle=fg.fg_response_scoring_bundle)
             jobs.append((index, solves[key]))

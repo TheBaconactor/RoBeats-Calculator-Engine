@@ -2017,7 +2017,6 @@ def test_fever_end_cluster_fail_loud_on_tight_non_perfect_same_time():
 
 def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, team_buff_effect
-    from gear_optimizer.pipeline.result_application import read_visible_stats
     from gear_optimizer.store import db, schema
     from gear_optimizer.store.legacy import fg_payload
     from gear_optimizer.gamedata import stat_curves
@@ -2054,7 +2053,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
         frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt
     )
 
-    stats = read_visible_stats(fd)
+    stats = fd["Stats"]
     for key, val in {
         k: team_buff_effect("T1", "Rush").get(k, 0)
         - team_buff_effect(OPTIMIZER_BASELINE_TEAM_BUFF, "Rush").get(k, 0)

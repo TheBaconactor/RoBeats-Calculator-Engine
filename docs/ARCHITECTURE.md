@@ -118,12 +118,11 @@ oracle. It is not a silent recovery path for failed GPU execution.
 
 Force Great behavior is split by responsibility:
 
-- `gear_optimizer/trace/` owns high-level planning,
-  reduction, replay, and service contracts;
-- `gear_optimizer/solver/fg_scoring.py` owns the
-  device response-frontier implementation and related response modules;
-- `gear_optimizer/frontier/fg_prebuild.py` owns startup
-  cache construction; and
+- `gear_optimizer/frontier/` owns the exact numba producer (Base and Force Great) and the disk caches of its output,
+  including the startup prebuild; nothing there loads Taichi;
+- `gear_optimizer/solver/fg_scoring.py` owns the exact gem search over a song's scoring bundle;
+- `gear_optimizer/trace/` owns a surface's play: trace reconstruction, activation witnesses, the note graph, physical
+  replay and the persisted FG payload; and
 - `gear_optimizer/solver/scoring/` owns canonical exact rescore of retained
   Force Great results.
 

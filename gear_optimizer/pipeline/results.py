@@ -13,8 +13,7 @@ from typing import Any
 from ..core.gem_defs import element_gem_count
 from ..core.utils import get_selected_element
 from ..gamedata import ELEMENTS, STATS, StatCurves
-from gear_optimizer.store.fg_payload import require_response_surface, strip_retired_fg_fields
-from .result_application import read_visible_stats
+from gear_optimizer.store.fg_payload import require_response_surface
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, gems
 
@@ -55,9 +54,9 @@ def solved_fg(payload: Mapping[str, Any], *, default_element: str) -> SolvedFg:
     return SolvedFg(
         element=element,
         gems=gem_allocation(payload, element),
-        stats=stats_tuple(read_visible_stats(dict(payload))),
+        stats=stats_tuple(payload["Stats"]),
         surface=tuple(require_response_surface(payload)),
-        trace=strip_retired_fg_fields(trace, parent_key="ForceGreats")[0],
+        trace=trace,
         score=int(payload["Score"]),
         paired=int(payload["BaseScore"]),
     )

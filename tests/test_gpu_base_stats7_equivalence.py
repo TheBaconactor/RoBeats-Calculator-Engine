@@ -21,7 +21,7 @@ from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.gamedata import empty_stats
 from gear_optimizer.solver.base_stats import build_stats_array, build_stats_dict
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
-from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
+from gear_optimizer.solver.base_stats import loadout_totals
 from gear_optimizer.solver.genetic_pipeline import (
     run_gpu_native_ga_runs_payload_prebuilt,
 )
@@ -195,10 +195,7 @@ def test_payload_base_stats7_matches_host_base_components_on_real_ga(real_ga_run
     # At least one row must carry a nonzero base_stats7, or zeros would trivially match.
     assert int(np.count_nonzero(payload_base_stats7)) > 0
     host = [
-        response_frontier_base_components_row(
-            build_stats_dict(fixed + item_stats[list(ids)].sum(axis=0)), None, primary_color=_PRIMARY_COLOR,
-            secondary_color=_SECONDARY_COLOR,
-        )
+        loadout_totals(build_stats_dict(fixed + item_stats[list(ids)].sum(axis=0)), _PRIMARY_COLOR, _SECONDARY_COLOR)
         for ids in genomes.tolist()
     ]
     assert host == [tuple(row) for row in payload_base_stats7.tolist()]

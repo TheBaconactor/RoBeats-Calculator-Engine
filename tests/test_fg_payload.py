@@ -2,7 +2,6 @@ import pytest
 
 from gear_optimizer.store.fg_payload import (
     require_response_surface,
-    strip_retired_fg_fields,
 )
 
 
@@ -28,23 +27,3 @@ def test_config_only_payload_is_invalid():
         require_response_surface(payload)
 
 
-def test_retired_fields_are_stripped_from_nested_persistence_payloads():
-    cleaned, removed = strip_retired_fg_fields(
-        {
-            "TimelineFrontier": {"frontier_trace": [{"forced_prefix_count": 4}]},
-            "ForceGreats": {
-                "config": {"NonFever1": 4},
-                "enabled": True,
-                "variant_applied": True,
-                "frontier_trace": [{"forced_counts": [4, 0]}],
-            },
-            "config": {"unrelated": "kept"},
-        }
-    )
-
-    assert removed == 5
-    assert cleaned == {
-        "TimelineFrontier": {"frontier_trace": [{}]},
-        "ForceGreats": {"frontier_trace": [{}]},
-        "config": {"unrelated": "kept"},
-    }

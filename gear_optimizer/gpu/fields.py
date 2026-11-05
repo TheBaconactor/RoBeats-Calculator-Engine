@@ -7,15 +7,10 @@ This module handles:
 - bind_fields() to inject live field objects into kernels module
 """
 import logging
-import sys
 import taichi as ti
 from gear_optimizer.frontier.timeline_cache import MAX_SONG_NOTES
 from gear_optimizer.frontier.timeline_producer import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 from .runtime import is_initialized, init_taichi
-# Skyline uses this to select the 32-bit-atomic reduction path on macOS.
-# That includes MoltenVK (`ti.vulkan` on Darwin), whose shaders still compile
-# through Metal and therefore cannot use the packed-u64 atomic reduction.
-IS_METAL = sys.platform == "darwin"
 logger = logging.getLogger(__name__)
 MAX_GENOMES = 4608  # Active-population genome pool: 13 runs of 352 genomes per GA batch (one batch for the
 # default 5 and the strong 10 runs). ~25MB VRAM on the 24GB RX 7900 XTX across all MAX_GENOMES-sized buffers.
@@ -101,7 +96,6 @@ GA_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed 
 GA_FG_SELECTED_MAX = 5000  # GPU GA->FG selection buffer capacity (safety bound; production funnel is LOADOUTS_PER_SONG_LIMIT).
 GA_FG_SELECTED_HASH_SIZE = 65536  # Open-addressing table for dedupe (power of two).
 GA_FG_SELECTED_STUBS_MAX = 20000  # Upper bound on unique stubs we support in GPU selection.
-SKYLINE_INIT_HEURISTIC_K = GA_INIT_HEURISTIC_K
 # GA->FG effective-dedup equivalence tables (Slice 1). Per-item i32 lookups the
 # select kernel uses to fold name/color-equivalent loadouts before the top-N cut:
 #   gear id  -> name rank (same gear Name => same rank)

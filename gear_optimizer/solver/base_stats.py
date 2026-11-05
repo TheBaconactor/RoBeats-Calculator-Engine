@@ -18,6 +18,19 @@ def build_stats_array(stats: Mapping[str, int]) -> np.ndarray:
     return np.asarray([stats[name] for name in STAT_NAMES], dtype=np.int32)
 
 
+def loadout_totals(stats: Mapping[str, int], primary_color: str, secondary_color: str) -> tuple[int, ...]:
+    """A Stats row as the gem searches read a loadout: (PP, CM, FM, primary, secondary, FT, FF)."""
+    return (
+        stats["Perfect Points"],
+        stats["Combo Multiplier"],
+        stats["Fever Multiplier"],
+        stats.get(primary_color, 0),
+        stats.get(secondary_color, 0),
+        stats["Fever Time"],
+        stats["Fever Fill Rate"],
+    )
+
+
 def build_stats_dict(values: Sequence[int] | np.ndarray) -> dict[str, int]:
     """A STAT_NAMES-order vector as a Stats row."""
     return {name: int(values[idx]) for idx, name in enumerate(STAT_NAMES)}

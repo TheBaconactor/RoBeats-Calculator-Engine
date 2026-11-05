@@ -232,10 +232,11 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
 
     # The persisted plan replays against the game's fill denominator of the final FF stat (58), not of the FF gem
     # count (0 here): materialization fails loud if the replay's fever window differs from the surface's.
-    from gear_optimizer.trace.materialize import materialize_force_payload_from_response_frontier
+    from gear_optimizer.trace.materialize import FgTraceMaterializationCache, materialize_force_payload_from_response_frontier
 
     payload = materialize_force_payload_from_response_frontier(
-        base_stats=final_stats, paired_base_score=1, selected_element="Vibe", result=result, song=song, curves=curves
+        base_stats=final_stats, paired_base_score=1, selected_element="Vibe", result=result, song=song, curves=curves,
+        trace_cache=FgTraceMaterializationCache(),
     )
     hits = int(song.chart.total_notes) - int(song.chart.long_notes)
     assert payload["ForceGreats"]["raw_fever_fill"] == hits * float(curves.f64["Fever Fill Rate"][58])

@@ -63,7 +63,6 @@ TEAM_BUFFS: dict[str, tuple[int, int]] = {
     "T50": (10, 15),
     "T51": (5, 10),
 }
-BASELINE_TEAM_BUFF = "T5"
 
 ASCENSION_LEVEL = 10
 # Every mini gains 2 Perfect Points per ascension level, whatever the song.

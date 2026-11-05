@@ -11,7 +11,7 @@ from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierScoringBund
 from gear_optimizer.frontier.types import FgResponseFrontierSolveResult, FgResponseSurface
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
-from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
+from gear_optimizer.solver.base_stats import loadout_totals
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.solver.gem_search import GemWinner, gem_groups, gem_winners
 from gear_optimizer.solver.timing_envelope import TimedSong
@@ -103,12 +103,7 @@ def fg_solve_results(
 ) -> list[FgResponseFrontierSolveResult]:
     """Each row of pre-gem stats' FG solve result."""
     song_inputs = song.fg_inputs
-    totals = [
-        response_frontier_base_components_row(
-            stats, None, primary_color=song_inputs.primary_color, secondary_color=song_inputs.secondary_color
-        )
-        for stats in stats_rows
-    ]
+    totals = [loadout_totals(stats, song_inputs.primary_color, song_inputs.secondary_color) for stats in stats_rows]
     rows = score_fg_base_components(
         base_components=np.asarray(totals, dtype=np.int32), song=song, curves=curves, selected_color=selected_color,
         scoring_bundle=scoring_bundle,

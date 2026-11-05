@@ -11,7 +11,7 @@ from tests.songs_support import make_chart, make_song
 import pytest
 import numpy as np
 
-from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
+from gear_optimizer.solver.base_stats import loadout_totals
 
 
 def _engine_envelopes(timestamps):
@@ -273,7 +273,10 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
 def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.trace.materialize import materialize_force_payload_from_response_frontier
+    from gear_optimizer.trace.materialize import (
+        FgTraceMaterializationCache,
+        materialize_force_payload_from_response_frontier,
+    )
     import gear_optimizer.trace.materialize as reducer_mod
     from gear_optimizer.frontier.types import (
         FgResponseFrontierSolveResult,
@@ -314,6 +317,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         result=result,
         song=_stub_song(1),
         curves=stat_curves(),
+        trace_cache=FgTraceMaterializationCache(),
     )
 
     assert payload["BaseScore"] == 1000
@@ -322,7 +326,10 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
 
 
 def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
-    from gear_optimizer.trace.materialize import materialize_force_payload_from_response_frontier
+    from gear_optimizer.trace.materialize import (
+        FgTraceMaterializationCache,
+        materialize_force_payload_from_response_frontier,
+    )
     import gear_optimizer.trace.materialize as reducer_mod
     from gear_optimizer.frontier.producer_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
@@ -400,6 +407,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         result=result,
         song=song,
         curves=stat_curves(),
+        trace_cache=FgTraceMaterializationCache(),
     )
 
     assert payload["BaseScore"] == 4000
