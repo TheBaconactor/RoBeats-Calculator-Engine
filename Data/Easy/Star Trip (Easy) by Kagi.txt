@@ -2,7 +2,7 @@ Song Name	Star Trip (Easy) by Kagi
 Title	Star Trip (Easy)
 Artist	Kagi
 Description	ducc goes to space - complextro from 2024 :D.
-Difficulty	8
+Difficulty	5
 Primary Color	Chill
 Secondary Color	Flow
 Cover Image ID	112484865864127

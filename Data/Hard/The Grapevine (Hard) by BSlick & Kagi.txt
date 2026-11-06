@@ -2,7 +2,7 @@ Song Name	The Grapevine (Hard) by BSlick & Kagi
 Title	The Grapevine (Hard)
 Artist	BSlick & Kagi
 Description	'Heard you were in town through the grapevine.' A 2024 collab from BSlick & Kagi - chords + synth solo by Kagi.
-Difficulty	22
+Difficulty	24
 Primary Color	Vibe
 Secondary Color	Flow
 Cover Image ID	112755967404780

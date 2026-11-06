@@ -2,7 +2,7 @@ Song Name	critical divEr (Hard) by seatrus (feat. Risa Yuzuki)
 Title	critical divEr (Hard)
 Artist	seatrus (feat. Risa Yuzuki)
 Description	Track 10 from seatrus's album 'E', featuring vocals from Risa Yuzuki (nickname 'Yuzurisa'), who you might also know from Laur's song 'Afflict'! Map by Fritzy.
-Difficulty	33
+Difficulty	29
 Primary Color	Vibe
 Secondary Color	Chill
 Cover Image ID	16030586463

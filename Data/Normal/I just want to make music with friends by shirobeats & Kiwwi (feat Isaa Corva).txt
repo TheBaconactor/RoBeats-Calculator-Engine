@@ -2,7 +2,7 @@ Song Name	I just want to make music with friends by shirobeats & Kiwwi (feat. Is
 Title	I just want to make music with friends
 Artist	shirobeats & Kiwwi (feat. Isaa Corva)
 Description	'Featuring lots of friends!' Track 11 on shirobeats & Kiwwi's 2026 album 'We Are So Back', art by Nondo39.
-Difficulty	19
+Difficulty	20
 Primary Color	Beat
 Secondary Color	Flow
 Cover Image ID	129827873318547

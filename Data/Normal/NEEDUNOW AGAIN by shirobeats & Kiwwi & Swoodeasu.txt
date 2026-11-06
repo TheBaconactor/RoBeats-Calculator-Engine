@@ -2,7 +2,7 @@ Song Name	NEEDUNOW AGAIN by shirobeats & Kiwwi & Swoodeasu
 Title	NEEDUNOW AGAIN
 Artist	shirobeats & Kiwwi & Swoodeasu
 Description	'I need you now, I need you now, baby.' Track 1 on shirobeats & Kiwwi's 2025 album 'Witch Jam', art by Nondo39.
-Difficulty	16
+Difficulty	17
 Primary Color	Rush
 Secondary Color	Beat
 Cover Image ID	93144738037167

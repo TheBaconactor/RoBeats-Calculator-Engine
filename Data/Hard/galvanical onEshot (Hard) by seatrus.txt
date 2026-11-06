@@ -2,7 +2,7 @@ Song Name	galvanical onEshot (Hard) by seatrus
 Title	galvanical onEshot (Hard)
 Artist	seatrus
 Description	Galvanical - Relating to, or in production of an electrical current (usually in the case of a chemical reaction). Who would have known this one without looking it up? Map by Fritzy.
-Difficulty	35
+Difficulty	31
 Primary Color	Chill
 Secondary Color	Beat
 Cover Image ID	16030501090

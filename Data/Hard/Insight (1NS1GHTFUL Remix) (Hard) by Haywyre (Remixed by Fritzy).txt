@@ -2,7 +2,7 @@ Song Name	Insight (1NS1GHTFUL Remix) (Hard) by Haywyre (Remixed by Fritzy)
 Title	Insight (1NS1GHTFUL Remix) (Hard)
 Artist	Haywyre (Remixed by Fritzy)
 Description	A remix of 'Insight' by Robeats contributor Fritzy. Map by Himitsu.
-Difficulty	31
+Difficulty	34
 Primary Color	Vibe
 Secondary Color	Flow
 Cover Image ID	7098335739

@@ -2,7 +2,7 @@ Song Name	Let's Roll (Hard) by Ephixa & Going Quantum [Monstercat]
 Title	Let's Roll (Hard)
 Artist	Ephixa & Going Quantum [Monstercat]
 Description	A 2019 track by Canadian producers Ephixa and Going Quantum, featured as the first track of the Monstercat 8 Year Anniversary compilation album. Both artists are notable for being among the first artists signed to the Monstercat label.
-Difficulty	21
+Difficulty	18
 Primary Color	Flow
 Secondary Color	Chill
 Cover Image ID	75115448124065

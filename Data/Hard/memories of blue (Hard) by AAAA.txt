@@ -2,7 +2,7 @@ Song Name	memories of blue (Hard) by AAAA
 Title	memories of blue (Hard)
 Artist	AAAA
 Description	'An unforgettable summer is coming.' A 2023 summer track from Japanese producer AAAA, art by Gurumin.
-Difficulty	29
+Difficulty	30
 Primary Color	Chill
 Secondary Color	Beat
 Cover Image ID	71853282473796

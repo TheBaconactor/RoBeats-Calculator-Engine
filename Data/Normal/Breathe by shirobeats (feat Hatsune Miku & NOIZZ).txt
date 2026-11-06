@@ -2,7 +2,7 @@ Song Name	Breathe by shirobeats (feat. Hatsune Miku & NOIZZ.)
 Title	Breathe
 Artist	shirobeats (feat. Hatsune Miku & NOIZZ.)
 Description	'I've been wanting to make something like this for a while.' A 2024 original Vocaloid song from shirobeats (feat. Hatsune Miku & NOIZZ.), art by Ariimaw.
-Difficulty	15
+Difficulty	16
 Primary Color	Vibe
 Secondary Color	Chill
 Cover Image ID	92333582772411

@@ -2,7 +2,7 @@ Song Name	Show Off by shirobeats & Kiwwi & Swoodeasu
 Title	Show Off
 Artist	shirobeats & Kiwwi & Swoodeasu
 Description	'I got your love in mind.' Track 6 on shirobeats & Kiwwi's 2026 album 'We Are So Back', art by Nondo39.
-Difficulty	13
+Difficulty	14
 Primary Color	Chill
 Secondary Color	Vibe
 Cover Image ID	112710690036193

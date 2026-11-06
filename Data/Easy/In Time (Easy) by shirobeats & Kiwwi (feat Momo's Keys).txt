@@ -2,7 +2,7 @@ Song Name	In Time (Easy) by shirobeats & Kiwwi (feat. Momo's Keys)
 Title	In Time (Easy)
 Artist	shirobeats & Kiwwi (feat. Momo's Keys)
 Description	'But in time, we'll know the answer.' Track 15 on shirobeats & Kiwwi's 2025 album 'Witch Jam', art by Nondo39.
-Difficulty	1
+Difficulty	2
 Primary Color	Flow
 Secondary Color	Rush
 Cover Image ID	89083232304902

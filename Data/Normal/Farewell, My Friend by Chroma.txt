@@ -2,7 +2,7 @@ Song Name	Farewell, My Friend by Chroma
 Title	Farewell, My Friend
 Artist	Chroma
 Description	A 2018 track from Japanese producer Chroma. I will never forget! Map by doofyplayer.
-Difficulty	12
+Difficulty	15
 Primary Color	Chill
 Secondary Color	Beat
 Cover Image ID	6527761091

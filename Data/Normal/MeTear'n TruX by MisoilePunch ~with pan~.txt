@@ -2,7 +2,7 @@ Song Name	MeTear'n TruX by MisoilePunch ~with pan~
 Title	MeTear'n TruX
 Artist	MisoilePunch ~with pan~
 Description	Track 6 from MisoilePunch's 2018 album I Re:s. From the artist: Tears of the stars and the light of truth. Map by doofyplayer and TeleBott.
-Difficulty	13
+Difficulty	8
 Primary Color	Beat
 Secondary Color	Vibe
 Cover Image ID	8919819474
