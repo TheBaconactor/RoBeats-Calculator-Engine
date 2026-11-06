@@ -26,8 +26,8 @@ at the build's windows raises UnplayableTrace.
 
 from __future__ import annotations
 
-import heapq
 import math
+from bisect import insort
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Mapping, NamedTuple, Sequence
@@ -585,19 +585,18 @@ def _assign_input_order(notes: list[dict[str, Any]], constraints: Sequence[tuple
             targets.add(after)
             indegree[after] += 1
 
-    # No constraint runs backward in time, so popping the earliest ready input yields a time-monotone order.
-    ready = [(event_times[index], index) for index in range(n) if indegree[index] == 0]
-    heapq.heapify(ready)
-    ordered: list[int] = []
-    while ready:
-        _event_time, index = heapq.heappop(ready)
-        ordered.append(index)
-        for after in successors.get(index, ()):
-            indegree[after] -= 1
-            if indegree[after] == 0:
-                heapq.heappush(ready, (event_times[after], after))
-    if len(ordered) != n:
+    # No constraint runs backward in time, so walking the ready inputs by time yields a time-monotone order: an input
+    # released by the walk joins the part still ahead of it. Constraints are few, so nearly every note starts ready.
+    ready = sorted([(event_times[index], index) for index in range(n) if indegree[index] == 0])
+    for position, (_event_time, index) in enumerate(ready, 1):
+        if index in successors:
+            for after in successors[index]:
+                indegree[after] -= 1
+                if indegree[after] == 0:
+                    insort(ready, (event_times[after], after), lo=position)
+    if len(ready) != n:
         raise UnplayableTrace("note_graph: exact input-order constraints contain a cycle")
+    ordered = [index for _event_time, index in ready]
     for input_order, note_index in enumerate(ordered):
         notes[note_index]["input_order"] = input_order
     return ordered

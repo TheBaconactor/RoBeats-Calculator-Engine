@@ -245,13 +245,7 @@ def edge_surface_option_details(
         fever_fill_denom=float(raw_fever_fill),
     )
     return [
-        _option_with_witness(
-            option,
-            reachability_context=reachability_context,
-            n=int(n),
-            real_fever_time=float(real_fever_time),
-            perfect_floor_timestamps=perfect_floor_timestamps,
-        )
+        _option_with_witness(option, reachability_context, float(real_fever_time))
         for option in _edge_surface_options(
             context=reachability_context,
             i=int(i),

@@ -52,8 +52,8 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         latest_activation_hit_for_contiguous_great_run,
     )
     from gear_optimizer.trace.reconstruct import (
-        _edge_end_at_hit,
         _edge_surface,
+        _fever_end,
     )
     from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
     from tests.fg_response_frontier_oracles import response_surface
@@ -134,14 +134,8 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         great_start: int,
         great_end: int,
     ) -> None:
-        fever_end, start_time, _carry_idx = _edge_end_at_hit(
-            n=n,
-            a=int(activation_index),
-            hit=float(activation_hit),
-            activation_great=bool(activation_great),
-            real_fever_time=float(real_fever_time),
-            perfect_floor_timestamps=perfect_floor_timestamps,
-        )
+        start_time = float(activation_hit)
+        fever_end = _fever_end(start_time, int(activation_index), perfect_floor_timestamps, float(real_fever_time), n)
         activation_great_idx = int(activation_index) if bool(activation_great) else -1
         surfaces.append(
             response_surface(_edge_surface(
