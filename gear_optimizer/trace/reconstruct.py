@@ -47,37 +47,10 @@ class _SectionOptionStream:
 
 @dataclass(slots=True)
 class FgTraceEdgeOptionsCache:
-    """One-song ordered edge cache with enforced owner identity and bounded option count."""
+    """One song's section options per state, bounded (eviction only rebuilds an identical stream). A cache belongs to
+    the one song it was made for: its keys do not name the song."""
 
     _entries: dict[Any, _SectionOptionStream] = field(default_factory=dict)
-    _owner_inputs: tuple[Any, ...] | None = None
-    _owner_note_count: int = -1
-    _explicit_owner: bool = False
-
-    def bind_owner(self, owner: Any, *, note_count: int) -> None:
-        if self._owner_inputs is None:
-            self._owner_inputs = (owner,)
-            self._owner_note_count = int(note_count)
-            self._explicit_owner = True
-        elif (
-            not self._explicit_owner
-            or self._owner_note_count != int(note_count)
-            or self._owner_inputs[0] is not owner
-        ):
-            raise ValueError("FG trace edge cache cannot be reused across song timing owners")
-
-    def bind_inputs(self, *, owner_inputs: tuple[Any, ...], note_count: int) -> None:
-        if self._explicit_owner:
-            if self._owner_note_count != int(note_count):
-                raise ValueError("FG trace edge cache note count changed for its bound song owner")
-            return
-        if self._owner_inputs is None:
-            self._owner_inputs = tuple(owner_inputs)
-            self._owner_note_count = int(note_count)
-        elif self._owner_note_count != int(note_count) or any(
-            current is not stored for current, stored in zip(owner_inputs, self._owner_inputs, strict=True)
-        ):
-            raise ValueError("FG trace edge cache cannot be reused across song timing owners")
 
     def get(self, key: tuple[Any, ...]) -> _SectionOptionStream | None:
         return self._entries.get(key)
@@ -112,61 +85,6 @@ class _ActivationReachabilityContext:
     exit_ceiling_timestamps: np.ndarray
     lanes: np.ndarray
     fever_fill_denom: float
-
-
-def _build_activation_reachability_context(
-    *,
-    timestamps: Any,
-    perfect_floor_timestamps: Any,
-    perfect_candidate_timestamps: Any,
-    great_floor_timestamps: Any,
-    great_candidate_timestamps: Any,
-    lanes: Any,
-    fever_fill_denom: float,
-    late_great_floor_timestamps: Any | None = None,
-    exit_ceiling_timestamps: Any | None = None,
-) -> _ActivationReachabilityContext:
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
-    perfect_floor = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
-    perfect_candidates = np.ascontiguousarray(
-        np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1)
-    )
-    great_floor = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
-    great_candidates = np.ascontiguousarray(
-        np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1)
-    )
-    late_great_floor = (
-        perfect_candidates + np.float32(0.001)
-        if late_great_floor_timestamps is None
-        else np.ascontiguousarray(np.asarray(late_great_floor_timestamps, dtype=np.float32).reshape(-1))
-    )
-    exit_ceiling = (
-        np.ascontiguousarray(np.minimum.accumulate(perfect_candidates[::-1])[::-1])
-        if exit_ceiling_timestamps is None
-        else np.ascontiguousarray(np.asarray(exit_ceiling_timestamps, dtype=np.float32).reshape(-1))
-    )
-    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
-    n = int(ts.shape[0])
-    if n <= 0:
-        raise ValueError("FG activation reachability requires at least one note")
-    if any(
-        int(values.shape[0]) != n
-        for values in (
-            perfect_floor, perfect_candidates, great_floor, great_candidates, late_great_floor, exit_ceiling, lane_arr
-        )
-    ):
-        raise ValueError("FG activation reachability arrays must match timestamps")
-    return _ActivationReachabilityContext(
-        timestamps=ts,
-        perfect_floor_timestamps=perfect_floor,
-        perfect_candidate_timestamps=perfect_candidates,
-        great_floor_timestamps=great_floor,
-        great_candidate_timestamps=great_candidates,
-        late_great_floor_timestamps=late_great_floor,
-        exit_ceiling_timestamps=exit_ceiling,
-        lanes=lane_arr,
-        fever_fill_denom=float(fever_fill_denom),
-    )
 
 
 def _lower_bound_from(timestamps: np.ndarray, value: float) -> int:
@@ -323,8 +241,6 @@ def _centered_hit_window_for_exit(
     target = max(0, min(int(target_end_idx), int(n)))
     lo = float(legal_lo)
     hi = float(legal_hi)
-    if lo > hi:
-        raise ValueError("FG response trace received an empty activation witness interval")
     # The exit must search the same earliest-Perfect floor envelope the surface boundary
     # used (issue #42), so the centered witness reproduces the (floor-based) target_end.
     floor_ts = perfect_floor_timestamps
@@ -470,12 +386,6 @@ def _activation_reachable(
     activation_great: bool,
     n: int,
 ) -> bool:
-    if int(n) != int(context.timestamps.shape[0]):
-        raise ValueError("FG activation reachability context length does not match the chart")
-    if not (0 <= int(section_start) <= int(a) < int(n)):
-        raise ValueError("FG activation reachability received invalid section bounds")
-    if not (int(section_start) <= int(great_start) <= int(n)) or int(great_count) < 0:
-        raise ValueError("FG activation reachability received an invalid Great run")
     return bool(
         _rb_numba._numba_activation_reachable_contiguous_run(
             int(a),
@@ -517,11 +427,6 @@ def _latest_activation_hit_for_labels(
     # (tests/fg_response_frontier_oracles.py) for the lanes=None,
     # epsilon=INPUT_ORDER_EPS_SEC(=1e-6) form this DFS always uses: same walk, same
     # per-note cap arithmetic, minus ~150k Python/numpy dispatches per heavy song.
-    n_eff = min(
-        int(n), int(timestamps.shape[0]), int(perfect_ts.shape[0]), int(great_ts.shape[0])
-    )
-    if not (0 <= int(a) < int(n_eff)):
-        raise ValueError("activation_index must be inside the section")
     cap, valid, _token = _rb_numba._numba_latest_activation_hit_for_contiguous_great_run(
         int(a),
         float(hit_lo),
@@ -531,7 +436,7 @@ def _latest_activation_hit_for_labels(
         great_ts,
         int(great_start_i),
         int(great_count_i),
-        int(n_eff),
+        int(n),
         -1,
     )
     return float(cap) if int(valid) else None
@@ -1041,12 +946,7 @@ def _option_with_witness(
     real_fever_time: float,
     perfect_floor_timestamps: np.ndarray,
 ) -> dict[str, Any]:
-    """Attach the centered activation-witness fields to one accepted option.
-
-    Produces the historical field layout (witness hit-window fields after the
-    judgment, timing fields after fever_end_ms) so persisted trace rows are
-    unchanged.
-    """
+    """An accepted option as a stored trace section: with its centered activation witness and exact schedule."""
     w = option["_witness"]
     centered_start_time, hit_lo, hit_hi = _centered_hit_window_for_exit(
         int(n), int(w["activation_idx"]),
@@ -1182,23 +1082,10 @@ def reconstruct_force_greats_response_trace(
     )
     if max(1, ceil(float(raw_fever_fill))) < early_exit_min_fill(floor_ts, perfect_ts):
         exit_ceiling_ts = np.full_like(exit_ceiling_ts, -np.inf)  # as the search: no early exits at this fill
-    reachability_context: _ActivationReachabilityContext | None = None
-
-    def _reachability_context() -> _ActivationReachabilityContext:
-        nonlocal reachability_context
-        if reachability_context is None:
-            reachability_context = _build_activation_reachability_context(
-                timestamps=ts,
-                perfect_floor_timestamps=floor_ts,
-                perfect_candidate_timestamps=perfect_ts,
-                great_floor_timestamps=great_floor_ts,
-                great_candidate_timestamps=great_ts,
-                late_great_floor_timestamps=late_great_floor_ts,
-                exit_ceiling_timestamps=exit_ceiling_ts,
-                lanes=lane_arr,
-                fever_fill_denom=float(raw_fever_fill),
-            )
-        return reachability_context
+    context = _ActivationReachabilityContext(
+        ts, floor_ts, perfect_ts, great_floor_ts, great_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr,
+        float(raw_fever_fill),
+    )
 
     actions, later_fill, first_fill, later_forced, first_forced = action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -1207,23 +1094,8 @@ def reconstruct_force_greats_response_trace(
     )
 
     target_words = tuple(int(value) for value in target_surface)
-    # The ordered edge list is independent of the target surface. A materialization batch can
-    # therefore reuse it across the up-to-51 exact surfaces for one song/stat geometry. Keep the
-    # cache song-local and bounded: eviction only regenerates an identical ordered stream.
+    # The ordered edge list is independent of the target surface, so the up-to-51 surfaces of one song reuse it.
     shared_edge_options = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
-    shared_edge_options.bind_inputs(
-        owner_inputs=(
-            inputs.timestamps,
-            inputs.perfect_candidates,
-            inputs.great_candidates,
-            inputs.perfect_floor,
-            inputs.great_floor,
-            inputs.late_great_floor,
-            inputs.exit_ceiling,
-            inputs.lanes,
-        ),
-        note_count=n,
-    )
     edge_cache_prefix = (
         int(non_fever_base),
         float(raw_fever_fill),
@@ -1240,7 +1112,7 @@ def reconstruct_force_greats_response_trace(
         section = dict(
             _option_with_witness(
                 option,
-                reachability_context=_reachability_context(),
+                reachability_context=context,
                 n=int(n),
                 real_fever_time=float(real_fever_time),
                 perfect_floor_timestamps=floor_ts,
@@ -1287,7 +1159,7 @@ def reconstruct_force_greats_response_trace(
         if options is None:
             options = _SectionOptionStream(
                 _edge_surface_options(
-                    context=_reachability_context(),
+                    context=context,
                     i=int(state),
                     first=bool(first),
                     actions=actions,

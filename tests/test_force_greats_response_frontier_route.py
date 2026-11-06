@@ -260,17 +260,6 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
     assert seen["reconstruct_calls"] == 1
     assert seen["validate_calls"] == 1
     assert seen["physical_calls"] == 1
-    with pytest.raises(ValueError, match="cannot be reused across song owners"):
-        materialize_force_payload_from_response_frontier(
-            base_stats={"Perfect Points": 1},
-            paired_base_score=1000,
-            selected_element="Rush",
-            result=result,
-            song=_stub_song(1),
-            curves=stat_curves(),
-            trace_cache=trace_cache,
-            perfect_time=0,
-        )
 
 
 def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):

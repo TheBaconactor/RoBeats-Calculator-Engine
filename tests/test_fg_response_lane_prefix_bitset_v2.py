@@ -11,10 +11,8 @@ from gear_optimizer.frontier.producer_kernels import (
     HitTimes,
     _numba_activation_reachable_contiguous_run,
 )
-from gear_optimizer.trace.reconstruct import (
-    _activation_reachable,
-    _build_activation_reachability_context,
-)
+from gear_optimizer.trace.reconstruct import _activation_reachable
+from tests.fg_response_frontier_oracles import build_activation_reachability_context
 
 
 def _retired_boolean_prefix_reachable(
@@ -268,7 +266,7 @@ def test_exact_surface_query_matches_randomized_cross_lane_swaps() -> None:
 def test_trace_reachability_context_uses_exact_surface_query() -> None:
     timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
     denom = 37.25
-    context = _build_activation_reachability_context(
+    context = build_activation_reachability_context(
         timestamps=timestamps,
         perfect_floor_timestamps=perfect_floor,
         perfect_candidate_timestamps=perfect_candidates,
@@ -314,17 +312,6 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
             n=end,
         )
         assert actual is _retired_boolean_prefix_reachable(*args), case_idx
-    with pytest.raises(ValueError, match="invalid Great run"):
-        _activation_reachable(
-            context=context,
-            a=40,
-            hit=float(timestamps[40]),
-            section_start=12,
-            great_start=11,
-            great_count=3,
-            activation_great=False,
-            n=int(timestamps.shape[0]),
-        )
 
 
 @pytest.mark.parametrize("denom", [float("inf"), float("nan")])

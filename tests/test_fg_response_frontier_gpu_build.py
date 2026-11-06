@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.fg_response_frontier_oracles import build_activation_reachability_context
+
 from tests.fg_cache_support import surface_frontier
 
 import hashlib
@@ -1307,7 +1309,6 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     from gear_optimizer.frontier.producer_batch import action_table
     from gear_optimizer.trace.reconstruct import (
-        _build_activation_reachability_context,
         _edge_surface_options,
     )
 
@@ -1320,7 +1321,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         use_forced_great_timing=True,
     )
     lanes = _lanes_for(timestamps)
-    reachability_context = _build_activation_reachability_context(
+    reachability_context = build_activation_reachability_context(
         timestamps=timestamps,
         perfect_floor_timestamps=timestamps,
         perfect_candidate_timestamps=timestamps,
@@ -1399,7 +1400,6 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
 def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None:
     from gear_optimizer.frontier.producer_batch import action_table
     from gear_optimizer.trace.reconstruct import (
-        _build_activation_reachability_context,
         _edge_surface_options,
     )
 
@@ -1416,7 +1416,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         use_forced_great_timing=True,
     )
     lanes = _lanes_for(timestamps)
-    reachability_context = _build_activation_reachability_context(
+    reachability_context = build_activation_reachability_context(
         timestamps=timestamps,
         perfect_floor_timestamps=perfect_floor,
         perfect_candidate_timestamps=perfect_candidates,
@@ -2372,7 +2372,6 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     from gear_optimizer.frontier.producer_batch import action_table
     from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
     from gear_optimizer.trace.reconstruct import (
-        _build_activation_reachability_context,
         _edge_surface_options,
         reconstruct_force_greats_response_trace,
     )
@@ -2432,7 +2431,7 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
         non_fever_base=non_fever_base,
         use_forced_great_timing=True,
     )
-    reachability_context = _build_activation_reachability_context(
+    reachability_context = build_activation_reachability_context(
         timestamps=timestamps,
         perfect_floor_timestamps=perfect_floor,
         perfect_candidate_timestamps=perfect_candidates,

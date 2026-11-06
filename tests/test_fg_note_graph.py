@@ -183,45 +183,6 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "edge_options_cache",
     }
 
-def test_trace_edge_cache_rejects_cross_song_geometry_reuse():
-    from gear_optimizer.trace.reconstruct import (
-        FgTraceEdgeOptionsCache,
-        reconstruct_force_greats_response_trace,
-    )
-
-    (
-        timestamps,
-        perfect_candidates,
-        great_candidates,
-        perfect_floor,
-        great_floor,
-        _actions,
-        options,
-    ) = _build_options(110, 96, 1.5)
-    cache = FgTraceEdgeOptionsCache()
-    arrays = {
-        "perfect_candidates": perfect_candidates,
-        "great_candidates": great_candidates,
-        "perfect_floor": perfect_floor,
-        "great_floor": great_floor,
-        "lanes": np.arange(110, dtype=np.int32),
-    }
-    kwargs = {
-        "inputs": fg_song_inputs(timestamps=timestamps, **arrays),
-        "non_fever_base": 96,
-        "target_surface": options[0]["surface"],
-        "raw_fever_fill": 1.0,
-        "real_fever_time": 1.5,
-        "edge_options_cache": cache,
-    }
-    reconstruct_force_greats_response_trace(**kwargs)
-
-    with pytest.raises(ValueError, match="cannot be reused across song timing owners"):
-        reconstruct_force_greats_response_trace(
-            **{**kwargs, "inputs": fg_song_inputs(timestamps=timestamps.copy(), **arrays)}
-        )
-
-
 def test_trace_edge_cache_bounds_the_options_its_states_built():
     from gear_optimizer.trace.reconstruct import (
         FgTraceEdgeOptionsCache,
@@ -229,8 +190,6 @@ def test_trace_edge_cache_bounds_the_options_its_states_built():
     )
 
     cache = FgTraceEdgeOptionsCache()
-    owner = object()
-    cache.bind_owner(owner, note_count=1)
     option = {"surface": "sentinel"}
 
     def read(count):
@@ -246,7 +205,6 @@ def test_trace_edge_cache_bounds_the_options_its_states_built():
     assert cache.option_count == 4000
 
     empty_cache = FgTraceEdgeOptionsCache()
-    empty_cache.bind_owner(owner, note_count=1)
     for index in range(300):
         empty_cache.put(("empty", index), _SectionOptionStream(iter(())))
     assert len(empty_cache) == 256

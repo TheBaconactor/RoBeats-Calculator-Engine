@@ -15,14 +15,36 @@ from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
 from gear_optimizer.frontier.fg_cache_patterns import EXPANDED_COEFF_COLUMNS, intern_surface_row_words, pack_surface_patterns
 
 from gear_optimizer.frontier.producer_batch import action_table
+from gear_optimizer.frontier.producer_batch import song_arrays
 from gear_optimizer.trace.reconstruct import (
-    _build_activation_reachability_context,
+    _ActivationReachabilityContext,
     _edge_surface_options,
     _option_with_witness,
 )
 from gear_optimizer.frontier.types import (
     FgResponseFrontierResult,
     FgResponseSurface,
+    )
+
+
+def build_activation_reachability_context(
+    *,
+    timestamps,
+    perfect_floor_timestamps,
+    perfect_candidate_timestamps,
+    great_floor_timestamps,
+    great_candidate_timestamps,
+    lanes,
+    fever_fill_denom,
+    late_great_floor_timestamps=None,
+    exit_ceiling_timestamps=None,
+):
+    ts, perfect, great, floor, great_floor, late_great_floor, exit_ceiling, lane_arr = song_arrays(
+        timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
+        great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
+    )
+    return _ActivationReachabilityContext(
+        ts, floor, perfect, great_floor, great, late_great_floor, exit_ceiling, lane_arr, float(fever_fill_denom)
     )
 
 
@@ -202,7 +224,7 @@ def edge_surface_option_details(
     """Materialize every option and witness for focused producer tests."""
     if lanes is None:
         raise ValueError("lanes are required for input-engine-aware response tests")
-    reachability_context = _build_activation_reachability_context(
+    reachability_context = build_activation_reachability_context(
         timestamps=timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
         perfect_candidate_timestamps=(
@@ -256,7 +278,7 @@ def input_engine_rebuild_first_frontier(
         use_forced_great_timing=bool(use_forced_great_timing),
     )
     n = int(timestamps.shape[0])
-    reachability_context = _build_activation_reachability_context(
+    reachability_context = build_activation_reachability_context(
         timestamps=timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,

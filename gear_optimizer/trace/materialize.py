@@ -22,17 +22,10 @@ from .physical_replay import validate_force_greats_physical_replay
 
 @dataclass(slots=True)
 class FgTraceMaterializationCache:
-    """Validated trace/edge cache bound to one exact song owner."""
+    """One song's validated traces and section options."""
 
     traces: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
     edge_options: FgTraceEdgeOptionsCache = field(default_factory=FgTraceEdgeOptionsCache)
-    _song_owner: TimedSong | None = None
-
-    def bind(self, song: TimedSong) -> None:
-        if self._song_owner is None:
-            self._song_owner = song
-        elif self._song_owner is not song:
-            raise ValueError("FG trace materialization cache cannot be reused across song owners")
 
 
 def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_fill: float) -> None:
@@ -106,10 +99,8 @@ def materialize_force_payload_from_response_frontier(
 ) -> dict[str, Any]:
     if paired_base_score <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
-    trace_cache.bind(song)
     frontier = result.frontier
     song_inputs = song.fg_inputs
-    trace_cache.edge_options.bind_owner(song, note_count=len(song_inputs.timestamps))
     surface = result.surface
     # The frontier plans against the fill threshold (result.raw_fever_fill); the replay and the persisted trace use the
     # game's own fill denominator for the final Fever Fill stat, so the stored plan is checked against the game's
