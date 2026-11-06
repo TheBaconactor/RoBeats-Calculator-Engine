@@ -33,24 +33,8 @@ def _numba_session_surface_basis(
 ):
     """Session-box twin of `_numba_head_surface_basis` (combo ramp slopes from the SESSION box corners
     instead of the global _HEAD_DOM_C); with a degenerate combo box it scores one cell exactly."""
-    pattern_basis = _numba_session_pattern_basis(
-        fl, fh, gl, gh, int(lo_pos), int(hi_pos), float(c_lo), float(c_hi)
-    )
-    return (
-        pattern_basis[0],
-        pattern_basis[1],
-        pattern_basis[2],
-        pattern_basis[3],
-        np.int64(bf),
-        np.int64(bg) - np.int64(bfg),
-        np.int64(bfg),
-        pattern_basis[4],
-        pattern_basis[5],
-        pattern_basis[6],
-        pattern_basis[7],
-        pattern_basis[8],
-        pattern_basis[9],
-    )
+    head = _numba_session_pattern_basis(fl, fh, gl, gh, int(lo_pos), int(hi_pos), float(c_lo), float(c_hi))
+    return (fl, fh, gl, gh, np.int64(bf), np.int64(bg) - np.int64(bfg), np.int64(bfg), *head)
 
 
 def _cell_score(words_row: np.ndarray, counts_row: np.ndarray, head_len: int, v: float, c: float, f: float, g: float) -> float:
@@ -136,10 +120,7 @@ def test_session_box_prune_keeps_every_session_cell_winner():
     f_lo, f_hi = 4.60, 5.48
     g_lo, g_hi = 1200.0, 4200.0
     keep = np.asarray(
-        _numba_session_box_keep_mask(
-            pattern_ids, pattern_words, counts, offsets, lengths, 0, head_len,
-            v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi,
-        ),
+        _numba_session_box_keep_mask((pattern_ids, pattern_words, counts, offsets, lengths), 0, head_len, (v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi)),
         dtype=bool,
     )
     assert keep.shape == (int(words.shape[0]),)
@@ -177,13 +158,7 @@ def test_session_box_prune_is_keep_all_when_box_equals_global():
     lengths = np.asarray([30], dtype=np.int32)
     offsets = np.asarray([0], dtype=np.int32)
     keep = np.asarray(
-        _numba_session_box_keep_mask(
-            pattern_ids, pattern_words, np.ascontiguousarray(counts), offsets, lengths, 0, head_len,
-            float(_HEAD_DOM_V[0]), float(_HEAD_DOM_V[1]),
-            float(_HEAD_DOM_C[0]), float(_HEAD_DOM_C[1]),
-            float(_HEAD_DOM_F[0]), float(_HEAD_DOM_F[1]),
-            float(_HEAD_DOM_G[0]), float(_HEAD_DOM_G[1]),
-        ),
+        _numba_session_box_keep_mask((pattern_ids, pattern_words, np.ascontiguousarray(counts), offsets, lengths), 0, head_len, (float(_HEAD_DOM_V[0]), float(_HEAD_DOM_V[1]), float(_HEAD_DOM_C[0]), float(_HEAD_DOM_C[1]), float(_HEAD_DOM_F[0]), float(_HEAD_DOM_F[1]), float(_HEAD_DOM_G[0]), float(_HEAD_DOM_G[1]))),
         dtype=bool,
     )
     grid = [
@@ -223,23 +198,7 @@ def test_compact_pattern_basis_matches_expanded_row_survivor_snapshot():
     counts[:, 2] = rng.integers(0, 6, size=180)
     counts[:, 1] = counts[:, 2] + rng.integers(0, 9, size=180)
     keep = np.asarray(
-        _numba_session_box_keep_mask(
-            pattern_ids,
-            pattern_words,
-            counts,
-            np.asarray([0, 80, 140], dtype=np.int32),
-            np.asarray([80, 60, 40], dtype=np.int32),
-            0,
-            head_len,
-            2000.0,
-            6400.0,
-            2.45,
-            2.72,
-            4.60,
-            5.48,
-            1200.0,
-            4200.0,
-        ),
+        _numba_session_box_keep_mask((pattern_ids, pattern_words, counts, np.asarray([0, 80, 140], dtype=np.int32), np.asarray([80, 60, 40], dtype=np.int32)), 0, head_len, (2000.0, 6400.0, 2.45, 2.72, 4.60, 5.48, 1200.0, 4200.0)),
         dtype=bool,
     )
     assert np.flatnonzero(keep).tolist() == [12, 46, 55, 85, 138, 140, 173, 174]
@@ -306,23 +265,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     original_offsets = np.asarray(bundle.pool.frontier_offsets, dtype=np.int32)
     original_lengths = np.asarray(bundle.pool.frontier_lengths, dtype=np.int32)
     expected_keep = np.asarray(
-        _numba_session_box_keep_mask(
-            pattern_ids,
-            pattern_words,
-            counts,
-            original_offsets,
-            original_lengths,
-            0,
-            head_len,
-            v_lo,
-            v_hi,
-            c_lo,
-            c_hi,
-            f_lo,
-            f_hi,
-            g_lo,
-            g_hi,
-        ),
+        _numba_session_box_keep_mask((pattern_ids, pattern_words, counts, original_offsets, original_lengths), 0, head_len, (v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi)),
         dtype=bool,
     )
     expected_used_patterns, expected_pattern_ids = np.unique(pattern_ids[expected_keep], return_inverse=True)
@@ -416,7 +359,7 @@ def test_session_prune_matches_retired_unique_remap(combo_box, fever_box):
     box = fg_cache.session_head_dominance_box(curves)
     keep = np.asarray(
         _numba_session_box_keep_mask(
-            pattern_ids, pattern_words, counts, offsets, lengths, 0, head_len, *box
+            (pattern_ids, pattern_words, counts, offsets, lengths), 0, head_len, box
         ),
         dtype=bool,
     )

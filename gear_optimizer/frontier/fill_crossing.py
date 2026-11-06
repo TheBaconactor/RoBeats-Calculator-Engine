@@ -98,10 +98,8 @@ def perfect_crossing_is_region3(fill: int, k: int, first: bool, fever_fill_denom
 
 def late_great_activation_prefix(fill: int, k: int, first: bool, fever_fill_denom: float) -> int | None:
     """Canonical forced-Great PREFIX for a late-Great activation, or ``None`` if a late-Great is
-    illegal there (a Perfect crosses first -> phantom over-report) -- the ONE owner of the late-Great
-    placement math that BOTH the search compaction (``_compact_first_frontier_action_arrays``) and the
-    reconstruct mirror (``_edge_surface_options``) consume, so the prefix cap +
-    :func:`late_great_prefix_is_legal` pair is written once.
+    illegal there (a Perfect crosses first -> phantom over-report), for the search compaction
+    (``_compact_first_frontier_action_arrays``); trace/section_kernels.py computes the same prefix.
 
     ``prefix`` is the number of forced Greats before the activation Great; the section burns one wasted
     note on later sections (``wasted = 1``) and none on the first (``wasted = 0``).  Returns ``None``
@@ -109,7 +107,7 @@ def late_great_activation_prefix(fill: int, k: int, first: bool, fever_fill_deno
 
     The first-section ``prefix == fill`` placement (every pre-activation slot a Great, the
     activation Great crossing on the run's end) is LEGAL and required: the P/G brute-force oracle
-    realizes it and the reconstruct mirror re-finds it (record 16.28's cap-to-``fill - 1``
+    realizes it and the trace search re-finds it (record 16.28's cap-to-``fill - 1``
     direction was refuted by that oracle -- the fixture phantoms were the region-2 NORMAL edges,
     fixed by :func:`perfect_crossing_is_region3`, not this chooser).
     """

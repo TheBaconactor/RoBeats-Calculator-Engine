@@ -28,7 +28,6 @@ _SCORING_POLICY_SOURCE = _ENGINE / "solver" / "scoring" / "fg_policy.py"
 _FG_SHARED_FRONTIER_PRODUCER_SOURCES = (
     _ENGINE / "rules.py",
     _ENGINE / "core" / "time_quantize.py",
-    _ENGINE / "solver" / "input_engine_breakpoints.py",
     _ENGINE / "solver" / "timing_envelope.py",
     _SCORING_POLICY_SOURCE,
     _HERE / "fill_crossing.py",

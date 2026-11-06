@@ -90,11 +90,11 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's payloads only when it
 # lists that version here, after a byte gate proved the persisted payloads identical. The version history is in git.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # judgment_bounds reads the game's Perfect Time curve, which at stat 0 gives the frontiers the same bands; no output
-    # changed: the 2026-11-05 gate (16 charts) and sample (40 charts, both modes) payloads hold the same arrays as the
-    # db3c419e0279 producer's, which ratified 3879362bd129's and so the 35c21d69e3b1 recompute's.
+    # The 2026-11-06 producer cleanup changed no output: the gate (16 charts) and the 40-chart sample (2,160 arrays) are
+    # identical to the adffed7e46af producer's, which ratified the versions listed after it. Evidence in
     # workspace/_rewrite_state_2026-11-05.
-    "exact-frontier-v12+logic-adffed7e46af": (
+    "exact-frontier-v12+logic-2fe49a9a0fdf": (
+        "exact-frontier-v12+logic-adffed7e46af",
         "exact-frontier-v12+logic-db3c419e0279",
         "exact-frontier-v12+logic-3879362bd129",
         "exact-frontier-v12+logic-35c21d69e3b1",
@@ -314,17 +314,7 @@ def _build_non_precise_timeline_payload(song: TimedSong, curves: StatCurves) -> 
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
 
     last_fever_end = np.zeros((grid_size, grid_size), dtype=np.int32)
-    calculate_fever_timeline_surface_grid(
-        timestamps,
-        total_notes,
-        fever_durations,
-        fill_notes,
-        grid_count_body_fever[0],
-        grid_count_body_normal[0],
-        grid_fever_masks_bits[0],
-        grid_fever_activations[0],
-        last_fever_end,
-    )
+    calculate_fever_timeline_surface_grid(timestamps, total_notes, fever_durations, fill_notes, (grid_count_body_fever[0], grid_count_body_normal[0], grid_fever_masks_bits[0], grid_fever_activations[0], last_fever_end))
     grid_gap[0] = int(total_notes) - last_fever_end
 
     for ft_idx in range(grid_size):

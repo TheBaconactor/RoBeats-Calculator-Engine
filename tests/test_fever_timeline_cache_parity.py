@@ -41,17 +41,7 @@ def test_batched_surface_grid_matches_every_canonical_scalar_cell() -> None:
     activations = np.zeros(shape, dtype=np.int32)
     last_end = np.zeros(shape, dtype=np.int32)
 
-    calculate_fever_timeline_surface_grid(
-        timestamps,
-        len(timestamps),
-        fever_durations,
-        fill_notes,
-        body_fever,
-        body_normal,
-        mask_words,
-        activations,
-        last_end,
-    )
+    calculate_fever_timeline_surface_grid(timestamps, len(timestamps), fever_durations, fill_notes, (body_fever, body_normal, mask_words, activations, last_end))
 
     mask_buffer = np.zeros(len(timestamps), dtype=np.bool_)
     for ft_idx, duration in enumerate(fever_durations):

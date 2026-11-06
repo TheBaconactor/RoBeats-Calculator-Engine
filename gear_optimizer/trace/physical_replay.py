@@ -119,24 +119,13 @@ def _fever_walk(event_order, event_times_ms, result_codes, fever_fill_denominato
 
 
 @njit(cache=True, nogil=True)
-def _replay_kernel(
-    delta_ms,
-    hit_time_ms,
-    input_order,
-    expected_result_code,
-    expected_fever,
-    edges,
-    lanes,
-    fever_fill_denominator,
-    real_fever_time,
-    event_order,
-    replay_fever,
-    check_combo_order,
-):
+def _replay_kernel(plan, edges, lanes, fever_fill_denominator, real_fever_time, replayed, check_combo_order):
     """One GIL-free pass over a plan: judge, order, lane-check and fever-replay it, and check its combo order.
 
     Returns ``(status, arg_a, arg_b)``; on success ``event_order`` and ``replay_fever`` are filled.
     """
+    delta_ms, hit_time_ms, input_order, expected_result_code, expected_fever = plan
+    event_order, replay_fever = replayed
     n = delta_ms.shape[0]
 
     # Per-note judgment agreement plus event-time accumulation.
@@ -227,17 +216,18 @@ def _replay_graph(
     expected_fever = np.array([note["fever"] for note in graph], dtype=np.int8)
     event_order, replay_fever = np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int8)
     status, arg_a, arg_b = _replay_kernel(
-        delta_ms,
-        np.array([note["hit_time_ms"] for note in graph], dtype=np.float64),
-        np.array([note["input_order"] for note in graph], dtype=np.int64),
-        np.array([_RESULT_CODE.get(judgment, -1) for judgment in judgments], dtype=np.int8),
-        expected_fever,
+        (
+            delta_ms,
+            np.array([note["hit_time_ms"] for note in graph], dtype=np.float64),
+            np.array([note["input_order"] for note in graph], dtype=np.int64),
+            np.array([_RESULT_CODE.get(judgment, -1) for judgment in judgments], dtype=np.int8),
+            expected_fever,
+        ),
         _note_edges(note_types, perfect_time),
         lanes,
         float(fever_fill_denominator),
         float(fever_seconds),
-        event_order,
-        replay_fever,
+        (event_order, replay_fever),
         check_combo_order,
     )
     if status == _REPLAY_ERR_JUDGMENT:
@@ -303,7 +293,13 @@ def validate_base_physical_replay(
     )
     reconcile_base_note_graph(graph, total_notes=n, response_surface=response_surface)
     event_order, fever_mask, _judgments = _replay_graph(
-        "Base", graph, nt, lane_arr, fever_fill_denominator, fever_duration_ms / 1000.0, perfect_time,
+        "Base",
+        graph,
+        nt,
+        lane_arr,
+        fever_fill_denominator,
+        fever_duration_ms / 1000.0,
+        perfect_time,
         check_combo_order=False,
     )
     return BasePhysicalReplay(event_order=event_order, fever_mask=fever_mask)
@@ -343,6 +339,6 @@ def validate_force_greats_physical_replay(
         body_fever_great=surface.body_fever_great,
     )
     event_order, fever_mask, judgments = _replay_graph(
-        "FG", graph, nt, lane_arr, fever_fill_denominator, real_fever_time, perfect_time, check_combo_order=True,
+        "FG", graph, nt, lane_arr, fever_fill_denominator, real_fever_time, perfect_time, check_combo_order=True
     )
     return FgPhysicalReplay(event_order=event_order, fever_mask=fever_mask, judgments=judgments)

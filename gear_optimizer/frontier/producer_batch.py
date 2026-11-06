@@ -151,8 +151,7 @@ def _compact_first_frontier_action_arrays(
                 later_activation,
                 first_activation,
             ) = rows[int(row_idx)]
-        # Late-Great activation (single-sourced with the reconstruct mirror `_edge_surface_options`
-        # via late_great_activation_prefix): the forced-Great prefix when the activation Great IS the
+        # Late-Great activation (late_great_activation_prefix): the forced-Great prefix when the activation Great IS the
         # server fill-crossing, else None -> the -1 sentinel stays, so the phantom late-Great
         # over-report (a Perfect crosses first) can never be selected on any vendor.
         if int(action_idx) > 0 and int(later_fill[int(action_idx) - 1]) == int(later):

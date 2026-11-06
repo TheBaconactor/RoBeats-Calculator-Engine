@@ -88,23 +88,11 @@ def _dense_inputs(n: int = 96) -> tuple[np.ndarray, ...]:
 def _exact_surface_query(*args) -> bool:
     """Call the canonical query from the retired oracle's wider historical signature."""
     return bool(
-        _numba_activation_reachable_contiguous_run(
-            args[0],
-            args[1],
-            args[3],
-            HitTimes(args[4],
+        _numba_activation_reachable_contiguous_run(args[0], args[1], args[3], HitTimes(args[4],
             args[5],
             args[6],
             args[7],
-            args[5] + np.float32(0.001)),
-            args[8],
-            args[9],
-            args[10],
-            args[11],
-            args[12],
-            args[13],
-            args[14],
-        )
+            args[5] + np.float32(0.001)), args[8], args[9], (args[10], args[11], args[12], args[13]), args[14])
     )
 
 
@@ -300,14 +288,10 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
             great_count,
             int(activation_great),
         )
-        actual = _numba_activation_reachable_contiguous_run(
-            activation, float(hit), context.timestamps,
-            HitTimes(
+        actual = _numba_activation_reachable_contiguous_run(activation, float(hit), context.timestamps, HitTimes(
                 context.perfect_floor_timestamps, context.perfect_candidate_timestamps, context.great_floor_timestamps,
                 context.great_candidate_timestamps, context.late_great_floor_timestamps,
-            ),
-            context.lanes, context.fever_fill_denom, start, end, great_start, great_count, int(activation_great),
-        )
+            ), context.lanes, context.fever_fill_denom, (start, end, great_start, great_count), int(activation_great))
         assert bool(actual) is _retired_boolean_prefix_reachable(*args), case_idx
 
 
@@ -315,23 +299,11 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
 def test_exact_surface_query_rejects_nonfinite_denominator(denom: float) -> None:
     timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
     with pytest.raises(ValueError, match="finite"):
-        _numba_activation_reachable_contiguous_run(
-            40,
-            float(timestamps[40]),
-            timestamps,
-            HitTimes(perfect_floor,
+        _numba_activation_reachable_contiguous_run(40, float(timestamps[40]), timestamps, HitTimes(perfect_floor,
             perfect_candidates,
             great_floor,
             great_candidates,
-            perfect_candidates + np.float32(0.001)),
-            lanes,
-            denom,
-            0,
-            96,
-            5,
-            30,
-            0,
-        )
+            perfect_candidates + np.float32(0.001)), lanes, denom, (0, 96, 5, 30), 0)
 
 
 def _retired_boolean_region_core_for_offset(

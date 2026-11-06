@@ -10,7 +10,6 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from gear_optimizer.solver.input_engine_breakpoints import INPUT_ORDER_EPS_SEC
 from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
 from gear_optimizer.frontier.fg_cache_patterns import EXPANDED_COEFF_COLUMNS, intern_surface_row_words, pack_surface_patterns
 
@@ -22,6 +21,9 @@ from gear_optimizer.frontier.types import (
     FgResponseFrontierResult,
     FgResponseSurface,
     )
+
+
+INPUT_ORDER_EPS_SEC = 1.0e-6
 
 
 def build_activation_reachability_context(

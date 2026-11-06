@@ -433,8 +433,8 @@ def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) ->
     monkeypatch.setattr(rb, "_numba_region_run_edge_for_offset", edge)
     ts = np.arange(n, dtype=np.float32)
     rb._numba_region2_activation_packet.py_func(
-        n, 20, -31, 110, 4.0, empty, empty, empty, ts, ts, ts, ts, ts, ts,
-        np.arange(n), region, limits, np.empty((1, 3), dtype=np.int64),
+        (n, 20, -31, 110, 4.0), empty, empty, empty, (ts, ts, ts, ts, ts, ts, np.arange(n)), region, limits,
+        np.empty((1, 3), dtype=np.int64),
     )
     assert len(calls) == 1
 
@@ -461,7 +461,6 @@ def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
     assert {
         "core/time_quantize.py",
         "rules.py",
-        "solver/input_engine_breakpoints.py",
         "solver/scoring/fg_policy.py",
         "solver/timing_envelope.py",
     } <= fingerprinted
@@ -756,22 +755,11 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                 state_i = int(activation) - int(activation_offset)
                 section_start = int(state_i) + 1
                 assert region_offset >= 1
-                direct = rb._numba_region_run_edge_for_offset(
-                    int(timestamps.shape[0]),
-                    int(section_start),
-                    int(region_offset),
-                    int(k),
-                    float(raw_fever_fill),
-                    timestamps,
-                    rb.HitTimes(perfect_floor,
+                direct = rb._numba_region_run_edge_for_offset((int(timestamps.shape[0]), int(section_start), int(region_offset), int(k)), float(raw_fever_fill), timestamps, rb.HitTimes(perfect_floor,
                     perfect_candidates,
                     great_floor,
                     great_candidates,
-                    perfect_candidates + np.float32(0.001)),
-                    lanes,
-                    perfect_ends,
-                    great_ends,
-                )
+                    perfect_candidates + np.float32(0.001)), lanes, perfect_ends, great_ends)
                 activation_i, edge_e, run_start, great_end, activation_great_idx, _eg_e, valid = direct
                 assert int(activation_i) == int(activation)
                 assert int(valid) != 0
@@ -804,6 +792,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
 def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypatch) -> None:
     from gear_optimizer.frontier import producer_batch
     from gear_optimizer.frontier import producer_reducer
+    from gear_optimizer.frontier import producer_scheduler
     from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseSurface,
@@ -814,15 +803,11 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
     calls: list[dict] = []
     previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(1)
 
-    def _fake_first_frontier(**kwargs):
-        calls.append(dict(kwargs))
-        return result
+    def _fake_first_frontier(*, chunk, start, stop, **_kwargs):
+        calls.extend(chunk[start:stop])
+        return [(int(item[0]), result) for item in chunk[start:stop]]
 
-    monkeypatch.setattr(
-        producer_reducer,
-        "_first_frontier_result_from_precomputed_end_indices",
-        _fake_first_frontier,
-    )
+    monkeypatch.setattr(producer_scheduler, "_first_frontier_results_for_precomputed_range", _fake_first_frontier)
     try:
         frontiers = producer_batch.build_first_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -845,6 +830,7 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
     from gear_optimizer.frontier import producer_batch
     from gear_optimizer.frontier import producer_precompute
     from gear_optimizer.frontier import producer_reducer
+    from gear_optimizer.frontier import producer_scheduler
     from gear_optimizer.frontier.types import (
         FgResponseFrontierResult,
         FgResponseSurface,
@@ -861,15 +847,11 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
         calls += 1
         return real_precompute(**kwargs)
 
-    def _fake_first_frontier(**_kwargs):
-        return result
+    def _fake_first_frontier(*, chunk, start, stop, **_kwargs):
+        return [(int(item[0]), result) for item in chunk[start:stop]]
 
     monkeypatch.setattr(producer_precompute, "_precompute_end_indices", _record_precompute)
-    monkeypatch.setattr(
-        producer_reducer,
-        "_first_frontier_result_from_precomputed_end_indices",
-        _fake_first_frontier,
-    )
+    monkeypatch.setattr(producer_scheduler, "_first_frontier_results_for_precomputed_range", _fake_first_frontier)
     try:
         frontiers = producer_batch.build_first_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -986,20 +968,7 @@ def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
     planted = [(2, 11, 100), (3, 14, 90), (5, 7, 80), (0, 15, 70), (9, 3, 60)]
     touched = 0
     for normal_great, fever_great, body_fever in planted:
-        touched = _numba_touch_body_candidate(
-            np.uint64(body_fever),
-            np.uint64(normal_great + fever_great),  # body_great
-            np.uint64(fever_great),                 # body_fever_great
-            np.uint64(0),
-            np.uint64(0),
-            np.uint64(0),
-            int(pair_mod),
-            1,
-            pair_stamp,
-            best_fever_by_pair,
-            touched_pair,
-            int(touched),
-        )
+        touched = _numba_touch_body_candidate((np.uint64(body_fever), np.uint64(normal_great + fever_great), np.uint64(fever_great)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, int(touched))
 
     assert int(touched) == len(planted)  # no two distinct pairs collided onto one slot
     decoded = {}
@@ -1028,20 +997,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
     touched_pair = np.empty(pair_size, dtype=np.int32)
 
     with pytest.raises(ValueError, match="fever-great"):
-        _numba_touch_body_candidate(
-            np.uint64(100),
-            np.uint64(14),  # body_great = 14
-            np.uint64(11),  # body_fever_great = 11 >= pair_mod = 5
-            np.uint64(0),
-            np.uint64(0),
-            np.uint64(0),
-            int(pair_mod),
-            1,
-            pair_stamp,
-            best_fever_by_pair,
-            touched_pair,
-            0,
-        )
+        _numba_touch_body_candidate((np.uint64(100), np.uint64(14), np.uint64(11)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, 0)
 
 
 def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
@@ -1755,16 +1711,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         perfect_successor_stamps = np.zeros(n + 1, dtype=np.int32)
         late_successor = np.empty(n + 1, dtype=np.int32)
         late_successor_stamps = np.zeros(n + 1, dtype=np.int32)
-        actual_reachable, actual_width = _numba_first_frontier_reachability_prepass(
-            int(common["n"]),
-            int(common["action_count"]),
-            common["first_fill"],
-            common["first_activation_forced"],
-            perfect_run_starts,
-            perfect_run_ends,
-            late_run_starts,
-            late_run_ends,
-            ActivationEnds(
+        actual_reachable, actual_width = _numba_first_frontier_reachability_prepass(int(common["n"]), int(common["action_count"]), (common["first_fill"], common["first_activation_forced"]), (perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends), ActivationEnds(
                 common["prefix_perfect_hit"],
                 common["prefix_perfect_valid"],
                 common["prefix_late_hit"],
@@ -1773,21 +1720,11 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
                     capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e,
                     capped_perfect_exit_e, capped_late_exit_e,
                 )),
-            ),
-            float(common["real_fever_time"]),
-            int(common["use_forced_great_timing_i"]),
-            RegionTables(
+            ), (float(common["real_fever_time"]), int(common["use_forced_great_timing_i"])), (RegionTables(
                 common["region_starts"], common["region_offsets"], common["region_activations"],
                 common["region_great_ends"], common["region_is_greats"], empty_i32, empty_i32,
                 common["region_perfect_valids"], perfect_floor, great_floor,
-            ),
-            common["great_floor_timestamps"],
-            perfect_successor,
-            perfect_successor_stamps,
-            late_successor,
-            late_successor_stamps,
-            1,
-        )
+            ), common["great_floor_timestamps"]), (perfect_successor, perfect_successor_stamps, late_successor, late_successor_stamps, 1))
         assert np.array_equal(actual_reachable, expected_reachable), case_idx
         assert int(actual_width) == int(expected_width), case_idx
 
@@ -1878,23 +1815,11 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
         )
         denom = float(rng.choice(np.asarray([1.25, 2.25, 3.5, 8.0, 63.2118], dtype=np.float64)))
         assert bool(
-            _numba_activation_reachable_contiguous_run(
-                activation,
-                float(hit),
-                timestamps,
-                HitTimes(perfect_floor,
+            _numba_activation_reachable_contiguous_run(activation, float(hit), timestamps, HitTimes(perfect_floor,
                 perfect_candidates,
                 great_floor,
                 great_candidates,
-                perfect_candidates + np.float32(0.001)),
-                lanes,
-                denom,
-                section_start,
-                section_end,
-                great_start,
-                great_count,
-                activation_great_i,
-            )
+                perfect_candidates + np.float32(0.001)), lanes, denom, (section_start, section_end, great_start, great_count), activation_great_i)
         ) is full_scan(
             activation_index=activation,
             activation_hit_timestamp=float(hit),
@@ -2146,17 +2071,13 @@ class _BodyReducerDifferentialHarness:
         touched_count = 0
         for body_fever, body_great, body_fever_great in rows:
             touched_count = self._touch(
-                np.uint64(body_fever),
-                np.uint64(body_great),
-                np.uint64(body_fever_great),
-                np.uint64(0),
-                np.uint64(0),
-                np.uint64(0),
+                (np.uint64(body_fever), np.uint64(body_great), np.uint64(body_fever_great)),
+                (np.uint64(0), np.uint64(0), np.uint64(0)),
                 int(self.pair_mod),
-                int(self.stamp),
                 self.pair_stamp,
                 self.best_fever_by_pair,
                 self.touched_pair,
+                int(self.stamp),
                 int(touched_count),
             )
         self.last_touched_count = int(touched_count)

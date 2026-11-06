@@ -70,18 +70,9 @@ def calculate_fever_timeline_indices(song_timestamps, total_notes, fill_notes, f
 
 
 @jit(nopython=True, cache=True)
-def calculate_fever_timeline_surface_grid(
-    song_timestamps,
-    total_notes,
-    fever_durations,
-    fill_notes,
-    body_fever_out,
-    body_normal_out,
-    head_mask_words_out,
-    fever_activations_out,
-    last_fever_end_out,
-):
+def calculate_fever_timeline_surface_grid(song_timestamps, total_notes, fever_durations, fill_notes, out):
     """Batch the canonical fixed-timing surface over every FT/FF axis cell."""
+    body_fever_out, body_normal_out, head_mask_words_out, fever_activations_out, last_fever_end_out = out
     mask_buffer = np.zeros(total_notes, dtype=np.bool_)
     for ft_idx in range(fever_durations.shape[0]):
         for ff_idx in range(fill_notes.shape[0]):

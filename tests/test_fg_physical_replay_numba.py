@@ -140,20 +140,7 @@ def _run_kernel(delta_ms, hit_time_ms, input_order, expected_code, expected_feve
     n = len(delta_ms)
     event_order = np.empty(n, dtype=np.int64)
     replay_fever = np.empty(n, dtype=np.int8)
-    status, a, b = _replay_kernel(
-        np.asarray(delta_ms, dtype=np.float64),
-        np.asarray(hit_time_ms, dtype=np.float64),
-        np.asarray(input_order, dtype=np.int64),
-        np.asarray(expected_code, dtype=np.int8),
-        np.asarray(expected_fever, dtype=np.int8),
-        np.asarray([_edges(note_type == _HELD_TAIL_TYPE) for note_type in note_types], dtype=np.float64).reshape(-1, 6),
-        np.asarray(lanes, dtype=np.int32),
-        float(denom),
-        float(duration),
-        event_order,
-        replay_fever,
-        True,
-    )
+    status, a, b = _replay_kernel((np.asarray(delta_ms, dtype=np.float64), np.asarray(hit_time_ms, dtype=np.float64), np.asarray(input_order, dtype=np.int64), np.asarray(expected_code, dtype=np.int8), np.asarray(expected_fever, dtype=np.int8)), np.asarray([_edges(note_type == _HELD_TAIL_TYPE) for note_type in note_types], dtype=np.float64).reshape(-1, 6), np.asarray(lanes, dtype=np.int32), float(denom), float(duration), (event_order, replay_fever), True)
     return int(status), int(a), int(b), event_order, replay_fever
 
 

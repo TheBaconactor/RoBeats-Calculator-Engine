@@ -24,12 +24,11 @@ from gear_optimizer.frontier.producer_kernels import (
     _numba_pack_edge_eg,
     _numba_perfect_activation_hit_for_run,
     _numba_region2_offset_for_count,
-    _numba_trace_edge_action_arrays,
 )
 
 # Numba's disk cache watches only this file, and the kernels here carry compiled copies of the producer kernels they call.
 # This digest of producer_kernels.py makes an edit there change this file too (tests/test_repo_guardrails.py checks it).
-_PRODUCER_KERNELS_SHA256 = "5f2043d6ea65d2bfa8174cbde4a55310ced0beb14787b3c3a2cc5afffe3a0b17"
+_PRODUCER_KERNELS_SHA256 = "cc2f9466296e340f708d427d3395e7349f04d36d3a68e4ba3f4664b7032959fe"
 
 # What the sections of a song read: its hit times, lanes, and one fill denominator and fever time.
 SectionContext = namedtuple(
@@ -102,9 +101,7 @@ def _region_section(context, times, section_start, run_start, k):
         return none
     count = run_end - run_start
     hit, valid, _token = _numba_perfect_activation_hit_for_run(a, ts, perfect, great, run_start, count, n)
-    if not valid or not _numba_activation_reachable_contiguous_run(
-        a, hit, ts, times, lanes, denom, section_start, n, run_start, count, 0
-    ):
+    if not valid or not _numba_activation_reachable_contiguous_run(a, hit, ts, times, lanes, denom, (section_start, n, run_start, count), 0):
         return none
     end, tail_end = fever_end(hit, a, floor, rft, n), fever_end(hit, a, great_floor, rft, n)
     return a, 0, run_end, end, tail_end, min(float(ts[a]), float(perfect[a])), hit
@@ -114,37 +111,53 @@ def _region_section(context, times, section_start, run_start, k):
 def _section_families(context, times, actions, fills, forced, first, state):
     """Per action its Perfect activation, its late-Great activation and its region runs, each a family of sections:
     (forced Greats, activation, late Great, run start, run end, end, early-Great end, hit low, hit high)."""
-    ts = context.timestamps
-    n, denom = ts.shape[0], context.fever_fill_denom
+    ts, lanes = context.timestamps, context.lanes
+    n, denom, rft = ts.shape[0], context.fever_fill_denom, context.real_fever_time
+    perfect, great = times.perfect_candidate_timestamps, times.great_candidate_timestamps
+    floor, great_floor, late_floor = (
+        times.perfect_floor_timestamps, times.great_floor_timestamps, times.late_great_floor_timestamps
+    )
     forced_timing = context.use_forced_great_timing
     section_start = 0 if first else state + 1
-    (
-        err, act_a, _act_chart, act_hit_lo, act_perfect_hit, _act_perfect_hit_ok, act_perfect_reachable, act_e,
-        act_start_time, act_eg_e, act_late_lo, act_late_hit, act_lg_prefix, act_late_e, _act_late_start, act_late_eg_e,
-    ) = _numba_trace_edge_action_arrays(
-        actions, fills, forced, int(first), state, n, ts, times.perfect_candidate_timestamps,
-        times.great_candidate_timestamps, times.perfect_floor_timestamps, times.great_floor_timestamps,
-        times.late_great_floor_timestamps, context.lanes, denom, context.real_fever_time,
-    )
-    if np.any(err):
-        raise ValueError("FG activation reachability received invalid section bounds")
+    wasted = 0 if first else 1  # a later section's first note after the fever does not fill
     shifted = bool(_numba_has_shifted_head_region(section_start, denom)) and section_start + 1 < n
     families = []
     prev_fill, prev_start_time, prev_e = -1, -1.0, -1
-    for idx in range(act_a.shape[0]):
-        k, fill, a, e, eg_e = int(actions[idx]), int(fills[idx]), int(act_a[idx]), int(act_e[idx]), int(act_eg_e[idx])
-        if act_perfect_reachable[idx] and (fill != prev_fill or (act_start_time[idx] != prev_start_time and e != prev_e)):
-            run_end = min(n, section_start + int(forced[idx]))
-            families.append((k, a, 0, section_start, run_end, e, eg_e, act_hit_lo[idx], act_perfect_hit[idx]))
-        # lg_prefix < 0 encodes both "no late-Great placement" and "placement not schedulable". A late Great has to
-        # reach past the Perfect activation's end or early-Great tail.
-        late_e, late_eg_e = int(act_late_e[idx]), int(act_late_eg_e[idx])
+    for idx in range(actions.shape[0]):
+        k, fill, count = int(actions[idx]), int(fills[idx]), int(forced[idx])
+        a = fill if first else state + fill
+        if a >= n:
+            break
+        chart_time, perfect_time = float(ts[a]), float(perfect[a])
+        hit, valid, _token = _numba_perfect_activation_hit_for_run(a, ts, perfect, great, section_start, count, n)
+        start_time = hit if valid else chart_time
+        e = fever_end(hit, a, floor, rft, n) if valid else -1
+        eg_e = fever_end(start_time, a, great_floor, rft, n)
+        # The action's k Greats pack the section's first notes, and a Perfect after them crosses the fill.
+        slots = fill - wasted
+        crosses_after_run = k <= 0 or (k <= slots and float(slots) - 0.5 * k < denom)
         if (
-            forced_timing and prev_fill == fill and act_lg_prefix[idx] >= 0
-            and (late_e > e or late_eg_e > eg_e)
+            valid and crosses_after_run and (fill != prev_fill or (start_time != prev_start_time and e != prev_e))
+            and _numba_activation_reachable_contiguous_run(a, hit, ts, times, lanes, denom, (section_start, n, section_start, count), 0)
         ):
-            run_end = min(n, section_start + int(act_lg_prefix[idx]))
-            families.append((k, a, 1, section_start, run_end, late_e, late_eg_e, act_late_lo[idx], act_late_hit[idx]))
+            run_end = min(n, section_start + count)
+            families.append((k, a, 0, section_start, run_end, e, eg_e, min(chart_time, perfect_time), hit))
+        # A late Great has k - 1 Greats before it, or as many as the notes before it allow, and the bar one half short.
+        prefix = min(max(0, k - 1), max(0, slots))
+        bar_before = 0.5 * prefix + (slots - prefix)
+        if (
+            forced_timing and prev_fill == fill and k > 0 and slots >= prefix and bar_before < denom
+            and bar_before + 0.5 >= denom
+        ):
+            late_hit, late_valid, _token = _numba_late_great_activation_hit_for_run(
+                a, ts, perfect, great, late_floor, section_start, prefix, n
+            )
+            if late_valid:
+                late_e, late_eg_e = fever_end(late_hit, a, floor, rft, n), fever_end(late_hit, a, great_floor, rft, n)
+                # It has to reach past the Perfect activation's end or early-Great tail.
+                if (late_e > e or late_eg_e > eg_e) and _numba_activation_reachable_contiguous_run(a, late_hit, ts, times, lanes, denom, (section_start, n, section_start, prefix), 1):
+                    run_end = min(n, section_start + prefix)
+                    families.append((k, a, 1, section_start, run_end, late_e, late_eg_e, float(late_floor[a]), late_hit))
         if forced_timing and k > 0:
             region2 = _numba_region2_offset_for_count(section_start, k, denom, n)
             for offset in (1 if shifted else -1, -1 if shifted and region2 == 1 else region2):
@@ -157,7 +170,7 @@ def _section_families(context, times, actions, fills, forced, first, state):
                         families.append(
                             (run_end - run_start, run_a, late, run_start, run_end, end, tail_end, hit_lo, hit_hi)
                         )
-        prev_fill, prev_start_time, prev_e = fill, act_start_time[idx], e
+        prev_fill, prev_start_time, prev_e = fill, start_time, e
     return families
 
 

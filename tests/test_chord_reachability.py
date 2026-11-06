@@ -6,7 +6,6 @@ rejecting the same-lane preemption cases that make an activation unreachable (no
 """
 import numpy as np
 
-from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
 from gear_optimizer.trace.activation_witness import (
     LabelHitIntervals,
     activation_schedule_witnesses,
@@ -101,34 +100,6 @@ def test_m_weighted_lane_owner_optional_fill_is_prefix_closed_per_lane():
     assert not _witnesses(**timing, units=[1.0, 0.5, 0.5], lanes=[1, 1, 2])
     assert _witnesses(**timing, units=[0.5, 1.0, 0.5], lanes=[1, 1, 2])
     assert _witnesses(**timing, units=[1.0, 0.5, 0.5], lanes=[1, 3, 2])
-
-
-def test_n_note_graph_activation_cap_can_be_lane_scoped_for_display_witnesses():
-    ts = np.array([1.000, 1.100], dtype=np.float64)
-    highs = np.array([1.190, 1.140], dtype=np.float64)
-
-    assert latest_activation_hit_from_label_highs(
-        activation_index=0,
-        hit_lo=1.041,
-        hit_hi=1.190,
-        chart_timestamps=ts,
-        label_high_timestamps=highs,
-        section_end=2,
-        lanes=np.array([1, 2], dtype=np.int32),
-        epsilon=0.001,
-    ) == 1.190
-    same_lane_hit = latest_activation_hit_from_label_highs(
-        activation_index=0,
-        hit_lo=1.041,
-        hit_hi=1.190,
-        chart_timestamps=ts,
-        label_high_timestamps=highs,
-        section_end=2,
-        lanes=np.array([1, 1], dtype=np.int32),
-        epsilon=0.001,
-    )
-    assert same_lane_hit is not None
-    assert abs(same_lane_hit - 1.139) < 1.0e-9
 
 
 def test_o_witness_returns_the_exact_cross_lane_prefix_that_fills_first():

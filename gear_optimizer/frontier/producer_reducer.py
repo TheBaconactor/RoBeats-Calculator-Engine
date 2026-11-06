@@ -7,7 +7,7 @@ import threading
 import numpy as np
 
 from . import producer_kernels as _rb_numba
-from .producer_kernels import _first_frontier_from_precomputed_end_indices_numba
+from .producer_kernels import _first_frontiers_of_fever_times
 from .producer_surfaces import SurfaceRowsFirstFrontier
 from .types import FgResponseFrontierResult
 
@@ -88,13 +88,15 @@ class _FirstFrontierStampWorkspace:
         self.bit_epoch = 0
         self.successor_epoch = 0
 
-    def next_successor_epoch(self) -> int:
-        self.successor_epoch += 1
-        if int(self.successor_epoch) > _STAMP_EPOCH_RESET_LIMIT:
+    def reserve_successor_epochs(self, count: int) -> int:
+        """The first of `count` fresh epochs."""
+        if self.successor_epoch + count > _STAMP_EPOCH_RESET_LIMIT:
             self.perfect_successor_stamps[:] = 0
             self.late_successor_stamps[:] = 0
-            self.successor_epoch = 1
-        return int(self.successor_epoch)
+            self.successor_epoch = 0
+        first = self.successor_epoch + 1
+        self.successor_epoch += count
+        return first
 
     def store_epochs(self, pair_epoch: int, bit_epoch: int) -> None:
         """Persist the kernel's final epochs, resetting any counter that passed the int32
@@ -289,106 +291,6 @@ def _first_frontier_reducer_executor(max_workers: int) -> concurrent.futures.Thr
     )
 
 
-def _first_frontier_result_from_precomputed_end_indices(
-    *,
-    context,
-    item: tuple,
-    real_time_idx: int,
-    fill_runs: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    region_table: tuple,
-    workspace: _FirstFrontierStampWorkspace,
-) -> FgResponseFrontierResult:
-    """Reduce one canonical geometry. `item` = (source index, non-Fever base, raw fill, fever time, then the seven
-    action arrays); `context` is the song's _FirstFrontierGroupContext; `fill_runs` = the Perfect and late-Great
-    fill runs of the item's action table."""
-    successor_epoch = workspace.next_successor_epoch()
-    action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
-        np.ascontiguousarray(values, dtype=np.int32) for values in item[4:11]
-    )
-    canonical = context.canonical
-    early_exits = max(1, int(np.ceil(float(item[2])))) >= int(context.early_exit_min_fill)
-    (
-        first_rows,
-        states_evaluated,
-        generated_surfaces,
-        retained_total,
-        max_state_frontier,
-        pair_epoch,
-        bit_epoch,
-    ) = (
-        _first_frontier_from_precomputed_end_indices_numba(
-            int(context.n),
-            int(later_fill.shape[0]),
-            int(action_k.shape[0]),
-            float(item[2]),
-            action_k,
-            later_fill,
-            first_fill,
-            later_forced,
-            first_forced,
-            later_activation_forced,
-            first_activation_forced,
-            *fill_runs,
-            context.timestamps,
-            context.perfect_candidate_timestamps,
-            context.great_candidate_timestamps,
-            context.perfect_floor_timestamps,
-            context.great_floor_timestamps,
-            context.late_great_floor_timestamps,
-            context.lanes,
-            context.prefix_perfect_hit,
-            context.prefix_perfect_valid,
-            context.prefix_late_hit,
-            context.prefix_late_valid,
-            canonical.capped_perfect_edge_e,
-            canonical.capped_late_edge_e,
-            canonical.capped_eg_perfect_e,
-            canonical.capped_eg_late_e,
-            canonical.capped_perfect_exit_e if early_exits else context.no_early_exit_e,
-            canonical.capped_late_exit_e if early_exits else context.no_early_exit_e,
-            float(item[3]),
-            int(real_time_idx),
-            1 if bool(context.use_forced_great_timing) else 0,
-            # Head cone-dominance size gate, read at call time so tools/verify/validate_cone_lossless.py can
-            # disable the prune (no njit recompile) and compare against the full reduce-only frontier.
-            int(_rb_numba._HEAD_FILTER_MIN_SURFACES),
-            region_table[0],
-            region_table[1],
-            region_table[2],
-            region_table[3],
-            region_table[4],
-            region_table[5],
-            region_table[6],
-            region_table[7],
-            canonical.hit_ends[0, real_time_idx],
-            canonical.hit_ends[1, real_time_idx],
-            workspace.pair_values,
-            workspace.pair_stamps,
-            workspace.pair_touched,
-            workspace.bit_values,
-            workspace.bit_stamps,
-            workspace.perfect_successor,
-            workspace.perfect_successor_stamps,
-            workspace.late_successor,
-            workspace.late_successor_stamps,
-            int(successor_epoch),
-            int(workspace.pair_epoch),
-            int(workspace.bit_epoch),
-        )
-    )
-    workspace.store_epochs(int(pair_epoch), int(bit_epoch))
-    return FgResponseFrontierResult(
-        first_frontier=SurfaceRowsFirstFrontier(first_rows),
-        states_evaluated=int(states_evaluated),
-        actions=int(later_fill.shape[0]),
-        transitions_evaluated=0,
-        generated_surfaces=int(generated_surfaces),
-        retained_surfaces_total=int(retained_total),
-        max_state_frontier=int(max_state_frontier),
-        non_fever_base=int(item[1]),
-    )
-
-
 def _first_frontier_results_for_precomputed_range(
     *,
     context,
@@ -399,18 +301,56 @@ def _first_frontier_results_for_precomputed_range(
     fill_runs: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     region_table: tuple,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
+    """The geometries chunk[start:stop] of one group: `item` = (source index, non-Fever base, raw fill, fever time, then
+    the shared action arrays); `context` is the song's _FirstFrontierGroupContext; `fill_runs` = the Perfect and
+    late-Great fill runs of the group's action table."""
     workspace = context.workspace_plan.thread_workspace()
+    items = chunk[start:stop]
+    item = items[0]
+    action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
+        np.ascontiguousarray(values, dtype=np.int32) for values in item[4:11]
+    )
+    canonical = context.canonical
+    early_exits = max(1, int(np.ceil(float(item[2])))) >= int(context.early_exit_min_fill)
+    rows, offsets, stats, pair_epoch, bit_epoch = _first_frontiers_of_fever_times(
+        (context.n, later_fill.shape[0], action_k.shape[0]),
+        (action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced,
+         first_activation_forced),
+        fill_runs,
+        (context.timestamps, context.perfect_candidate_timestamps, context.great_candidate_timestamps,
+         context.perfect_floor_timestamps, context.great_floor_timestamps, context.late_great_floor_timestamps,
+         context.lanes),
+        (context.prefix_perfect_hit, context.prefix_perfect_valid, context.prefix_late_hit,
+         context.prefix_late_valid, canonical.capped_perfect_edge_e, canonical.capped_late_edge_e,
+         canonical.capped_eg_perfect_e, canonical.capped_eg_late_e,
+         canonical.capped_perfect_exit_e if early_exits else context.no_early_exit_e,
+         canonical.capped_late_exit_e if early_exits else context.no_early_exit_e),
+        # The head cone-dominance size gate is read at call time, so tools/verify/validate_cone_lossless.py can
+        # disable the prune (no njit recompile) and compare against the full reduce-only frontier.
+        (float(item[2]), np.asarray([float(row[3]) for row in items], dtype=np.float64), real_time_index[start:stop],
+         1 if context.use_forced_great_timing else 0, _rb_numba._HEAD_FILTER_MIN_SURFACES),
+        (*region_table[:8], canonical.hit_ends[0], canonical.hit_ends[1]),
+        (workspace.pair_values, workspace.pair_stamps, workspace.pair_touched, workspace.bit_values,
+         workspace.bit_stamps, workspace.perfect_successor, workspace.perfect_successor_stamps,
+         workspace.late_successor, workspace.late_successor_stamps, workspace.reserve_successor_epochs(len(items)),
+         workspace.pair_epoch, workspace.bit_epoch),
+    )
+    workspace.store_epochs(int(pair_epoch), int(bit_epoch))
     return [
         (
-            int(chunk[int(local_idx)][0]),
-            _first_frontier_result_from_precomputed_end_indices(
-                context=context,
-                item=chunk[int(local_idx)],
-                real_time_idx=int(real_time_index[int(local_idx)]),
-                fill_runs=fill_runs,
-                region_table=region_table,
-                workspace=workspace,
+            int(row[0]),
+            FgResponseFrontierResult(
+                first_frontier=SurfaceRowsFirstFrontier(rows[first:end]),
+                states_evaluated=states,
+                actions=int(later_fill.shape[0]),
+                transitions_evaluated=0,
+                generated_surfaces=generated,
+                retained_surfaces_total=retained,
+                max_state_frontier=largest,
+                non_fever_base=int(row[1]),
             ),
         )
-        for local_idx in range(int(start), int(stop))
+        for row, first, end, (states, generated, retained, largest) in zip(
+            items, offsets[:-1].tolist(), offsets[1:].tolist(), stats.tolist(), strict=True
+        )
     ]

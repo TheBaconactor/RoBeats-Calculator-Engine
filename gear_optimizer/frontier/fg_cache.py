@@ -105,16 +105,9 @@ def session_prune_scoring_bundle(
     row_count = int(pool.pattern_ids.shape[0])
     if row_count <= 0:
         return bundle
-    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = session_head_dominance_box(curves)
     keep = _numba_session_box_keep_mask(
-        pool.pattern_ids,
-        pool.pattern_words,
-        pool.counts,
-        pool.frontier_offsets,
-        pool.frontier_lengths,
-        0,
-        min(int(bundle.total_notes), 100),
-        v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi,
+        (pool.pattern_ids, pool.pattern_words, pool.counts, pool.frontier_offsets, pool.frontier_lengths),
+        0, min(int(bundle.total_notes), 100), session_head_dominance_box(curves),
     )
     keep = np.asarray(keep, dtype=bool)
     if tuple(keep.shape) != (row_count,):

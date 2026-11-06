@@ -97,11 +97,7 @@ def ftff_shortlist(
     cell_count = np.bincount(pairs // len(surfaces), minlength=len(counts))
     side = MAX_STAT + 1
     keep_bits = np.zeros((side * side, (len(combo_ft) + 63) // 64), dtype=np.uint64)
-    _shortlist_keep(
-        np.ascontiguousarray(reach.ravel()), combo_index, int(total_budget), int(gem_scale_fever),
-        np.stack([np.cumsum(cell_count) - cell_count, cell_count], axis=1), pairs % len(surfaces),
-        np.ascontiguousarray(surfaces), np.asarray(element_gains, dtype=np.int64), keep_bits,
-    )
+    _shortlist_keep(np.ascontiguousarray(reach.ravel()), combo_index, int(total_budget), int(gem_scale_fever), (np.stack([np.cumsum(cell_count) - cell_count, cell_count], axis=1), pairs % len(surfaces)), np.ascontiguousarray(surfaces), np.asarray(element_gains, dtype=np.int64), keep_bits)
     start, count, combos = _decode_keep(keep_bits, len(combo_ft))
     return FtffShortlist(start, count, combos, int(total_budget))
 
@@ -136,7 +132,7 @@ def _decode_keep(keep_bits, n_combos):
 
 
 @jit(nopython=True, cache=True, nogil=True)
-def _shortlist_keep(reach, combo_index, budget, gem_scale, cell_ranges, cell_surfaces, surfaces, gains, keep_bits):
+def _shortlist_keep(reach, combo_index, budget, gem_scale, cells, surfaces, gains, keep_bits):
     """Set keep_bits[key, c] (bit c % 64 of word c // 64) for every reachable key's kept combos.
 
     Which option beats which does not depend on the key: from key (ft0, ff0) an option at cell (x, y) has r = budget -
@@ -151,6 +147,7 @@ def _shortlist_keep(reach, combo_index, budget, gem_scale, cell_ranges, cell_sur
     combo_index: (a, b) -> index in the combo table; cell_ranges: (cells, 2) start and count into cell_surfaces;
     surfaces: (n, 5) four head fever words and the body fever count; gains: the Perfect base per FT, FF and element
     gem."""
+    cell_ranges, cell_surfaces = cells
     side = MAX_STAT + 1
     masks, body = surfaces[:, :4], surfaces[:, 4]
     wx, wy = gains[0] - gains[2], gains[1] - gains[2]
