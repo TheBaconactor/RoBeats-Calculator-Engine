@@ -18,7 +18,8 @@ _GIT_TIMEOUT_SECONDS = 300
 
 class ServiceUpdater:
     """`drain` stops new solves and waits for the running ones, `resume` takes that back, `restart` replaces the process
-    with the new code, `refresh` makes the running service current with the checkout's Data."""
+    with the new code, `refresh` makes the running service current with the checkout's Data. A song publish commits
+    Data in this very checkout, so a revision is new against what the service runs, not against the checkout."""
 
     def __init__(
         self,
@@ -32,7 +33,8 @@ class ServiceUpdater:
         self.repo_root, self.drain, self.resume, self.restart, self.refresh = repo_root, drain, resume, restart, refresh
         self._stop = threading.Event()
         self._wake = threading.Event()
-        self._refreshed = False
+        self._running: str | None = None  # the revision this process started on
+        self._refreshed: str | None = None  # the revision whose Data the service is current with
 
     def _git(self, *args: str) -> str:
         return subprocess.run(["git", *args], cwd=self.repo_root, check=True, capture_output=True, text=True,
@@ -50,25 +52,27 @@ class ServiceUpdater:
             logger.warning("git fetch failed; using the last fetched ref", exc_info=True)
         head = self._git("rev-parse", "HEAD^{commit}")
         commit = self._git("rev-parse", f"{_REMOTE_REF}^{{commit}}")
-        if commit != head:
-            changed = self._git("diff", "--name-only", head, commit, "--", ".", ":(exclude)Data/**", ":(exclude)config.ini")
+        self._running = self._running or head
+        if commit == self._refreshed:
+            return
+        new_code = bool(self._git("diff", "--name-only", self._running, commit, "--", ".", ":(exclude)Data/**",
+                                  ":(exclude)config.ini"))
+        if commit != head or new_code:
             self.drain()
             try:
-                self._fast_forward(commit)
+                if commit != head:
+                    self._fast_forward(commit)
             except Exception:
                 self.resume()
                 raise
-            if changed:
+            if new_code:
                 logger.info("restarting into revision %s", commit)
                 self.stop()
                 self.restart(commit)
                 return
-            logger.info("Data revision %s", commit)
             self.resume()
-            self._refreshed = False
-        if not self._refreshed:
-            self.refresh()
-            self._refreshed = True
+        self.refresh()
+        self._refreshed = commit
 
     def serve_forever(self) -> None:
         while not self._stop.is_set():

@@ -81,6 +81,22 @@ def test_a_data_revision_lands_between_solves_and_refreshes_without_a_restart(ch
     assert checkout.checkout_commit() == commit and (checkout.live / "Data/Hard/new.txt").is_file()
 
 
+def test_a_data_commit_made_in_the_checkout_refreshes(checkout):
+    """The song publisher commits in the live checkout and pushes: HEAD and origin move together."""
+    checkout.updater.run_once()
+    _push(checkout.live, "Data/Hard/published.txt", "chart\n")
+    checkout.updater.run_once()
+    checkout.updater.run_once()
+    assert checkout.events == ["refresh", "refresh"]
+
+
+def test_a_code_commit_that_reached_the_checkout_first_still_restarts(checkout):
+    checkout.updater.run_once()
+    commit = _push(checkout.live, "code.py", "two\n")
+    checkout.updater.run_once()
+    assert checkout.events == ["refresh", "drain", f"restart {commit}"]
+
+
 def test_a_code_revision_restarts_into_it(checkout):
     commit = _push(checkout.seed, "code.py", "two\n")
     checkout.updater.run_once()
