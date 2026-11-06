@@ -19,7 +19,7 @@ from gear_optimizer.pipeline.song import (
 )
 from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.ftff_combos import FtffShortlist, ftff_shortlist, reachable_ftff_keys
-from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
+from gear_optimizer.solver.ga_selection import effective_tables
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, GEM_BUDGET, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
@@ -51,8 +51,7 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
     """The song's item registry, its GPU arrays, the GA's initial-heuristic top-k items and the FG effective-loadout
     tables (gear name rank, mini signature id; the GA selects the primary element), cached per pool key."""
     from gear_optimizer.pipeline.pools import initialize_pools
-    from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
-    from gear_optimizer.gpu.fields import GA_INIT_HEURISTIC_K
+    from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, build_ga_init_heuristic_topk
 
     # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
     targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
@@ -71,10 +70,7 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
         secondary_color=secondary,
         heuristic_k=GA_INIT_HEURISTIC_K,
     )
-    effective = effective_tables_for_context(
-        registry, primary_color=primary, secondary_color=secondary, selected_color=primary
-    )
-    prepared = _PREP_CACHE[pool_key] = (registry, gpu_data, topk, effective)
+    prepared = _PREP_CACHE[pool_key] = (registry, gpu_data, topk, effective_tables(registry, primary, secondary))
     if len(_PREP_CACHE) > _PREP_CACHE_MAX:
         _PREP_CACHE.popitem(last=False)
     return prepared
@@ -85,7 +81,6 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     static preparation, and the timeline frontier payload built or loaded here, off the GPU owner thread."""
     from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
-    from gear_optimizer.gpu.fields import GA_INIT_HEURISTIC_K
 
     context = task.context
     core = build_prepared_song_core(
@@ -97,6 +92,12 @@ def prepare_native_song(task: SongTask) -> NativeSong:
         context.gears, core.minis, primary, secondary
     )
     num_runs = max(1, context.multi_start)
+    base_fixed_stats = np.asarray(build_stats_array(core.fixed_stats), dtype=np.int32)
+    color_flags = build_color_flags(primary, secondary, primary)
+    # The timeline frontier payload is hydrated here (host side, no Taichi), so the GPU owner's upload at the GA turn hits
+    # memory; a payload the startup cache lacks is built and persisted here, off the owner.
+    payload = build_or_load_timeline_frontier_payload(timed_song, context.curves).payload
+    reach = reachable_ftff_keys(gpu_data["item_stats"], gpu_data["slot_start"], gpu_data["slot_count"], base_fixed_stats)
     song = NativeSong(
         config=NativeSongConfig(
             song_name=task.song_name,
@@ -105,38 +106,29 @@ def prepare_native_song(task: SongTask) -> NativeSong:
             db_key=task.song_name.strip(),
         ),
         gpu_inputs=NativeSongGPUInputs(
-            curves=context.curves,
-            minis_by_name={mini.name: mini for mini in core.minis},
             timed_song=timed_song,
-            meta_primary_color=primary,
-            meta_secondary_color=secondary,
-            fixed_stats=core.fixed_stats,
-            registry=registry,
-            color_flags=build_color_flags(primary, secondary, primary),
+            curves=context.curves,
+            color_flags=color_flags,
             gens_per_run=max(1, (max(1, context.ga_depth) + num_runs - 1) // num_runs),
             num_runs=num_runs,
             n_genomes=GA_POPULATION_SIZE,
             item_stats=gpu_data["item_stats"],
             slot_start=gpu_data["slot_start"],
             slot_count=gpu_data["slot_count"],
-            base_fixed_stats_arr=np.asarray(build_stats_array(core.fixed_stats), dtype=np.int32),
+            base_fixed_stats_arr=base_fixed_stats,
             init_heuristic_topk=init_heuristic_topk,
-            init_heuristic_k=GA_INIT_HEURISTIC_K,
             init_heuristic_copies=_INIT_HEURISTIC_COPIES,
+            ftff_shortlist=ga_ftff_shortlist(payload, reach=reach, color_flags=color_flags),
+            minis_by_name={mini.name: mini for mini in core.minis},
+            meta_primary_color=primary,
+            meta_secondary_color=secondary,
+            registry=registry,
             fg_gear_name_rank=fg_gear_name_rank,
             fg_mini_sig_id=fg_mini_sig_id,
         ),
         runtime=NativeSongRuntimeState(),
     )
     prepare_fg_static(song)
-    # Hydrate the in-memory timeline-frontier payload cache here (host side, no Taichi) so the GPU owner's upload at
-    # the GA turn hits memory; a payload the startup cache lacks is built and persisted here, off the owner.
-    gpu_inputs = song.gpu_inputs
-    payload = build_or_load_timeline_frontier_payload(gpu_inputs.timed_song, gpu_inputs.curves).payload
-    reach = reachable_ftff_keys(
-        gpu_inputs.item_stats, gpu_inputs.slot_start, gpu_inputs.slot_count, gpu_inputs.base_fixed_stats_arr
-    )
-    gpu_inputs.ftff_shortlist = ga_ftff_shortlist(payload, reach=reach, color_flags=gpu_inputs.color_flags)
     return song
 
 

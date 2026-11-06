@@ -9,8 +9,7 @@ version lists its ratified predecessors itself (ratification is never chained).
 Each directory keeps a manifest of the files a prebuild verified, keyed by chart content, so verifying the catalog
 again reads no file it verified before. The startup prebuild (`prebuild_frontier_cache`) is the same for both caches;
 what differs stays with each cache: the payload, its file format and completeness check, how missing charts are
-built, and directory maintenance (timeline_cache with timeline_prebuild;
-fg_cache* with fg_prebuild).
+built, and directory maintenance (timeline_cache with timeline_prebuild; fg_cache* with fg_prebuild).
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import logging
 import os
 import threading
 import time
-from collections import Counter, OrderedDict
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Generic, Iterable, Mapping, TypeVar
@@ -30,8 +29,8 @@ from typing import Callable, Generic, Iterable, Mapping, TypeVar
 from gear_optimizer.chart import load_chart
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import pin_frontier_prebuild_worker
+from gear_optimizer.core.file_lock import exclusive_file_lock
 from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.frontier.build_lock import FrontierBuildLock
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.solver.timing_envelope import TimedSong, time_song
 
@@ -69,15 +68,14 @@ def write_atomically(path: Path, write: Callable[[Path], None]) -> None:
 
 @dataclass(frozen=True)
 class FrontierCacheManifestPlan:
-    total_paths: int
     hit_paths: tuple[str, ...]
     missing_paths: tuple[str, ...]
-    key_by_norm_path: dict[str, str]
-    validated_entry_count: int = 0
+    key_by_path: dict[str, str]  # the manifest key of each readable chart
+    newly_recorded: int = 0  # files the plan verified itself
 
     @property
-    def hit_count(self) -> int:
-        return len(self.hit_paths)
+    def total_paths(self) -> int:
+        return len(self.hit_paths) + len(self.missing_paths)
 
 
 @dataclass(frozen=True)
@@ -96,7 +94,7 @@ class FrontierCacheLoad(Generic[P]):
     payload: P
     cache_key: tuple
     disk_path: Path
-    cache_source: str  # "memory", "disk", "built", or "warmup_disposable" for a GPU warmup's own payload
+    cache_source: str  # "memory", "disk" or "built"
     elapsed_ms: float
 
 
@@ -108,11 +106,17 @@ class FrontierCacheBuildResult:
     cache_file: str
 
 
+def _file_size(path: str) -> int | None:
+    with contextlib.suppress(OSError):
+        return os.stat(path).st_size
+    return None
+
+
 @dataclass(frozen=True)
 class FrontierCache:
     """One frontier cache directory: the identity of its files and its manifest."""
 
-    name: str  # its subdirectory in a temporary cache scope and its build lock's label
+    name: str  # its subdirectory in a temporary cache scope
     log_label: str
     directory: Callable[[], Path]
     file_path: Callable[[tuple], Path]
@@ -150,297 +154,123 @@ class FrontierCache:
         """The file serving the chart's song in `timing_mode` (parses the chart)."""
         return self.serving_path(self.song_key(time_song(load_chart(Path(chart_path)), timing_mode), curves))
 
-    def remove_temp_files(self) -> int:
-        """Delete the temporary files of interrupted writes; returns how many."""
+    def remove_temp_files(self) -> None:
+        """Delete the temporary files of interrupted writes."""
         directory = self.directory()
-        if not directory.exists():
-            return 0
-        removed = 0
-        for path in directory.glob("*.tmp.npz"):
-            path.unlink(missing_ok=True)
-            removed += 1
-        if removed:
-            logger.info("%s Removed %s stale temporary cache file(s).", self.log_label, removed)
-        return removed
+        if directory.exists():
+            for path in directory.glob("*.tmp.npz"):
+                path.unlink(missing_ok=True)
 
     def manifest_path(self) -> Path:
         return self.directory() / self.manifest_name
 
-    def manifest_records_current_version(self) -> bool:
-        """Whether the manifest was written for the current version (its entries are not read)."""
+    def manifest_entries(self) -> dict[str, dict]:
+        """The manifest's entries: none unless it was written for the current version."""
         try:
             payload = json.loads(self.manifest_path().read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return False
-        return isinstance(payload, dict) and str(payload.get(self.manifest_version_field, "") or "") == self.version()
+            return {}
+        current = payload.get("schema") == _MANIFEST_SCHEMA and payload.get(self.manifest_version_field) == self.version()
+        return payload["entries"] if current else {}
+
+    def _save_manifest(self, entries: dict[str, dict]) -> None:
+        # An entry stays useful while its (content-addressed) file exists, whichever directory its chart lies in.
+        kept = {key: entry for key, entry in entries.items() if os.path.exists(entry["cache_file"])}
+        text = json.dumps({"schema": _MANIFEST_SCHEMA, self.manifest_version_field: self.version(), "entries": kept},
+                          separators=(",", ":"))
+        with _MANIFEST_LOCK:
+            write_atomically(self.manifest_path(), lambda tmp: tmp.write_text(text, encoding="utf-8"))
+
+    def _manifest_key(self, chart_path: str, axes_signature: str, timing_mode: str) -> str | None:
+        """The chart's identity in the manifest (None when it cannot be read): the version, the FT/FF axes and stat
+        keys every file covers, the timing mode and the chart's bytes."""
+        try:
+            content = Path(chart_path).read_bytes()
+        except OSError:
+            return None
+        parts = [self.version(), timing_mode, axes_signature]
+        if self.manifest_stat_signature is not None:
+            parts.append(self.manifest_stat_signature)
+        parts.append(hashlib.blake2b(content, digest_size=16).hexdigest())
+        return hashlib.blake2b("|".join(parts).encode("utf-8"), digest_size=16).hexdigest()
 
     def manifest_plan(
-        self,
-        song_paths: Iterable[str],
-        curves: StatCurves,
-        *,
-        timing_mode: str,
-        persist_validated_entries: bool = True,
+        self, song_paths: list[str], curves: StatCurves, *, timing_mode: str, persist: bool = True
     ) -> FrontierCacheManifestPlan:
         """Split the charts into hits (a complete file serves them) and misses.
 
-        A recorded entry hits on its file's size alone. A chart without a usable entry is probed: when the file its
-        current key derives exists and is complete, it hits and its entry is recorded (written to the manifest
-        unless `persist_validated_entries` is False). If a sample of the hits derives other files than the manifest
-        recorded, the key derivation changed without a version change and every chart counts as missing.
+        A recorded entry hits on its file's size alone: the path is content-addressed and builds are deterministic, and
+        a corrupt file fails loudly where it is read (a file's mtime changes with copies; comparing it cost ~100 s of
+        verifying per start). A chart without a usable entry is probed: when the file its key derives is complete, it
+        hits and its entry is recorded (and saved, with `persist`). If a sample of the hits derives other files than the
+        manifest recorded, the key derivation changed without a version change and every chart counts as missing.
         """
-        song_paths = [str(path) for path in song_paths if str(path or "").strip()]
-        if not song_paths:
-            return FrontierCacheManifestPlan(0, (), (), {})
-        version = self.version()
-        entries = _load_manifest(self.manifest_path(), version=version, version_field=self.manifest_version_field)
-        ref_sig_hex = _ref_axes_signature(curves)
-
-        def derived_file(song_path: str) -> str:
-            return str(self.chart_file(song_path, curves, timing_mode))
-
+        entries = self.manifest_entries()
+        axes_signature = bytes(array_sig16(curves.f32["Fever Time"]) + array_sig16(curves.f32["Fever Fill Rate"])).hex()
         hits: list[str] = []
         misses: list[str] = []
-        key_by_norm: dict[str, str] = {}
-        recorded_file_by_norm: dict[str, str] = {}
-        validated = 0
-        for song_path in song_paths:
-            identity = _chart_identity(song_path)
-            if identity is None:
-                misses.append(song_path)
-                continue
-            abs_path, chart_digest = identity
-            key = _manifest_key(
-                cache_version=version,
-                ref_sig_hex=ref_sig_hex,
-                stat_sig_hex=self.manifest_stat_signature,
-                timing_mode=timing_mode,
-                chart_digest=chart_digest,
-            )
-            key_by_norm[_normalize_manifest_path(abs_path)] = key
-            entry = entries.get(key) or {}
-            cache_file = str(entry.get("cache_file", "") or "").strip()
-            cache_identity = _path_identity(cache_file) if cache_file else None
-            cache_hit = cache_identity is not None
-            if cache_hit:
-                # The fast path compares the file's SIZE only, never its mtime: external copies and filesystem
-                # maintenance change mtimes without changing content, which would force a full re-validation on
-                # every startup (measured: FG fast-path hit 0/6704 -> ~100 s warm verify). The path is
-                # content-addressed and builds are deterministic, so a same-size file at the same path is the
-                # validated file; corruption is still caught loudly by the loader on the real read path.
-                _cache_abs_path, _cache_mtime_ns, cache_size = cache_identity
-                entry_size = entry.get("cache_size")
-                if entry_size is None:
-                    cache_hit = False
-                else:
-                    try:
-                        cache_hit = int(entry_size) == int(cache_size)
-                    except (TypeError, ValueError):
-                        cache_hit = False
-            if cache_identity is None:
-                try:
-                    derived = derived_file(song_path).strip()
-                except Exception as exc:
-                    logger.debug("frontier_cache:derived_file: %s", exc)
-                    derived = ""
-                derived_identity = _path_identity(derived) if derived else None
-                if derived_identity is not None:
-                    cache_file = derived
-                    cache_identity = derived_identity
-            if cache_identity is not None and not cache_hit:
-                try:
-                    cache_hit = bool(self.is_complete(cache_file))
-                except Exception as exc:
-                    logger.debug("frontier_cache:is_complete: %s", exc)
-                    cache_hit = False
-                if cache_hit:
-                    cache_abs_path, cache_mtime_ns, cache_size = cache_identity
-                    entries[key] = _manifest_entry(cache_abs_path, cache_mtime_ns, cache_size, abs_path, time.time_ns())
-                    validated += 1
-            if cache_hit:
-                hits.append(song_path)
-                recorded_file_by_norm[_normalize_manifest_path(abs_path)] = cache_file
-            else:
-                misses.append(song_path)
-
-        if persist_validated_entries and validated > 0:
-            _save_manifest(
-                self.manifest_path(), version=version, version_field=self.manifest_version_field, entries=entries
-            )
-        if _cache_key_drift(hits, recorded_file_by_norm=recorded_file_by_norm, derived_file=derived_file):
-            return FrontierCacheManifestPlan(len(song_paths), (), tuple(song_paths), key_by_norm)
-        return FrontierCacheManifestPlan(len(song_paths), tuple(hits), tuple(misses), key_by_norm, validated)
-
-    def record_manifest(self, plan: FrontierCacheManifestPlan, results: Iterable[FrontierCacheBuildResult]) -> int:
-        """Record the complete files a build produced for its plan's charts; returns how many."""
-        version = self.version()
-        entries = _load_manifest(self.manifest_path(), version=version, version_field=self.manifest_version_field)
+        keys: dict[str, str] = {}
         recorded = 0
-        now_ns = time.time_ns()
-        for result in results:
-            if result.source not in {"built", "disk", "memory"} or not result.path or not result.cache_file:
+        for song_path in song_paths:
+            key = self._manifest_key(song_path, axes_signature, timing_mode)
+            if key is None:
+                misses.append(song_path)
                 continue
-            cache_identity = _path_identity(result.cache_file)
-            if cache_identity is None:
+            keys[song_path] = key
+            entry = entries.get(key)
+            if entry and _file_size(entry["cache_file"]) == entry.get("cache_size"):
+                hits.append(song_path)
                 continue
             try:
-                if not bool(self.is_complete(result.cache_file)):
-                    continue
-            except Exception as exc:
-                logger.debug("frontier_cache:record_manifest:is_complete: %s", exc)
+                cache_file = str(self.chart_file(song_path, curves, timing_mode))
+            except (OSError, ValueError) as exc:
+                logger.warning("%s Cannot derive the file of %s: %s", self.log_label, song_path, exc)
+                misses.append(song_path)
                 continue
-            cache_abs_path, cache_mtime_ns, cache_size = cache_identity
-            if not os.path.exists(cache_abs_path):
+            if _file_size(cache_file) is not None and self.is_complete(cache_file):
+                entries[key] = {"cache_file": cache_file, "cache_size": _file_size(cache_file)}
+                recorded += 1
+                hits.append(song_path)
+            else:
+                misses.append(song_path)
+        if persist and recorded:
+            self._save_manifest(entries)
+        if self._key_drifted(hits, keys, entries, curves, timing_mode):
+            return FrontierCacheManifestPlan((), tuple(song_paths), keys)
+        return FrontierCacheManifestPlan(tuple(hits), tuple(misses), keys, recorded)
+
+    def _key_drifted(
+        self, hits: list[str], keys: dict[str, str], entries: dict[str, dict], curves: StatCurves, timing_mode: str
+    ) -> bool:
+        """Whether a sample of the hits derives other files than the manifest recorded for them.
+
+        The manifest's identity cannot see a change of the key derivation itself: if the key inputs change without a
+        version change, every entry silently points at a file runtime never asks for (the 2026-07-02 incident: stale
+        bundles reported ready, every affected song failed prep). A handful of chart parses turns that into a re-verify.
+        """
+        for song_path in hits[:: max(1, len(hits) // _DRIFT_SAMPLE_SIZE)][:_DRIFT_SAMPLE_SIZE]:
+            recorded = entries[keys[song_path]]["cache_file"]
+            try:
+                derived = str(self.chart_file(song_path, curves, timing_mode))
+            except (OSError, ValueError):  # a chart that does not parse is not a drift signal
                 continue
-            key = plan.key_by_norm_path.get(_normalize_manifest_path(result.path))
-            if not key:
-                continue
-            entries[key] = _manifest_entry(
-                cache_abs_path, cache_mtime_ns, cache_size, os.path.abspath(result.path), now_ns
-            )
-            recorded += 1
-        if recorded > 0:
-            _save_manifest(
-                self.manifest_path(), version=version, version_field=self.manifest_version_field, entries=entries
-            )
-        return recorded
-
-
-def _normalize_manifest_path(path_text: str) -> str:
-    return os.path.abspath(str(path_text or "")).casefold()
-
-
-def _ref_axes_signature(curves: StatCurves) -> str:
-    return bytes(array_sig16(curves.f32["Fever Time"]) + array_sig16(curves.f32["Fever Fill Rate"])).hex()
-
-
-def _path_identity(path_text: str) -> tuple[str, int, int] | None:
-    try:
-        abs_path = os.path.abspath(str(path_text))
-        st = os.stat(abs_path)
-    except OSError as exc:
-        logger.debug("frontier_cache:_path_identity: %s", exc)
-        return None
-    return abs_path, int(st.st_mtime_ns), int(st.st_size)
-
-
-def _chart_identity(path_text: str) -> tuple[str, str] | None:
-    """(absolute path, digest of the chart's bytes), None when it cannot be read."""
-    try:
-        abs_path = os.path.abspath(str(path_text))
-        content = Path(abs_path).read_bytes()
-    except OSError as exc:
-        logger.debug("frontier_cache:_chart_identity: %s", exc)
-        return None
-    return abs_path, hashlib.blake2b(content, digest_size=16).hexdigest()
-
-
-def _manifest_key(
-    *,
-    cache_version: str,
-    ref_sig_hex: str,
-    stat_sig_hex: str | None,
-    timing_mode: str,
-    chart_digest: str,
-) -> str:
-    parts = [cache_version, timing_mode, ref_sig_hex]
-    if stat_sig_hex is not None:
-        parts.append(stat_sig_hex)
-    parts.append(chart_digest)
-    return hashlib.blake2b("|".join(parts).encode("utf-8"), digest_size=16).hexdigest()
-
-
-def _manifest_entry(cache_file: str, mtime_ns: int, size: int, song_path: str, updated_at_ns: int) -> dict:
-    # The chart path is informational: where the chart was when its file was verified.
-    return {
-        "cache_file": str(cache_file),
-        "cache_mtime_ns": int(mtime_ns),
-        "cache_size": int(size),
-        "updated_at_ns": int(updated_at_ns),
-        "song_path": str(song_path),
-    }
-
-
-def _load_manifest(path: Path, *, version: str, version_field: str) -> dict[str, dict]:
-    with _MANIFEST_LOCK:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.debug("frontier_cache:_load_manifest: %s", exc)
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        try:
-            schema = int(payload.get("schema", 0) or 0)
-        except (TypeError, ValueError) as exc:
-            logger.debug("frontier_cache:_load_manifest_schema: %s", exc)
-            return {}
-        if schema != _MANIFEST_SCHEMA or str(payload.get(version_field, "") or "") != str(version):
-            return {}
-        entries = payload.get("entries", {})
-        if not isinstance(entries, dict):
-            return {}
-        return {str(k): dict(v) for k, v in entries.items() if isinstance(k, str) and isinstance(v, dict)}
-
-
-def _save_manifest(path: Path, *, version: str, version_field: str, entries: dict[str, dict]) -> None:
-    # An entry stays useful while its (content-addressed) file exists, whichever directory its chart is published
-    # under; entries whose file is gone are dropped.
-    entries = {
-        key: entry
-        for key, entry in entries.items()
-        if isinstance(entry.get("cache_file"), str) and os.path.exists(entry["cache_file"])
-    }
-    text = json.dumps(
-        {"schema": _MANIFEST_SCHEMA, version_field: str(version), "entries": entries},
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
-    with _MANIFEST_LOCK:
-        write_atomically(path, lambda tmp: tmp.write_text(text, encoding="utf-8"))
-
-
-def _cache_key_drift(
-    hit_paths: list[str],
-    *,
-    recorded_file_by_norm: dict[str, str],
-    derived_file: Callable[[str], str],
-) -> bool:
-    """Whether a sample of the hits derives other files than the manifest recorded for them.
-
-    The manifest's identity (version, chart content, FT/FF and stat signatures) cannot see a change of the key
-    derivation itself: if the key inputs change without a version change, every recorded entry silently points at a
-    file runtime never asks for (the 2026-07-02 incident: changed great_candidates, the fast path kept reporting
-    stale bundles as ready, and every affected song failed prep). Deriving a handful of keys costs a few chart parses
-    (~50ms each) and turns that into a full re-verify. A chart that fails to parse is not a drift signal (the per-file
-    path reports it).
-    """
-    if not hit_paths:
+            if os.path.abspath(derived) != os.path.abspath(recorded):
+                logger.warning("%s Cache-key drift: %s derives %s, the manifest recorded %s: every chart is verified again.",
+                               self.log_label, song_path, derived, recorded)
+                return True
         return False
-    sample_count = max(1, min(_DRIFT_SAMPLE_SIZE, len(hit_paths)))
-    step = max(1, len(hit_paths) // sample_count)
-    for song_path in hit_paths[::step][:sample_count]:
-        recorded = recorded_file_by_norm.get(_normalize_manifest_path(song_path), "")
-        if not recorded:
-            continue
-        try:
-            derived = derived_file(song_path)
-        except Exception as exc:
-            logger.debug("frontier_cache:derived_file: %s", exc)
-            continue
-        if not derived:
-            continue
-        if _normalize_manifest_path(derived) != _normalize_manifest_path(recorded):
-            logger.warning(
-                "[FrontierCacheManifest] Cache-key drift detected: %s derives %s but the manifest "
-                "recorded %s. Key-derivation inputs changed without a cache-version bump; dropping "
-                "the manifest fast-path for this run (full per-file verify + rebuild).",
-                song_path,
-                derived,
-                recorded,
-            )
-            return True
-    return False
+
+    def record_manifest(self, plan: FrontierCacheManifestPlan, results: Iterable[FrontierCacheBuildResult]) -> None:
+        """Record the complete files a build produced for its plan's charts."""
+        entries = self.manifest_entries()
+        recorded = 0
+        for result in results:
+            size = _file_size(result.cache_file)
+            if size is not None and result.path in plan.key_by_path and self.is_complete(result.cache_file):
+                entries[plan.key_by_path[result.path]] = {"cache_file": result.cache_file, "cache_size": size}
+                recorded += 1
+        if recorded:
+            self._save_manifest(entries)
 
 
 class MemoryLru(Generic[V]):
@@ -500,12 +330,8 @@ class MemoryLru(Generic[V]):
 @dataclass(frozen=True)
 class FrontierCachePrebuildSummary:
     total: int = 0
-    completed: int = 0
-    failures: int = 0
     built: int = 0
-    disk: int = 0
-    memory: int = 0
-    elapsed_ms: float = 0.0
+    failures: int = 0
 
 
 class PrebuildTally:
@@ -513,49 +339,24 @@ class PrebuildTally:
 
     def __init__(self, cache: FrontierCache, total: int, *, progress_every: int) -> None:
         self.cache = cache
-        self.total = int(total)
-        self.progress_every = int(progress_every)
-        self.started = time.perf_counter()
+        self.total = total
+        self.progress_every = progress_every
         self.results: list[FrontierCacheBuildResult] = []
         self.failures = 0
-        self.sources: Counter[str] = Counter()
 
     def add(self, result: FrontierCacheBuildResult) -> None:
         self.results.append(result)
-        self.sources[result.source] += 1
 
     def fail(self, chart_path: str, exc: BaseException, *, songs: int = 1) -> None:
         """A chart's build failed; `songs` counts it with the charts its file would have served too."""
-        self.failures += int(songs)
+        self.failures += songs
         logger.warning("%s Failed to prebuild %s: %s", self.cache.log_label, chart_path, exc)
 
     def log_progress(self, latest: FrontierCacheBuildResult) -> None:
         completed = len(self.results)
         if completed == 1 or completed % self.progress_every == 0:
-            logger.info(
-                "%s %s/%s complete (built=%s disk=%s memory=%s, latest=%s %.1fms)",
-                self.cache.log_label,
-                completed,
-                self.total,
-                self.sources["built"],
-                self.sources["disk"],
-                self.sources["memory"],
-                latest.source,
-                latest.build_ms,
-            )
-
-    def log_ready(self) -> None:
-        logger.info(
-            "%s Prebuild ready: completed=%s/%s failures=%s built=%s disk=%s memory=%s elapsed=%.1fs",
-            self.cache.log_label,
-            len(self.results),
-            self.total,
-            self.failures,
-            self.sources["built"],
-            self.sources["disk"],
-            self.sources["memory"],
-            time.perf_counter() - self.started,
-        )
+            logger.info("%s %s/%s complete (latest=%s %.1fms)", self.cache.log_label, completed, self.total, latest.source,
+                        latest.build_ms)
 
 
 def build_frontier_cache_for_chart(
@@ -566,9 +367,7 @@ def build_frontier_cache_for_chart(
 ) -> FrontierCacheBuildResult:
     """Make sure the chart's song has its cache file; `ensure` returns (source, build ms, file)."""
     source, build_ms, cache_file = ensure(time_song(load_chart(Path(chart_path)), timing_mode), curves)
-    return FrontierCacheBuildResult(
-        path=str(chart_path), source=str(source), build_ms=float(build_ms), cache_file=str(cache_file)
-    )
+    return FrontierCacheBuildResult(path=chart_path, source=source, build_ms=build_ms, cache_file=str(cache_file))
 
 
 _prebuild_worker_curves: StatCurves | None = None
@@ -578,13 +377,11 @@ def init_prebuild_worker(curves: StatCurves, configure_threads: Callable[[int], 
     """Process-pool initializer of a prebuild worker: its CPU placement, its build threads and the run's curves."""
     global _prebuild_worker_curves
     pin_frontier_prebuild_worker()
-    configure_threads(max(1, int(threads)))
+    configure_threads(max(1, threads))
     _prebuild_worker_curves = curves
 
 
 def prebuild_worker_curves() -> StatCurves:
-    if _prebuild_worker_curves is None:
-        raise RuntimeError("prebuild worker was not initialized with stat curves")
     return _prebuild_worker_curves
 
 
@@ -600,8 +397,33 @@ class FrontierCachePrebuild:
     cache: FrontierCache
     # The missing charts of one timing mode -> their results (the cache's build scheduler).
     build_songs: Callable[[list[str], StatCurves, str], PrebuildTally]
-    # Under the build lock, once the manifest plan is known: (plan, build_missing, authorize_destructive_rotation).
-    maintain: Callable[[FrontierCacheManifestPlan, bool, bool], None]
+    # Under the build lock, once the manifest plan is known: (plan, authorize_destructive_rotation).
+    maintain: Callable[[FrontierCacheManifestPlan, bool], None]
+
+
+def _prebuild_timing_mode(
+    prebuild: FrontierCachePrebuild, song_paths: list[str], curves: StatCurves, timing_mode: str, rotate: bool
+) -> FrontierCachePrebuildSummary:
+    cache = prebuild.cache
+    if not song_paths:
+        return FrontierCachePrebuildSummary()
+    if not rotate and cache.manifest_entries():
+        # Charts the manifest records are readers, not builders: probe without the lock and without writing the
+        # manifest, so they never wait behind another process's build. Files to record go through the lock below.
+        probe = cache.manifest_plan(song_paths, curves, timing_mode=timing_mode, persist=False)
+        if not probe.missing_paths and not probe.newly_recorded:
+            return FrontierCachePrebuildSummary(total=probe.total_paths)
+    # One builder per directory: a concurrent process waits here, then its plan hits what this one wrote instead of
+    # duplicating the build (and its peak memory).
+    with exclusive_file_lock(cache.directory() / ".build.lock"):
+        plan = cache.manifest_plan(song_paths, curves, timing_mode=timing_mode)
+        prebuild.maintain(plan, rotate)
+        if not plan.missing_paths:
+            return FrontierCachePrebuildSummary(total=plan.total_paths)
+        tally = prebuild.build_songs(list(plan.missing_paths), curves, timing_mode)
+        cache.record_manifest(plan, tally.results)
+        built = sum(result.source == "built" for result in tally.results)
+        return FrontierCachePrebuildSummary(total=plan.total_paths, built=built, failures=tally.failures)
 
 
 def prebuild_frontier_cache(
@@ -609,95 +431,15 @@ def prebuild_frontier_cache(
     *,
     charts_by_mode: Mapping[str, Iterable[str]],
     curves: StatCurves,
-    build_missing: bool = True,
     authorize_destructive_rotation: bool = False,
 ) -> FrontierCachePrebuildSummary:
-    """Verify the cache files of each timing mode's charts and build the missing ones; with `build_missing` False a
-    missing file counts as a failure."""
-    started = time.perf_counter()
+    """Verify the cache files of each timing mode's charts and build the missing ones."""
     summaries = [
-        _prebuild_timing_mode(
-            prebuild, _unique_chart_paths(charts), curves, mode, build_missing, authorize_destructive_rotation
-        )
+        _prebuild_timing_mode(prebuild, _unique_chart_paths(charts), curves, mode, authorize_destructive_rotation)
         for mode, charts in charts_by_mode.items()
     ]
     return FrontierCachePrebuildSummary(
         total=sum(summary.total for summary in summaries),
-        completed=sum(summary.completed for summary in summaries),
-        failures=sum(summary.failures for summary in summaries),
         built=sum(summary.built for summary in summaries),
-        disk=sum(summary.disk for summary in summaries),
-        memory=sum(summary.memory for summary in summaries),
-        elapsed_ms=_elapsed_ms(started),
+        failures=sum(summary.failures for summary in summaries),
     )
-
-
-def _prebuild_timing_mode(
-    prebuild: FrontierCachePrebuild,
-    song_paths: list[str],
-    curves: StatCurves,
-    timing_mode: str,
-    build_missing: bool,
-    authorize_destructive_rotation: bool,
-) -> FrontierCachePrebuildSummary:
-    cache = prebuild.cache
-    started = time.perf_counter()
-    if not song_paths:
-        return FrontierCachePrebuildSummary()
-    if not authorize_destructive_rotation and cache.manifest_records_current_version():
-        # Charts the manifest records are readers, not builders: probe without the lock and without writing the
-        # manifest, so they never wait behind another process's build. Files to record go through the lock below.
-        probe = cache.manifest_plan(song_paths, curves, timing_mode=timing_mode, persist_validated_entries=False)
-        if not probe.missing_paths and probe.validated_entry_count == 0:
-            return FrontierCachePrebuildSummary(
-                total=probe.total_paths,
-                completed=probe.hit_count,
-                disk=probe.hit_count,
-                elapsed_ms=_elapsed_ms(started),
-            )
-
-    # One builder per directory: a concurrent process waits here, then its plan hits what this one wrote instead of
-    # duplicating the build (and its peak memory).
-    with FrontierBuildLock(cache.directory(), label=cache.name):
-        plan = cache.manifest_plan(song_paths, curves, timing_mode=timing_mode)
-        hits = plan.hit_count
-        if hits:
-            logger.info(
-                "%s Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
-                cache.log_label,
-                hits,
-                plan.total_paths,
-            )
-        prebuild.maintain(plan, build_missing, authorize_destructive_rotation)
-        if not plan.missing_paths:
-            return FrontierCachePrebuildSummary(
-                total=plan.total_paths, completed=hits, disk=hits, elapsed_ms=_elapsed_ms(started)
-            )
-        if not build_missing:
-            logger.error(
-                "%s Frontier server publication is missing %s required song cache(s).",
-                cache.log_label,
-                len(plan.missing_paths),
-            )
-            return FrontierCachePrebuildSummary(
-                total=plan.total_paths,
-                completed=hits,
-                failures=len(plan.missing_paths),
-                disk=hits,
-                elapsed_ms=_elapsed_ms(started),
-            )
-        tally = prebuild.build_songs(list(plan.missing_paths), curves, timing_mode)
-        cache.record_manifest(plan, tally.results)
-        return FrontierCachePrebuildSummary(
-            total=plan.total_paths,
-            completed=hits + len(tally.results),
-            failures=tally.failures,
-            built=tally.sources["built"],
-            disk=hits + tally.sources["disk"],
-            memory=tally.sources["memory"],
-            elapsed_ms=_elapsed_ms(started),
-        )
-
-
-def _elapsed_ms(started: float) -> float:
-    return (time.perf_counter() - started) * 1000.0

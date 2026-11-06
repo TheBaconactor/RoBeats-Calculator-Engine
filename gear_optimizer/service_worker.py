@@ -60,16 +60,6 @@ def solve(request: dict[str, Any], executor: Any) -> list[dict[str, Any]]:
             path.unlink(missing_ok=True)
 
 
-def _started_executor(request: dict[str, Any]) -> Any:
-    """The GPU executor, with GA buffers for every multi-start this worker can get: an uploaded chart's worker serves that
-    chart alone, the warm worker any reasoning level."""
-    from gear_optimizer.gpu.executor import start_gpu_executor
-
-    executor = start_gpu_executor(reasoning_search(request["reasoning"] if request["uploaded"] else "max")[1])
-    reassert_process_background_only()
-    return executor
-
-
 def main() -> int:
     make_process_background_only()
     from gear_optimizer.cli import apply_service_frontier_threads
@@ -82,13 +72,15 @@ def main() -> int:
         os.environ.setdefault("TI_ENABLE_PYBUF", "0")
         apply_service_frontier_threads()
         reassert_process_background_only()
-        from gear_optimizer.gpu.executor import is_fatal_gpu_error
+        from gear_optimizer.gpu.executor import is_fatal_gpu_error, start_gpu_executor
 
         executor = None
         for line in sys.stdin:
             try:
                 request = json.loads(line)
-                executor = executor or _started_executor(request)
+                if executor is None:
+                    executor = start_gpu_executor()
+                    reassert_process_background_only()
                 answer = {"ok": True, "loadouts": solve(request, executor)}
             except Exception as exc:
                 # A failed request leaves nothing behind; the worker keeps serving unless its GPU is gone.

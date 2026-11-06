@@ -178,7 +178,7 @@ def profile(run: Path) -> None:
         schema.ensure(paths.database)
         tasks = build_queue(run_settings, SharedRunContext(multi_start=run_settings.multi_start, curves=stat_curves(),
                                                            gears=gears, minis=minis, ga_depth=run_settings.search_depth))
-        executor = start_gpu_executor(run_settings.multi_start)
+        executor = start_gpu_executor()
     with clock("warmup"):  # numba's and the kernels' first load belongs to no song
         solve.solve_song(tasks[0], executor)
     clock.priced(prepare, "prepare_native_song", "prepare")

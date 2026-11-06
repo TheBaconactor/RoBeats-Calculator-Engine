@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gear_optimizer.frontier.build_lock import FrontierBuildLock
+from gear_optimizer.core.file_lock import exclusive_file_lock
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.timing_envelope import TimedSong
@@ -31,12 +31,6 @@ from .fg_cache_types import (
 from .producer_batch import build_first_frontiers
 from .producer_kernels import _HEAD_DOM_C, _HEAD_DOM_F, _HEAD_DOM_G, _HEAD_DOM_V, _numba_session_box_keep_mask
 from .types import SurfacePool
-
-
-def _response_bundle_build_lock(bundle_key: tuple) -> FrontierBuildLock:
-    bundle_path = FG_RESPONSE_FRONTIER_CACHE.file_path(bundle_key)
-    lock_dir = bundle_path.parent / ".bundle_locks" / bundle_path.stem
-    return FrontierBuildLock(lock_dir, label=f"fg_response_bundle:{bundle_path.stem}")
 
 
 def _missing_payload_keys(payload: FgResponseFrontierCachePayload | None, keys: np.ndarray) -> np.ndarray:
@@ -285,7 +279,8 @@ def ensure_response_frontier_cache_for_song(
         return "disk", 0.0, FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)
     started = time.perf_counter()
     source = "disk"
-    with _response_bundle_build_slot, _response_bundle_build_lock(bundle_key):
+    bundle_path = FG_RESPONSE_FRONTIER_CACHE.file_path(bundle_key)
+    with _response_bundle_build_slot, exclusive_file_lock(bundle_path.parent / ".bundle_locks" / bundle_path.stem):
         bundle = _load_payload(bundle_key)
         missing = _missing_payload_keys(bundle, keys)
         if len(missing):

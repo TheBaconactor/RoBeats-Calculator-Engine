@@ -74,7 +74,7 @@ The main execution owners are:
 - `gear_optimizer/pipeline/solve.py` for a song's stages;
 - `gear_optimizer/pipeline/song.py` for the state of a song being solved and
   `pipeline/prepare.py` for its preparation;
-- `gear_optimizer/pipeline/ga.py` for the GA request and its decode;
+- `gear_optimizer/gpu/ga.py` for the GA on the GPU and `gear_optimizer/solver/ga_selection.py` for the loadouts it hands on;
 - `gear_optimizer/pipeline/fg.py` for Force Great preparation, planning and
   results;
 - `gear_optimizer/pipeline/storing.py` for storing a solved song;
@@ -90,8 +90,8 @@ thread; it never initializes or accesses the GPU.
 
 - `gear_optimizer/solver/genetic_pipeline.py` constructs native GA requests; the
   FG stage (`gear_optimizer/pipeline/fg.py`) reads the selected payload it returns.
-- `gear_optimizer/gpu/api/` is the public Taichi solver surface.
-- `gear_optimizer/gpu/kernels/` contains device kernels.
+- `gear_optimizer/gpu/ga.py` runs a song's GA; `gear_optimizer/gpu/device.py` holds a process's GPU state and a song's uploads.
+- `gear_optimizer/gpu/fields.py` declares the device fields; `gear_optimizer/gpu/kernels.py` and `gear_optimizer/gpu/scoring.py` run on them.
 
 Production scoring imports through the public Taichi API or GPU service rather
 than reaching into kernel internals.

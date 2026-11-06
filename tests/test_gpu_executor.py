@@ -1,4 +1,5 @@
 import threading
+import types
 
 import pytest
 
@@ -109,18 +110,76 @@ def test_fatal_gpu_errors_are_the_engines_own_or_a_lost_device_anywhere_in_the_c
     assert not is_fatal_gpu_error(RuntimeError("GpuExecutor aborted: stop requested"))
 
 
-def test_starting_the_gpu_sizes_the_ga_buffers_and_starts_the_executor(monkeypatch):
+def test_starting_the_gpu_starts_the_executor(monkeypatch):
     import sys
-    import types
-
-    from gear_optimizer.gpu import fields as gpu_fields
 
     started = []
     # No real GPU: a started executor would keep initializing Taichi after the test, racing later tests' resets.
     monkeypatch.setattr(gpu_executor, "get_gpu_executor", lambda: types.SimpleNamespace(start=lambda: started.append(1)))
     monkeypatch.setattr(sys, "platform", "linux")  # macOS would materialize Taichi here first
-    gpu_fields._REQUESTED_MAX_GA_RUNS = None
-    gpu_executor.start_gpu_executor(3)
-    assert gpu_fields._REQUESTED_MAX_GA_RUNS == 3
+    gpu_executor.start_gpu_executor()
     assert started == [1]
-    gpu_fields.reset_fields_state()
+
+
+def _inputs(num_runs: int = 1):
+    return types.SimpleNamespace(num_runs=num_runs, timed_song=None, curves=None)
+
+
+@pytest.fixture
+def ga_calls(monkeypatch):
+    """gpu.ga.run_ga around a stubbed GA: its outcomes in order, and the resets between them."""
+    from gear_optimizer.gpu import device, ga
+
+    calls = types.SimpleNamespace(outcomes=[], runs=0, resets=[])
+
+    def run(_inputs, _seed, _payload, check):
+        calls.runs += 1
+        check("in the test")
+        outcome = calls.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(ga, "_run_ga", run)
+    monkeypatch.setattr(device, "hard_reset", calls.resets.append)
+    monkeypatch.setattr(ga, "build_or_load_timeline_frontier_payload", lambda _song, _curves: types.SimpleNamespace(payload=None))
+    return calls
+
+
+def test_a_vulkan_semaphore_failure_restarts_the_ga_on_a_fresh_runtime(ga_calls):
+    from gear_optimizer.gpu.ga import run_ga
+
+    ga_calls.outcomes = [RuntimeError("RHI Error: failed to create semaphore"), "table"]
+    assert run_ga(_inputs(), 1, lambda: False) == "table"
+    assert ga_calls.runs == 2 and len(ga_calls.resets) == 1
+
+
+def test_a_second_vulkan_failure_and_any_other_failure_reach_the_caller(ga_calls):
+    from gear_optimizer.gpu.ga import run_ga
+
+    failure = RuntimeError("failed to create semaphore")
+    ga_calls.outcomes = [failure, failure]
+    with pytest.raises(RuntimeError, match="semaphore"):
+        run_ga(_inputs(), 1, lambda: False)
+    ga_calls.outcomes = [ValueError("no")]
+    with pytest.raises(ValueError, match="no"):
+        run_ga(_inputs(), 1, lambda: False)
+    assert len(ga_calls.resets) == 1
+
+
+def test_an_abort_stops_the_ga(ga_calls):
+    from gear_optimizer.gpu.executor import is_stop_abort_exception
+    from gear_optimizer.gpu.ga import run_ga
+
+    with pytest.raises(RuntimeError) as failure:
+        run_ga(_inputs(), 1, lambda: True)
+    assert is_stop_abort_exception(failure.value)
+
+
+def test_a_song_past_the_ga_capacity_is_refused(ga_calls):
+    from gear_optimizer.gpu.fields import MAX_GA_RUNS
+    from gear_optimizer.gpu.ga import run_ga
+
+    with pytest.raises(ValueError, match="runs"):
+        run_ga(_inputs(MAX_GA_RUNS + 1), 1, lambda: False)
+    assert ga_calls.runs == 0

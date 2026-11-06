@@ -164,7 +164,7 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
     gears, minis = catalog.gears, catalog.minis
     context = SharedRunContext(multi_start=run.multi_start, curves=stat_curves(), gears=gears, minis=minis,
                                ga_depth=run.search_depth)
-    executor = start_gpu_executor(run.multi_start)
+    executor = start_gpu_executor()
 
     def abort_on_stop() -> None:
         stop.wait()

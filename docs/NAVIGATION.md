@@ -21,7 +21,7 @@ Use this page to find the current owner of a behavior. The
 - A song end to end (preparation, GA and FG turn, finish): `gear_optimizer/pipeline/solve.py`
 - A song being solved and its preparation: `gear_optimizer/pipeline/song.py`,
   `gear_optimizer/pipeline/prepare.py`
-- GA request: `gear_optimizer/pipeline/ga.py`
+- The GA of a song: `gear_optimizer/gpu/ga.py`, its inputs and host half `gear_optimizer/solver/genetic_pipeline.py`, its selection `gear_optimizer/solver/ga_selection.py`
 - Force Great stage (scoring bundle, the payload's FG scores, the stored surface and its FG results):
   `gear_optimizer/pipeline/fg.py`
 - Progress and the NEW-record counter: `gear_optimizer/ui/runtime_ui.py`
@@ -48,13 +48,8 @@ Use this page to find the current owner of a behavior. The
 ## GPU and Taichi
 
 - Single GPU owner (one thread runs every GPU call): `gear_optimizer/gpu/executor.py`
-- Public Taichi API: `gear_optimizer/gpu/api/`
-- Kernels: `gear_optimizer/gpu/kernels/`
-- GA evaluation and reduction:
-  `gear_optimizer/gpu/kernels/ga_eval/`
-
-Production scoring should import through the public Taichi API or GPU executor,
-not directly from kernel internals.
+- A process's GPU state and a song's uploads: `gear_optimizer/gpu/device.py`
+- Fields, kernels and scoring functions: `gear_optimizer/gpu/fields.py`, `gear_optimizer/gpu/kernels.py`, `gear_optimizer/gpu/scoring.py`
 
 ## Data and persistence
 

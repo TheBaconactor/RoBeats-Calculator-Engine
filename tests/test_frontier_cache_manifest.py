@@ -57,13 +57,13 @@ def _built_file(cache: FrontierCache, chart: Path) -> Path:
 def test_a_complete_derived_file_hits_and_is_recorded(tmp_path: Path) -> None:
     cache = _cache(tmp_path / "cache")
     chart = _chart(tmp_path / "charts" / "A.txt", "A")
-    _built_file(cache, chart)
+    cache_file = _built_file(cache, chart)
 
     plan = cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise")
 
     assert plan.hit_paths == (str(chart),) and plan.missing_paths == ()
-    assert plan.validated_entry_count == 1
-    assert [entry["song_path"] for entry in _entries(cache).values()] == [str(chart)]
+    assert plan.newly_recorded == 1
+    assert [entry["cache_file"] for entry in _entries(cache).values()] == [str(cache_file)]
 
 
 def test_a_probe_without_persistence_writes_no_manifest(tmp_path: Path) -> None:
@@ -71,19 +71,18 @@ def test_a_probe_without_persistence_writes_no_manifest(tmp_path: Path) -> None:
     chart = _chart(tmp_path / "charts" / "A.txt", "A")
     _built_file(cache, chart)
 
-    plan = cache.manifest_plan([str(chart)], CURVES, persist_validated_entries=False, timing_mode="non-precise")
+    plan = cache.manifest_plan([str(chart)], CURVES, persist=False, timing_mode="non-precise")
 
-    assert plan.hit_paths == (str(chart),) and plan.validated_entry_count == 1
+    assert plan.hit_paths == (str(chart),) and plan.newly_recorded == 1
     assert not cache.manifest_path().exists()
 
 
 def test_manifest_keys_separate_timing_modes(tmp_path: Path) -> None:
     cache = _cache(tmp_path / "cache")
     chart = _chart(tmp_path / "charts" / "A.txt", "A")
-    path_key = os.path.abspath(chart).casefold()
 
-    perfect = cache.manifest_plan([str(chart)], CURVES, timing_mode="precise").key_by_norm_path[path_key]
-    zero = cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise").key_by_norm_path[path_key]
+    perfect = cache.manifest_plan([str(chart)], CURVES, timing_mode="precise").key_by_path[str(chart)]
+    zero = cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise").key_by_path[str(chart)]
 
     assert perfect != zero
 
@@ -102,7 +101,7 @@ def test_a_recorded_hit_survives_an_mtime_touch_without_revalidation(tmp_path: P
     os.utime(cache_file, (future, future))
     plan = cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise")
 
-    assert plan.hit_paths == (str(chart),) and plan.validated_entry_count == 0
+    assert plan.hit_paths == (str(chart),) and plan.newly_recorded == 0
     assert validated == []
 
 
@@ -187,17 +186,17 @@ def test_entries_whose_file_is_gone_are_dropped_when_the_manifest_is_saved(tmp_p
     cache = _cache(tmp_path / "cache")
     chart_a = _chart(tmp_path / "charts" / "A.txt", "A")
     chart_b = _chart(tmp_path / "charts" / "B.txt", "B")
-    _built_file(cache, chart_a)
+    file_a = _built_file(cache, chart_a)
     file_b = _built_file(cache, chart_b)
     cache.manifest_plan([str(chart_a), str(chart_b)], CURVES, timing_mode="non-precise")
     assert len(_entries(cache)) == 2
 
     file_b.unlink()
     chart_c = _chart(tmp_path / "charts" / "C.txt", "C")
-    _built_file(cache, chart_c)
+    file_c = _built_file(cache, chart_c)
     cache.manifest_plan([str(chart_c)], CURVES, timing_mode="non-precise")
 
-    assert sorted(Path(entry["song_path"]).name for entry in _entries(cache).values()) == ["A.txt", "C.txt"]
+    assert sorted(entry["cache_file"] for entry in _entries(cache).values()) == sorted([str(file_a), str(file_c)])
 
 
 def test_recorded_build_results_hit_on_the_next_plan(tmp_path: Path) -> None:
@@ -207,12 +206,11 @@ def test_recorded_build_results_hit_on_the_next_plan(tmp_path: Path) -> None:
     assert plan.missing_paths == (str(chart),)
     cache_file = _built_file(cache, chart)
 
-    recorded = cache.record_manifest(
+    cache.record_manifest(
         plan, [FrontierCacheBuildResult(path=str(chart), source="built", build_ms=1.0, cache_file=str(cache_file))]
     )
 
-    assert recorded == 1
-    assert [entry["song_path"] for entry in _entries(cache).values()] == [os.path.abspath(chart)]
+    assert [entry["cache_file"] for entry in _entries(cache).values()] == [str(cache_file)]
     assert cache.manifest_plan([str(chart)], CURVES, timing_mode="non-precise").hit_paths == (str(chart),)
 
 
@@ -221,13 +219,13 @@ def test_a_manifest_of_another_version_is_ignored(tmp_path: Path) -> None:
     chart = _chart(tmp_path / "charts" / "A.txt", "A")
     _built_file(_cache(directory), chart)
     _cache(directory).manifest_plan([str(chart)], CURVES, timing_mode="non-precise")
-    assert _cache(directory).manifest_records_current_version()
+    assert _cache(directory).manifest_entries()
 
     rotated = _cache(directory, version="v2")
 
-    assert not rotated.manifest_records_current_version()
-    plan = rotated.manifest_plan([str(chart)], CURVES, persist_validated_entries=False, timing_mode="non-precise")
-    assert plan.validated_entry_count == 1  # the complete file is validated again, not trusted from v1's entry
+    assert not rotated.manifest_entries()
+    plan = rotated.manifest_plan([str(chart)], CURVES, persist=False, timing_mode="non-precise")
+    assert plan.newly_recorded == 1  # the complete file is validated again, not trusted from v1's entry
 
 
 def test_both_caches_record_an_incomplete_file_as_a_miss(tmp_path: Path, monkeypatch) -> None:

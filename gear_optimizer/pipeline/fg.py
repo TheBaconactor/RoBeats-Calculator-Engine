@@ -9,7 +9,7 @@ effective loadout, with their exact Base scores and validated FG results, as the
 from __future__ import annotations
 
 import logging
-from typing import Any, NamedTuple
+from typing import Any
 
 import numpy as np
 
@@ -20,6 +20,7 @@ from gear_optimizer.pipeline.results import SolvedLoadout, SongSolve, solved_fg
 from gear_optimizer.pipeline.song import NativeSong
 from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX, build_stats_dict, loadout_totals
 from gear_optimizer.solver.fg_search import search_fg_loadouts
+from gear_optimizer.solver.ga_selection import GaSelection
 from gear_optimizer.trace.materialize import (
     FgTraceMaterializationCache,
     materialize_force_payload_from_response_frontier,
@@ -48,52 +49,34 @@ def prepare_fg_static(song: NativeSong) -> None:
     song.runtime.fg.fg_response_scoring_bundle = session_prune_scoring_bundle(bundle, gpu_inputs.curves)
 
 
-class GaSelection(NamedTuple):
-    """The loadouts the GA selected (the GPU's selected payload, gpu/kernels/ga_eval/payload.py). A loadout's `results`
-    are its Base score and gems: [score, FT, FF, PP, CM, FM, element]; its `base_stats` the device's base_stats7."""
-
-    best_score: int
-    best_genome: np.ndarray
-    best_results: np.ndarray
-    scores: np.ndarray
-    genomes: np.ndarray
-    results: np.ndarray
-    base_stats: np.ndarray
-
-
-def _parse_selection(runs_payload: np.ndarray) -> GaSelection:
-    payload = np.asarray(runs_payload, dtype=np.int32)
-    rows = payload[1 : 1 + int(payload[0, 0])]
-    return GaSelection(int(payload[0, 1]), payload[0, 2:11], payload[0, 11:18], rows[:, 2], rows[:, 3:12], rows[:, 12:19],
-                       rows[:, 19:26])
-
-
-def fg_turn(runs_payload: np.ndarray, *, song, curves, selected_color: str, fg_scoring_bundle, item_stats: np.ndarray,
-            slot_start: np.ndarray, slot_count: np.ndarray, base_fixed_stats_arr: np.ndarray,
-            beam_width: int) -> tuple[GaSelection, dict]:
+def fg_turn(song: NativeSong, selection: GaSelection) -> tuple[GaSelection, dict]:
     """In the GA turn (GPU owner): the GA's selection and its FG score rows, with the FG search's board candidates added
     to both: the best LOADOUTS_PER_SONG_LIMIT loadouts the search scored outside the selection whose FG score beats their
-    own Base score (re-solved on the GPU). A candidate whose Base score beats the selection's best becomes its best."""
-    selection = _parse_selection(runs_payload)
+    own Base score (re-solved on the GPU). A candidate whose Base score beats the selection's best becomes its best. The
+    search widens with the GA's runs, i.e. the reasoning level."""
+    inputs = song.gpu_inputs
+    timed, curves, selected_color = inputs.timed_song, inputs.curves, inputs.meta_primary_color
+    fg_scoring_bundle = song.runtime.fg.fg_response_scoring_bundle
 
     def score(rows: np.ndarray, floors: np.ndarray | None = None) -> dict:
-        return score_fg_base_components(base_components=rows, song=song, curves=curves, selected_color=selected_color,
+        return score_fg_base_components(base_components=rows, song=timed, curves=curves, selected_color=selected_color,
                                         scoring_bundle=fg_scoring_bundle, floors=floors)
 
     fg_rows = score(selection.base_stats) if selection.scores.shape[0] else {}
-    if not fg_rows or beam_width <= 0:
+    if not fg_rows:
         return selection, fg_rows
-    stats, fixed = item_stats.astype(np.int64), base_fixed_stats_arr.astype(np.int64)
-    columns = [0, 1, 2, COLOR_TO_STAT_INDEX[song.fg_inputs.primary_color],
-               COLOR_TO_STAT_INDEX[song.fg_inputs.secondary_color], 3, 4]
+    stats, fixed = inputs.item_stats.astype(np.int64), inputs.base_fixed_stats_arr.astype(np.int64)
+    columns = [0, 1, 2, COLOR_TO_STAT_INDEX[timed.fg_inputs.primary_color],
+               COLOR_TO_STAT_INDEX[timed.fg_inputs.secondary_color], 3, 4]
     found = search_fg_loadouts(seeds=selection.genomes, seed_rows=fg_rows,
                                totals=lambda genomes: (fixed + stats[genomes].sum(axis=1))[:, columns], score=score,
-                               slot_start=slot_start, slot_count=slot_count, beam_width=beam_width)
+                               slot_start=inputs.slot_start, slot_count=inputs.slot_count,
+                               beam_width=FG_SEARCH_BEAM_PER_GA_RUN * inputs.num_runs)
     seeded = {tuple(row) for row in selection.base_stats.tolist()}
     outside = sorted((key for key in found if key not in seeded), key=lambda key: -found[key][1].inner_row[0])
     genomes = [found[key][0] for key in outside]
     bases = solve_best_fever_combination_batch(
-        [build_stats_dict(fixed + stats[list(genome)].sum(axis=0)) for genome in genomes], song, curves,
+        [build_stats_dict(fixed + stats[list(genome)].sum(axis=0)) for genome in genomes], timed, curves,
         selected_color=selected_color,
     ) if genomes else []
     added = []

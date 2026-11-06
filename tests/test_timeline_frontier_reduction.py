@@ -21,11 +21,9 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         validate_base_physical_replay,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
-    from gear_optimizer.gpu.api.timeline import reset_timeline_state
     from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
-    reset_timeline_state()
     chart_path = Path(__file__).resolve().parents[1] / "Data" / "Hard" / "Epilogue (Hard) by Creo.txt"
     song, curves = _load_case(chart_path)
     replay = score_stats_exact_with_timeline_trace(
@@ -123,7 +121,6 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
     assert result.score == int(replay["score"])
     assert result.tally == {"perfect": 962, "great": 0, "okay": 0, "miss": 0}
     assert result.fever_hits == 758
-    reset_timeline_state()
 
 
 def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatch, tmp_path) -> None:
@@ -132,10 +129,8 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         validate_base_physical_replay,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
-    from gear_optimizer.gpu.api.timeline import reset_timeline_state
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
-    reset_timeline_state()
     chart_path = (
         Path(__file__).resolve().parents[1]
         / "Data"
@@ -179,7 +174,6 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         timing_mode="precise",
         perfect_time=0,
     )
-    reset_timeline_state()
 
 
 def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
@@ -190,10 +184,8 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         validate_base_physical_replay,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
-    from gear_optimizer.gpu.api.timeline import reset_timeline_state
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
-    reset_timeline_state()
     chart_path = (
         Path(__file__).resolve().parents[1]
         / "Data"
@@ -237,4 +229,3 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         perfect_time=0,
     )
     assert physical.event_order.index(586) < physical.event_order.index(587)
-    reset_timeline_state()

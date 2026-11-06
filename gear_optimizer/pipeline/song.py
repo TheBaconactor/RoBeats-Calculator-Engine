@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
-from gear_optimizer.gamedata import SongMini, StatCurves
-from gear_optimizer.solver.ftff_combos import FtffShortlist
+from gear_optimizer.gamedata import SongMini
+from gear_optimizer.solver.genetic_pipeline import GaInputs
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.timing_envelope import TimedSong
 
 
 @dataclass
@@ -22,32 +21,15 @@ class NativeSongConfig:
 
 
 @dataclass
-class NativeSongGPUInputs:
-    curves: StatCurves | None = None
+class NativeSongGPUInputs(GaInputs):
     # The song's minis by name (Mini Ascension applied).
-    minis_by_name: dict[str, SongMini] = field(default_factory=dict)
-    timed_song: TimedSong | None = None
-    meta_primary_color: str = ""
-    meta_secondary_color: str = ""
-    fixed_stats: dict[str, Any] = field(default_factory=dict)
-    registry: ItemRegistry | None = None
-    color_flags: dict[str, Any] = field(default_factory=dict)
-    gens_per_run: int = 0
-    num_runs: int = 0
-    n_genomes: int = 0
-    item_stats: np.ndarray | None = None
-    slot_start: np.ndarray | None = None
-    slot_count: np.ndarray | None = None
-    base_fixed_stats_arr: np.ndarray | None = None
-    init_heuristic_topk: Optional[np.ndarray] = None
-    init_heuristic_k: int = 0
-    init_heuristic_copies: int = 25
-    # GA->FG effective-dedup equivalence tables for this song's color context: built at prep, uploaded by the GA run
-    # before the candidate select.
-    fg_gear_name_rank: Optional[np.ndarray] = None
-    fg_mini_sig_id: Optional[np.ndarray] = None
-    # The GA gem search's FT/FF combo shortlist (ftff_combos.ftff_shortlist), built at prep.
-    ftff_shortlist: Optional[FtffShortlist] = None
+    minis_by_name: dict[str, SongMini]
+    meta_primary_color: str
+    meta_secondary_color: str
+    registry: ItemRegistry
+    # The GA selection's effective-loadout tables for the song's colors (solver.ga_selection.effective_tables).
+    fg_gear_name_rank: np.ndarray
+    fg_mini_sig_id: np.ndarray
 
 
 @dataclass
@@ -58,7 +40,6 @@ class NativeSongFGState:
 
 @dataclass
 class NativeSongRuntimeState:
-    song_slot: int = 0
     fg: NativeSongFGState = field(default_factory=NativeSongFGState)
 
 

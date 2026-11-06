@@ -17,13 +17,13 @@ import logging
 import os
 import queue
 import signal
+import sys
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
 from gear_optimizer import settings
-from gear_optimizer.gpu.windows_timer import acquire_windows_timer_period_1ms, release_windows_timer_period_1ms
 
 logger = logging.getLogger(__name__)
 
@@ -96,24 +96,19 @@ def _stop_this_process(message: str) -> None:
 def _init_gpu() -> None:
     """Taichi init + the GA kernel warmups, on the owner thread. A run's workers warm up side by side: only Taichi's init
     and the offline cache dump at shutdown hold the cross-process cache lock."""
-    # Import order matters: nothing that allocates Taichi fields is imported before init_taichi.
-    from . import runtime as ti_runtime
+    from . import ga
 
-    ti_runtime.init_taichi()
-    from .api import ga_operations as ga_ops
-
-    ga_ops.warmup_ga_kernels_light()
+    ga.warmup()
 
 
 def _finalize_gpu() -> None:
     """Taichi finalized on the owner thread, with the Vulkan runtime fully alive: left to interpreter exit, the offline
     kernel cache dump races daemon-thread teardown and truncates (observed: 1-9 of ~40 kernels persisted per run)."""
     try:
-        from . import runtime as ti_runtime
-        from gear_optimizer.gpu.api.initialization import hard_reset_taichi
+        from . import device, runtime
 
-        with ti_runtime.offline_cache_lock():  # one process dumps the shared cache at a time
-            hard_reset_taichi(reason="executor shutdown (persist offline kernel cache)")
+        with runtime.offline_cache_lock():  # one process dumps the shared cache at a time
+            device.hard_reset("executor shutdown (persist offline kernel cache)")
     except Exception as exc:
         logger.warning("[GpuExecutor] Taichi shutdown finalize failed (offline cache may be stale): %s", exc)
 
@@ -127,7 +122,6 @@ class GpuExecutor:
         self._abort = threading.Event()
         self._abort_reason = ""
         self._call_timeout_s: float | None = None
-        self._timer_1ms = False
 
     @property
     def is_running(self) -> bool:
@@ -142,9 +136,12 @@ class GpuExecutor:
         self._init_error = None
         self._abort.clear()
         self._call_timeout_s = _CALL_TIMEOUT_S if settings.service_mode() else None
-        # Windows: a thread waiting for the GIL (prep and finish threads beside the GA) waits 5 ms before asking for
-        # it, which the default ~15.6 ms timer stretches.
-        self._timer_1ms = acquire_windows_timer_period_1ms()
+        if os.name == "nt":
+            # A thread waiting for the GIL (prep and finish threads beside the GA) waits 5 ms before asking for it, which
+            # the default ~15.6 ms timer stretches. The period lasts as long as the process.
+            import ctypes
+
+            ctypes.windll.winmm.timeBeginPeriod(1)
         self._thread = threading.Thread(target=self._run, name="GpuExecutorThread", daemon=True)
         self._thread.start()
 
@@ -158,9 +155,6 @@ class GpuExecutor:
         if self._thread.is_alive():
             logger.warning("[GpuExecutor] Stop timed out; the owner thread is still alive.")
         self._thread = None
-        if self._timer_1ms:
-            release_windows_timer_period_1ms()
-            self._timer_1ms = False
 
     def call(self, fn: Callable[..., Any], *args: Any) -> Any:
         """fn(*args) on the owner thread, once the GPU init is done: its result, or its exception. GpuFatalError if
@@ -217,25 +211,14 @@ def get_gpu_executor() -> GpuExecutor:
     return _executor
 
 
-def start_gpu_executor(multi_start: int) -> GpuExecutor:
-    """The process's GPU executor, started with GA buffers for `multi_start` runs. On macOS the Taichi runtime is
-    materialized first, on the main thread: MoltenVK takes a GLFW/Cocoa context in materialize_runtime, which traps off
-    the main thread (Linux and Windows initialize on the owner thread)."""
-    import sys
-
-    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
-    from . import fields as gpu_fields
-
-    gpu_fields.configure_ga_run_buffers(max_runs=multi_start, max_genomes=GA_POPULATION_SIZE)
+def start_gpu_executor() -> GpuExecutor:
+    """The process's GPU executor, started. On macOS the Taichi runtime is materialized first, on the main thread: MoltenVK
+    takes a GLFW/Cocoa context in materialize_runtime, which traps off the main thread (Linux and Windows initialize on
+    the owner thread)."""
     if sys.platform == "darwin":
-        if threading.current_thread() is not threading.main_thread():
-            raise RuntimeError("the GPU runtime must be materialized on the OS main thread on macOS, got thread "
-                               f"{threading.current_thread().name!r}")
-        from . import api as gpu_api
-        from .runtime import ti
+        from . import device
 
-        gpu_api.ensure_ready()
-        ti.sync()
+        device.ensure_ready()
     executor = get_gpu_executor()
     executor.start()
     return executor

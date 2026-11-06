@@ -38,12 +38,12 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
         calls.append("timeline_start")
         time.sleep(0.02)
         calls.append("timeline_end")
-        return FrontierCachePrebuildSummary(total=1, completed=1, disk=1)
+        return FrontierCachePrebuildSummary(total=1)
 
     def _fg(**_kwargs):
         calls.append("fg_start")
         calls.append("fg_end")
-        return FrontierCachePrebuildSummary(total=1, completed=1, built=1)
+        return FrontierCachePrebuildSummary(total=1, built=1)
 
     _fake_prebuilds(monkeypatch, timeline=_timeline, fg=_fg)
 
@@ -60,8 +60,8 @@ def test_cpu_work_manager_reports_each_cache_and_fails_loud(monkeypatch) -> None
 
     _fake_prebuilds(
         monkeypatch,
-        timeline=lambda **_kwargs: FrontierCachePrebuildSummary(total=2, completed=2, built=1, disk=1),
-        fg=lambda **_kwargs: FrontierCachePrebuildSummary(total=2, completed=1, failures=1, disk=1),
+        timeline=lambda **_kwargs: FrontierCachePrebuildSummary(total=2, built=1),
+        fg=lambda **_kwargs: FrontierCachePrebuildSummary(total=2, failures=1),
     )
 
     stream = io.StringIO()
@@ -72,8 +72,8 @@ def test_cpu_work_manager_reports_each_cache_and_fails_loud(monkeypatch) -> None
 
     output = stream.getvalue()
     assert "caches for 1 queued song(s)" in output
-    assert "Timeline frontier cache ready: total=2 built=1 disk=1" in output
-    assert "FG response-frontier cache ready: total=2 built=0 disk=1 memory=0 failures=1" in output
+    assert "Timeline frontier cache ready: total=2 built=1" in output
+    assert "FG response-frontier cache ready: total=2 built=0 failures=1" in output
 
 
 def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
@@ -98,7 +98,7 @@ def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path:
     tally = prebuild._build_timeline_songs([str(song_path)], {}, "precise")
 
     assert built == [str(song_path)]
-    assert len(tally.results) == 1 and tally.sources["disk"] == 1
+    assert [result.source for result in tally.results] == ["disk"]
     assert tally.results[0].path == str(song_path)
 
 
@@ -197,7 +197,7 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
     tally = prebuild._build_fg_songs([str(song_path)], {}, "precise")
 
     assert built == [str(song_path)]
-    assert len(tally.results) == 1 and tally.sources["disk"] == 1
+    assert [result.source for result in tally.results] == ["disk"]
     assert tally.results[0].path == str(song_path)
 
 
@@ -214,13 +214,13 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     # Hermetic closed-loop inputs: no real pool workers exist under the fake executor, and the
     # RAM guard thread has nothing real to guard.
     monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
-    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: SimpleNamespace(stop=lambda: None))
+    monkeypatch.setattr(prebuild, "_FgPrebuildRamGuard", lambda: SimpleNamespace(start=lambda: None, stop=lambda: None))
     items = [(f"giant{i}.txt", 7000) for i in range(3)] + [(f"light{i}.txt", 500) for i in range(4)]
     monkeypatch.setattr(
         prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _curves, _mode: (list(items), {})
     )
 
-    budget_gb = 26.0 - prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB
+    budget_gb = 26.0 - prebuild._SYSTEM_RESERVE_GB
     ledger_peaks: list[float] = []
 
     class _FakeFuture:
@@ -263,7 +263,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     assert sorted(result.path for result in tally.results) == sorted(path for path, _notes in items)
     assert ledger_peaks, "admission loop never drained"
     assert max(ledger_peaks) <= budget_gb + 1e-9
-    assert captured_kwargs["max_tasks_per_worker"] == prebuild._FG_PREBUILD_MAX_TASKS_PER_WORKER
+    assert captured_kwargs["max_tasks_per_worker"] == prebuild._MAX_TASKS_PER_WORKER
 
 
 def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch) -> None:
@@ -275,7 +275,7 @@ def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch)
     monkeypatch.setattr(prebuild, "frontier_prebuild_worker_count", lambda: 1)
     monkeypatch.setattr(prebuild, "frontier_prebuild_cpu_count", lambda: 31)
     monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
-    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: SimpleNamespace(stop=lambda: None))
+    monkeypatch.setattr(prebuild, "_FgPrebuildRamGuard", lambda: SimpleNamespace(start=lambda: None, stop=lambda: None))
     monkeypatch.setattr(
         prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _refs, _mode: (list(items), {})
     )
@@ -400,8 +400,8 @@ def test_ram_guard_force_resumes_stalled_worker_below_resume_floor(monkeypatch):
 
     from gear_optimizer.frontier import fg_prebuild as pb
 
-    monkeypatch.setattr(pb, "_FG_PREBUILD_GUARD_POLL_SECONDS", 0.005)
-    monkeypatch.setattr(pb, "_FG_PREBUILD_RESUME_STALL_POLLS", 2)
+    monkeypatch.setattr(pb, "_GUARD_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(pb, "_RESUME_STALL_POLLS", 2)
     # Free RAM permanently below both the suspend (5) and resume (12) floors.
     monkeypatch.setattr(pb, "_fg_prebuild_available_ram_gb", lambda: 0.3)
 

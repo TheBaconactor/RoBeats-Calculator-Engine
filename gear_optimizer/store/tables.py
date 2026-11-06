@@ -121,10 +121,6 @@ def insert_rows(conn: sqlite3.Connection, rows: Iterable[Row]) -> None:
     )
 
 
-def insert_song(conn: sqlite3.Connection, mode: str, song: str, last_updated_at: float) -> None:
-    conn.execute("INSERT INTO songs (timing_mode, name, last_updated) VALUES (?, ?, ?)", (mode, song, last_updated_at))
-
-
 def _values(row: Row) -> tuple:
     x = row.loadout
     return (

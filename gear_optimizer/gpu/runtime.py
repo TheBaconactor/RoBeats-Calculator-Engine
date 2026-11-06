@@ -8,10 +8,10 @@ import os
 import struct
 import sys
 import threading
-import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Iterator
+from gear_optimizer.core.file_lock import exclusive_file_lock
 from gear_optimizer.core.output import quiet_stdio
 from gear_optimizer import settings
 
@@ -23,6 +23,7 @@ _ti_initialized = False
 _ti_materialized_once = False
 _ti_lock = threading.RLock()
 _offline_cache_dir: str | None = None
+_GPU_BLOCK_DIM = 256  # The benchmark-validated choice for these kernels (Vulkan allows 1..1024).
 logger = logging.getLogger(__name__)
 
 # Taichi prints a version banner at import time. On Windows, spawned child processes can inherit an invalid console
@@ -31,99 +32,22 @@ with quiet_stdio(not settings.output_enabled()):
     import taichi as ti  # noqa: E402
 
 
-def is_initialized() -> bool:
-    """Check if Taichi has been initialized."""
-    return _ti_initialized
-
-
 def _assert_darwin_main_thread_materialization() -> None:
-    """Refuse a process's FIRST Taichi materialization off the macOS main thread.
-
-    Required OS/GPU dispatch-safety boundary. On darwin ``ti.vulkan`` lowers through MoltenVK,
-    and Taichi acquires a GLFW/Cocoa context inside ``VulkanProgramImpl::materialize_runtime``.
-    AppKit hard-traps that off the OS main thread (``EXC_BREAKPOINT`` /
-    "NSUpdateCycleInitialize() is called off the main thread"), which kills the WHOLE process --
-    a lazy first-use from one request thread takes down every other in-flight request with it.
-
-    Raising here converts that unrecoverable trap into an ordinary exception the caller can shed
-    on. Hosts that want in-process GPU on darwin materialize on the main thread first (see
-    ``gpu_executor.start_gpu_executor``); once that has run, ``init_taichi()``
-    short-circuits on ``_ti_initialized`` and every thread proceeds normally.
-
-    Scoped to the first materialization only: the GLFW context is process-global and refcounted,
-    so a ``reset_taichi()`` recovery re-init does not necessarily re-enter GLFW init. That path
-    has never been observed to trap, so it keeps its existing behaviour rather than being
-    speculatively broken.
-    """
-    if sys.platform != "darwin":
-        return
-    if _ti_materialized_once:
-        return
-    if threading.current_thread() is threading.main_thread():
-        return
-    raise RuntimeError(
-        "Taichi's GPU runtime must be materialized on the OS main thread on macOS; got thread "
-        f"'{threading.current_thread().name}'. Taichi/MoltenVK acquires a GLFW/Cocoa context "
-        "during materialize_runtime, which traps off the main thread and kills the process. "
-        "Materialize on the main thread during startup before dispatching GPU work to threads."
-    )
-
-
-@contextmanager
-def _file_lock(lock_path: Path, *, timeout_sec: float | None = None) -> Iterator[None]:
-    """Cross-process exclusive file lock (Windows + POSIX); waits forever when `timeout_sec` is None."""
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+", encoding="utf-8")
-    deadline = None if timeout_sec is None else time.monotonic() + max(0.0, float(timeout_sec))
-    locked = False
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            # Every process locks byte 0 (Windows allows a lock past the end of the file) and never reads it: a
-            # read of a byte another process holds locked fails with PermissionError.
-            handle.seek(0)
-            while True:
-                try:
-                    # `msvcrt.locking(..., LK_LOCK, ...)` is not reliably blocking on Windows and can raise
-                    # `EDEADLK` ("Resource deadlock avoided") under contention. Use a non-blocking lock and
-                    # implement the wait loop ourselves for both bounded and unbounded cases.
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    if deadline is not None and time.monotonic() >= deadline:
-                        raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
-                    time.sleep(0.01)
-        else:
-            import fcntl
-
-            while True:
-                try:
-                    flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if deadline is not None else 0)
-                    fcntl.flock(handle.fileno(), flags)
-                    break
-                except BlockingIOError:
-                    if deadline is None:
-                        raise
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
-                    time.sleep(0.01)
-        locked = True
-        yield
-    finally:
-        if locked and os.name == "nt":
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        elif locked:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+    """Refuse a process's first Taichi materialization off the macOS main thread: on darwin ti.vulkan lowers through
+    MoltenVK, whose GLFW/Cocoa context AppKit hard-traps off the main thread, which kills the whole process. Later
+    materializations (a reset's recovery) share that process-global context."""
+    if sys.platform == "darwin" and not _ti_materialized_once and threading.current_thread() is not threading.main_thread():
+        raise RuntimeError(
+            "Taichi's GPU runtime must be materialized on the OS main thread on macOS, got thread "
+            f"{threading.current_thread().name!r}: materialize during startup, before dispatching GPU work to threads."
+        )
 
 
 @contextmanager
 def offline_cache_lock(*, timeout_sec: float | None = None) -> Iterator[str]:
     """Cross-process lock keyed by the Taichi offline-cache directory, which it yields."""
     cache_dir = _offline_cache_dir or _get_offline_cache_dir()
-    with _file_lock(Path(cache_dir) / ".metafinder_offline_cache.lock", timeout_sec=timeout_sec):
+    with exclusive_file_lock(Path(cache_dir) / ".metafinder_offline_cache.lock", timeout_sec=timeout_sec):
         yield cache_dir
 
 
@@ -232,11 +156,6 @@ def _select_vulkan_device() -> None:
         logger.warning("[Taichi] Could not select Vulkan device %s", target, exc_info=True)
 
 
-def get_block_dim() -> int:
-    """The GPU block size: 256 is the benchmark-validated choice for these kernels (Vulkan allows 1..1024)."""
-    return 256
-
-
 def _get_offline_cache_dir() -> str:
     """<engine>/bin/taichi_cache/v2/ti_<version>/<key>, created; the key hashes this package's sources (paths and
     contents), so only a change here (not every commit) pays the ~minute Vulkan warm-up compile."""
@@ -273,12 +192,7 @@ def _init_taichi_quietly(init_kwargs: dict) -> None:
 
 
 def init_taichi():
-    """
-    Initialize Taichi on the Vulkan backend, once per process.
-
-    Called by gpu_executor.py on the GPU thread, or lazily on first use.
-    Uses f32 precision for performance (sufficient for score accuracy).
-    """
+    """Initialize Taichi on the Vulkan backend, once per process, in f32 precision."""
     global _ti_initialized
     global _ti_materialized_once
     global _offline_cache_dir
@@ -292,8 +206,7 @@ def init_taichi():
             arch=ti.vulkan,
             default_fp=ti.f32,
             default_ip=ti.i32,
-            # Cross-vendor determinism: the per-note score is floor(f32*f32) (kernels_helpers
-            # `_calc_body_score`/`_calc_head_score_*`). With fast_math on, the backend may
+            # Cross-vendor determinism: the per-note score is floor(f32*f32) (scoring.py). With fast_math on, the backend may
             # contract `a*b+c` into an FMA or reassociate products, and Metal (MoltenVK) vs
             # Vulkan/AMD then round the last bit differently -> the per-note floor flips +/-1 on
             # boundary notes -> the integer gem argmax selects a different allocation on each
@@ -302,7 +215,7 @@ def init_taichi():
             # bit-identical across Metal and Vulkan and the pick is deterministic. Stays on GPU
             # (search remains batched); negligible cost for this add/mul arithmetic.
             fast_math=False,
-            default_gpu_block_dim=get_block_dim(),
+            default_gpu_block_dim=_GPU_BLOCK_DIM,
             # Compiled kernels persist on disk across processes (no recompiles; results unchanged).
             offline_cache=True,
             offline_cache_file_path=_offline_cache_dir,
@@ -321,17 +234,11 @@ def init_taichi():
                 _init_taichi_quietly(init_kwargs)
         _ti_initialized = True
         _ti_materialized_once = True
-        logger.debug("[Taichi] Initialized with the Vulkan backend - f32 precision (block_dim=%s)", get_block_dim())
+        logger.debug("[Taichi] Initialized with the Vulkan backend - f32 precision")
 
 
 def reset_taichi(*, reason: str | None = None) -> None:
-    """
-    Hard-reset Taichi runtime (frees Vulkan/Metal resources).
-
-    This is intended as a recovery path for backend/driver failures (e.g. Vulkan
-    semaphore allocation failures) and for long-running sessions where driver
-    resources may leak.
-    """
+    """Reset Taichi (frees its Vulkan resources): the recovery path of a driver failure, and the executor's shutdown."""
     global _ti_initialized
     with _ti_lock:
         if reason:
@@ -352,20 +259,3 @@ def reset_taichi(*, reason: str | None = None) -> None:
             logger.warning("[Taichi] reset failed", exc_info=True)
 
         _ti_initialized = False
-
-
-# Module state built on the runtime above `fields` (device-derived caches, warmup flags) registers its reset here on
-# import; api.initialization.hard_reset_taichi runs them after resetting the runtime and the fields. Keyed by the
-# function's qualified name, so a re-imported module replaces its reset instead of adding a second one.
-_HARD_RESET_HOOKS: dict[str, Callable[[], None]] = {}
-
-
-def on_hard_reset(reset: Callable[[], None]) -> Callable[[], None]:
-    """Decorator: run `reset` on every hard reset of the Taichi runtime."""
-    _HARD_RESET_HOOKS[f"{reset.__module__}.{reset.__qualname__}"] = reset
-    return reset
-
-
-def run_hard_reset_hooks() -> None:
-    for reset in list(_HARD_RESET_HOOKS.values()):
-        reset()

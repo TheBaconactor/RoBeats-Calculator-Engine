@@ -156,7 +156,6 @@ def test_fixed_timing_base_scorer_batch_matches_single():
 
 def test_non_precise_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_path, monkeypatch):
     from gear_optimizer.frontier import timeline_cache
-    from gear_optimizer.gpu.api import timeline
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     timeline_cache._frontier_payload_memory.clear()
@@ -183,18 +182,6 @@ def test_non_precise_singleton_payload_matches_fixed_timing_scorer_and_persists(
     assert score_stats_exact_batch(stats_rows, song, ref) == score_stats_fixed_timing_exact_batch(
         stats_rows, song, ref
     )
-
-    uploads: list[int] = []
-    monkeypatch.setattr(timeline, "ensure_ready", lambda *_args, **_kwargs: b"")
-    monkeypatch.setattr(
-        timeline,
-        "_upload_timeline_frontier_payload_slot",
-        lambda _payload, song_slot: uploads.append(song_slot),
-    )
-
-    timeline.precompute_timeline_gpu(song, ref, song_slot=0, prebuilt_payload=loaded.payload)
-
-    assert uploads == [0]
 
 
 def test_fixed_timing_fg_asks_only_for_the_reachable_cells(monkeypatch):

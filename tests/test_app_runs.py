@@ -78,31 +78,6 @@ def test_a_lost_gpu_ends_the_run(monkeypatch):
         _app()._solve(_tasks(2), RunSettings(workers=2))
 
 
-def test_ga_buffer_config_restores_defaults_and_clears_request_on_reset():
-    # reset_fields_state() restores GA buffer sizing to defaults AND clears the requested
-    # record, so a stale session size never silently re-applies after a hard_reset_taichi
-    # (CPU-level mirror of the gpu-marked test_gpu_ga_run_buffer_config_restores_defaults_
-    # after_hard_reset). The GA recovery paths re-call configure_ga_run_buffers() to re-size.
-    from gear_optimizer.gpu import fields as gpu_fields
-
-    gpu_fields.reset_fields_state()
-    try:
-        gpu_fields.configure_ga_run_buffers(max_runs=7, max_genomes=705)
-        assert gpu_fields.MAX_GA_RUNS == 7
-        assert gpu_fields._REQUESTED_MAX_GA_RUNS == 7
-
-        gpu_fields.reset_fields_state()
-        assert gpu_fields.MAX_GA_RUNS == gpu_fields.DEFAULT_MAX_GA_RUNS
-        assert gpu_fields.MAX_GA_RUN_GENOMES == gpu_fields.DEFAULT_MAX_GA_RUN_GENOMES
-        assert gpu_fields._REQUESTED_MAX_GA_RUNS is None
-
-        # A cleared record must NOT re-apply a stale size on the next allocation.
-        gpu_fields._apply_requested_ga_run_buffers()
-        assert gpu_fields.MAX_GA_RUNS == gpu_fields.DEFAULT_MAX_GA_RUNS
-    finally:
-        gpu_fields.reset_fields_state()
-
-
 def test_request_stop_goes_to_the_stop_control():
     app = object.__new__(GearOptimizerApp)
     calls = []

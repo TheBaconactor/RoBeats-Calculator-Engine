@@ -19,7 +19,6 @@ def _field_names(cls: type) -> tuple[str, ...]:
 _FIELD_PATH_BY_NAME = {
     **{name: ("config",) for name in _field_names(NativeSongConfig)},
     **{name: ("gpu_inputs",) for name in _field_names(NativeSongGPUInputs)},
-    "song_slot": ("runtime",),
     **{name: ("runtime", "fg") for name in _field_names(NativeSongFGState)},
 }
 
@@ -36,7 +35,7 @@ def _resolve_owner(root: object | None, path: tuple[str, ...]) -> object | None:
 def make_native_song(**kwargs: Any) -> NativeSong:
     """Build a NativeSong test fixture from flat keyword arguments."""
     config = NativeSongConfig()
-    gpu_inputs = NativeSongGPUInputs()
+    gpu_inputs = NativeSongGPUInputs(**dict.fromkeys(_field_names(NativeSongGPUInputs)))
     runtime = NativeSongRuntimeState()
     roots = {"config": config, "gpu_inputs": gpu_inputs, "runtime": runtime}
     assignments: list[tuple[object, str, Any]] = []

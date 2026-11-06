@@ -198,12 +198,6 @@ def test_maintained_documentation_does_not_reference_retired_surfaces() -> None:
     )
 
 
-def test_taichi_api_package_imports_fail_loudly() -> None:
-    api_init = (_REPO_ROOT / "gear_optimizer" / "gpu" / "api" / "__init__.py").read_text(encoding="utf-8")
-
-    assert "except ImportError" not in api_init
-
-
 def test_the_cpu_layers_never_load_taichi() -> None:
     imports = "import gear_optimizer.trace.note_graph, gear_optimizer.frontier.timeline_cache, gear_optimizer.store.legacy"
     tiers = "import gear_optimizer.solver.team_buff_tiers, gear_optimizer.solver.scoring.exact_rescore"

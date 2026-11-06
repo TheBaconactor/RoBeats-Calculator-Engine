@@ -4,52 +4,43 @@ from types import SimpleNamespace
 from gear_optimizer.pipeline import solve as solve_module
 
 
-def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(monkeypatch):
-    import inspect
-
+def test_the_ga_and_the_fg_turn_are_one_executor_call(monkeypatch):
+    from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
+    from gear_optimizer.gpu import ga
     from gear_optimizer.pipeline import fg as fg_stage
-    from gear_optimizer.solver import genetic_pipeline
+    from gear_optimizer.solver import ga_selection
 
-    bundle, ga_calls, fg_calls = object(), [], []
+    ga_calls, selections, fg_calls = [], [], []
 
-    def run_ga_runs(**kwargs):
-        inspect.signature(real_run).bind(**kwargs)  # every payload key is a GA argument
-        ga_calls.append(kwargs)
-        return "runs payload"
+    def run_ga(inputs, seed, abort_requested):
+        ga_calls.append((inputs, seed, abort_requested))
+        return "table"
 
-    def fg_turn(runs_payload, **kwargs):
-        fg_calls.append({"runs_payload": runs_payload, **kwargs})
-        return runs_payload, "fg owner score"
+    def select(table, gear_rank, mini_sig, limit):
+        selections.append((table, gear_rank, mini_sig, limit))
+        return "selection"
 
-    real_run = genetic_pipeline.run_gpu_native_ga_runs_payload_prebuilt
-    monkeypatch.setattr(genetic_pipeline, "run_gpu_native_ga_runs_payload_prebuilt", run_ga_runs)
+    def fg_turn(song, selection):
+        fg_calls.append((song, selection))
+        return "ga result"
+
+    monkeypatch.setattr(ga, "run_ga", run_ga)
+    monkeypatch.setattr(ga_selection, "select_ga_loadouts", select)
     monkeypatch.setattr(fg_stage, "fg_turn", fg_turn)
-    inputs = SimpleNamespace(timed_song="timed song", curves="curves", item_stats=1, slot_start=2, slot_count=3,
-                             base_fixed_stats_arr=4, num_runs=3, n_genomes=128, init_heuristic_topk=None,
-                             init_heuristic_k=0, init_heuristic_copies=25, gens_per_run=42,
-                             color_flags={"rush": True}, meta_primary_color='rush', fg_gear_name_rank=5,
-                             fg_mini_sig_id=6, ftff_shortlist="shortlist")
-    song = SimpleNamespace(gpu_inputs=inputs, config=SimpleNamespace(ga_seed=7),
-                           runtime=SimpleNamespace(song_slot=0,
-                                                   fg=SimpleNamespace(fg_response_scoring_bundle=bundle)))
+    inputs = SimpleNamespace(fg_gear_name_rank=5, fg_mini_sig_id=6)
+    song = SimpleNamespace(gpu_inputs=inputs, config=SimpleNamespace(ga_seed=7))
     abort = threading.Event()
 
     class _Executor:
         abort_requested = abort.is_set
 
         def call(self, fn, *args):
-            assert song.runtime.song_slot == solve_module._GA_SLOT
             return fn(*args)
 
-    assert solve_module.run_ga(song, _Executor()) == ("runs payload", "fg owner score")
-    assert song.runtime.song_slot == 0
-    assert ga_calls[0]["song"] == "timed song" and ga_calls[0]["n_generations"] == 42 and ga_calls[0]["ga_seed"] == 7
-    assert ga_calls[0]["abort_requested"] == abort.is_set
-    assert ga_calls[0]["ftff_shortlist"] == "shortlist"
-    assert fg_calls == [{"runs_payload": "runs payload", "fg_scoring_bundle": bundle, "song": "timed song",
-                         "curves": "curves", "selected_color": "rush", "item_stats": 1, "slot_start": 2,
-                         "slot_count": 3, "base_fixed_stats_arr": 4,
-                         "beam_width": fg_stage.FG_SEARCH_BEAM_PER_GA_RUN * 3}]
+    assert solve_module.run_ga(song, _Executor()) == "ga result"
+    assert ga_calls == [(inputs, 7, abort.is_set)]
+    assert selections == [("table", 5, 6, LOADOUTS_PER_SONG_LIMIT)]
+    assert fg_calls == [(song, "selection")]
 
 
 def test_only_an_executor_abort_counts_as_a_stop_abort():

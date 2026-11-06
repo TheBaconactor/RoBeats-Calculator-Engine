@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from collections.abc import Iterable, Mapping
 from typing import TextIO
 
@@ -19,10 +20,9 @@ def run_startup_cpu_work(
     charts_by_mode: Mapping[str, Iterable[str]],
     curves: StatCurves,
     announce_stream: TextIO | None = None,
-    build_missing: bool = True,
     authorize_destructive_rotation: bool = False,
 ) -> None:
-    """Verify (and with `build_missing`, build) both caches of every chart in each of its modes; the summary lines go to
+    """Verify, and build where missing, both caches of every chart in each of its modes; the summary lines go to
     `announce_stream` (default stdout). Raises when a cache could not be verified or built."""
     stream = announce_stream or sys.stdout
     charts_by_mode = {mode: list(charts) for mode, charts in charts_by_mode.items()}
@@ -31,12 +31,12 @@ def run_startup_cpu_work(
     failures = {}
     for label, prebuild in (("Timeline frontier cache", TIMELINE_FRONTIER_PREBUILD),
                             ("FG response-frontier cache", FG_RESPONSE_FRONTIER_PREBUILD)):
+        started = time.perf_counter()
         summary = prebuild_frontier_cache(prebuild, charts_by_mode=charts_by_mode, curves=curves,
-                                          build_missing=build_missing,
                                           authorize_destructive_rotation=authorize_destructive_rotation)
         stream.write(
-            f"[Startup][Cache] {label} ready: total={summary.total} built={summary.built} disk={summary.disk} "
-            f"memory={summary.memory} failures={summary.failures} elapsed={summary.elapsed_ms / 1000.0:.1f}s\n"
+            f"[Startup][Cache] {label} ready: total={summary.total} built={summary.built} "
+            f"failures={summary.failures} elapsed={time.perf_counter() - started:.1f}s\n"
         )
         stream.flush()
         failures[label] = summary.failures

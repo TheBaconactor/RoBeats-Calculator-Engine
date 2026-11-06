@@ -45,7 +45,7 @@ class _Run:
         self.prebuild = FrontierCachePrebuild(
             cache=self.cache,
             build_songs=self._build_songs,
-            maintain=lambda _plan, build_missing, rotate: self.calls.append(f"maintain:{build_missing}:{rotate}"),
+            maintain=lambda _plan, rotate: self.calls.append(f"maintain:{rotate}"),
         )
 
         @contextmanager
@@ -53,7 +53,7 @@ class _Run:
             self.calls.append("lock")
             yield
 
-        monkeypatch.setattr(frontier_cache, "FrontierBuildLock", lock)
+        monkeypatch.setattr(frontier_cache, "exclusive_file_lock", lock)
 
     def _build_songs(self, song_paths: list[str], curves, timing_mode: str) -> PrebuildTally:
         self.calls.append(f"build:{len(song_paths)}")
@@ -98,7 +98,7 @@ def test_recorded_hits_return_without_the_build_lock(tmp_path: Path, monkeypatch
     summary = run.run([chart])
 
     assert run.calls == []
-    assert (summary.total, summary.completed, summary.disk, summary.built) == (1, 1, 1, 0)
+    assert (summary.total, summary.built) == (1, 0)
 
 
 def test_unrecorded_complete_files_are_recorded_under_the_lock_without_a_build(tmp_path: Path, monkeypatch) -> None:
@@ -111,9 +111,9 @@ def test_unrecorded_complete_files_are_recorded_under_the_lock_without_a_build(t
 
     summary = run.run([recorded, unrecorded])
 
-    assert run.calls == ["lock", "maintain:True:False"]
-    assert (summary.completed, summary.disk, summary.built) == (2, 2, 0)
-    assert run.cache.manifest_plan([str(unrecorded)], CURVES, timing_mode="non-precise").validated_entry_count == 0
+    assert run.calls == ["lock", "maintain:False"]
+    assert (summary.total, summary.built) == (2, 0)
+    assert run.cache.manifest_plan([str(unrecorded)], CURVES, timing_mode="non-precise").newly_recorded == 0
 
 
 def test_without_a_current_manifest_the_locked_plan_records_the_hits(tmp_path: Path, monkeypatch) -> None:
@@ -123,9 +123,9 @@ def test_without_a_current_manifest_the_locked_plan_records_the_hits(tmp_path: P
 
     summary = run.run([chart])
 
-    assert run.calls == ["lock", "maintain:True:False"]
-    assert (summary.completed, summary.disk) == (1, 1)
-    assert run.cache.manifest_records_current_version()
+    assert run.calls == ["lock", "maintain:False"]
+    assert summary.total == 1
+    assert run.cache.manifest_entries()
 
 
 def test_missing_charts_are_built_and_recorded(tmp_path: Path, monkeypatch) -> None:
@@ -136,21 +136,11 @@ def test_missing_charts_are_built_and_recorded(tmp_path: Path, monkeypatch) -> N
 
     summary = run.run([hit, missing])
 
-    assert run.calls == ["lock", "maintain:True:False", "build:1"]
-    assert (summary.total, summary.completed, summary.disk, summary.built, summary.failures) == (2, 2, 1, 1, 0)
+    assert run.calls == ["lock", "maintain:False", "build:1"]
+    assert (summary.total, summary.built, summary.failures) == (2, 1, 0)
     assert (
-        run.cache.manifest_plan([str(missing)], CURVES, timing_mode="non-precise").validated_entry_count == 0
+        run.cache.manifest_plan([str(missing)], CURVES, timing_mode="non-precise").newly_recorded == 0
     )  # recorded by the build
-
-
-def test_without_build_missing_a_missing_chart_is_a_failure(tmp_path: Path, monkeypatch) -> None:
-    run = _Run(tmp_path, monkeypatch)
-    chart = _chart(tmp_path / "charts" / "A.txt", "A")
-
-    summary = run.run([chart], build_missing=False)
-
-    assert run.calls == ["lock", "maintain:False:False"]
-    assert (summary.total, summary.completed, summary.failures) == (1, 0, 1)
 
 
 def test_an_authorized_rotation_goes_through_the_lock_and_maintenance(tmp_path: Path, monkeypatch) -> None:
@@ -161,8 +151,8 @@ def test_an_authorized_rotation_goes_through_the_lock_and_maintenance(tmp_path: 
 
     summary = run.run([chart], authorize_destructive_rotation=True)
 
-    assert run.calls == ["lock", "maintain:True:True"]
-    assert (summary.completed, summary.disk) == (1, 1)
+    assert run.calls == ["lock", "maintain:True"]
+    assert summary.total == 1
 
 
 def test_every_timing_mode_is_verified_and_summed(tmp_path: Path, monkeypatch) -> None:

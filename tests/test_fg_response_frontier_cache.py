@@ -1036,10 +1036,10 @@ def test_fg_prebuild_admission_weight_is_anchored_to_measured_peaks() -> None:
     must weigh more -- clamping would re-create the 2026-07-09 over-commit crash)."""
     from gear_optimizer.frontier import fg_prebuild as prebuild
 
-    assert prebuild._fg_prebuild_song_weight_gb(0) == prebuild._FG_PREBUILD_FLOOR_COMMIT_GB
-    anchor = prebuild._fg_prebuild_song_weight_gb(int(prebuild._FG_PREBUILD_PEAK_COMMIT_NOTES))
-    assert abs(anchor - prebuild._FG_PREBUILD_PEAK_COMMIT_GB) < 1e-9
-    assert prebuild._fg_prebuild_song_weight_gb(14000) > prebuild._FG_PREBUILD_PEAK_COMMIT_GB
+    assert prebuild._fg_prebuild_song_weight_gb(0) == prebuild._FLOOR_COMMIT_GB
+    anchor = prebuild._fg_prebuild_song_weight_gb(int(prebuild._PEAK_COMMIT_NOTES))
+    assert abs(anchor - prebuild._PEAK_COMMIT_GB) < 1e-9
+    assert prebuild._fg_prebuild_song_weight_gb(14000) > prebuild._PEAK_COMMIT_GB
     # Monotone in note count.
     weights = [prebuild._fg_prebuild_song_weight_gb(n) for n in (0, 1000, 3500, 7000, 10000)]
     assert weights == sorted(weights)
@@ -1051,11 +1051,11 @@ def test_fg_prebuild_reducer_threads_size_to_memory_weight_class(monkeypatch) ->
     from gear_optimizer.frontier import fg_prebuild as prebuild
 
     # 42 GB budget, 31 frontier CPUs, up to 24 workers (the 2026-07-09 box shape).
-    giant = prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=42.0, max_workers=24, frontier_cpus=31)
-    light = prebuild._fg_prebuild_reducer_threads(2.0, budget_gb=42.0, max_workers=24, frontier_cpus=31)
+    giant = prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=42.0, max_workers=24, frontier_cpus=31, workload_count=99)
+    light = prebuild._fg_prebuild_reducer_threads(2.0, budget_gb=42.0, max_workers=24, frontier_cpus=31, workload_count=99)
     # 42/8 -> 5 concurrent -> 31//5=6, below the measured-safe saturation cap of 9.
     assert giant == 6
-    assert prebuild._FG_PREBUILD_MAX_REDUCER_THREADS == 11
+    assert prebuild._MAX_REDUCER_THREADS == 11
     assert light == 1  # 42/2 -> 21 concurrent -> 31//21=1
     # A one-song queue owns otherwise-idle CPUs, capped at the measured saturation width.
     assert prebuild._fg_prebuild_reducer_threads(
@@ -1065,14 +1065,6 @@ def test_fg_prebuild_reducer_threads_size_to_memory_weight_class(monkeypatch) ->
         frontier_cpus=31,
         workload_count=1,
     ) == 11
-    with pytest.raises(ValueError, match="workload count must be positive"):
-        prebuild._fg_prebuild_reducer_threads(
-            8.0,
-            budget_gb=42.0,
-            max_workers=24,
-            frontier_cpus=31,
-            workload_count=0,
-        )
 
 
 def test_required_response_stat_keys_are_the_complete_legal_ftff_projection() -> None:

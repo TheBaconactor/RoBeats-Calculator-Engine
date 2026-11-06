@@ -1,6 +1,6 @@
 """The timeline frontier cache's startup prebuild: missing charts build in a RAM-capped recycling process pool.
 
-The driver (manifest, build lock, recording) is frontier_cache.prebuild_frontier_cache.
+The driver (manifest, build lock, recording) is cache.prebuild_frontier_cache.
 """
 
 from __future__ import annotations
@@ -74,13 +74,10 @@ def _build_timeline_songs(song_paths: list[str], curves: StatCurves, timing_mode
                 continue
             tally.add(result)
             tally.log_progress(result)
-    tally.log_ready()
     return tally
 
 
-def _maintain_timeline_cache(
-    _plan: FrontierCacheManifestPlan, _build_missing: bool, _authorize_destructive_rotation: bool
-) -> None:
+def _maintain_timeline_cache(_plan: FrontierCacheManifestPlan, _authorize_destructive_rotation: bool) -> None:
     TIMELINE_FRONTIER_CACHE.remove_temp_files()
 
 

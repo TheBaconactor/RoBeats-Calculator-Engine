@@ -41,6 +41,6 @@ def test_startup_prepares_both_frontier_cache_families_per_mode(monkeypatch):
 
 
 def test_gpu_warmup_songs_do_not_select_a_request_mode():
-    from gear_optimizer.gpu.api import ga_operations
+    from gear_optimizer.gpu import ga
 
-    assert "Timing Mode" not in ga_operations._warmup_song().chart.header
+    assert "Timing Mode" not in ga._warmup_song().chart.header

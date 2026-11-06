@@ -50,12 +50,10 @@ Ties and non-dominated witnesses remain in a stable canonical order.
   hit-timing model.
 - `gear_optimizer/frontier/timeline_producer.py` builds and reduces exact
   symbolic surfaces.
-- `gear_optimizer/gpu/api/timeline.py` owns cache identity,
-  serialization, and GPU upload.
-- `gear_optimizer/gpu/kernels/kernels_helpers.py` exposes the
-  device-side frontier reader.
-- `gear_optimizer/gpu/kernels/kernels_scoring.py` evaluates every
-  retained surface for the active reference cell.
+- `gear_optimizer/frontier/timeline_cache.py` owns cache identity and
+  serialization; `gear_optimizer/gpu/device.py` the GPU upload.
+- `gear_optimizer/gpu/scoring.py` holds the device-side frontier reader and
+  evaluates every retained surface for the active reference cell.
 
 The packed payload records a count and offset per cell, followed by shared
 surface pools. Upload is slot-aware: updating one active song slot must not
@@ -94,9 +92,8 @@ still budget-bounded.
 
 Focused reference tests include:
 
-- `tests/test_timeline_frontier_reduction.py`;
-- `tests/test_gpu_timeline_frontier_cpu_gpu_exact.py`; and
-- `tests/test_gpu_timeline_frontier_exact_bnb.py`.
+- `tests/test_timeline_frontier_reduction.py`; and
+- `tests/test_gpu_ga.py`.
 
 Run CPU/reference coverage first:
 

@@ -128,26 +128,14 @@ def test_the_worker_marks_itself_a_daemon_before_native_startup(monkeypatch):
     assert events == ["background", "logging", "frontier_threads", "reassert"]
 
 
-@pytest.mark.parametrize(("request_fields", "multi_start"), [
-    ({"reasoning": "default", "uploaded": False}, 20),  # the warm worker takes any reasoning level
-    ({"reasoning": "default", "uploaded": True}, 5),
-])
-def test_the_executor_is_sized_for_the_requests_a_worker_can_get(monkeypatch, request_fields, multi_start):
-    from gear_optimizer.gpu import executor as gpu_executor
-
-    events: list[str] = []
-    monkeypatch.setattr(gpu_executor, "start_gpu_executor", lambda runs: events.append(f"start:{runs}"))
-    monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))
-    worker._started_executor(request_fields)
-    assert events == [f"start:{multi_start}", "reassert"]
-
-
 def _serve(monkeypatch, failures: list) -> tuple[list[dict], int]:
     """worker.main over one request per entry of `failures` (the exception that request's solve raises, or None).
     Returns the protocol answers and the number of solves."""
     _quiet_startup(monkeypatch)
+    from gear_optimizer.gpu import executor as gpu_executor
+
     solves: list[dict] = []
-    starts: list[dict] = []
+    starts: list[int] = []
 
     def solve(request, _executor):
         failure = failures[len(solves)]
@@ -157,7 +145,7 @@ def _serve(monkeypatch, failures: list) -> tuple[list[dict], int]:
         return [{"score": 1}]
 
     monkeypatch.setattr(worker, "solve", solve)
-    monkeypatch.setattr(worker, "_started_executor", lambda request: starts.append(request) or object())
+    monkeypatch.setattr(gpu_executor, "start_gpu_executor", lambda: starts.append(1) or object())
     line = json.dumps({"chartText": "c", "songName": "Song"}) + "\n"
     monkeypatch.setattr(worker.sys, "stdin", io.StringIO(line * len(failures)))
     out = io.StringIO()

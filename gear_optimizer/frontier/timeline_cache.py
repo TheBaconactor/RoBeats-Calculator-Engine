@@ -1,6 +1,6 @@
 """A song's exact timeline frontier payload on disk and in memory: one compressed .npz per song timing and FT/FF axes.
 
-Host-side, no Taichi: scoring, the prebuild and the website read it here; gpu.api.timeline uploads it into a song slot.
+Host-side, no Taichi: scoring, the prebuild and the website read it here; gpu.device uploads it into a song slot.
 """
 
 import io

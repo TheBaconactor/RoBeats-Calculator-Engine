@@ -30,8 +30,8 @@ These measurements overlap; do not add them. Yappi captured all-thread wall time
 ## Optimization opportunities
 
 1. **Remove repeated compression from cache-hit startup — implemented September 16 below.** [The eligibility check](../../gear_optimizer/frontier/fg_cache_store.py) treats allocated bytes ≥ logical bytes as needing compression. After three runs, 1,720 sidecars still qualified. Startup revisited the entire directory for both timing modes, even on manifest hits.
-2. **Reduce first-use compilation.** Inspect the statically unrolled [warmstart lane reduction](../../gear_optimizer/gpu/kernels/ga_eval/warmstart.py). Benchmark a smaller compilation footprint while preserving exact winner/tie selection. The subsequent [reuse review](ga_evaluation_reuse_2026-09-16.md) found a second-request GPU initialization failure in the existing persistent worker on this Mac.
-3. **Benchmark cheaper exact deduplication.** [Duplicate detection](../../gear_optimizer/gpu/kernels/ga_eval/reuse.py) compares each genome with preceding genomes: quadratic worst-case work. Any replacement must preserve all seven stats and the lowest-index representative. The subsequent [reuse change](ga_evaluation_reuse_2026-09-16.md) avoids repeat evaluations across generations; pairwise deduplication remains for cache misses.
+2. **Reduce first-use compilation.** Inspect the statically unrolled [lane reduction](../../gear_optimizer/gpu/kernels.py). Benchmark a smaller compilation footprint while preserving exact winner/tie selection. The subsequent [reuse review](ga_evaluation_reuse_2026-09-16.md) found a second-request GPU initialization failure in the existing persistent worker on this Mac.
+3. **Benchmark cheaper exact deduplication.** [Duplicate detection](../../gear_optimizer/gpu/kernels.py) compares each genome with preceding genomes: quadratic worst-case work. Any replacement must preserve all seven stats and the lowest-index representative. The subsequent [reuse change](ga_evaluation_reuse_2026-09-16.md) avoids repeat evaluations across generations; pairwise deduplication remains for cache misses.
 
 ## Verification and artifacts
 
