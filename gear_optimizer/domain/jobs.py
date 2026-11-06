@@ -14,7 +14,7 @@ class SharedRunContext:
 
     multi_start: int
     curves: StatCurves
-    # Gears.csv / Minis.csv by name, in file order.
+    # The items a solve picks from (data.game_export).
     gears: Mapping[str, Gear]
     minis: Mapping[str, Mini]
     ga_depth: int

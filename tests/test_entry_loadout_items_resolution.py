@@ -11,7 +11,8 @@ These exercise the real resolver against the live Gears.csv/Minis.csv -- no monk
 
 import pytest
 
-from gear_optimizer.gamedata import ASCENSION_PERFECT_POINTS, Gear, SongMini, load_gears, load_minis
+from gear_optimizer.data.game_export import load_catalog
+from gear_optimizer.gamedata import ASCENSION_PERFECT_POINTS, Gear, SongMini
 from gear_optimizer.solver.team_buff_tiers import _entry_loadout_items
 from gear_optimizer.settings import paths
 from tests.items_support import make_song_mini
@@ -22,14 +23,14 @@ _CHART = make_chart([1.0, 2.0], name="Untargeted Test Song", primary="Rush", sec
 
 
 def _real_gear_and_mini_names():
-    gears = load_gears(paths().gears_csv)
-    minis = load_minis(paths().minis_csv)
+    gears = load_catalog(paths().game_export).gears
+    minis = load_catalog(paths().game_export).minis
     gear_names = list(gears)[:6]
     return gear_names, list(minis)[:3]
 
 
 def _assert_resolved(items, gear_names, mini_names):
-    minis = load_minis(paths().minis_csv)
+    minis = load_catalog(paths().game_export).minis
     assert len(items) == 9, "must resolve exactly 6 gear + 3 minis"
     assert all(isinstance(item, Gear) for item in items[:6])
     assert [item.name for item in items[:6]] == list(gear_names), "gear order/identity preserved"
@@ -61,8 +62,8 @@ def test_entry_loadout_items_accepts_already_expanded_items():
     gear_names, mini_names = _real_gear_and_mini_names()
     if len(gear_names) < 6 or len(mini_names) < 3:
         pytest.skip("Gears.csv/Minis.csv not available in this environment")
-    gears = load_gears(paths().gears_csv)
-    minis = load_minis(paths().minis_csv)
+    gears = load_catalog(paths().game_export).gears
+    minis = load_catalog(paths().game_export).minis
     entry = {
         "loadout_hash": "items",
         "gear": [gears[n] for n in gear_names],
@@ -75,7 +76,7 @@ def test_entry_loadout_items_keeps_song_minis_as_they_are():
     gear_names, _mini_names = _real_gear_and_mini_names()
     if len(gear_names) < 6:
         pytest.skip("Gears.csv not available in this environment")
-    gears = load_gears(paths().gears_csv)
+    gears = load_catalog(paths().game_export).gears
     song_minis = [make_song_mini(f"M{i}", **{"Perfect Points": 20 + i}) for i in range(3)]
     entry = {"loadout_hash": "song-minis", "gear": [gears[n] for n in gear_names], "minis": song_minis}
     assert _entry_loadout_items(entry, _CHART)[6:] == song_minis

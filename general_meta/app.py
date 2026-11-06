@@ -14,9 +14,9 @@ from gear_optimizer.core.team_buff import (
     team_buff_display_label,
     team_buff_effect,
 )
-from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
+from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
-from gear_optimizer.gamedata import Gear, Mini, load_gears, load_minis
+from gear_optimizer.gamedata import Gear, Mini
 from gear_optimizer.settings import paths
 from gear_optimizer.store.db import load_boards
 from gear_optimizer.store.legacy import served_rows
@@ -232,10 +232,9 @@ def _category_result(
 
 def run_general_meta(database: Path) -> dict:
     """The General Meta of a results database: every elemental category's ranked sets at each TeamBuff tier."""
-    sync_exported_game_data()
 
-    gears_by_name = load_gears(paths().gears_csv)
-    minis_by_name = load_minis(paths().minis_csv)
+    catalog = load_catalog(paths().game_export)
+    gears_by_name, minis_by_name = catalog.gears, catalog.minis
     team_buff_tiers = [team_buff_display_label(tier, default="NONE") for tier in DEFAULT_TEAM_BUFF_REPLAY_TIERS]
     songs_by_combo = get_songs_by_elemental_combo()
 

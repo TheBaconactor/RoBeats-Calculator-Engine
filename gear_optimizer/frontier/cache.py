@@ -40,8 +40,7 @@ logger = logging.getLogger(__name__)
 V = TypeVar("V")
 P = TypeVar("P")
 
-# Manifest entries are keyed by the chart's content, so a chart published under a new directory (each engine deploy
-# publishes the charts under frontier_server_sources/<revision>) still hits its entry.
+# Manifest entries are keyed by the chart's content, so a chart under a new directory still hits its entry.
 _MANIFEST_SCHEMA = 2
 _MANIFEST_LOCK = threading.RLock()
 # Manifest hits re-derived from their chart to catch a key change that came without a version change.

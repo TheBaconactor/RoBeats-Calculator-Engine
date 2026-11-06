@@ -14,7 +14,7 @@ from gear_optimizer.solver.timing_envelope import TimedSong, time_song
 class PreparedSongCore:
     song: TimedSong
     fixed_stats: dict[str, int]
-    # Every mini as this song sees it, in Minis.csv order.
+    # Every mini as this song sees it, in catalog order.
     minis: list[SongMini]
 
 

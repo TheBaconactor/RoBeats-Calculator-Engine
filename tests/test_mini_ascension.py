@@ -3,7 +3,8 @@
 Every mini ascends at level 10. The in-game fixtures below (issue #127) pin the two-component model.
 """
 
-from gear_optimizer.gamedata import ascended_mini_stats, ascension_element_bonus, load_minis, song_minis
+from gear_optimizer.data.game_export import load_catalog
+from gear_optimizer.gamedata import ascended_mini_stats, ascension_element_bonus, song_minis
 from gear_optimizer.pipeline.pools import initialize_pools
 from gear_optimizer.settings import paths
 from tests.items_support import make_gear, make_mini
@@ -17,7 +18,7 @@ def _target_mini(name, **stats):
 
 
 def _real_mini(name):
-    return load_minis(paths().minis_csv)[name]
+    return load_catalog(paths().game_export).minis[name]
 
 
 def test_targeted_mini_gains_base_pp_and_the_primary_secondary_bonus():

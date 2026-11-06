@@ -32,7 +32,8 @@ from gear_optimizer.core.team_buff import (
 from gear_optimizer.core.utils import get_selected_element
 from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key
 from gear_optimizer.frontier.fg_cache_store import release_fg_response_song_memory
-from gear_optimizer.gamedata import Gear, Mini, SongMini, StatCurves, load_gears, load_minis, song_minis
+from gear_optimizer.data.game_export import load_catalog
+from gear_optimizer.gamedata import Gear, Mini, SongMini, StatCurves, song_minis
 from gear_optimizer.settings import paths
 from gear_optimizer.stats import total
 from gear_optimizer.store.fg_payload import require_response_surface
@@ -97,15 +98,15 @@ def _entry_loadout_items(entry: dict, chart: Chart) -> list[Gear | SongMini]:
     """The loadout's 6 gear + 3 minis, the minis as ``chart``'s song sees them (Mini Ascension).
 
     The serving paths pass entries whose ``gear``/``minis`` are already items (catalog items, or a job's custom-pool
-    items, which only the job knows); stored entries keep item NAME STRINGS, which resolve through Gears.csv/Minis.csv.
+    items, which only the job knows); stored entries keep item NAME STRINGS, which resolve through the catalog.
     Fails loud when the loadout does not resolve to exactly 6 gear + 3 minis.
     """
     gear = [item for item in entry["gear"][:6] if isinstance(item, Gear)]
     minis = [item for item in entry["minis"][:3] if isinstance(item, (Mini, SongMini))]
     if len(gear) != 6 or len(minis) != 3:
-        gears, catalog_minis = load_gears(paths().gears_csv), load_minis(paths().minis_csv)
-        gear = [gears[name] for name in _item_names(entry["gear"]) if name in gears]
-        minis = [catalog_minis[name] for name in _item_names(entry["minis"]) if name in catalog_minis]
+        catalog = load_catalog(paths().game_export)
+        gear = [catalog.gears[name] for name in _item_names(entry["gear"]) if name in catalog.gears]
+        minis = [catalog.minis[name] for name in _item_names(entry["minis"]) if name in catalog.minis]
     if len(gear) != 6 or len(minis) != 3:
         raise ValueError(
             f"tier re-solve needs 6 gear + 3 minis, got {len(gear)} gear + {len(minis)} minis "

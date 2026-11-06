@@ -155,7 +155,11 @@ results into its boards in one transaction.
 
 - `GET /songs` returns the available chart catalog;
 - `POST /optimize` runs an official or supplied chart; and
-- `/metafinder/v1/*` serves optional authenticated distribution metadata.
+- `POST /frontiers/refresh` re-reads the chart list and looks for a new revision.
+
+Official charts solve on one warm process (`service_worker.py`), a custom item pool included; an uploaded chart gets a
+process of its own with throwaway frontier caches. `service_update.py` follows `origin/main`: a new commit lands between
+solves, new code restarts the service, and new `Data/` builds what it lacks.
 
 ```mermaid
 sequenceDiagram

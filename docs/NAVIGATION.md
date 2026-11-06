@@ -8,7 +8,6 @@ Use this page to find the current owner of a behavior. The
 - Optimizer executable: `main.py`
 - Module CLI: `gear_optimizer/cli.py`
   - `python -m gear_optimizer.cli run`
-  - `python -m gear_optimizer.cli sync-data`
 - HTTP service: `gear_optimizer/robeatsmeta_service.py`
 - GeneralMeta: `general_meta/app.py` (`run_general_meta`), which the website's data publish runs on its
   `evolution.db` snapshot
@@ -61,8 +60,7 @@ not directly from kernel internals.
 
 - Charts (parsing, header reads, cached loads): `gear_optimizer/chart.py`
 - Timing models (a chart timed for Precise or default Non-Precise): `gear_optimizer/solver/timing_envelope.py`
-- Exported-data synchronization:
-  `gear_optimizer/data/exported_game_data_sync.py`
+- The game export (gears, minis, custom pools): `gear_optimizer/data/game_export.py`
 - Results store: `gear_optimizer/store/` (typed rows in `records.py`, schema and
   connections in `schema.py`, tables in `tables.py`, board rules in `boards.py`,
   reads and writes in `db.py`, the version 19 migration in `v19.py`)

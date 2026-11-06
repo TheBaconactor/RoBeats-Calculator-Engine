@@ -164,7 +164,8 @@ def profile(run: Path) -> None:
     with clock("startup"):
         from gear_optimizer import settings
         from gear_optimizer.domain.jobs import SharedRunContext
-        from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
+        from gear_optimizer.data.game_export import load_catalog
+        from gear_optimizer.gamedata import stat_curves
         from gear_optimizer.pipeline import fg, prepare, solve
         from gear_optimizer.pipeline.queue import build_queue
         from gear_optimizer.pipeline.storing import store_solve
@@ -172,7 +173,8 @@ def profile(run: Path) -> None:
         from gear_optimizer.store import schema
 
         run_settings, paths = settings.read_run_settings(), settings.paths()
-        gears, minis = load_gears(paths.gears_csv), load_minis(paths.minis_csv)
+        catalog = load_catalog(paths.game_export)
+        gears, minis = catalog.gears, catalog.minis
         schema.ensure(paths.database)
         tasks = build_queue(run_settings, SharedRunContext(multi_start=run_settings.multi_start, curves=stat_curves(),
                                                            gears=gears, minis=minis, ga_depth=run_settings.search_depth))
@@ -263,7 +265,8 @@ def surfaces(run: Path) -> None:
     clock = _Clock()
     from gear_optimizer.chart import load_chart
     from gear_optimizer.core.timing_modes import PRECISE, TIMING_MODES
-    from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
+    from gear_optimizer.data.game_export import load_catalog
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.solver.team_buff_tiers import build_team_buff_tier_db_batches
     from gear_optimizer.settings import paths
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
@@ -272,7 +275,8 @@ def surfaces(run: Path) -> None:
     from general_meta import run_general_meta
 
     database, curves = paths().database, stat_curves()
-    gears, minis = load_gears(paths().gears_csv), load_minis(paths().minis_csv)
+    catalog = load_catalog(paths().game_export)
+    gears, minis = catalog.gears, catalog.minis
     outputs: dict[str, str] = {}
     with clock("general-meta"):
         outputs["general-meta"] = digest(run_general_meta(database)["results"])
@@ -327,11 +331,10 @@ def service(run: Path) -> None:
     """The service's solve(): official charts on the warm worker, a custom pool, and an uploaded chart's cold run."""
     clock = _Clock()
     from gear_optimizer import robeatsmeta_service
-    from gear_optimizer.gamedata import load_gears
+    from gear_optimizer.data.game_export import load_catalog
     from gear_optimizer.settings import paths
 
-    robeatsmeta_service.DATA_ROOT, robeatsmeta_service.GEAR_DIR = paths().data_dir, paths().gear_dir
-    requests = _service_requests(paths().data_dir, min(load_gears(paths().gears_csv)))
+    requests = _service_requests(paths().data_dir, min(load_catalog(paths().game_export).gears))
     outputs = {}
     for name, request in requests.items():
         with clock(f"service {name}"):
@@ -363,7 +366,7 @@ def _frozen_inputs(root: Path) -> Path:
     for relative in CHARTS:
         (staging / "Data" / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(TREE / "Data" / relative, staging / "Data" / relative)
-    shutil.copytree(TREE / "Data" / "Gear", staging / "Data" / "Gear")
+    shutil.copyfile(TREE / "Data" / "exported_game_data.json", staging / "Data" / "exported_game_data.json")
     (staging / "config.ini").write_text(_CONFIG, encoding="utf-8")
     staging.rename(inputs)
     return inputs

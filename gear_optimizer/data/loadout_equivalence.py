@@ -167,7 +167,7 @@ def minis_signature_to_names_map(
     """
     Build (and cache) a signature->all-names map for a given song-context.
 
-    This lets persistence populate mini variant groups deterministically from Minis.csv
+    This lets persistence populate mini variant groups deterministically from the catalog
     (instead of relying on the GA to have explored both names).
     """
     key = (primary_color, secondary_color, selected_color)
@@ -196,10 +196,10 @@ def canonical_minis_groups_from_names(
     mini_sigs: List[tuple[Any, ...]] | None = None,
 ) -> list[list[str]]:
     """
-    Deterministically expand minis into variant groups based on Minis.csv equivalence.
+    Deterministically expand minis into variant groups based on catalog equivalence.
 
     For each selected mini name, we compute its effective signature under the song context,
-    then expand it to all minis that share that signature in the provided Minis.csv map.
+    then expand it to all minis that share that signature in the provided catalog map.
     Callers that already computed those signatures for hashing can pass `mini_sigs`.
 
     Multiplicity is preserved (e.g., if duplicates ever appear).

@@ -17,12 +17,6 @@ def test_cli_run_inits_app_once_and_returns_its_exit_status(monkeypatch):
             return status[0]
 
     monkeypatch.setattr(optimizer_cli, "common_init", lambda: None)
-    monkeypatch.setattr(optimizer_cli, "_apply_taichi_shell_env", lambda: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.client_update",
-        types.SimpleNamespace(update_and_restart_client=lambda: None),
-    )
     monkeypatch.setitem(sys.modules, "gear_optimizer.app", types.SimpleNamespace(GearOptimizerApp=FakeApp))
 
     status.append(0)

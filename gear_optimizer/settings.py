@@ -18,9 +18,9 @@ Environment variables the engine reads (every one of them):
     TAICHI_VULKAN_VISIBLE_DEVICE        GPU to use when several are visible
     METAFINDER_OUTPUT                   print progress/results to the console (1/0)
     METAFINDER_PROGRESS                 1 forces the progress bar on, 0 off; unset = on in an interactive terminal
-    ROBEATSMETA_OPTIMIZER_SERVICE_MODE  running under the :8765 service (no self-update, GPU request timeouts,
-                                        GPU runtime failures stop the process)
-  :8765 service (see ServiceSettings) and MetaFinder distribution (see MetaFinderSettings).
+    ROBEATSMETA_OPTIMIZER_SERVICE_MODE  running under the :8765 service (GPU request timeouts, GPU runtime failures
+                                        stop the process)
+  :8765 service: see ServiceSettings.
 """
 
 from __future__ import annotations
@@ -80,16 +80,8 @@ class Paths:
     fg_cache: Path
 
     @property
-    def gear_dir(self) -> Path:
-        return self.data_dir / "Gear"
-
-    @property
-    def gears_csv(self) -> Path:
-        return self.gear_dir / "Gears.csv"
-
-    @property
-    def minis_csv(self) -> Path:
-        return self.gear_dir / "Minis.csv"
+    def game_export(self) -> Path:
+        return self.data_dir / "exported_game_data.json"
 
     def chart_dir(self, difficulty: str) -> Path:
         if difficulty not in DIFFICULTIES:
@@ -239,15 +231,9 @@ class ServiceSettings:
     port: int
     api_token: str  # required for a non-loopback bind
     solve_pool: int  # concurrent solves admitted
-    min_free_mb: int  # free memory a new solve waits for
     max_body_bytes: int
-    max_custom_chart_events: int
-    solve_timeout_s: int
-    repeats: int  # optimizer repeats per solve
-    persistent_solver: bool  # official solves reuse one warm worker process
-    run_dir: str  # per-solve workspaces; empty = the service's default
-    catalog_data_dir: str  # official chart library; empty = <engine>/Data
-    gear_source_dir: str  # game data copied into a persistent worker's data dir
+    run_dir: str  # solve workspaces; empty = <bin>/robeatsmeta_api_runs
+    catalog_data_dir: str  # the official chart library the song list reads; empty = the engine's Data
 
 
 def service_settings() -> ServiceSettings:
@@ -256,43 +242,7 @@ def service_settings() -> ServiceSettings:
         port=_env_int("ROBEATSMETA_OPTIMIZER_API_PORT", 8765, minimum=1),
         api_token=_env("ROBEATSMETA_OPTIMIZER_API_TOKEN"),
         solve_pool=_env_int("ROBEATSMETA_OPTIMIZER_SERVICE_POOL", 10, minimum=1),
-        min_free_mb=_env_int("ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB", 3000, minimum=0),
         max_body_bytes=_env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 * 1024 * 1024, minimum=1024),
-        max_custom_chart_events=_env_int("ROBEATSMETA_OPTIMIZER_MAX_CUSTOM_EVENTS", 4_000, minimum=1),
-        solve_timeout_s=_env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60, minimum=1),
-        repeats=_env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1, minimum=1),
-        persistent_solver=_env_bool("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", True),
         run_dir=_env("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR"),
         catalog_data_dir=_env("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR"),
-        gear_source_dir=_env("ROBEATSMETA_OPTIMIZER_GEAR_SOURCE_DIR"),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class MetaFinderSettings:
-    """MetaFinder distribution: the client syncing from the server, and the server publishing to clients."""
-
-    server_url: str  # METAFINDER_FRONTIER_SERVER_URL (client; required to sync)
-    credentials_file: Path  # METAFINDER_FRONTIER_CREDENTIALS_FILE (client)
-    clients_file: Path  # ROBEATSMETA_FRONTIER_CLIENTS_FILE (server)
-    publication_dir: Path  # ROBEATSMETA_FRONTIER_PUBLICATION_DIR (server)
-    source_dir: Path  # ROBEATSMETA_FRONTIER_SOURCE_DIR (server)
-    git_remote: str
-    git_branch: str
-    git_poll_seconds: int
-    git_timeout_seconds: int
-
-
-def metafinder_settings() -> MetaFinderSettings:
-    bin_dir = paths().bin_dir
-    return MetaFinderSettings(
-        server_url=_env("METAFINDER_FRONTIER_SERVER_URL").rstrip("/"),
-        credentials_file=_env_path("METAFINDER_FRONTIER_CREDENTIALS_FILE", bin_dir / "frontier_client_credentials.json"),
-        clients_file=_env_path("ROBEATSMETA_FRONTIER_CLIENTS_FILE", bin_dir / "frontier_server_clients.json"),
-        publication_dir=_env_path("ROBEATSMETA_FRONTIER_PUBLICATION_DIR", bin_dir / "frontier_publications"),
-        source_dir=_env_path("ROBEATSMETA_FRONTIER_SOURCE_DIR", bin_dir / "frontier_server_sources"),
-        git_remote=_env("ROBEATSMETA_FRONTIER_GIT_REMOTE") or "origin",
-        git_branch=_env("ROBEATSMETA_FRONTIER_GIT_BRANCH") or "main",
-        git_poll_seconds=_env_int("ROBEATSMETA_FRONTIER_GIT_POLL_SECONDS", 300, minimum=60),
-        git_timeout_seconds=_env_int("ROBEATSMETA_FRONTIER_GIT_TIMEOUT_SECONDS", 120, minimum=30),
     )

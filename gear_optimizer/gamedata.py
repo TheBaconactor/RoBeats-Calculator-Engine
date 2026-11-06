@@ -1,14 +1,12 @@
 """Game data: gear, minis, the game's stat curves, TeamBuff tiers and Mini Ascension.
 
-Gear and minis are read from Data/Gear (Gears.csv, Minis.csv, generated from the game's exported_game_data.json);
-the stat curves are the game's own formulas (GearStats.lua), computed here. All of it is immutable once built.
+The items come from the game's export (data.game_export); the stat curves are the game's own formulas (GearStats.lua),
+computed here. All of it is immutable once built.
 """
 
 from __future__ import annotations
 
-import csv
 import functools
-import json
 import math
 import threading
 from collections.abc import Iterable, Mapping
@@ -26,31 +24,6 @@ CURVE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever 
 STATS = (*CURVE_STATS, *ELEMENTS)
 
 Stats = dict[str, int]
-
-_GEAR_COLUMNS = {
-    "Chill": "Chill",
-    "Flow": "Flow",
-    "Rush": "Rush",
-    "Beat": "Beat",
-    "Vibe": "Vibe",
-    "PPoint": "Perfect Points",
-    "CMult": "Combo Multiplier",
-    "FMult": "Fever Multiplier",
-    "Time": "Fever Time",
-    "Fill": "Fever Fill Rate",
-}
-_GEAR_OTHER_COLUMNS = {"Type", "Gear Name", "PTime"}
-_MINI_COLUMNS = {
-    "Chill": "Chill",
-    "Flow": "Flow",
-    "Rush": "Rush",
-    "Beat": "Beat",
-    "Vibe": "Vibe",
-    "CbMlt": "Combo Multiplier",
-    "FvMlt": "Fever Multiplier",
-    "FvTim": "Fever Time",
-    "FvFil": "Fever Fill Rate",
-}
 
 # TeamBuff: Perfect Points plus a bonus to the team color (always the song's primary element).
 TEAM_BUFFS: dict[str, tuple[int, int]] = {
@@ -239,88 +212,6 @@ def _combo_ramp(gains: np.ndarray) -> np.ndarray:
     return ramp
 
 
-def _int_cell(value: str, *, column: str, item: str) -> int:
-    text = value.strip()
-    if not text:
-        return 0
-    try:
-        return int(text)
-    except ValueError as exc:
-        raise ValueError(f"{column} for {item!r} must be an integer, got {value!r}") from exc
-
-
-def _read_rows(path: Path) -> tuple[list[str], list[list[str]]]:
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        rows = [row for row in csv.reader(fh) if any(cell.strip() for cell in row)]
-    if not rows:
-        raise ValueError(f"{path} is empty")
-    return [cell.strip() for cell in rows[0]], rows[1:]
-
-
-def read_gears(path: Path) -> dict[str, Gear]:
-    header, rows = _read_rows(path)
-    unknown = set(header) - set(_GEAR_COLUMNS) - _GEAR_OTHER_COLUMNS
-    if unknown or "Gear Name" not in header or "Type" not in header:
-        raise ValueError(f"{path}: unexpected header {header}")
-    gears: dict[str, Gear] = {}
-    for row in rows:
-        cells = dict(zip(header, row, strict=True))
-        name = cells["Gear Name"].strip()
-        stats = empty_stats()
-        for column, stat in _GEAR_COLUMNS.items():
-            stats[stat] = _int_cell(cells[column], column=column, item=name)
-        if not name or name in gears:
-            raise ValueError(f"{path}: missing or duplicate gear name {name!r}")
-        perfect_time = _int_cell(cells["PTime"], column="PTime", item=name)
-        gears[name] = Gear(name=name, slot=cells["Type"].strip(), stats=stats, perfect_time=perfect_time)
-    return gears
-
-
-def read_minis(path: Path) -> dict[str, Mini]:
-    """Minis.csv: max-level stats, then an "L1 Stats" block repeating the columns at level 1."""
-    header, rows = _read_rows(path)
-    split = header.index("L1 Stats")
-    main, level1 = header[:split], header[split + 1 :]
-    if level1[-1] != "Song Target":
-        raise ValueError(f"{path}: expected Song Target as the last column, got {header}")
-    minis: dict[str, Mini] = {}
-    for row in rows:
-        if len(row) != len(header):
-            raise ValueError(f"{path}: row has {len(row)} cells, header has {len(header)}: {row[:3]}")
-        name = row[header.index("Mini Name")].strip()
-        if not name or name in minis:
-            raise ValueError(f"{path}: missing or duplicate mini name {name!r}")
-        # The blank-headed columns are the Perfect Points slot; minis have none, so they must stay empty.
-        for index, column in enumerate(header[:-1]):
-            if not column and row[index].strip():
-                raise ValueError(f"{path}: {name!r} has a value under a blank header (column {index})")
-        stats = empty_stats()
-        for index, column in enumerate(main):
-            if column in _MINI_COLUMNS:
-                stats[_MINI_COLUMNS[column]] = _int_cell(row[index], column=column, item=name)
-        level1_elements = {
-            column: _int_cell(row[split + 1 + index], column=f"L1 {column}", item=name)
-            for index, column in enumerate(level1)
-            if column in ELEMENTS and row[split + 1 + index].strip()
-        }
-        targets = json.loads(row[-1]) if row[-1].strip() else []
-        if not isinstance(targets, list) or not all(isinstance(song, str) for song in targets):
-            raise ValueError(f"{path}: Song Target for {name!r} must be a JSON list of song names")
-        # Level-1 values only rank colors for the elemental bonus, which only a targeted song gets.
-        # The service's custom minis target no song and leave the level-1 block blank.
-        missing_level1 = [color for color in ELEMENTS if stats[color] > 0 and color not in level1_elements]
-        if missing_level1 and targets:
-            raise ValueError(f"{path}: {name!r} has no level-1 value for {missing_level1}")
-        minis[name] = Mini(
-            name=name,
-            element=row[header.index("Type")].strip(),
-            stats=stats,
-            level1_elements=level1_elements,
-            song_targets=frozenset(song.strip() for song in targets if song.strip()),
-        )
-    return minis
-
-
 def _curve(a0: float, a40: float, a80: float) -> np.ndarray:
     return np.array([_stat_curve(a0, a40, a80, value) for value in range(MAX_STAT + 1)])
 
@@ -345,11 +236,9 @@ _FILE_CACHE: dict[tuple[str, Path], tuple[tuple[int, int], object]] = {}
 _FILE_CACHE_LOCK = threading.Lock()
 
 
-def _load_cached(path: Path, read):
-    """read(path), cached per file until the file changes (a new Data revision reloads it).
-
-    Callers share the cached value and must not mutate it.
-    """
+def load_cached(path: Path, read):
+    """read(path), cached per file until the file changes (a new Data revision reloads it). Callers share the cached
+    value and must not mutate it."""
     resolved = Path(path).resolve()
     stat = resolved.stat()
     stamp = (stat.st_mtime_ns, stat.st_size)
@@ -362,16 +251,6 @@ def _load_cached(path: Path, read):
     with _FILE_CACHE_LOCK:
         _FILE_CACHE[key] = (stamp, value)
     return value
-
-
-def load_gears(path: Path) -> dict[str, Gear]:
-    """Gears.csv by name, in file order."""
-    return _load_cached(path, read_gears)
-
-
-def load_minis(path: Path) -> dict[str, Mini]:
-    """Minis.csv by name, in file order."""
-    return _load_cached(path, read_minis)
 
 
 def perfect_time_of(gear_names: Iterable[str], gears: Mapping[str, Gear]) -> int:

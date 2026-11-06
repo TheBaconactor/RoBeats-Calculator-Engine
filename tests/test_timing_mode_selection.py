@@ -7,15 +7,18 @@ import io
 import pytest
 
 
-def test_service_request_gate_preserves_each_supported_mode():
+def test_a_service_request_keeps_each_supported_mode():
     from gear_optimizer import robeatsmeta_service
 
-    assert robeatsmeta_service._normalize_timing_mode(None) == "non-precise"
-    assert robeatsmeta_service._normalize_timing_mode("precise") == "precise"
-    assert robeatsmeta_service._normalize_timing_mode("non-precise") == "non-precise"
+    def mode_of(value):
+        return robeatsmeta_service.parse_request({"chartText": "Song Data\n", "timingMode": value}).timing_mode
+
+    assert mode_of(None) == "non-precise"
+    assert mode_of("precise") == "precise"
+    assert mode_of("non-precise") == "non-precise"
     for mode in ("bogus", "perfect_window", "zero_ms", "frame_robust"):
         with pytest.raises(robeatsmeta_service.RequestError):
-            robeatsmeta_service._normalize_timing_mode(mode)
+            mode_of(mode)
 
 
 def test_startup_prepares_both_frontier_cache_families_per_mode(monkeypatch):

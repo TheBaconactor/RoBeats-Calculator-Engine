@@ -13,30 +13,16 @@ Data/
 ├── Easy/                      # Easy chart .txt files
 ├── Normal/                    # Normal chart .txt files
 ├── Hard/                      # Hard chart .txt files
-├── Gear/
-│   ├── Gears.csv
-│   └── Minis.csv
-└── exported_game_data.json    # game export; feeds gear CSV regeneration
+└── exported_game_data.json    # game export: gears, minis, songs
 ```
 
 The optimizer reads this fixed layout under `Data/` (or under `ROBEATSMETA_OPTIMIZER_DATA_DIR`). Chart files use the
 RoBeats note-chart text format (tab-separated rows).
 
-## Who uses which data source?
+## Gears and Minis
 
-| Persona | Data source |
-|---|---|
-| **Host operator** | Maintains the canonical `Data/` tree in git and on the authoritative machine; builds frontiers and publishes revisions. |
-| **Trusted clients** | Receive Data/frontier bundles from an explicitly configured host (requires `bin/frontier_client_credentials.json`). |
-| **Community DIY users** | Use the `Data/` tree from a git clone, or populate their own copy before the first run. Frontier sync is skipped when no credential file is present. |
-
-## Gear and Mini tables
-
-Regenerate the CSVs from the bundled export when game data changes:
-
-```bash
-python -m gear_optimizer.cli sync-data
-```
+The optimizer reads them straight from `exported_game_data.json`, so a new export needs no regeneration step. A gear's
+export stats are final; a mini's are its level-1 stats, which the reader raises to max level.
 
 ## Results database
 
@@ -54,8 +40,5 @@ export EVOLUTION_DB_PATH=/path/to/evolution.db
 | `evolution.db` | Base and Force Great leaderboards |
 | `bin/timeline_frontier_cache/` | Exact fever-timing frontier payloads |
 | `bin/fg_response_frontier_cache/` | Exact Force Great response-frontier payloads |
-| `bin/frontier_publications/` | Host-side published revisions (server only) |
 
-Only the authoritative machine builds timeline and FG frontiers for publication. Trusted clients install prebuilt
-frontier bundles from the host; see the
-[maintenance playbook](../docs/MAINTENANCE_PLAYBOOK.md#managed-frontier-distribution).
+A run builds the frontiers its charts lack, and later runs reuse them.

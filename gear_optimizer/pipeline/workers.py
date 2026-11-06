@@ -145,7 +145,8 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
     from gear_optimizer.core.memory import memory_release_requested, set_memory_watchdog_limit
     from gear_optimizer.core.output import suppress_stderr, suppress_stdout
     from gear_optimizer.domain.jobs import SharedRunContext
-    from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
+    from gear_optimizer.data.game_export import load_catalog
+    from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.pipeline.solve import solve_song
     from gear_optimizer.pipeline.storing import store_solve
     from gear_optimizer.gpu.executor import is_stop_abort_exception, start_gpu_executor
@@ -159,7 +160,8 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
     configure_default_logging()
     pin_solve_worker(worker, workers)
     run, paths = settings.read_run_settings(), settings.paths()
-    gears, minis = load_gears(paths.gears_csv), load_minis(paths.minis_csv)
+    catalog = load_catalog(paths.game_export)
+    gears, minis = catalog.gears, catalog.minis
     context = SharedRunContext(multi_start=run.multi_start, curves=stat_curves(), gears=gears, minis=minis,
                                ga_depth=run.search_depth)
     executor = start_gpu_executor(run.multi_start)

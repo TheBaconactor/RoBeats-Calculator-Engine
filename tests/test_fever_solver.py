@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from gear_optimizer.gamedata import load_gears, load_minis, stat_curves, song_minis
+from gear_optimizer.data.game_export import load_catalog
+from gear_optimizer.gamedata import stat_curves, song_minis
 from gear_optimizer.solver.song_config import baseline_fixed_stats
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
@@ -21,8 +22,9 @@ def test_real_song_gem_search_finds_the_exact_optimum_past_a_float32_near_tie():
     song = time_song(load_chart(Path(__file__).resolve().parents[1] / "Data" / "Hard" / "Kanpai (Hard) by Kagi.txt"), "precise")
     curves = stat_curves()
     build_or_load_timeline_frontier_payload(song, curves)
-    gears = load_gears(paths().gears_csv)
-    view = {m.name: m for m in song_minis(load_minis(paths().minis_csv).values(), song.chart.name, "Vibe", "Vibe")}
+    catalog = load_catalog(paths().game_export)
+    gears = catalog.gears
+    view = {m.name: m for m in song_minis(catalog.minis.values(), song.chart.name, "Vibe", "Vibe")}
     gear = (
         "The Games: Hidden Shine",
         "Legendary Vibe Ringleader's Necktie",

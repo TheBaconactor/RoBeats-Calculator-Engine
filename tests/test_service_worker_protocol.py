@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
-import queue
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -10,185 +12,164 @@ from gear_optimizer import robeatsmeta_service as service
 from gear_optimizer import service_worker as worker
 from gear_optimizer.gpu.executor import GpuServiceTimeoutError
 
-
-def test_persistent_worker_reuses_one_process(monkeypatch):
-    starts = 0
-    worker = service._PersistentSolveWorker()
-
-    class FakeStdin:
-        def write(self, line: str) -> int:
-            payload = json.loads(line)
-            worker._responses.put({"ok": True, "loadouts": [{"mode": payload["mode"]}]})
-            return len(line)
-
-        def flush(self) -> None:
-            return None
-
-        def close(self) -> None:
-            return None
-
-    class FakeProcess:
-        stdin = FakeStdin()
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        pid = 1
-
-        @staticmethod
-        def poll():
-            return None
-
-    def fake_start():
-        nonlocal starts
-        starts += 1
-        worker._responses = queue.Queue()
-        worker._gear_source = service.GEAR_DIR
-        worker._proc = FakeProcess()
-        return worker._proc
-
-    monkeypatch.setattr(worker, "_start_locked", fake_start)
-
-    assert worker.request({"mode": "default"}) == [{"mode": "default"}]
-    assert worker.request({"mode": "non-precise"}) == [{"mode": "non-precise"}]
-    assert starts == 1
+# The worker's side of the protocol, for the tests of the service's side.
+_FAKE_WORKER = textwrap.dedent("""
+    import json, sys, time
+    for line in sys.stdin:
+        request = json.loads(line)
+        action = request.get("action")
+        if action == "exit":
+            raise SystemExit(1)
+        if action == "hang":
+            time.sleep(60)
+        if action == "noise":
+            print("not json", flush=True)
+        if action == "lost-gpu":
+            print(json.dumps({"ok": False, "error": "GPU gone", "restart": True}), flush=True)
+        elif action == "fail":
+            print(json.dumps({"ok": False, "error": "bad chart", "restart": False}), flush=True)
+        else:
+            print(json.dumps({"ok": True, "loadouts": [request]}), flush=True)
+""")
 
 
-def test_persistent_worker_stop_is_idempotent(monkeypatch):
-    worker = service._PersistentSolveWorker()
-    stopped: list[int] = []
+@pytest.fixture
+def solve_worker(tmp_path, monkeypatch):
+    """A _SolveWorker on a fake worker process; `.starts` counts its processes."""
+    real_popen = subprocess.Popen
+    subject = service._SolveWorker(tmp_path / "worker")
+    subject.starts = 0
 
-    class FakeProcess:
-        pid = 123
-        stdin = io.StringIO()
-        stdout = io.StringIO()
-        stderr = io.StringIO()
+    def popen(_command, **kwargs):
+        subject.starts += 1
+        subject.env = kwargs["env"]
+        return real_popen([sys.executable, "-c", _FAKE_WORKER], **kwargs)
 
-        @staticmethod
-        def poll():
-            return None
-
-        @staticmethod
-        def wait(timeout=None):
-            stopped.append(1)
-            return 0
-
-    worker._proc = FakeProcess()
-    monkeypatch.setattr(service, "_kill_process_group", lambda _proc: stopped.append(1))
-
-    worker.stop()
-    worker.stop()
-
-    assert stopped == [1, 1]
+    monkeypatch.setattr(service.subprocess, "Popen", popen)
+    yield subject
+    subject.stop()
 
 
-def test_service_worker_marks_daemon_before_native_startup(monkeypatch):
+def test_one_process_answers_every_request(solve_worker):
+    assert solve_worker.request({"n": 1}) == [{"n": 1}]
+    assert solve_worker.request({"n": 2}) == [{"n": 2}]
+    assert solve_worker.starts == 1
+
+
+def test_a_failed_request_keeps_the_process(solve_worker):
+    with pytest.raises(RuntimeError, match="bad chart"):
+        solve_worker.request({"action": "fail"})
+    assert solve_worker.request({"n": 1}) == [{"n": 1}]
+    assert solve_worker.starts == 1
+
+
+@pytest.mark.parametrize(("action", "message"), [("lost-gpu", "GPU gone"), ("exit", "exited")])
+def test_a_lost_process_fails_its_request_and_the_next_one_starts_fresh(solve_worker, action, message):
+    with pytest.raises(RuntimeError, match=message):
+        solve_worker.request({"action": action})
+    assert solve_worker.request({"n": 1}) == [{"n": 1}]
+    assert solve_worker.starts == 2
+
+
+def test_stray_output_is_not_an_answer(solve_worker):
+    assert solve_worker.request({"action": "noise", "n": 1}) == [{"action": "noise", "n": 1}]
+
+
+def test_a_solve_past_the_timeout_kills_the_process(solve_worker, monkeypatch):
+    monkeypatch.setattr(service, "_SOLVE_TIMEOUT_S", 0.5)
+    with pytest.raises(RuntimeError, match="timed out"):
+        solve_worker.request({"action": "hang"})
+    assert solve_worker.request({"n": 1}) == [{"n": 1}]
+    assert solve_worker.starts == 2
+
+
+def test_stop_twice_is_stop_once(solve_worker):
+    solve_worker.request({"n": 1})
+    solve_worker.stop()
+    solve_worker.stop()
+    assert solve_worker._proc is None
+
+
+def test_each_worker_has_its_own_result_database_and_frontier_caches_when_asked(solve_worker, tmp_path, monkeypatch):
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", "/shared/timeline")
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", "/shared/fg")
+    solve_worker.request({"n": 1})
+    assert solve_worker.env["EVOLUTION_DB_PATH"] == str(tmp_path / "worker" / "bin" / "service_result.db")
+    assert solve_worker.env["TIMELINE_FRONTIER_CACHE_DIR"] == "/shared/timeline"
+
+    uploaded = service._SolveWorker(tmp_path / "upload", frontier_root=tmp_path / "upload")
+    uploaded.starts = 0
+    env = uploaded._frontier_env()
+    assert env == {
+        "TIMELINE_FRONTIER_CACHE_DIR": str(tmp_path / "upload" / "timeline"),
+        "FG_RESPONSE_FRONTIER_CACHE_DIR": str(tmp_path / "upload" / "fg"),
+    }
+
+
+def _quiet_startup(monkeypatch, events: list[str] | None = None) -> None:
     import gear_optimizer.cli as cli
     import gear_optimizer.core.logging_config as logging_config
 
+    def note(name: str):
+        return lambda: None if events is None else events.append(name)
+
+    monkeypatch.setattr(worker, "make_process_background_only", note("background"))
+    monkeypatch.setattr(worker, "reassert_process_background_only", note("reassert"))
+    monkeypatch.setattr(logging_config, "configure_default_logging", note("logging"))
+    monkeypatch.setattr(cli, "apply_service_frontier_threads", note("frontier_threads"))
+    monkeypatch.setattr(sys, "__stdout__", sys.__stdout__)  # the worker keeps its own stdout from everything else
+
+
+def test_the_worker_marks_itself_a_daemon_before_native_startup(monkeypatch):
     events: list[str] = []
-    monkeypatch.setattr(worker, "make_process_background_only", lambda: events.append("background"))
-    monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))
-    monkeypatch.setattr(cli, "common_init", lambda: events.append("common_init"))
-    monkeypatch.setattr(logging_config, "configure_default_logging", lambda: events.append("logging"))
-    monkeypatch.setattr(cli, "_apply_taichi_shell_env", lambda: events.append("taichi_env"))
-    monkeypatch.setattr(cli, "_apply_service_mode_frontier_threads", lambda: events.append("frontier_threads"))
-
-    class FakeSession:
-        def __init__(self):
-            events.append("session")
-
-    monkeypatch.setattr(worker, "PersistentOptimizerSession", FakeSession)
+    _quiet_startup(monkeypatch, events)
     monkeypatch.setattr(worker.sys, "stdin", io.StringIO(""))
-
     assert worker.main() == 0
-    assert events == [
-        "background",
-        "common_init",
-        "logging",
-        "taichi_env",
-        "frontier_threads",
-        "reassert",
-        "session",
-    ]
+    assert events == ["background", "logging", "frontier_threads", "reassert"]
 
 
-def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("request_fields", "multi_start"), [
+    ({"reasoning": "default", "uploaded": False}, 20),  # the warm worker takes any reasoning level
+    ({"reasoning": "default", "uploaded": True}, 5),
+])
+def test_the_executor_is_sized_for_the_requests_a_worker_can_get(monkeypatch, request_fields, multi_start):
     from gear_optimizer.gpu import executor as gpu_executor
 
     events: list[str] = []
-    monkeypatch.setattr(gpu_executor, "start_gpu_executor", lambda multi_start: events.append(f"native_prewarm:{multi_start}"))
-    session = object.__new__(worker.PersistentOptimizerSession)
-
-    monkeypatch.setattr(worker, "stat_curves", lambda: events.append("load curves") or object())
-    monkeypatch.setattr(worker, "load_gears", lambda _path: {})
-    monkeypatch.setattr(worker, "load_minis", lambda _path: {})
+    monkeypatch.setattr(gpu_executor, "start_gpu_executor", lambda runs: events.append(f"start:{runs}"))
     monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))
-
-    session._initialize()
-
-    assert events == ["load curves", "native_prewarm:20", "reassert"]
-
-
-def test_service_worker_passes_the_promotion_target_to_the_solve(monkeypatch):
-    import gear_optimizer.cli as cli
-    import gear_optimizer.core.logging_config as logging_config
-
-    for name in ("common_init", "_apply_taichi_shell_env", "_apply_service_mode_frontier_threads"):
-        monkeypatch.setattr(cli, name, lambda: None)
-    monkeypatch.setattr(logging_config, "configure_default_logging", lambda: None)
-    monkeypatch.setattr(worker, "make_process_background_only", lambda: None)
-    monkeypatch.setattr(worker, "reassert_process_background_only", lambda: None)
-    calls = []
-
-    class FakeSession:
-        def solve(self, **kwargs):
-            calls.append(kwargs)
-            return [{"score": 1}]
-
-    monkeypatch.setattr(worker, "PersistentOptimizerSession", FakeSession)
-    lines = [
-        {"chartText": "c", "songName": "Song", "promoteTo": "/catalog/evolution.db"},
-        {"chartText": "c", "songName": "Song"},
-    ]
-    monkeypatch.setattr(worker.sys, "stdin", io.StringIO("".join(json.dumps(x) + "\n" for x in lines)))
-    monkeypatch.setattr(worker.sys, "stdout", io.StringIO())
-
-    assert worker.main() == 0
-    assert [c["promote_to"] for c in calls] == ["/catalog/evolution.db", None]
+    worker._started_executor(request_fields)
+    assert events == [f"start:{multi_start}", "reassert"]
 
 
 def _serve(monkeypatch, failures: list) -> tuple[list[dict], int]:
     """worker.main over one request per entry of `failures` (the exception that request's solve raises, or None).
-    Returns the protocol responses and the number of solves."""
-    import gear_optimizer.cli as cli
-    import gear_optimizer.core.logging_config as logging_config
-
-    for name in ("common_init", "_apply_taichi_shell_env", "_apply_service_mode_frontier_threads"):
-        monkeypatch.setattr(cli, name, lambda: None)
-    monkeypatch.setattr(logging_config, "configure_default_logging", lambda: None)
-    monkeypatch.setattr(worker, "make_process_background_only", lambda: None)
-    monkeypatch.setattr(worker, "reassert_process_background_only", lambda: None)
+    Returns the protocol answers and the number of solves."""
+    _quiet_startup(monkeypatch)
     solves: list[dict] = []
+    starts: list[dict] = []
 
-    class FakeSession:
-        def solve(self, **kwargs):
-            failure = failures[len(solves)]
-            solves.append(kwargs)
-            if failure is not None:
-                raise failure
-            return [{"score": 1}]
+    def solve(request, _executor):
+        failure = failures[len(solves)]
+        solves.append(request)
+        if failure is not None:
+            raise failure
+        return [{"score": 1}]
 
-    monkeypatch.setattr(worker, "PersistentOptimizerSession", FakeSession)
-    request = json.dumps({"chartText": "c", "songName": "Song"}) + "\n"
-    monkeypatch.setattr(worker.sys, "stdin", io.StringIO(request * len(failures)))
+    monkeypatch.setattr(worker, "solve", solve)
+    monkeypatch.setattr(worker, "_started_executor", lambda request: starts.append(request) or object())
+    line = json.dumps({"chartText": "c", "songName": "Song"}) + "\n"
+    monkeypatch.setattr(worker.sys, "stdin", io.StringIO(line * len(failures)))
     out = io.StringIO()
     monkeypatch.setattr(worker.sys, "stdout", out)
     assert worker.main() == 0
-    return [json.loads(line) for line in out.getvalue().splitlines()], len(solves)
+    assert len(starts) == min(1, len(failures))
+    return [json.loads(answer) for answer in out.getvalue().splitlines()], len(solves)
 
 
 def test_a_failed_request_is_answered_and_the_worker_keeps_serving(monkeypatch):
-    responses, solves = _serve(monkeypatch, [ValueError("bad chart"), None])
-    assert responses == [
+    answers, solves = _serve(monkeypatch, [ValueError("bad chart"), None])
+    assert answers == [
         {"ok": False, "error": "ValueError: bad chart", "restart": False},
         {"ok": True, "loadouts": [{"score": 1}]},
     ]
@@ -200,13 +181,13 @@ def test_a_failed_request_is_answered_and_the_worker_keeps_serving(monkeypatch):
     RuntimeError("Vulkan: VK_ERROR_DEVICE_LOST (device lost)"),
 ])
 def test_a_request_that_lost_the_gpu_ends_the_worker(monkeypatch, failure):
-    responses, solves = _serve(monkeypatch, [failure, None])
-    assert [r["restart"] for r in responses] == [True]
+    answers, solves = _serve(monkeypatch, [failure, None])
+    assert [answer["restart"] for answer in answers] == [True]
     assert solves == 1
 
 
 def test_past_the_memory_guard_the_worker_exits_after_answering(monkeypatch):
     monkeypatch.setattr(worker, "memory_release_requested", lambda: True)
-    responses, solves = _serve(monkeypatch, [None, None])
-    assert responses == [{"ok": True, "loadouts": [{"score": 1}]}]
+    answers, solves = _serve(monkeypatch, [None, None])
+    assert answers == [{"ok": True, "loadouts": [{"score": 1}]}]
     assert solves == 1

@@ -1,14 +1,12 @@
+"""The service through its request entry points. `worker` fakes the solve process; test_service_worker_protocol runs a
+real one."""
+
 from __future__ import annotations
 
-import concurrent.futures
 import io
 import json
 import os
-import queue
 import socket
-import sqlite3
-import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -18,6 +16,8 @@ import pytest
 
 from gear_optimizer import robeatsmeta_service as service
 from gear_optimizer.core.timing_modes import PRECISE
+from gear_optimizer.data.game_export import load_catalog
+from gear_optimizer.settings import paths
 
 
 def _write_chart(root: Path, difficulty: str, song_name: str, filename: str = "song.txt") -> None:
@@ -34,27 +34,46 @@ def _write_chart(root: Path, difficulty: str, song_name: str, filename: str = "s
     )
 
 
+def _write_export(root: Path, *songs: tuple[int, str, str]) -> None:
+    gear = {"name": "Catalog Hat", "slot": 3, "stats": {
+        "ColorBlue": 1, "ColorPurple": 0, "ColorRed": 0, "ColorOrange": 0, "ColorGreen": 0, "PerfectPoints": 0,
+        "ComboMultiplier": 0, "FeverMultiplier": 0, "FeverTime": 0, "FeverFillRate": 0, "PerfectTime": 0,
+    }}
+    mini = {"name": "Catalog Mini", "stats": {
+        "ColorBlue": 1, "ColorPurple": 0, "ColorRed": 0, "ColorOrange": 0, "ColorGreen": 0, "ComboMultiplier": 0,
+        "FeverMultiplier": 0, "FeverTime": 0, "FeverFillRate": 0,
+    }}
+    (root / "Data").mkdir(exist_ok=True)
+    (root / "Data" / "exported_game_data.json").write_text(json.dumps({
+        "gears": {"1": {"gears": [gear]}},
+        "minis": {"1": {"minis": [mini]}},
+        "songs": {"1": {"songs": [{"songid": i, "displayname": title, "artist": artist} for i, title, artist in songs]}},
+    }), encoding="utf-8")
+
+
 @pytest.fixture
 def data_root(tmp_path, monkeypatch):
     monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", raising=False)
-    monkeypatch.setattr(service, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(service, "DATA_ROOT", tmp_path / "Data")
-    monkeypatch.setattr(service, "GEAR_DIR", tmp_path / "Data" / "Gear")
-    monkeypatch.setattr(service, "_TIMELINE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "timeline_frontier_cache")
-    monkeypatch.setattr(service, "_FG_RESPONSE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "fg_response_frontier_cache")
-    monkeypatch.setattr(service, "_SERVICE_DRAINING_FOR_UPDATE", False)
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "0")
-    monkeypatch.setattr(service, "_PERSISTENT_SOLVE_WORKER", None)
-    monkeypatch.setattr(service.db, "promote", lambda *_args, **_kwargs: None)
-    service._AUTHORITATIVE_PUBLICATION_READY.clear()
-    service.clear_official_song_catalog_cache()
-    with service._INFLIGHT_SOLVES_LOCK:
-        service._INFLIGHT_SOLVES.clear()
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path / "Data"))
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "evolution.db"))
+    service.clear_official_charts()
     yield tmp_path
-    service._AUTHORITATIVE_PUBLICATION_READY.clear()
-    service.clear_official_song_catalog_cache()
-    with service._INFLIGHT_SOLVES_LOCK:
-        service._INFLIGHT_SOLVES.clear()
+    service.clear_official_charts()
+
+
+@pytest.fixture
+def worker(monkeypatch):
+    """Every solve-process request, with the worker that took it; each answers one loadout."""
+    requests: list[dict] = []
+
+    def request(self, payload):
+        requests.append({**payload, "worker": self})
+        return [{"loadout_hash": "h"}]
+
+    monkeypatch.setattr(service._SolveWorker, "request", request)
+    monkeypatch.setattr(service._SolveWorker, "stop", lambda self: None)
+    return requests
 
 
 def test_list_official_songs_reads_headers(data_root):
@@ -66,100 +85,79 @@ def test_list_official_songs_reads_headers(data_root):
     assert songs["Feeding [Hard]"]["difficulty"] == "Hard"
 
 
-def test_completed_publication_becomes_the_service_data_source(data_root):
-    published = data_root / "published" / "Data"
-    (published / "Gear").mkdir(parents=True)
-
-    service._activate_published_data(published)
-
-    assert service._AUTHORITATIVE_PUBLICATION_READY.is_set()
-    assert service.DATA_ROOT == published.resolve()
-    assert service.GEAR_DIR == (published / "Gear").resolve()
+def test_a_title_loses_its_difficulty_suffix(data_root):
+    folder = data_root / "Data" / "Hard"
+    folder.mkdir(parents=True)
+    (folder / "song.txt").write_text("Song Name\tSong\nTitle\tSong (Hard)\nSong Data\n", encoding="utf-8")
+    assert service.list_official_songs()[0]["title"] == "Song"
 
 
-def test_last_complete_publication_is_active_during_restart(data_root):
-    code_revision = "a" * 40
-    published = data_root / "snapshots" / code_revision / "Data"
-    (published / "Gear").mkdir(parents=True)
-
-    class _Distribution:
-        @staticmethod
-        def manifest_bytes():
-            return f'{{"code_revision":"{code_revision}"}}'.encode()
-
-    restored = service._activate_last_complete_publication(
-        _Distribution(),  # type: ignore[arg-type]
-        snapshots_root=data_root / "snapshots",
-    )
-
-    assert restored is True
-    assert service._AUTHORITATIVE_PUBLICATION_READY.is_set()
-    assert service.DATA_ROOT == published.resolve()
+def test_an_unreadable_chart_stays_out_of_the_list(data_root):
+    _write_chart(data_root, "Normal", "Good")
+    (data_root / "Data" / "Normal" / "bad.txt").write_text("no tab\n", encoding="utf-8")
+    assert [song["songId"] for song in service.list_official_songs()] == ["Good"]
 
 
-def test_api_catalog_uses_configured_external_song_library(data_root, monkeypatch):
-    _write_chart(data_root, "Hard", "Private Calculator Chart")
-    reference_data = data_root / "ReferenceClient" / "Data"
+def test_the_list_comes_from_a_configured_library(data_root, monkeypatch):
+    library = data_root / "Library"
     for difficulty in ("Easy", "Normal", "Hard"):
-        (reference_data / f"{difficulty} Songs").mkdir(parents=True)
-    external_chart = reference_data / "Hard Songs" / "canonical.txt"
-    external_chart.write_text(
-        "Song Name\tCanonical Replay Chart\n"
-        "Difficulty\t24\n"
-        "Primary Color\tBeat\n"
-        "Secondary Color\tVibe\n"
-        "Song Data\n"
-        "1000\t0\t0\t1\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(reference_data))
+        (library / f"{difficulty} Songs").mkdir(parents=True)
+    (library / "Normal Songs" / "chart.txt").write_text("Song Name\tLibrary Chart\nSong Data\n", encoding="utf-8")
+    _write_chart(data_root, "Normal", "Private Calculator Chart")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(library))
 
-    songs = service.list_official_songs()
-
-    assert [song["songId"] for song in songs] == ["Canonical Replay Chart"]
-    assert service.find_official_chart("Canonical Replay Chart") == external_chart
+    assert [song["songId"] for song in service.list_official_songs()] == ["Library Chart"]
+    assert service.find_official_chart("Library Chart").parent == library / "Normal Songs"
     with pytest.raises(service.RequestError):
         service.find_official_chart("Private Calculator Chart")
 
 
-def test_a_frontier_refresh_rereads_the_chart_library_and_wakes_the_maintainer(data_root, monkeypatch):
-    reference_data = data_root / "ReferenceClient" / "Data"
-    for difficulty in ("Easy", "Normal", "Hard"):
-        (reference_data / f"{difficulty} Songs").mkdir(parents=True)
-    normal_dir = reference_data / "Normal Songs"
-    (normal_dir / "first.txt").write_text(
-        "Song Name\tFirst Imported Chart\nSong Data\n1000\t0\t0\t1\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(reference_data))
+def test_a_configured_library_needs_every_difficulty(data_root, monkeypatch):
+    library = data_root / "Library"
+    (library / "Hard Songs").mkdir(parents=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(library))
+    with pytest.raises(RuntimeError, match="Easy Songs.*Normal Songs"):
+        service.list_official_songs()
+
+
+def test_find_official_chart_is_an_exact_match(data_root):
+    _write_chart(data_root, "Normal", "Canon in D [Normal]")
+    assert service.find_official_chart("Canon in D [Normal]").name == "song.txt"
+    with pytest.raises(service.RequestError):
+        service.find_official_chart("Canon in D")
+
+
+def test_a_refresh_rereads_the_charts_and_wakes_the_updater(data_root, monkeypatch):
+    _write_chart(data_root, "Normal", "First")
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_API_TOKEN", "secret")
-    calls: list[tuple[object, object]] = []
-
-    class _Maintainer:
-        def request_refresh(self):
-            calls.append(("wake", None))
-
+    calls: list[object] = []
     handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
     handler.path = "/frontiers/refresh"
     handler.headers = {"Authorization": "Bearer secret"}
-    handler.server = type("Server", (), {"frontier_maintainer": _Maintainer()})()
+    handler.server = type("Server", (), {"updater": type("U", (), {"request_check": lambda _: calls.append("wake")})()})()
     monkeypatch.setattr(handler, "_send", lambda status, payload: calls.append((status, payload)))
 
-    assert [song["songId"] for song in service.list_official_songs()] == ["First Imported Chart"]
-    (normal_dir / "second.txt").write_text(
-        "Song Name\tSecond Imported Chart\nSong Data\n1000\t0\t0\t1\n",
-        encoding="utf-8",
-    )
-    # Requests never stat the library: the chart appears once the publisher's refresh request arrives.
-    assert [song["songId"] for song in service.list_official_songs()] == ["First Imported Chart"]
+    assert len(service.list_official_songs()) == 1
+    _write_chart(data_root, "Normal", "Second", "second.txt")
+    # Requests never stat the library: the chart appears once the publisher's refresh arrives.
+    assert len(service.list_official_songs()) == 1
 
     handler.do_POST()
 
-    assert calls == [("wake", None), (service.HTTPStatus.ACCEPTED, {"queued": True})]
-    assert [song["songId"] for song in service.list_official_songs()] == [
-        "First Imported Chart",
-        "Second Imported Chart",
-    ]
+    assert calls == ["wake", (service.HTTPStatus.ACCEPTED, {"queued": True})]
+    assert len(service.list_official_songs()) == 2
+
+
+def test_requests_need_the_token(data_root, monkeypatch):
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_API_TOKEN", "secret")
+    statuses: list[object] = []
+    handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
+    handler.headers = {"Authorization": "Bearer wrong"}
+    monkeypatch.setattr(handler, "_send", lambda status, _payload: statuses.append(status))
+    for handle, path in ((handler.do_GET, "/songs"), (handler.do_POST, "/optimize"), (handler.do_POST, "/frontiers/refresh")):
+        handler.path = path
+        handle()
+    assert statuses == [service.HTTPStatus.UNAUTHORIZED] * 3
 
 
 def test_the_next_image_serves_on_the_handed_over_listening_socket(monkeypatch):
@@ -182,7 +180,7 @@ def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch)
     listener.bind(("127.0.0.1", 0))
     listener.listen()
     calls: list[str] = []
-    maintainer_kwargs: dict[str, object] = {}
+    updater_callbacks: dict[str, object] = {}
     executed: dict[str, object] = {}
 
     class _Server:
@@ -192,7 +190,7 @@ def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch)
             self.socket = listener
 
         def serve_forever(self):
-            maintainer_kwargs["restart_requested"]("abc123def4567890")
+            updater_callbacks["restart"]("abc123def4567890")
 
         def shutdown(self):
             calls.append("shutdown")
@@ -207,9 +205,9 @@ def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch)
         def start(self):
             self._target()
 
-    class _Maintainer:
-        def __init__(self, **kwargs):
-            maintainer_kwargs.update(kwargs)
+    class _Updater:
+        def __init__(self, _repo_root, **kwargs):
+            updater_callbacks.update(kwargs)
 
         def serve_forever(self):
             pass
@@ -220,15 +218,14 @@ def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch)
     monkeypatch.delenv(service._LISTENER_FD_ENV, raising=False)
     monkeypatch.setattr(service, "ThreadingHTTPServer", _Server)
     monkeypatch.setattr(service.threading, "Thread", _Thread)
-    monkeypatch.setattr(service, "_activate_last_complete_publication", lambda _state: True)
-    monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
-    monkeypatch.setattr(service, "_finish_server_code_update", lambda **_kwargs: None)
+    monkeypatch.setattr(service, "ServiceUpdater", _Updater)
+    monkeypatch.setattr(service._warm_worker, "stop", lambda: calls.append("worker"))
     monkeypatch.setattr(
         service.os, "execv", lambda _exe, args: executed.update(args=args, fd=os.environ[service._LISTENER_FD_ENV])
     )
     try:
         service.main(["--host", "127.0.0.1", "--port", "0"])
-        assert calls == ["shutdown", "stop"]  # the listening socket stays open across the exec
+        assert calls == ["shutdown", "worker", "stop"]  # the listening socket stays open across the exec
         assert executed["fd"] == str(listener.fileno()) and listener.get_inheritable()
         assert executed["args"][1:3] == ["-m", "gear_optimizer.robeatsmeta_service"]
     finally:
@@ -236,563 +233,223 @@ def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch)
         listener.close()
 
 
-def test_configured_external_library_requires_all_difficulty_directories(data_root, monkeypatch):
-    reference_data = data_root / "ReferenceClient" / "Data"
-    (reference_data / "Hard Songs").mkdir(parents=True)
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(reference_data))
-
-    with pytest.raises(RuntimeError, match="Easy Songs.*Normal Songs"):
-        service.list_official_songs()
-
-
-def test_service_starts_frontier_server_maintenance(monkeypatch):
-    calls: list[str] = []
-
-    class _Server:
-        daemon_threads = False
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def serve_forever(self):
-            calls.append("serve")
-
-        def server_close(self):
-            calls.append("close")
-
-    class _Thread:
-        def __init__(self, *, target, **_kwargs):
-            self._target = target
-
-        def start(self):
-            self._target()
-
-    monkeypatch.setattr(service, "ThreadingHTTPServer", _Server)
-    monkeypatch.setattr(service.threading, "Thread", _Thread)
-    monkeypatch.setattr(
-        service,
-        "_activate_last_complete_publication",
-        lambda _state: calls.append("restore") or True,
-    )
-
-    maintainer_kwargs: dict[str, object] = {}
-
-    class _Maintainer:
-        def __init__(self, **kwargs):
-            maintainer_kwargs.update(kwargs)
-            calls.append("init")
-
-        def serve_forever(self):
-            calls.append("maintain")
-
-        def stop(self):
-            calls.append("stop")
-
-    class _CatalogBuilder:
-        def request(self):
-            calls.append("catalog build")
-
-    monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
-    monkeypatch.setattr(service, "_CatalogBuilder", _CatalogBuilder)
-    monkeypatch.setattr(service, "_activate_published_data", lambda root: calls.append(f"activate {root}"))
-
-    assert service.main(["--host", "127.0.0.1", "--port", "0"]) == 0
-
-    assert calls == ["restore", "init", "maintain", "serve", "stop", "close"]
-    # Publication prebuilds run in a child process, never on the service's maintenance thread.
-    assert maintainer_kwargs["prebuild"] is service._prebuild_frontier_caches_isolated
-
-    # Every publication the maintainer activates builds the charts it made newly solvable.
-    maintainer_kwargs["publication_ready"](Path("published"))
-    assert calls[-2:] == ["activate published", "catalog build"]
-
-
-def test_find_official_chart_exact_match(data_root):
+def test_an_official_request_keeps_its_song_identity(data_root):
     _write_chart(data_root, "Normal", "Canon in D [Normal]")
-    chart = service.find_official_chart("Canon in D [Normal]")
-    assert chart.read_text(encoding="utf-8").startswith("Song Name\tCanon in D [Normal]")
+    request = service.parse_request({"jobId": "job/1", "targetSongId": "Canon in D [Normal]", "timingMode": PRECISE})
+    assert (request.job, request.song_name, request.uploaded, request.promotes) == ("job_1", "Canon in D [Normal]", False, True)
+    assert "Song Name\tCanon in D [Normal]\n" in request.chart_text
+    assert "Timing Mode\tprecise\n" in request.chart_text
+    assert "Difficulty\tNormal\n" in request.chart_text  # the timeline cache key reads it
 
 
-def test_official_song_catalog_reuses_header_scan_for_lookup(data_root, monkeypatch):
-    _write_chart(data_root, "Normal", "Canon in D [Normal]", filename="canon.txt")
-    _write_chart(data_root, "Hard", "Feeding [Hard]", filename="feeding.txt")
-
-    real_read_full_header = service._read_full_header
-    scanned: list[Path] = []
-
-    def counted_read_full_header(path: Path) -> dict[str, str]:
-        scanned.append(path)
-        return real_read_full_header(path)
-
-    monkeypatch.setattr(service, "_read_full_header", counted_read_full_header)
-
-    songs = service.list_official_songs()
-    chart = service.find_official_chart("Feeding [Hard]")
-
-    assert [song["songId"] for song in songs] == ["Canon in D [Normal]", "Feeding [Hard]"]
-    assert chart.name == "feeding.txt"
-    assert len(scanned) == 2
+def test_an_uploaded_chart_takes_the_job_as_its_name_and_never_promotes():
+    request = service.parse_request({"jobId": "job", "chartText": "Song Name\tMine\nSong Data\n1000\t0\t0\t1\n"})
+    assert (request.song_name, request.uploaded, request.promotes) == ("job", True, False)
+    assert request.chart_text.splitlines()[:2] == ["Timing Mode\tnon-precise", "Song Name\tjob"]
 
 
-def test_find_official_chart_unknown_raises(data_root):
-    _write_chart(data_root, "Normal", "Canon in D [Normal]")
+def test_the_solve_headers_come_first_when_a_chart_lacks_them():
+    request = service.parse_request({"jobId": "job", "chartText": "Title\tMine\nSong Data\n1000\t0\t0\t1\n"})
+    assert request.chart_text.splitlines()[:3] == ["Song Name\tjob", "Timing Mode\tnon-precise", "Title\tMine"]
+
+
+@pytest.mark.parametrize("request_payload", [
+    pytest.param({}, id="no-chart"),
+    pytest.param({"targetSongId": "Not A Real Song"}, id="unknown-song"),
+    pytest.param({"chartText": "Song Name\tMine\n"}, id="no-song-data"),
+    pytest.param({"chartText": "Song Data\n" + "1000\t0\t0\t1\n" * 4001}, id="too-many-events"),
+    pytest.param({"chartText": "Song Data\n", "timingMode": "zero_ms"}, id="unknown-timing-mode"),
+    pytest.param({"chartText": "Song Data\n", "reasoning": "extreme"}, id="unknown-reasoning"),
+])
+def test_a_bad_request_is_refused(data_root, request_payload):
     with pytest.raises(service.RequestError):
-        service.find_official_chart("Not A Real Song")  # no fuzzy/substring fallback
+        service.parse_request(request_payload)
 
 
-def test_chart_text_and_result_song_name_preserves_official_identity(data_root):
+@pytest.mark.parametrize("value", ["..", "...", "", None])
+def test_a_job_id_cannot_climb_out_of_the_run_root(value):
+    assert service._job_slug(value) == "job"
+
+
+def test_a_clean_official_solve_runs_warm_and_promotes(data_root, worker):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
-
-    chart_text, result_song_name = service.chart_text_and_result_song_name_for_request(
-        {"jobId": "job_abc", "targetSongId": "Feeding [Hard]"},
-        fallback_name="job_abc",
-    )
-
-    assert "Song Name\tFeeding [Hard]" in chart_text
-    assert result_song_name == "Feeding [Hard]"
+    assert service.solve({"jobId": "job", "targetSongId": "Feeding [Hard]", "reasoning": "strong"}) == [{"loadout_hash": "h"}]
+    (request,) = worker
+    assert request["worker"] is service._warm_worker
+    assert request["promoteTo"] == str(paths().database)
+    assert (request["songName"], request["reasoning"], request["uploaded"]) == ("Feeding [Hard]", "strong", False)
 
 
-def test_chart_text_and_result_song_name_custom_uses_job_key(data_root):
-    chart_text, result_song_name = service.chart_text_and_result_song_name_for_request(
-        {"jobId": "job_abc", "chartText": "Song Name\tCustom\nSong Data\n500\t0\t0\t1"},
-        fallback_name="job_abc",
-    )
-
-    assert chart_text.startswith("Song Name\tCustom")
-    assert result_song_name == "job_abc"
-
-
-def test_chart_text_requires_a_source(data_root):
-    with pytest.raises(service.RequestError):
-        service.chart_text_and_result_song_name_for_request({"jobId": "x"}, fallback_name="x")
-
-
-def test_custom_chart_event_limit_rejects_before_solve(data_root, monkeypatch):
-    monkeypatch.setattr(service, "_MAX_CUSTOM_CHART_EVENTS", 2)
-    chart = "Song Name\tCustom\nSong Data\n0.1\t1\t1\t1\n0.2\t2\t2\t1\n0.3\t3\t3\t1\n"
-
-    with pytest.raises(service.RequestError, match="exceeds 2 replay events"):
-        service.solve({"jobId": "too_large", "chartText": chart})
-
-
-def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
+def test_a_custom_pool_runs_warm_and_never_promotes(data_root, worker):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
-
-    captured: dict[str, dict[str, str]] = {}
-    entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
-
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            env = kwargs["env"]
-            captured["env"] = env
-            captured["cmd"] = cmd
-            # The chart file is keyed by the job slug, but its Song Name remains the official
-            # song identity. Mini Ascension song targets match against this header.
-            chart = (Path(env["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) / "Hard" / "job_abc.txt").read_text("utf-8")
-            assert "Song Name\tFeeding [Hard]" in chart
-            self.returncode = 0
-
-        def communicate(self, timeout=None):
-            return ("", "")
-
-    def fake_loadouts(path, mode, song_name, tier, *, limit):
-        assert mode == "non-precise"  # read back in the mode the request solved
-        assert song_name == "Feeding [Hard]"
-        assert tier == "T5"
-        assert limit == 51  # full leaderboard, not a single rank #1
-        return [entry]
-
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", fake_loadouts)
-
-    result = service.solve(
-        {"jobId": "job_abc", "targetSongId": "Feeding [Hard]", "timingMode": "non-precise"}
-    )
-
-    assert result == [entry]  # full T5 leaderboard returned verbatim for host persistence/replay
-    assert captured["cmd"] == [sys.executable, str(service.REPO_ROOT / "main.py"), "run"]  # the standalone app
-    env = captured["env"]
-    assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
-    run_root = Path(env["EVOLUTION_DB_PATH"]).parent
-    assert run_root.parent == data_root / "runs"
-    assert run_root.name.startswith("job_abc-")
-    assert not run_root.exists()
-    assert Path(env["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) == run_root / "Data"  # isolated song source
-    assert Path(env["ROBEATSMETA_OPTIMIZER_BIN_DIR"]) == run_root / "bin"  # isolated run state
-    assert Path(env["TIMELINE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "timeline_frontier_cache"
-    assert Path(env["FG_RESPONSE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "fg_response_frontier_cache"
+    service.solve({"jobId": "job", "targetSongId": "Feeding [Hard]", "excludeGear": ["Some Hat"]})
+    (request,) = worker
+    assert request["worker"] is service._warm_worker
+    assert request["promoteTo"] is None
+    assert request["customPool"]["excludeGear"] == ["Some Hat"]
 
 
-def test_official_solve_uses_persistent_worker_for_mode_switches(data_root, monkeypatch):
+def test_an_uploaded_chart_gets_its_own_worker_and_throwaway_frontiers(data_root, worker):
+    service.solve({"jobId": "job", "chartText": "Song Data\n1000\t0\t0\t1\n"})
+    (request,) = worker
+    own = request["worker"]
+    assert own is not service._warm_worker
+    assert own._frontier_root == own._root and own._root.parent == data_root / "runs"
+    assert request["promoteTo"] is None and request["uploaded"] is True
+    assert not own._root.exists()
+
+
+def test_a_failed_upload_leaves_no_workspace(data_root, monkeypatch):
+    def fail(_self, _payload):
+        raise RuntimeError("no T5")
+
+    monkeypatch.setattr(service._SolveWorker, "request", fail)
+    with pytest.raises(RuntimeError, match="no T5"):
+        service.solve({"jobId": "job", "chartText": "Song Data\n1000\t0\t0\t1\n"})
+    assert list((data_root / "runs").iterdir()) == []
+
+
+def _hold_solves(monkeypatch) -> tuple[threading.Event, threading.Event, list[dict]]:
+    started, release = threading.Event(), threading.Event()
+    requests: list[dict] = []
+
+    def request(_self, payload):
+        requests.append(payload)
+        started.set()
+        assert release.wait(timeout=5.0)
+        if payload["reasoning"] == "max":
+            raise RuntimeError("solve failed")
+        return [{"reasoning": payload["reasoning"]}]
+
+    monkeypatch.setattr(service._SolveWorker, "request", request)
+    return started, release, requests
+
+
+def test_a_retry_joins_the_running_job(data_root, monkeypatch):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
-    worker_calls: list[dict[str, object]] = []
-    entry = {"loadout_hash": "persistent", "score": 999}
+    started, release, requests = _hold_solves(monkeypatch)
+    results: list[object] = []
 
-    class FakeWorker:
-        def request(self, payload):
-            worker_calls.append(payload)
-            return [entry]
+    def call() -> None:
+        results.append(service.solve({"jobId": "job", "targetSongId": "Feeding [Hard]"}))
 
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1")
-    monkeypatch.setattr(service, "_get_persistent_solve_worker", lambda: FakeWorker())
-
-    result = service.solve(
-        {
-            "jobId": "persistent_mode_switch",
-            "targetSongId": "Feeding [Hard]",
-            "reasoning": "strong",
-            "timingMode": "non-precise",
-        }
-    )
-
-    assert result == [entry]
-    assert len(worker_calls) == 1
-    assert worker_calls[0]["reasoning"] == "strong"
-    assert "Timing Mode\tnon-precise" in str(worker_calls[0]["chartText"])
-
-
-def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
-    _write_chart(data_root, "Hard", "Feeding [Hard]")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
-    promoted: list[tuple[str, str, str, str]] = []
-
-    class FakePopen:
-        returncode = 0
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def communicate(self, timeout=None):
-            return "", ""
-
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [entry])
-    monkeypatch.setattr(
-        service.db,
-        "promote",
-        lambda source, target, mode, song, tier: promoted.append((Path(source).name, target, mode, song, tier)),
-    )
-
-    result = service.solve({"jobId": "job_promote", "targetSongId": "Feeding [Hard]", "timingMode": "precise"})
-
-    assert result == [entry]
-    # Merged from the solve's own result database while the isolated workspace still exists, under its mode.
-    assert promoted == [("result.db", str(service.paths().database), "precise", "Feeding [Hard]", "T5")]
-
-
-def test_a_persistent_solve_asks_the_worker_to_promote(monkeypatch):
-    payloads = []
-
-    class FakeWorker:
-        def request(self, payload):
-            payloads.append(payload)
-            return [{"score": 1}]
-
-    monkeypatch.setattr(service, "_get_persistent_solve_worker", lambda: FakeWorker())
-    monkeypatch.setattr(service, "_acquire_solve_slot", lambda: None)
-    monkeypatch.setattr(service, "_release_solve_slot", lambda: None)
-    for promote_to in ("/catalog/evolution.db", None):
-        service._solve_persistent("job", "chart", "Song", 1, "default", promote_to=promote_to)
-    assert payloads[0]["promoteTo"] == "/catalog/evolution.db"
-    assert "promoteTo" not in payloads[1]
-
-
-def test_only_clean_official_solves_are_promoted(tmp_path, monkeypatch):
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "evolution.db"))
-    clean = {"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []}
-    custom = {**clean, "gear": [{"name": "Custom"}]}
-
-    def target(request, pool=clean):
-        return service._promotion_target(request, custom_pool=pool)
-
-    # Either timing mode: the catalog keeps both, keyed by mode.
-    assert target({"targetSongId": "Official"}) == str(tmp_path / "evolution.db")
-    assert target({"targetSongId": "Official"}, pool=custom) is None
-    assert target({"chartText": "Song Data\n"}) is None
-    assert target({"targetSongId": "Official", "chartText": "Song Data\n"}) is None
-
-
-def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, monkeypatch):
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
-    captured: dict[str, str] = {}
-
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            captured.update(kwargs["env"])
-            self.returncode = 0
-
-        def communicate(self, timeout=None):
-            return "", ""
-
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
-
-    service.solve(
-        {
-            "jobId": "job_custom",
-            "chartText": "Song Name\tCustom\nSong Data\n0.500\t1\t1\t1\n",
-        }
-    )
-
-    workspace = Path(captured["EVOLUTION_DB_PATH"]).parent
-    run_bin = workspace / "bin"
-    assert Path(captured["TIMELINE_FRONTIER_CACHE_DIR"]) == run_bin / "timeline_frontier_cache"
-    assert Path(captured["FG_RESPONSE_FRONTIER_CACHE_DIR"]) == run_bin / "fg_response_frontier_cache"
-    assert not workspace.exists()
-
-
-def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monkeypatch):
-    _write_chart(data_root, "Hard", "Feeding [Hard]")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
-
-    captured: dict[str, str] = {}
-
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            chart_path = Path(kwargs["env"]["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) / "Hard" / "job_timing.txt"
-            captured["chart"] = chart_path.read_text("utf-8")
-            self.returncode = 0
-
-        def communicate(self, timeout=None):
-            return ("", "")
-
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
-
-    service.solve({"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "non-precise"})
-
-    assert "Timing Mode\tnon-precise" in captured["chart"]
-
-
-def test_solve_rejects_unknown_timing_mode(data_root):
-    _write_chart(data_root, "Hard", "Feeding [Hard]")
-    with pytest.raises(service.RequestError, match="unknown timingMode"):
-        service.solve({"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "approximate"})
-
-
-def _capture_solve_config(data_root, monkeypatch, request: dict) -> str:
-    """Run one mocked solve and return the config.ini text the service generated for it."""
-    _write_chart(data_root, "Hard", "Feeding [Hard]")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
-
-    captured: dict[str, str] = {}
-    entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
-
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            env = kwargs["env"]
-            captured["config"] = Path(env["METAFINDER_CONFIG_PATH"]).read_text("utf-8")
-            self.returncode = 0
-
-        def communicate(self, timeout=None):
-            return ("", "")
-
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **k: [entry])
-    service.solve(request)
-    return captured["config"]
-
-
-def test_solve_default_reasoning_omits_search_knobs(data_root, monkeypatch):
-    # "default" (and absent) must reproduce stock behavior: no GA search knobs are written, so
-    # config.py's own fallbacks apply exactly as before this feature existed.
-    config = _capture_solve_config(data_root, monkeypatch, {"jobId": "job_def", "targetSongId": "Feeding [Hard]"})
-    assert "GA_SearchDepth" not in config
-    assert "GA_MultiStart" not in config
-
-
-def test_solve_strong_reasoning_scales_search_knobs(data_root, monkeypatch):
-    config = _capture_solve_config(
-        data_root, monkeypatch, {"jobId": "job_str", "targetSongId": "Feeding [Hard]", "reasoning": "strong"}
-    )
-    # 2x of the stock bases (210, 5).
-    assert "GA_SearchDepth = 420" in config
-    assert "GA_MultiStart = 10" in config
-
-
-def test_solve_max_reasoning_scales_search_knobs(data_root, monkeypatch):
-    config = _capture_solve_config(
-        data_root, monkeypatch, {"jobId": "job_max", "targetSongId": "Feeding [Hard]", "reasoning": "MAX"}
-    )
-    # 4x of the stock bases (210, 5). Case-insensitive; unknown values fall back to default.
-    assert "GA_SearchDepth = 840" in config
-    assert "GA_MultiStart = 20" in config
-
-
-def test_solve_unknown_reasoning_falls_back_to_default(data_root, monkeypatch):
-    config = _capture_solve_config(
-        data_root, monkeypatch, {"jobId": "job_unk", "targetSongId": "Feeding [Hard]", "reasoning": "ultra"}
-    )
-    assert "GA_SearchDepth" not in config
-
-
-def test_solve_joins_duplicate_live_job_instead_of_spawning_again(data_root, monkeypatch):
-    _write_chart(data_root, "Hard", "Feeding [Hard]")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
-
-    started = threading.Event()
-    release = threading.Event()
-    popen_count = 0
-    popen_lock = threading.Lock()
-    entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
-
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            nonlocal popen_count
-            with popen_lock:
-                popen_count += 1
-            self.returncode = 0
-            started.set()
-
-        def communicate(self, timeout=None):
-            assert release.wait(timeout=2.0)
-            return ("", "")
-
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [entry])
-
-    results: list[list[dict[str, object]]] = []
-    errors: list[BaseException] = []
-
-    def call_solve() -> None:
-        try:
-            results.append(service.solve({"jobId": "job_abc", "targetSongId": "Feeding [Hard]"}))
-        except BaseException as exc:  # pragma: no cover - makes thread failures visible in assertion
-            errors.append(exc)
-
-    first = threading.Thread(target=call_solve)
-    second = threading.Thread(target=call_solve)
-    first.start()
-    assert started.wait(timeout=2.0)
-    second.start()
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    threads[0].start()
+    assert started.wait(timeout=5.0)
+    threads[1].start()
+    while len(service._in_flight) != 1:  # pragma: no cover - the owner registered before it started
+        time.sleep(0.01)
     time.sleep(0.05)
     release.set()
-    first.join(timeout=2.0)
-    second.join(timeout=2.0)
-
-    assert not first.is_alive()
-    assert not second.is_alive()
-    assert errors == []
-    assert results == [[entry], [entry]]
-    assert popen_count == 1
+    for thread in threads:
+        thread.join(timeout=5.0)
+    assert results == [[{"reasoning": "default"}]] * 2
+    assert len(requests) == 1 and service._in_flight == {}
 
 
-def test_solve_propagates_optimizer_failure(data_root, monkeypatch):
+def test_a_joined_failure_reaches_both_callers(data_root, monkeypatch):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
+    started, release, _requests = _hold_solves(monkeypatch)
+    errors: list[str] = []
 
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            self.returncode = 1
+    def call() -> None:
+        try:
+            service.solve({"jobId": "job", "targetSongId": "Feeding [Hard]", "reasoning": "max"})
+        except RuntimeError as exc:
+            errors.append(str(exc))
 
-        def communicate(self, timeout=None):
-            return ("", "boom")
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    threads[0].start()
+    assert started.wait(timeout=5.0)
+    threads[1].start()
+    time.sleep(0.05)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    assert errors == ["solve failed", "solve failed"]
 
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    with pytest.raises(RuntimeError):
-        service.solve({"jobId": "job_x", "targetSongId": "Feeding [Hard]"})
 
-
-def test_solve_times_out_and_kills_process_group(data_root, monkeypatch):
+def test_the_same_job_with_other_inputs_solves_apart(data_root, monkeypatch):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True, exist_ok=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
-
-    killed: dict[str, int] = {}
-
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            self.pid = 4321
-            self.returncode = None
-            self._calls = 0
-
-        def communicate(self, timeout=None):
-            self._calls += 1
-            if timeout is not None:  # the guarded solve call -> simulate a hang
-                raise subprocess.TimeoutExpired(cmd="main.py", timeout=timeout)
-            return ("", "")  # the post-kill drain
-
-    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service, "_kill_process_group", lambda proc: killed.setdefault("pid", proc.pid))
-
-    with pytest.raises(RuntimeError, match="timed out"):
-        service.solve({"jobId": "job_t", "targetSongId": "Feeding [Hard]"})
-    assert killed["pid"] == 4321  # the whole process group was reaped, not orphaned
+    _started, release, requests = _hold_solves(monkeypatch)
+    release.set()
+    for reasoning in ("default", "strong"):
+        service.solve({"jobId": "job", "targetSongId": "Feeding [Hard]", "reasoning": reasoning})
+    assert [request["reasoning"] for request in requests] == ["default", "strong"]
 
 
-def test_read_json_rejects_oversize_body():
+def test_a_draining_service_refuses_new_solves(data_root, worker):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    service._drain_solves()
+    try:
+        with pytest.raises(service.ServiceNotReady):
+            service.solve({"jobId": "job", "targetSongId": "Feeding [Hard]"})
+    finally:
+        service._resume_solves()
+    assert service.solve({"jobId": "job", "targetSongId": "Feeding [Hard]"}) == [{"loadout_hash": "h"}]
+
+
+def test_a_drain_waits_for_running_solves(monkeypatch):
+    finished: list[str] = []
+    entered, release = threading.Event(), threading.Event()
+
+    def solve() -> None:
+        with service._solve_slot():
+            entered.set()
+            assert release.wait(timeout=5.0)
+            finished.append("solve")
+
+    thread = threading.Thread(target=solve)
+    thread.start()
+    assert entered.wait(timeout=5.0)
+    threading.Timer(0.05, release.set).start()
+    service._drain_solves()
+    finished.append("drained")
+    service._resume_solves()
+    thread.join(timeout=5.0)
+    assert finished == ["solve", "drained"]
+
+
+def test_read_json_rejects_an_oversize_body():
     handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
-    handler.headers = {"Content-Length": str(service._MAX_BODY_BYTES + 1)}
+    handler.headers = {"Content-Length": str(service.service_settings().max_body_bytes + 1)}
+    handler.rfile = io.BytesIO()
     with pytest.raises(service.RequestTooLarge):
         handler._read_json()
 
 
 def _peak_concurrent_slots(workers: int, available: int, min_free: int, monkeypatch) -> int:
-    """Drive N threads through the memory-admission gate and return the peak simultaneous slots."""
+    """Drive N threads through the memory gate and return the peak simultaneous slots."""
     monkeypatch.setattr(service, "_MIN_FREE_BYTES", min_free)
     monkeypatch.setattr(service, "_available_bytes", lambda: available)
-    monkeypatch.setattr(service, "_active_solves", 0)
-    monkeypatch.setattr(service, "_SERVICE_DRAINING_FOR_UPDATE", False)
     peak = {"n": 0}
     peak_lock = threading.Lock()
     start = threading.Barrier(workers)
 
     def worker() -> None:
         start.wait()  # release together to maximize contention
-        service._acquire_solve_slot()
-        try:
+        with service._solve_slot():
             with peak_lock:
                 peak["n"] = max(peak["n"], service._active_solves)
             time.sleep(0.05)  # hold the slot so overlap is observable
-        finally:
-            service._release_solve_slot()
 
     threads = [threading.Thread(target=worker) for _ in range(workers)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
     return peak["n"]
 
 
-def test_memory_guard_serializes_solves_when_memory_low(monkeypatch):
-    # Available memory always below the floor -> only the first (progress-guaranteed) solve runs;
-    # additional solves wait for it to finish, so at most one runs at a time.
-    peak = _peak_concurrent_slots(workers=4, available=0, min_free=8 * 1024 * 1024 * 1024, monkeypatch=monkeypatch)
-    assert peak == 1
+def test_low_memory_runs_one_solve_at_a_time(monkeypatch):
+    assert _peak_concurrent_slots(workers=4, available=0, min_free=8 << 30, monkeypatch=monkeypatch) == 1
 
 
-def test_memory_guard_allows_concurrency_when_memory_ample(monkeypatch):
-    # Plenty of memory -> the gate admits everyone; concurrency is bounded only by the pool.
-    peak = _peak_concurrent_slots(workers=4, available=64 * 1024 * 1024 * 1024, min_free=1, monkeypatch=monkeypatch)
-    assert peak == 4
+def test_ample_memory_lets_solves_overlap(monkeypatch):
+    assert _peak_concurrent_slots(workers=4, available=64 << 30, min_free=1, monkeypatch=monkeypatch) == 4
 
 
-def test_available_bytes_darwin_excludes_compressible_and_speculative(monkeypatch):
+def test_available_bytes_on_macos_counts_only_what_frees_without_compressing(monkeypatch):
     counters = {
         "vm.page_free_count": 100,
         "vm.page_pageable_external_count": 1000,
@@ -802,19 +459,7 @@ def test_available_bytes_darwin_excludes_compressible_and_speculative(monkeypatc
     }
     monkeypatch.setattr(service.sys, "platform", "darwin")
     monkeypatch.setattr(service, "_sysctl_uint", counters.__getitem__)
-
     assert service._available_bytes() == (100 + 1000 + 10) * 16384
-
-
-def test_available_bytes_darwin_sysctl_failure_raises(monkeypatch):
-    def fail(name: str) -> int:
-        raise OSError(2, name)
-
-    monkeypatch.setattr(service.sys, "platform", "darwin")
-    monkeypatch.setattr(service, "_sysctl_uint", fail)
-
-    with pytest.raises(OSError):
-        service._available_bytes()
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="reads macOS VM counters")
@@ -825,299 +470,82 @@ def test_sysctl_uint_reads_real_counters():
         service._sysctl_uint("vm.no_such_counter")
 
 
-# --- custom gear / mini pool -------------------------------------------------
-
 _CUSTOM_GEAR = {"name": "Test Hat", "type": "Hat", "chill": 30, "ppoint": 20}
 _CUSTOM_MINI = {"name": "Test Mini", "type": "Chill", "chill": 90, "cbmlt": 30}
+_SONG = {"chartText": "Song Data\n"}
 
 
-@pytest.mark.parametrize(
-    "request_payload",
-    [
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name=f"Hat {i}") for i in range(6)]}, id="over-item-cap"),
-        pytest.param({"customGear": {"name": "Hat"}}, id="not-a-list"),
-        pytest.param({"customGear": ["Hat"]}, id="item-not-an-object"),
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name='a,b"\nHat')]}, id="csv-hostile-name"),
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name="=1+1")]}, id="formula-injection-name"),
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name="x" * 33)]}, id="name-too-long"),
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, type="Wings")]}, id="unknown-slot"),
-        pytest.param({"customMinis": [dict(_CUSTOM_MINI, type="Sparkle")]}, id="unknown-mini-type"),
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill=-1)]}, id="negative-stat"),
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill=10**9)]}, id="stat-out-of-range"),
-        pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill="30")]}, id="stat-not-an-int"),
-        pytest.param({"customGear": [_CUSTOM_GEAR, dict(_CUSTOM_GEAR, type="Face")]}, id="duplicate-name"),
-    ],
-)
-def test_custom_pool_rejects_invalid_requests(request_payload):
+@pytest.mark.parametrize("request_payload", [
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, name=f"Hat {i}") for i in range(6)]}, id="over-item-cap"),
+    pytest.param({"customGear": {"name": "Hat"}}, id="not-a-list"),
+    pytest.param({"customGear": ["Hat"]}, id="item-not-an-object"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, name='a,b"\nHat')]}, id="hostile-name"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, name="=1+1")]}, id="formula-injection-name"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, name="x" * 33)]}, id="name-too-long"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, type="Wings")]}, id="unknown-slot"),
+    pytest.param({"customMinis": [dict(_CUSTOM_MINI, type="Sparkle")]}, id="unknown-mini-type"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill=-1)]}, id="negative-stat"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill=10**9)]}, id="stat-out-of-range"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill="30")]}, id="stat-not-an-int"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill=True)]}, id="stat-a-bool"),
+    pytest.param({"customGear": [_CUSTOM_GEAR, dict(_CUSTOM_GEAR, type="Face")]}, id="duplicate-name"),
+    pytest.param({"excludeGear": "Hat"}, id="exclude-not-a-list"),
+    pytest.param({"excludeGear": [123]}, id="exclude-not-a-string"),
+    pytest.param({"excludeGear": ["a\nb"]}, id="exclude-newline-in-name"),
+    pytest.param({"excludeGear": ['a"b']}, id="exclude-quote-in-name"),
+    pytest.param({"excludeGear": ["x" * 65]}, id="exclude-name-too-long"),
+    pytest.param({"excludeGear": [f"Hat {i}" for i in range(401)]}, id="exclude-over-gear-cap"),
+    pytest.param({"excludeMinis": [f"Mini {i}" for i in range(201)]}, id="exclude-over-mini-cap"),
+])
+def test_an_invalid_custom_pool_is_refused(request_payload):
     with pytest.raises(service.RequestError):
-        service._custom_pool_for_request(request_payload)
-
-
-def test_custom_pool_rows_land_in_the_request_copy_and_never_the_catalog(tmp_path):
-    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
-    before = (catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()
-
-    work = tmp_path / "Gear"
-    shutil.copytree(catalog, work)
-    pool = service._custom_pool_for_request({"customGear": [_CUSTOM_GEAR], "customMinis": [_CUSTOM_MINI]})
-    service._append_custom_pool_rows(work, pool)
-
-    from gear_optimizer.gamedata import read_gears, read_minis
-
-    # The strict typed readers accept the service's rows (custom minis leave the level-1 block blank).
-    gear = read_gears(work / "Gears.csv")["Test Hat"]
-    mini = read_minis(work / "Minis.csv")["Test Mini"]
-    assert (gear.slot, gear.stats["Chill"], gear.stats["Perfect Points"]) == ("Hat", 30, 20)
-    assert (mini.element, mini.stats["Chill"], mini.stats["Combo Multiplier"]) == ("Chill", 90, 30)
-    # The repeated L1 ascension columns in Minis.csv must stay empty for a custom mini.
-    assert mini.level1_elements == {} and mini.song_targets == frozenset()
-    assert ((catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()) == before
-
-
-def test_a_custom_pool_on_an_official_chart_is_solved_warm_with_its_own_catalog_copy(data_root, monkeypatch):
-    _write_chart(data_root, "Hard", "Feeding [Hard]")
-    shutil.copytree(Path(service.__file__).resolve().parents[1] / "Data" / "Gear", data_root / "Data" / "Gear")
-    seen: dict[str, object] = {}
-
-    class FakeWorker:
-        def request(self, payload):
-            from gear_optimizer.gamedata import read_gears, read_minis
-
-            gear_dir = Path(payload["gearDir"])
-            seen.update(dir=gear_dir, gear=read_gears(gear_dir / "Gears.csv"), minis=read_minis(gear_dir / "Minis.csv"))
-            return [{"loadout_hash": "custom", "score": 1}]
-
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1")
-    monkeypatch.setattr(service, "_get_persistent_solve_worker", lambda: FakeWorker())
-    from gear_optimizer.gamedata import read_gears
-
-    excluded = next(iter(read_gears(data_root / "Data" / "Gear" / "Gears.csv")))
-    result = service.solve(
-        {
-            "jobId": "custom_pool_warm",
-            "targetSongId": "Feeding [Hard]",
-            "customGear": [_CUSTOM_GEAR],
-            "customMinis": [_CUSTOM_MINI],
-            "excludeGear": [excluded],
-        }
-    )
-
-    assert result == [{"loadout_hash": "custom", "score": 1}]
-    assert "Test Hat" in seen["gear"] and "Test Mini" in seen["minis"] and excluded not in seen["gear"]
-    assert not Path(seen["dir"]).exists()  # the request's catalog copy goes with the request
-
-
-def test_custom_pool_refuses_to_redefine_a_catalog_item(tmp_path):
-    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
-    work = tmp_path / "Gear"
-    shutil.copytree(catalog, work)
-    import csv
-
-    with (catalog / "Gears.csv").open(encoding="utf-8-sig", newline="") as handle:
-        # A catalog name the validator itself accepts, so the collision check is what rejects it.
-        taken = next(
-            row["Gear Name"]
-            for row in csv.DictReader(handle)
-            if service._CUSTOM_ITEM_NAME_RE.match(str(row["Gear Name"]).strip())
-        )
-    pool = service._custom_pool_for_request({"customGear": [dict(_CUSTOM_GEAR, name=taken)]})
-    with pytest.raises(service.RequestError):
-        service._append_custom_pool_rows(work, pool)
-
-
-@pytest.mark.parametrize(
-    "request_payload",
-    [
-        pytest.param({"excludeGear": "Hat"}, id="not-a-list"),
-        pytest.param({"excludeGear": [123]}, id="not-a-string"),
-        pytest.param({"excludeGear": ["a\nb"]}, id="newline-in-name"),
-        pytest.param({"excludeGear": ['a"b']}, id="quote-in-name"),
-        pytest.param({"excludeGear": ["x" * 65]}, id="name-too-long"),
-        pytest.param({"excludeGear": [f"Hat {i}" for i in range(401)]}, id="over-gear-cap"),
-        pytest.param({"excludeMinis": [f"Mini {i}" for i in range(201)]}, id="over-mini-cap"),
-    ],
-)
-def test_excluded_names_reject_invalid_requests(request_payload):
-    with pytest.raises(service.RequestError):
-        service._custom_pool_for_request(request_payload)
+        service.parse_request(_SONG | request_payload)
 
 
 def test_excluded_names_accept_real_catalog_names_with_punctuation():
-    # Real names carry characters a USER may not invent ("(The) Red * Room", commas, unicode).
-    pool = service._custom_pool_for_request(
-        {"excludeGear": ["Juggernaut's Goggles"], "excludeMinis": ["(The) Red * Room", "t+pazolite"]}
-    )
+    # Real names carry characters a user may not invent ("(The) Red * Room", commas, unicode).
+    pool = service.parse_request(_SONG | {
+        "excludeGear": ["Juggernaut's Goggles", "  "], "excludeMinis": ["(The) Red * Room", "t+pazolite"],
+    }).custom_pool
     assert pool["excludeGear"] == ["Juggernaut's Goggles"]
     assert pool["excludeMinis"] == ["(The) Red * Room", "t+pazolite"]
 
 
-def test_excluded_rows_leave_the_request_copy_without_them_and_never_the_catalog(tmp_path):
-    from gear_optimizer.gamedata import read_gears, read_minis
-
-    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
-    before = (catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()
-    gears_before = read_gears(catalog / "Gears.csv")
-    minis_before = read_minis(catalog / "Minis.csv")
-    drop_gear = list(gears_before)[:3]
-    drop_mini = list(minis_before)[:2]
-
-    work = tmp_path / "Gear"
-    shutil.copytree(catalog, work)
-    pool = service._custom_pool_for_request(
-        {"customGear": [_CUSTOM_GEAR], "excludeGear": drop_gear, "excludeMinis": drop_mini}
-    )
-    service._remove_excluded_rows(work, pool)
-    service._append_custom_pool_rows(work, pool)
-
-    gears_after = read_gears(work / "Gears.csv")
-    minis_after = read_minis(work / "Minis.csv")
-    assert set(gears_after).isdisjoint(drop_gear)
-    assert set(minis_after).isdisjoint(drop_mini)
-    # exactly the excluded rows left, and the custom one arrived
-    assert len(gears_after) == len(gears_before) - len(drop_gear) + 1
-    assert len(minis_after) == len(minis_before) - len(drop_mini)
-    assert _CUSTOM_GEAR["name"] in gears_after
-    assert ((catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()) == before
+def test_a_custom_item_cannot_redefine_a_catalog_item_that_stays(data_root):
+    _write_export(data_root)
+    for field, item in (("customGear", _CUSTOM_GEAR | {"name": "CATALOG hat"}), ("customMinis", _CUSTOM_MINI | {"name": "catalog mini"})):
+        with pytest.raises(service.RequestError, match="taken"):
+            service.parse_request(_SONG | {field: [item]})
+    pool = service.parse_request(_SONG | {
+        "customGear": [_CUSTOM_GEAR | {"name": "Catalog Hat"}], "excludeGear": ["catalog hat"],
+    }).custom_pool
+    assert [item["name"] for item in pool["customGear"]] == ["Catalog Hat"]
+    assert list(load_catalog(paths().game_export).gears) == ["Catalog Hat"]
 
 
-def test_excluding_an_unknown_name_is_a_no_op(tmp_path):
-    from gear_optimizer.gamedata import read_gears
-
-    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
-    work = tmp_path / "Gear"
-    shutil.copytree(catalog, work)
-    pool = service._custom_pool_for_request({"excludeGear": ["No Such Gear At All"]})
-    service._remove_excluded_rows(work, pool)
-    # A stale exclusion (catalog moved on) must not fail the solve or drop anything.
-    assert len(read_gears(work / "Gears.csv")) == len(read_gears(catalog / "Gears.csv"))
-
-
-def test_same_job_different_inputs_own_separate_workspaces(data_root, monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
-
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    runs = data_root / "runs"
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(runs))
-    monkeypatch.setattr(service, "_SOLVE_SEMAPHORE", threading.Semaphore(2))
-    monkeypatch.setattr(service, "_acquire_solve_slot", lambda: None)
-    monkeypatch.setattr(service, "_release_solve_slot", lambda: None)
-    first_started = threading.Event()
-    both_started = threading.Barrier(2, timeout=5)
-    paths = []
-
-    class Process:
-        returncode = 0
-
-        def __init__(self, _cmd, **kwargs):
-            self.work = Path(kwargs["env"]["EVOLUTION_DB_PATH"]).parent
-            self.chart = self.work / "Data" / "Hard" / "same.txt"
-            self.original = self.chart.read_text()
-            paths.append(self.work)
-            first_started.set()
-
-        def communicate(self, timeout=None):
-            both_started.wait()
-            assert self.chart.read_text() == self.original
-            return "", ""
-
-    monkeypatch.setattr(service.subprocess, "Popen", Process)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **kw: [{"score": 1}])
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(service.solve, {"jobId": "same", "chartText": "Song Data\n500\t0\t0\t1\n"})
-        assert first_started.wait(5)
-        second = pool.submit(service.solve, {"jobId": "same", "chartText": "Song Data\n750\t0\t0\t1\n"})
-        assert first.result(timeout=10) == [{"score": 1}]
-        assert second.result(timeout=10) == [{"score": 1}]
-    assert len(set(paths)) == 2
-    assert all(path.parent == runs and not path.exists() for path in paths)
-
-
-def test_isolated_workspace_cleanup_includes_preparation_failure(data_root, monkeypatch):
-    runs = data_root / "runs"
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(runs))
-
-    def fail_copy(*args, **kwargs):
-        raise OSError("catalog unavailable")
-
-    monkeypatch.setattr(service.shutil, "copytree", fail_copy)
-    with pytest.raises(OSError, match="catalog unavailable"):
-        service._solve_isolated("job", "Song Data\n500\t0\t0\t1\n", "song", 1)
-    assert not list(runs.iterdir())
-
-
-@pytest.mark.parametrize(
-    "exit_code, entries, message",
-    [
-        (1, [{"score": 1}], "optimizer exited 1"),
-        (0, [], "optimizer produced no T5 loadout"),
-    ],
-)
-def test_failed_solve_never_publishes_plausible_results(data_root, monkeypatch, exit_code, entries, message):
-    from unittest.mock import Mock
-
-    _write_chart(data_root, "Hard", "Official")
-    gear = data_root / "Data" / "Gear"
-    gear.mkdir(parents=True)
-    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
-    runs = data_root / "runs"
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(runs))
-    publish = Mock()
-    monkeypatch.setattr(service.db, "promote", publish)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **kw: entries)
-
-    class Process:
-        returncode = exit_code
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def communicate(self, timeout=None):
-            return "", "GPU execution failed"
-
-    monkeypatch.setattr(service.subprocess, "Popen", Process)
-    with pytest.raises(RuntimeError, match=message):
-        service.solve({"jobId": "failure", "targetSongId": "Official"})
-    publish.assert_not_called()
-    assert not list(runs.iterdir())
-
-
-def _write_export(data_root: Path, *songs: tuple[int, str, str]) -> None:
-    payload = {
-        "songs": {
-            "1": {
-                "songs": [
-                    {"songid": song_id, "displayname": displayname, "artist": artist}
-                    for song_id, displayname, artist in songs
-                ]
-            }
-        }
-    }
-    (data_root / "Data" / "exported_game_data.json").write_text(json.dumps(payload), encoding="utf-8")
-
-
-def test_catalog_build_solves_described_official_charts_missing_from_the_catalog(data_root, monkeypatch):
+def _store_catalog(data_root: Path, *songs: str) -> None:
     from gear_optimizer.store import db, schema
 
+    schema.ensure(data_root / "evolution.db")
+    conn = schema.connect(data_root / "evolution.db", write=True)
+    for song in songs:
+        for mode in ("non-precise", "precise"):
+            db.store_results(conn, mode, song, "T5", [])
+    conn.close()
+
+
+def test_a_catalog_pass_solves_the_described_charts_the_catalog_lacks(data_root, monkeypatch):
     _write_chart(data_root, "Normal", "Built by Artist", "built.txt")
     _write_chart(data_root, "Hard", "New (Hard) by Artist", "new.txt")
     _write_chart(data_root, "Normal", "Unreleased by Artist", "unreleased.txt")
     _write_export(data_root, (1, "Built", "Artist"), (2, "New (Hard)", "Artist"))
-    db_path = data_root / "evolution.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    conn = schema.connect(db_path, write=True)
-    for mode in ("non-precise", "precise"):
-        db.store_results(conn, mode, "Built by Artist", "T5", [])  # a song processed in both modes
-    conn.close()
-    solved: list[dict[str, object]] = []
+    _store_catalog(data_root, "Built by Artist")
+    solved: list[dict] = []
     monkeypatch.setattr(service, "solve", lambda request: solved.append(request) or [])
-    service._AUTHORITATIVE_PUBLICATION_READY.set()
 
     service.build_missing_catalog_songs()
 
-    # Only the chart the game data describes and the catalog lacks, once per timing mode, as clean official
-    # requests (no custom pool) so their results are promoted into the catalog.
+    # As clean official requests (no custom pool), so their results are promoted into the catalog.
     assert [(r["targetSongId"], r["timingMode"]) for r in solved] == [
         ("New (Hard) by Artist", "non-precise"),
         ("New (Hard) by Artist", "precise"),
@@ -1126,211 +554,71 @@ def test_catalog_build_solves_described_official_charts_missing_from_the_catalog
     assert len({r["jobId"] for r in solved}) == 2
 
 
-def test_a_catalog_pass_with_nothing_to_build_warms_the_persistent_solver_without_promoting(data_root, monkeypatch):
-    from gear_optimizer.store import db, schema
-
+def test_a_catalog_pass_with_nothing_to_build_warms_the_solver_without_promoting(data_root, worker):
     _write_chart(data_root, "Normal", "B by Artist", "b.txt")
     _write_chart(data_root, "Hard", "A (Hard) by Artist", "a.txt")
     _write_export(data_root, (1, "B", "Artist"), (2, "A (Hard)", "Artist"))
-    db_path = data_root / "evolution.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    conn = schema.connect(db_path, write=True)
-    for song in ("B by Artist", "A (Hard) by Artist"):
-        for mode in ("non-precise", "precise"):
-            db.store_results(conn, mode, song, "T5", [])
-    conn.close()
-    warmed: list[tuple] = []
-    monkeypatch.setattr(service, "_solve_persistent", lambda *args, **kwargs: warmed.append((args, kwargs)) or [])
-    service._AUTHORITATIVE_PUBLICATION_READY.set()
+    _store_catalog(data_root, "B by Artist", "A (Hard) by Artist")
 
-    service.build_missing_catalog_songs()  # the fixture runs every solve isolated: no persistent solver to warm
-    assert warmed == []
-
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1")
     service.build_missing_catalog_songs()
 
-    # One solve of the first official chart in the timing mode website jobs use, its results promoted nowhere.
-    (((job, chart, song, repeats, reasoning), kwargs),) = warmed
-    assert (job, song, repeats, reasoning, kwargs) == ("warmup", "A (Hard) by Artist", 1, "default", {})
-    assert "Timing Mode\tprecise\n" in chart
+    (request,) = worker
+    assert request["worker"] is service._warm_worker
+    assert request["songName"] == "A (Hard) by Artist"
+    assert "Timing Mode\tprecise\n" in request["chartText"]
+    assert request["promoteTo"] is None
 
 
-def test_catalog_build_continues_past_a_failed_chart_and_yields_to_a_code_update(data_root, monkeypatch):
+def test_a_catalog_pass_goes_past_a_failed_chart_and_yields_to_a_drain(data_root, monkeypatch):
     for name in ("A by Artist", "B by Artist", "C by Artist"):
         _write_chart(data_root, "Normal", name, f"{name}.txt")
     _write_export(data_root, (1, "A", "Artist"), (2, "B", "Artist"), (3, "C", "Artist"))
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(data_root / "missing.db"))
     attempted: list[tuple[str, str]] = []
 
     def solve(request):
         attempted.append((request["targetSongId"], request["timingMode"]))
         if request["targetSongId"] == "A by Artist":
-            raise RuntimeError("optimizer exited 1")
-        service._AUTHORITATIVE_PUBLICATION_READY.clear()  # a code update starts draining
-        return []
+            raise RuntimeError("no T5")
+        raise service.ServiceNotReady("a code update is draining")
 
     monkeypatch.setattr(service, "solve", solve)
-    service._AUTHORITATIVE_PUBLICATION_READY.set()
 
     service.build_missing_catalog_songs()
 
-    # A fails in both modes and the pass goes on; B's first solve starts a code update's drain, so the pass stops.
     assert attempted == [("A by Artist", "non-precise"), ("A by Artist", "precise"), ("B by Artist", "non-precise")]
 
 
-def test_persistent_worker_restarts_when_a_new_catalog_activates(data_root, monkeypatch):
-    first = data_root / "first" / "Gear"
-    second = data_root / "second" / "Gear"
-    first.mkdir(parents=True)
-    second.mkdir(parents=True)
-    spawned: list[Path] = []
+def test_a_data_refresh_builds_every_chart_in_both_modes_and_rereads_the_list(data_root, monkeypatch):
+    from gear_optimizer.frontier import startup_prebuild
 
-    class _SolverProcess:
-        def __init__(self, *_args, **_kwargs):
-            spawned.append(service.GEAR_DIR)
-            self._lines: queue.Queue[str | None] = queue.Queue()
-            self.stdin = self
-            self.stdout = self
-            self.stderr = io.StringIO()
+    _write_chart(data_root, "Hard", "A")
+    _write_chart(data_root, "Easy", "B")
+    seen: list[dict] = []
 
-        def __iter__(self):
-            return iter(self._lines.get, None)
-
-        def write(self, _payload):
-            self._lines.put('{"ok": true, "loadouts": []}\n')
-
-        def flush(self):
+    class _Executor:
+        def __init__(self, **_kwargs):
             pass
 
-        def poll(self):
-            return None
+        def __enter__(self):
+            return self
 
-        def wait(self, timeout=None):
-            return 0
+        def __exit__(self, *_exc):
+            return False
 
-        def close(self):
-            self._lines.put(None)
+        def submit(self, task):
+            task()
+            return type("Done", (), {"result": lambda _: None})()
 
-    monkeypatch.setattr(service.subprocess, "Popen", _SolverProcess)
-    monkeypatch.setattr(service, "_kill_process_group", lambda _proc: None)
-    worker = service._PersistentSolveWorker()
-    try:
-        for gear_dir in (first, first, second):
-            monkeypatch.setattr(service, "GEAR_DIR", gear_dir)
-            assert worker.request({"jobId": "job"}) == []
-    finally:
-        worker.stop()
+    monkeypatch.setattr(service, "ProcessPoolExecutor", _Executor)
+    monkeypatch.setattr(startup_prebuild, "run_startup_cpu_work", lambda **kwargs: seen.append(kwargs))
+    built: list[str] = []
+    monkeypatch.setattr(service, "build_missing_catalog_songs", lambda: built.append("pass"))
+    assert len(service.list_official_songs()) == 2
+    _write_chart(data_root, "Normal", "C")
 
-    assert spawned == [first, second]
+    service.refresh_data()
 
-
-def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root, monkeypatch):
-    from gear_optimizer import gamedata
-    from gear_optimizer.frontier import startup_prebuild
-    from gear_optimizer.solver.timing_envelope import TIMING_MODES
-
-    _write_chart(data_root, "Normal", "Old by Artist", "old.txt")
-    _write_chart(data_root, "Normal", "New by Artist", "new.txt")
-    changed = data_root / "Data" / "Normal" / "new.txt"
-    monkeypatch.setattr(gamedata, "stat_curves", lambda: object())
-    queued: list[object] = []
-
-    class _Stop(Exception):
-        pass
-
-    def capture(**kwargs):
-        queued.append(kwargs["charts_by_mode"])
-        raise _Stop
-
-    monkeypatch.setattr(startup_prebuild, "run_startup_cpu_work", capture)
-
-    with pytest.raises(_Stop):
-        service._prebuild_frontier_caches(data_root / "Data", (changed,))
-
-    assert queued == [{mode: (str(changed),) for mode in TIMING_MODES}]
-
-
-class _InlineExecutor:
-    """ProcessPoolExecutor stand-in that runs the child body synchronously."""
-
-    created: list[dict[str, object]] = []
-
-    def __init__(self, **kwargs):
-        _InlineExecutor.created.append(kwargs)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
-
-    def submit(self, fn, *args):
-        future: concurrent.futures.Future = concurrent.futures.Future()
-        try:
-            future.set_result(fn(*args))
-        except BaseException as exc:  # noqa: BLE001 - mirror a child failure into the future
-            future.set_exception(exc)
-        return future
-
-
-class _ActivePublication:
-    def __init__(self, body: bytes | None):
-        self._body = body
-
-    def manifest_bytes(self) -> bytes | None:
-        return self._body
-
-
-_ACTIVE_MANIFEST = json.dumps(
-    {"bundles": [{"files": [{"scope": "timeline", "path": "c.npz"}, {"scope": "fg", "path": "d.npz"}]}]}
-).encode("utf-8")
-
-
-def test_isolated_prebuild_merges_active_publication_in_parent(tmp_path, monkeypatch):
-    child_calls: list[tuple[object, ...]] = []
-
-    def child_body(data_root, changed_charts):
-        child_calls.append((data_root, changed_charts))
-        return {"timeline": {"a.npz"}, "fg": {"b.npz"}}
-
-    _InlineExecutor.created.clear()
-    monkeypatch.setattr(service.concurrent.futures, "ProcessPoolExecutor", _InlineExecutor)
-    monkeypatch.setattr(service, "_prebuild_frontier_caches", child_body)
-    monkeypatch.setattr(service, "_FRONTIER_DISTRIBUTION", _ActivePublication(_ACTIVE_MANIFEST))
-    changed = tmp_path / "Data" / "Normal" / "new.txt"
-
-    incremental = service._prebuild_frontier_caches_isolated(tmp_path / "Data", [changed])
-    full = service._prebuild_frontier_caches_isolated(tmp_path / "Data", None)
-
-    assert incremental == {"timeline": {"a.npz", "c.npz"}, "fg": {"b.npz", "d.npz"}}
-    assert full == {"timeline": {"a.npz"}, "fg": {"b.npz"}}
-    assert child_calls == [(tmp_path / "Data", (changed,)), (tmp_path / "Data", None)]
-    assert [(kw["max_workers"], kw["mp_context"].get_start_method()) for kw in _InlineExecutor.created] == [
-        (1, "spawn"),
-        (1, "spawn"),
-    ]
-
-
-def test_isolated_prebuild_propagates_child_failure(tmp_path, monkeypatch):
-    def child_body(_data_root, _changed_charts):
-        raise RuntimeError("frontier prebuild failed in the child")
-
-    monkeypatch.setattr(service.concurrent.futures, "ProcessPoolExecutor", _InlineExecutor)
-    monkeypatch.setattr(service, "_prebuild_frontier_caches", child_body)
-    monkeypatch.setattr(service, "_FRONTIER_DISTRIBUTION", _ActivePublication(_ACTIVE_MANIFEST))
-
-    with pytest.raises(RuntimeError, match="failed in the child"):
-        service._prebuild_frontier_caches_isolated(tmp_path / "Data", None)
-
-
-def test_isolated_prebuild_requires_active_publication(tmp_path, monkeypatch):
-    monkeypatch.setattr(service.concurrent.futures, "ProcessPoolExecutor", _InlineExecutor)
-    monkeypatch.setattr(
-        service,
-        "_prebuild_frontier_caches",
-        lambda *_args: {"timeline": {"a.npz"}, "fg": {"b.npz"}},
-    )
-    monkeypatch.setattr(service, "_FRONTIER_DISTRIBUTION", _ActivePublication(None))
-
-    with pytest.raises(RuntimeError, match="requires the active complete publication"):
-        service._prebuild_frontier_caches_isolated(tmp_path / "Data", (tmp_path / "Data" / "Normal" / "new.txt",))
+    (call,) = seen
+    assert call["authorize_destructive_rotation"] is True
+    assert {mode: len(charts) for mode, charts in call["charts_by_mode"].items()} == {"precise": 3, "non-precise": 3}
+    assert built == ["pass"] and len(service.list_official_songs()) == 3

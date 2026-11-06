@@ -44,6 +44,12 @@ def build_queue(run: RunSettings, context: SharedRunContext) -> list[SongTask]:
     return tasks
 
 
+def chart_tasks(path: Path, run: RunSettings, context: SharedRunContext) -> list[SongTask]:
+    """One chart's solves, for a caller that picks the chart itself (the service)."""
+    chart = _Chart(path, "Hard", read_header(path))
+    return _seeded_tasks([(chart, mode) for mode in _modes(chart)], run, context)
+
+
 class _Chart:
     __slots__ = ("path", "name", "difficulty", "header")
 

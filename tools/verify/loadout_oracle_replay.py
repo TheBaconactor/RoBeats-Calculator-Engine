@@ -101,7 +101,8 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
     needed so the oracle gets BOTH chart colors -- feeding only the Selected Element manufactures a
     single-color colorPointBonus and a spurious delta on two-color loadouts."""
     from gear_optimizer.core.timing_modes import PRECISE
-    from gear_optimizer.gamedata import load_gears, perfect_time_of
+    from gear_optimizer.data.game_export import load_catalog
+    from gear_optimizer.gamedata import perfect_time_of
     from gear_optimizer.settings import paths
     from gear_optimizer.store import schema
     from gear_optimizer.store.db import load_boards, load_traces, song_names
@@ -122,7 +123,7 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
         trace = load_traces(conn, PRECISE, best.song, "T5", [best.loadout_hash])[best.loadout_hash].fg
     finally:
         conn.close()
-    perfect_time = perfect_time_of(best.gear, load_gears(paths().gears_csv))
+    perfect_time = perfect_time_of(best.gear, load_catalog(paths().game_export).gears)
     return (fg_payload(best, trace), best.song, int(best.fg_score), int(best.score), best.primary, best.secondary,
             perfect_time)
 

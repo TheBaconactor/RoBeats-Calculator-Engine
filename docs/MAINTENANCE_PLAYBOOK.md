@@ -31,24 +31,17 @@ version, and profiler settings with benchmark results. A faster result is not
 acceptable if CPU/GPU parity, exact rescore, retained witnesses, or either
 leaderboard frontier changes unexpectedly.
 
-## Managed frontier distribution
+## Service deployment
 
-Managed deployments use one authoritative host to build and publish frontier bundles. Trusted clients authenticate to
-that host and install SHA-256-verified code, data, and frontier revisions.
-
-Community clones do not need frontier credentials: when `bin/frontier_client_credentials.json` is absent, hosted
-synchronization is skipped and the optimizer uses the local checkout and `Data/` tree.
+The service follows `origin/main` from its own checkout, so test before pushing and keep tracked edits out of it.
 
 | Variable | Purpose |
 |---|---|
-| `METAFINDER_FRONTIER_SERVER_URL` | Hosted update origin |
-| `METAFINDER_FRONTIER_CREDENTIALS_FILE` | Per-installation client credential |
-| `ROBEATSMETA_OPTIMIZER_SERVICE_MODE` | Disable client-side sync on the authoritative host |
-| `ROBEATSMETA_FRONTIER_CLIENTS_FILE` | Host-side client registry |
-| `ROBEATSMETA_FRONTIER_GIT_REMOTE` / `ROBEATSMETA_FRONTIER_GIT_BRANCH` | Repository ref polled by the host |
+| `ROBEATSMETA_OPTIMIZER_SERVICE_MODE` | Marks a process as running under the service |
+| `ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR` | A chart library in place of `Data/` for the official song list |
 | `EVOLUTION_DB_PATH` | External results database path |
 
-Never commit client credentials, server registries, API tokens, or deployment secrets.
+Never commit API tokens or deployment secrets.
 
 ## Database maintenance
 

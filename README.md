@@ -94,7 +94,6 @@ twice to force an exit, or create `bin/STOP`.
 
 ```bash
 python main.py                                 # Run the optimizer over the config.ini queue
-python -m gear_optimizer.cli sync-data         # Rebuild the gear CSVs from the game export
 python -m gear_optimizer.robeatsmeta_service --host 127.0.0.1 --port 8765   # HTTP service
 python -m tools list                           # List the developer tools
 ```
@@ -103,6 +102,7 @@ python -m tools list                           # List the developer tools
 |---|---|
 | `GET /songs` | Official chart metadata |
 | `POST /optimize` | Optimize an official chart or supplied chart text |
+| `POST /frontiers/refresh` | Re-read the chart list and look for a new revision |
 
 Bind the service to loopback unless it sits behind a trusted boundary, and set `ROBEATSMETA_OPTIMIZER_API_TOKEN` before
 exposing it to a network. Every environment variable the engine reads is documented in
@@ -147,15 +147,14 @@ RoBeats-Calculator-Engine/
 │   ├── gpu/                  # Everything Taichi: runtime, kernels, GPU API and the GPU's owner thread
 │   ├── trace/                # Stored builds to playable note plans, and their physical replay checks
 │   ├── store/                # The results database: schema, boards, reads and writes
-│   ├── core/, data/, domain/, ui/   # Shared utilities, catalog sync, job and board rules, progress output
+│   ├── core/, data/, domain/, ui/   # Shared utilities, the game export, job and board rules, progress output
 │   ├── app.py, cli.py        # Run lifecycle and command line
-│   ├── robeatsmeta_service.py   # HTTP service
-│   └── frontier_*.py         # Frontier publication to trusted clients
+│   ├── robeatsmeta_service.py, service_worker.py, service_update.py   # HTTP service, its solve process and self-update
 ├── general_meta/             # Cross-song General Meta analysis
 ├── tools/                    # Verification gates, game oracles and maintenance utilities
 ├── tests/                    # CPU, GPU, parity and regression coverage
 ├── docs/                     # Architecture, mathematics and research
-├── Data/                     # Charts, gear tables and the game export
+├── Data/                     # Charts and the game export
 └── .github/                  # Contributing, governance, security, support and templates
 ```
 

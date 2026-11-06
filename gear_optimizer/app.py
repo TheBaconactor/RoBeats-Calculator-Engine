@@ -9,10 +9,8 @@ from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress
 from gear_optimizer.store import schema
 from gear_optimizer.core.memory import compute_memory_guard_limit
 from gear_optimizer.domain.jobs import SharedRunContext
-from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
-from gear_optimizer.gamedata import load_gears, load_minis, stat_curves
-from gear_optimizer.client_update import update_and_restart_client
-from gear_optimizer.frontier_client import sync_frontiers_from_server
+from gear_optimizer.data.game_export import load_catalog
+from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.frontier.startup_prebuild import run_startup_cpu_work
 from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.ui.progress import (
@@ -113,8 +111,6 @@ class GearOptimizerApp(RuntimeUiMixin):
         try:
             if self._stop_requested_now():
                 return False
-            update_and_restart_client()
-            frontier_sync = sync_frontiers_from_server()
             run = settings.read_run_settings()
             if self._banner_enabled:
                 self._print_banner()
@@ -122,13 +118,10 @@ class GearOptimizerApp(RuntimeUiMixin):
             schema.ensure(paths().database)
             logger.info(" >> [ForceGreats] ResponseFrontier")
             loop_forever = run.loop_forever
-            sync_exported_game_data()
             curves = stat_curves()
-            gears = load_gears(paths().gears_csv)
-            minis = load_minis(paths().minis_csv)
-            context = SharedRunContext(
-                multi_start=run.multi_start, curves=curves, gears=gears, minis=minis, ga_depth=run.search_depth
-            )
+            catalog = load_catalog(paths().game_export)
+            context = SharedRunContext(multi_start=run.multi_start, curves=curves, gears=catalog.gears,
+                                       minis=catalog.minis, ga_depth=run.search_depth)
             tasks = build_queue(run, context)
             queued_songs = len({task.song_name for task in tasks})
             charts_by_mode: dict[str, list[str]] = {}
@@ -138,7 +131,6 @@ class GearOptimizerApp(RuntimeUiMixin):
                 charts_by_mode=charts_by_mode,
                 curves=curves,
                 announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
-                build_missing=not frontier_sync.enabled,
             )
             self._solve(tasks, run)
         except KeyboardInterrupt:

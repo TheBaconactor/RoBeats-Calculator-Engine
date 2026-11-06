@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.team_buff import team_buff_effect
-from gear_optimizer.gamedata import MINI_ASCENSION_VERSION, STATS, load_gears, load_minis, stat_curves, song_minis
+from gear_optimizer.data.game_export import load_catalog
+from gear_optimizer.gamedata import MINI_ASCENSION_VERSION, STATS, stat_curves, song_minis
 from gear_optimizer.pipeline import canonical
 from gear_optimizer.pipeline.canonical import canonical_rows, loadout_identity, row_order, stored_stats
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, SongSolve
@@ -182,10 +183,11 @@ def test_real_song_base_result_is_the_exhaustive_gem_optimum_scored_by_exact_rep
     curves = stat_curves()
     build_or_load_timeline_frontier_payload(song, curves)
     base = frozen["base_entry"]
+    catalog = load_catalog(paths().game_export)
     solve = SongSolve(
         song.chart.name, "T5", song, curves, (SolvedLoadout(tuple(base["gear"]), tuple(base["minis"])),), ()
     )
-    (row,) = canonical_rows(solve, load_gears(paths().gears_csv), load_minis(paths().minis_csv))
+    (row,) = canonical_rows(solve, catalog.gears, catalog.minis)
     x = row.loadout
     assert x.score == base["expected_score"] == 47192170
     assert (x.fg, x.fg_score) == (None, None)

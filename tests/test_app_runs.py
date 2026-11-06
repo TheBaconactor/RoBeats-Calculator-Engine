@@ -117,18 +117,16 @@ def _looping_app(monkeypatch, tmp_path, failure: BaseException):
     from gear_optimizer.settings import RunSettings
 
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "results.db"))
-    monkeypatch.setattr(app_module, "update_and_restart_client", lambda: None)
-    monkeypatch.setattr(app_module, "sync_frontiers_from_server", lambda: types.SimpleNamespace(enabled=False))
     monkeypatch.setattr(app_module.settings, "read_run_settings", lambda: RunSettings(loop_forever=True))
     iterations = []
 
-    def fail():
+    def fail(_path):
         iterations.append(1)
         if len(iterations) > 3:
             raise KeyboardInterrupt  # a non-fatal failure loops; end the loop for the test
         raise failure
 
-    monkeypatch.setattr(app_module, "sync_exported_game_data", fail)
+    monkeypatch.setattr(app_module, "load_catalog", fail)
     return GearOptimizerApp(), iterations
 
 

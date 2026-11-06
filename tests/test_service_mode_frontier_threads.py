@@ -23,7 +23,7 @@ def test_service_mode_configures_timeline_pair_build_threads(monkeypatch) -> Non
     monkeypatch.setattr(cpu_affinity, "frontier_prebuild_cpu_count", lambda: 7)
     timeline_producer.configure_timeline_pair_build_threads(1)
 
-    cli._apply_service_mode_frontier_threads()
+    cli.apply_service_frontier_threads()
 
     assert _effective_threads() == min(7, os.cpu_count() or 1)
 
@@ -35,6 +35,6 @@ def test_standalone_mode_does_not_reconfigure_timeline_pair_build_threads(monkey
     monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", raising=False)
     timeline_producer.configure_timeline_pair_build_threads(3)
 
-    cli._apply_service_mode_frontier_threads()
+    cli.apply_service_frontier_threads()
 
     assert _effective_threads() == min(3, os.cpu_count() or 1)
