@@ -16,11 +16,8 @@ from gear_optimizer.frontier.fg_cache_patterns import EXPANDED_COEFF_COLUMNS, in
 
 from gear_optimizer.frontier.producer_batch import action_table
 from gear_optimizer.frontier.producer_batch import song_arrays
-from gear_optimizer.trace.reconstruct import (
-    _ActivationReachabilityContext,
-    _edge_surface_options,
-    _option_with_witness,
-)
+from gear_optimizer.trace.reconstruct import _Edge, _stored_section, section_table
+from gear_optimizer.trace.section_kernels import SectionContext
 from gear_optimizer.frontier.types import (
     FgResponseFrontierResult,
     FgResponseSurface,
@@ -43,9 +40,78 @@ def build_activation_reachability_context(
         timestamps, perfect_candidate_timestamps, great_candidate_timestamps, perfect_floor_timestamps,
         great_floor_timestamps, late_great_floor_timestamps, exit_ceiling_timestamps, lanes,
     )
-    return _ActivationReachabilityContext(
-        ts, floor, perfect, great_floor, great, late_great_floor, exit_ceiling, lane_arr, float(fever_fill_denom)
+    return SectionContext(
+        ts, floor, perfect, great_floor, great, late_great_floor, exit_ceiling, lane_arr, float(fever_fill_denom), 0.0, True
     )
+
+
+def section_options(
+    *, context, i, first, actions, fills, forced, real_fever_time, use_forced_great_timing
+) -> list[dict[str, Any]]:
+    """A section start's options as dicts, for focused tests."""
+    context = context._replace(real_fever_time=float(real_fever_time), use_forced_great_timing=use_forced_great_timing)
+    table = section_table(context, actions, fills, forced, int(i), bool(first))
+    options = []
+    for row, (edge, _next_state) in zip(table.rows.tolist(), table.walk):
+        k, next_state, activation, late_great, run_start, run_count, tail_start, tail_end, _end, _exit = row
+        options.append({
+            "k": k,
+            "next_state": next_state,
+            "fever_end_index": next_state,
+            "activation_index": activation,
+            "activation_judgment": "late_great" if late_great else "perfect",
+            "forced_start_index": table.section_start,
+            "forced_run_start_index": run_start,
+            "forced_run_count": run_count,
+            "early_great_start": tail_start,
+            "early_great_end": tail_end,
+            "surface": edge,
+        })
+    return options
+
+
+def _head_mask(start: int, end: int, n: int) -> int:
+    lo, hi = max(0, min(start, n, 100)), max(0, min(end, n, 100))
+    return ((1 << (hi - lo)) - 1) << lo if hi > lo else 0
+
+
+def _body_count(start: int, end: int, n: int) -> int:
+    return max(0, min(end, n) - max(start, 100))
+
+
+def _body_overlap(first_start: int, first_end: int, second_start: int, second_end: int, n: int) -> int:
+    return max(0, min(first_end, second_end, n) - max(first_start, second_start, 100))
+
+
+def edge_surface(
+    *,
+    n: int,
+    fever_start: int,
+    fever_end: int,
+    great_start: int,
+    great_end: int,
+    activation_great_idx: int = -1,
+    early_great_start: int = -1,
+    early_great_end: int = -1,
+) -> _Edge:
+    """A plain-Python twin of the kernels' edge: the section's fever range, forced Greats, activation Great and tail."""
+    great = _head_mask(great_start, great_end, n)
+    if 0 <= activation_great_idx < min(n, 100):
+        great |= 1 << activation_great_idx
+    body_great = _body_count(great_start, great_end, n)
+    body_fever_great = _body_overlap(fever_start, fever_end, great_start, great_end, n)
+    if (
+        max(100, fever_start) <= activation_great_idx < min(fever_end, n)
+        and not great_start <= activation_great_idx < great_end
+    ):
+        body_great += 1
+        body_fever_great += 1
+    if early_great_end > early_great_start:
+        great |= _head_mask(early_great_start, early_great_end, n)
+        body_great += _body_count(early_great_start, early_great_end, n)
+        body_fever_great += _body_overlap(fever_start, fever_end, early_great_start, early_great_end, n)
+    return _Edge(_head_mask(fever_start, fever_end, n), great, _body_count(fever_start, fever_end, n), body_great,
+                 body_fever_great)
 
 
 def response_surface(edge) -> FgResponseSurface:
@@ -244,18 +310,13 @@ def edge_surface_option_details(
         lanes=lanes,
         fever_fill_denom=float(raw_fever_fill),
     )
+    context = reachability_context._replace(
+        real_fever_time=float(real_fever_time), use_forced_great_timing=bool(use_forced_great_timing)
+    )
+    fills, forced = (first_fill, first_forced) if first else (later_fill, later_forced)
+    table = section_table(context, actions, fills, forced, int(i), bool(first))
     return [
-        _option_with_witness(option, reachability_context, float(real_fever_time))
-        for option in _edge_surface_options(
-            context=reachability_context,
-            i=int(i),
-            first=bool(first),
-            actions=actions,
-            fills=first_fill if bool(first) else later_fill,
-            forced=first_forced if bool(first) else later_forced,
-            real_fever_time=float(real_fever_time),
-            use_forced_great_timing=bool(use_forced_great_timing),
-        )
+        {**_stored_section(table, index, context), "surface": edge} for index, (edge, _state) in enumerate(table.walk)
     ]
 
 
@@ -304,7 +365,7 @@ def input_engine_rebuild_first_frontier(
             return cached
         states_evaluated += 1
         generated: list[FgResponseSurface] = []
-        for option in _edge_surface_options(
+        for option in section_options(
             context=reachability_context,
             i=int(state),
             first=bool(first),

@@ -51,12 +51,9 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         _reduce_surfaces,
         latest_activation_hit_for_contiguous_great_run,
     )
-    from gear_optimizer.trace.reconstruct import (
-        _edge_surface,
-        _fever_end,
-    )
     from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
-    from tests.fg_response_frontier_oracles import response_surface
+    from gear_optimizer.trace.section_kernels import fever_end as _fever_end
+    from tests.fg_response_frontier_oracles import edge_surface as _edge_surface, response_surface
 
     n = int(timestamps.shape[0])
     lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
@@ -1048,10 +1045,8 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
 
 
 def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
-    from gear_optimizer.trace.reconstruct import (
-        _centered_hit_window_for_exit,
-        _lower_bound_from,
-    )
+    from gear_optimizer.frontier.producer_kernels import _numba_lower_bound_from as _lower_bound_from
+    from gear_optimizer.trace.reconstruct import _centered_hit_window_for_exit
 
     timestamps = np.asarray(
         [15.46399974822998, 73.97799682617188, 74.11299896240234],
@@ -1303,9 +1298,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
 
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     from gear_optimizer.frontier.producer_batch import action_table
-    from gear_optimizer.trace.reconstruct import (
-        _edge_surface_options,
-    )
+    from tests.fg_response_frontier_oracles import section_options
 
     timestamps = np.asarray([float(idx) for idx in range(8)], dtype=np.float32)
     great_candidates = timestamps.copy()
@@ -1326,7 +1319,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         fever_fill_denom=2.0,
     )
 
-    options = _edge_surface_options(
+    options = section_options(
         context=reachability_context,
         i=0,
         first=False,
@@ -1394,9 +1387,7 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
 
 def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None:
     from gear_optimizer.frontier.producer_batch import action_table
-    from gear_optimizer.trace.reconstruct import (
-        _edge_surface_options,
-    )
+    from tests.fg_response_frontier_oracles import section_options
 
     timestamps = np.asarray([float(idx) * 0.1 for idx in range(130)], dtype=np.float32)
     timestamps[103] = timestamps[102]
@@ -1421,7 +1412,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         fever_fill_denom=raw_fever_fill,
     )
 
-    options = list(_edge_surface_options(
+    options = list(section_options(
         context=reachability_context,
         i=99,
         first=False,
@@ -2366,12 +2357,9 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     from gear_optimizer.frontier import producer_batch
     from gear_optimizer.frontier.producer_batch import action_table
     from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
-    from gear_optimizer.trace.reconstruct import (
-        _edge_surface_options,
-        reconstruct_force_greats_response_trace,
-    )
+    from gear_optimizer.trace.reconstruct import reconstruct_force_greats_response_trace
     from gear_optimizer.frontier.types import FgResponseSurface
-    from tests.fg_response_frontier_oracles import response_surface
+    from tests.fg_response_frontier_oracles import response_surface, section_options
 
     def _combine_surface(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
         return FgResponseSurface(
@@ -2460,7 +2448,7 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     surface = _EMPTY_SURFACE
     for row in trace:
         edge_match = None
-        for option in _edge_surface_options(
+        for option in section_options(
             context=reachability_context,
             i=state,
             first=first,

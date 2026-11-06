@@ -12,6 +12,7 @@ Rationale:
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -196,6 +197,15 @@ def test_maintained_documentation_does_not_reference_retired_surfaces() -> None:
         "Maintained documentation references retired code or policy surfaces:\n"
         + "\n".join(offenders)
     )
+
+
+def test_the_section_kernels_name_the_producer_kernels_they_compile_in() -> None:
+    """Numba's cache does not follow calls into another file: an edit to the producer has to change section_kernels.py,
+    or the cached section kernels keep running the old producer code."""
+    from gear_optimizer.trace import section_kernels
+
+    source = (_REPO_ROOT / "gear_optimizer" / "frontier" / "producer_kernels.py").read_bytes().replace(b"\r\n", b"\n")
+    assert section_kernels._PRODUCER_KERNELS_SHA256 == hashlib.sha256(source).hexdigest()
 
 
 def test_the_cpu_layers_never_load_taichi() -> None:

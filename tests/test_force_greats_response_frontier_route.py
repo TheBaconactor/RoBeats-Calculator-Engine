@@ -400,14 +400,14 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
 
     assert payload["BaseScore"] == 4000
     trace = payload["ForceGreats"]["frontier_trace"]
-    assert [row["forced_count"] for row in trace] == [int(target_option["k"])]
+    assert [row["forced_count"] for row in trace] == [int(target_option["forced_count"])]
     assert len(trace) == 1
     assert trace[0]["activation_judgment"] == "late_great"
     assert trace[0]["activation_index"] == int(target_option["activation_index"])
     assert trace[0]["activation_hit_ms"] == pytest.approx(float(target_option["activation_hit_ms"]))
     assert trace[0]["activation_hit_offset_ms"] == pytest.approx(float(target_option["activation_hit_offset_ms"]))
     assert trace[0]["fever_end_index"] == int(target_option["fever_end_index"])
-    assert trace[0]["forced_count"] == int(target_option["k"])
+    assert trace[0]["forced_count"] == int(target_option["forced_count"])
 
 
 def test_response_frontier_prunes_duplicate_constant_ftff_frontiers_by_best_residual():

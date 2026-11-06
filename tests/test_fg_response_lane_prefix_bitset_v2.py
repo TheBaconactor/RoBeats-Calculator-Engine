@@ -11,7 +11,6 @@ from gear_optimizer.frontier.producer_kernels import (
     HitTimes,
     _numba_activation_reachable_contiguous_run,
 )
-from gear_optimizer.trace.reconstruct import _activation_reachable
 from tests.fg_response_frontier_oracles import build_activation_reachability_context
 
 
@@ -301,17 +300,15 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
             great_count,
             int(activation_great),
         )
-        actual = _activation_reachable(
-            context=context,
-            a=activation,
-            hit=float(hit),
-            section_start=start,
-            great_start=great_start,
-            great_count=great_count,
-            activation_great=activation_great,
-            n=end,
+        actual = _numba_activation_reachable_contiguous_run(
+            activation, float(hit), context.timestamps,
+            HitTimes(
+                context.perfect_floor_timestamps, context.perfect_candidate_timestamps, context.great_floor_timestamps,
+                context.great_candidate_timestamps, context.late_great_floor_timestamps,
+            ),
+            context.lanes, context.fever_fill_denom, start, end, great_start, great_count, int(activation_great),
         )
-        assert actual is _retired_boolean_prefix_reachable(*args), case_idx
+        assert bool(actual) is _retired_boolean_prefix_reachable(*args), case_idx
 
 
 @pytest.mark.parametrize("denom", [float("inf"), float("nan")])

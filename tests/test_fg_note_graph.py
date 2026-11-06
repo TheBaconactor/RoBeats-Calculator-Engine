@@ -157,8 +157,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
             assert isinstance(wit["delta_ms"], float)
 
     assert validated > 0, "no edge surface reconstructed+reconciled"
-    assert edge_options_cache
-    assert edge_options_cache.option_count <= 8192
+    assert edge_options_cache.tables
     # body-count + witness reconciliation is proven directly below (standalone single-surface
     # frontiers only reconstruct head-reaching edges; body coverage is the synthetic test).
     _ = (saw_body_fever, saw_witness)
@@ -184,50 +183,23 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "edge_options_cache",
     }
 
-def test_trace_edge_cache_bounds_the_options_its_states_built():
+def test_trace_edge_cache_starts_over_when_full():
     from gear_optimizer.trace.reconstruct import (
+        _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS,
         FgTraceEdgeOptionsCache,
-        _SectionOptionStream,
+        _SectionTable,
     )
 
+    def table(count):
+        return _SectionTable(0, [None] * count, None, None)
+
     cache = FgTraceEdgeOptionsCache()
-    option = {"surface": "sentinel"}
-
-    def read(count):
-        stream = _SectionOptionStream(iter((option,) * count))
-        assert len(list(stream)) == count
-        return stream
-
-    cache.put(("first",), read(5000))
-    cache.put(("second",), read(4000))
-
-    assert cache.get(("first",)) is None
-    assert len(list(cache.get(("second",)))) == 4000
-    assert cache.option_count == 4000
-
-    empty_cache = FgTraceEdgeOptionsCache()
-    for index in range(300):
-        empty_cache.put(("empty", index), _SectionOptionStream(iter(())))
-    assert len(empty_cache) == 256
-    assert empty_cache.option_count == 0
-
-
-def test_a_section_option_stream_builds_only_what_is_read_and_replays_it():
-    from gear_optimizer.trace.reconstruct import _SectionOptionStream
-
-    pulled = []
-
-    def source():
-        for index in range(3):
-            pulled.append(index)
-            yield {"surface": index}
-
-    stream = _SectionOptionStream(source())
-    assert next(iter(stream))["surface"] == 0
-    assert pulled == [0]
-    assert [option["surface"] for option in stream] == [0, 1, 2]
-    assert [option["surface"] for option in stream] == [0, 1, 2]
-    assert pulled == [0, 1, 2]
+    cache.add(("first",), table(_TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS - 1))
+    cache.add(("second",), table(1))
+    assert set(cache.tables) == {("first",), ("second",)}
+    cache.add(("third",), table(4000))
+    assert set(cache.tables) == {("third",)}
+    assert cache.options == 4000
 
 
 def _words_from_indices(indices):
