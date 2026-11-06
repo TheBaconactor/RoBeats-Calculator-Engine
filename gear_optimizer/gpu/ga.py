@@ -11,7 +11,6 @@ from gear_optimizer.chart import Chart
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload, build_timeline_payload
 from gear_optimizer.gamedata import stat_curves
-from gear_optimizer.rules import ELEMENT_GEM_GAIN, GEM_BUDGET, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.ftff_combos import ftff_shortlist, reachable_ftff_keys
 from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, GaInputs, one_swap_neighborhood
 from gear_optimizer.solver.timing_envelope import TimedSong
@@ -163,10 +162,11 @@ def warmup() -> None:
     item_stats = np.zeros((3, fields.ITEM_STAT_DIM), dtype=np.int32)
     slot_start, slot_count = np.ones(MAX_SLOTS, dtype=np.int32), np.full(MAX_SLOTS, 2, dtype=np.int32)
     base_fixed = np.zeros(fields.ITEM_STAT_DIM, dtype=np.int32)
+    color_flags = build_color_flags("Rush", "Flow", "Rush")
     inputs = GaInputs(
         timed_song=song,
         curves=curves,
-        color_flags=build_color_flags("Rush", "Flow", "Rush"),
+        color_flags=color_flags,
         gens_per_run=2,
         num_runs=1,
         n_genomes=4,
@@ -177,11 +177,7 @@ def warmup() -> None:
         init_heuristic_topk=np.ones((MAX_SLOTS, GA_INIT_HEURISTIC_K), dtype=np.int32),
         init_heuristic_copies=1,
         ftff_shortlist=ftff_shortlist(
-            payload,
-            reach=reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed),
-            total_budget=GEM_BUDGET,
-            gem_scale_fever=STAT_GEM_GAIN_FEVER,
-            element_gains=(STAT_GEM_ELEMENT_GAIN, STAT_GEM_ELEMENT_GAIN, ELEMENT_GEM_GAIN),
+            payload, reach=reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed), color_flags=color_flags
         ),
     )
     _run_ga(inputs, 12345, payload, lambda _where: None)

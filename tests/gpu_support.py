@@ -5,9 +5,8 @@ import numpy as np
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 from gear_optimizer.gamedata import empty_stats, stat_curves
-from gear_optimizer.pipeline.prepare import ga_ftff_shortlist
 from gear_optimizer.solver.base_stats import build_stats_array
-from gear_optimizer.solver.ftff_combos import reachable_ftff_keys
+from gear_optimizer.solver.ftff_combos import ftff_shortlist, reachable_ftff_keys
 from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, GaInputs, build_ga_init_heuristic_topk
 from gear_optimizer.solver.item_registry import ItemRegistry
 from tests.items_support import make_gear, make_song_mini
@@ -76,7 +75,7 @@ def ga_inputs(timed=None, *, num_runs: int = 2, n_genomes: int = 64, generations
             secondary_color=SECONDARY, heuristic_k=GA_INIT_HEURISTIC_K,
         ),
         init_heuristic_copies=8,
-        ftff_shortlist=ga_ftff_shortlist(
+        ftff_shortlist=ftff_shortlist(
             payload, reach=reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed), color_flags=flags
         ),
     )

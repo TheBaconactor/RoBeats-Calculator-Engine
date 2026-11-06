@@ -18,10 +18,9 @@ from gear_optimizer.pipeline.song import (
     NativeSongRuntimeState,
 )
 from gear_optimizer.solver.base_stats import build_stats_array
-from gear_optimizer.solver.ftff_combos import FtffShortlist, ftff_shortlist, reachable_ftff_keys
+from gear_optimizer.solver.ftff_combos import ftff_shortlist, reachable_ftff_keys
 from gear_optimizer.solver.ga_selection import effective_tables
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.rules import ELEMENT_GEM_GAIN, GEM_BUDGET, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 
 # Per pool key (_ga_registry): the item registry, its GPU arrays, the GA's initial-heuristic top-k and the FG
@@ -118,7 +117,7 @@ def prepare_native_song(task: SongTask) -> NativeSong:
             base_fixed_stats_arr=base_fixed_stats,
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_copies=_INIT_HEURISTIC_COPIES,
-            ftff_shortlist=ga_ftff_shortlist(payload, reach=reach, color_flags=color_flags),
+            ftff_shortlist=ftff_shortlist(payload, reach=reach, color_flags=color_flags),
             minis_by_name={mini.name: mini for mini in core.minis},
             meta_primary_color=primary,
             meta_secondary_color=secondary,
@@ -130,16 +129,3 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     )
     prepare_fg_static(song)
     return song
-
-
-def ga_ftff_shortlist(payload, *, reach: np.ndarray, color_flags: dict) -> FtffShortlist:
-    """The FT/FF combo shortlist of the GA's gem search (ftff_combos.ftff_shortlist, GEM_BUDGET gems) for a song's
-    timing frontier payload, the pre-gem keys its genomes can reach (ftff_combos.reachable_ftff_keys) and its color
-    flags (build_color_flags)."""
-    gains = (
-        STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ft"] + color_flags["is_s_ft"]),
-        STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ff"] + color_flags["is_s_ff"]),
-        ELEMENT_GEM_GAIN * (2 * color_flags["is_p_ov"] + color_flags["is_s_ov"]),
-    )
-    return ftff_shortlist(payload, reach=reach, total_budget=GEM_BUDGET, gem_scale_fever=STAT_GEM_GAIN_FEVER,
-                          element_gains=gains)
