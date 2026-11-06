@@ -25,10 +25,11 @@ def build_fixed_timing_fg_replays(
     curves: StatCurves,
     selected_color: str,
     trace_cache: FgTraceMaterializationCache,
+    perfect_times: list[int],
 ) -> list[dict[str, Any] | None]:
     """Each row of pre-gem stats' FG `force` payload at the song's timing, in order (the shape of a persisted FG row,
-    carrying its frontier trace), or None when no hit timing plays its plan. Its paired base is the non-FG score at the
-    re-solved stats. `trace_cache` is shared by the replays of one song: loadouts commonly reach the same surface, at
+    carrying its frontier trace), or None when no hit timing plays its plan at the row's Perfect Time. Its paired base is
+    the non-FG score at the re-solved stats. `trace_cache` is shared by the replays of one song: loadouts commonly reach the same surface, at
     every TeamBuff tier, and the trace rebuild is the dominant cost. The caller releases the song's bundle
     (release_fg_response_song_memory)."""
     rows = [dict(stats) for stats in pre_gem_stats]
@@ -38,7 +39,7 @@ def build_fixed_timing_fg_replays(
     results = fg_solve_results(rows, song=song, curves=curves, selected_color=selected_color, scoring_bundle=bundle)
     paired_base_scores = score_base_exact_batch([result.stats for result in results], song, curves)
     forces: list[dict[str, Any] | None] = []
-    for result, paired_base in zip(results, paired_base_scores, strict=True):
+    for result, paired_base, perfect_time in zip(results, paired_base_scores, perfect_times, strict=True):
         try:
             forces.append(materialize_force_payload_from_response_frontier(
                 base_stats=dict(result.stats),
@@ -48,6 +49,7 @@ def build_fixed_timing_fg_replays(
                 song=song,
                 curves=curves,
                 trace_cache=trace_cache,
+                perfect_time=perfect_time,
             ))
         except UnplayableTrace as exc:
             # As the solver's materializer: a plan no hit timing plays (non-precise: a held tail's Great between its

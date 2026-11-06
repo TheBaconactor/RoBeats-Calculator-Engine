@@ -9,6 +9,7 @@ import numpy as np
 from numba import njit
 
 from gear_optimizer.score import HEAD_NOTES
+from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE, judgment_edges
 from .reconstruct import UnplayableTrace
 from gear_optimizer.frontier.types import FgResponseSurface
 from .note_graph import (
@@ -17,9 +18,6 @@ from .note_graph import (
     reconcile_force_greats_note_graph,
     timeline_frontier_note_graph,
 )
-
-_TAP_EDGES = (430.0, 190.0, 40.0, -20.0, -95.0, -235.0)
-_HELD_TAIL_TYPE = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,26 +33,10 @@ class BasePhysicalReplay:
     fever_mask: tuple[bool, ...]
 
 
-# The judgment edges of a tap and of a held tail (twice as wide).
-_EDGES_BY_HELD_TAIL = {held: tuple(edge * (2.0 if held else 1.0) for edge in _TAP_EDGES) for held in (False, True)}
-
-
-def _judgment_at(delta_ms: float, *, held_tail: bool) -> str:
-    okay_late, great_late, perfect_late, perfect_early, great_early, okay_early = _EDGES_BY_HELD_TAIL[held_tail]
-    delta = float(delta_ms)
-    if delta > okay_late:
-        return "Miss"
-    if delta > great_late:
-        return "Okay"
-    if delta > perfect_late:
-        return "Great"
-    if delta > perfect_early:
-        return "Perfect"
-    if delta > great_early:
-        return "Great"
-    if delta > okay_early:
-        return "Okay"
-    return "Miss"
+def _note_edges(note_types: np.ndarray, perfect_time: int) -> np.ndarray:
+    """Per note, its six judgment edges (a held tail's are twice as wide) at the build's Perfect Time."""
+    tap = np.asarray(judgment_edges(perfect_time), dtype=np.float64)
+    return np.where((note_types == HELD_TAIL_TYPE)[:, None], tap * HELD_TAIL_WINDOW_SCALE, tap)
 
 
 def _base_graph_physical_replay(
@@ -67,6 +49,7 @@ def _base_graph_physical_replay(
     fever_fill_denominator: float,
     fever_duration_ms: float,
     timing_mode: str,
+    perfect_time: int,
 ) -> tuple[list[dict[str, object]], BasePhysicalReplay]:
     """Build and replay one Base graph through the engine's physical input order."""
     ts = np.asarray(timestamps, dtype=np.float64).reshape(-1)
@@ -83,24 +66,29 @@ def _base_graph_physical_replay(
         note_types=nt,
         lanes=lane_arr,
         timing_mode=timing_mode,
+        perfect_time=perfect_time,
     )
     if response_surface is not None:
         reconcile_base_note_graph(graph, total_notes=n, response_surface=response_surface)
 
+    delta_ms = np.empty(n, dtype=np.float64)
     event_times_ms = np.empty(n, dtype=np.float64)
     input_orders: list[int] = []
-    note_types_list, lanes_list = nt.tolist(), lane_arr.tolist()
+    lanes_list = lane_arr.tolist()
     for index, note in enumerate(graph):
         delta = note.get("delta_ms")
         if delta is None:
             raise ValueError(f"Base physical replay note {index} has no canonical timing witness")
-        actual = _judgment_at(float(delta), held_tail=note_types_list[index] == _HELD_TAIL_TYPE)
-        if actual != "Perfect":
-            raise ValueError(
-                f"Base physical replay note {index} judges {actual} at {float(delta):.6f}ms"
-            )
+        delta_ms[index] = float(delta)
         event_times_ms[index] = float(note["hit_time_ms"]) + float(delta)
         input_orders.append(int(note.get("input_order", -1)))
+    edges = _note_edges(nt, perfect_time)
+    misjudged = np.flatnonzero((delta_ms > edges[:, 2]) | (delta_ms <= edges[:, 3]))
+    if misjudged.size:
+        # The frontier plans on the base windows: a build that narrows them can lose a planned Perfect.
+        index = int(misjudged[0])
+        actual = _JUDGMENT_NAME[_judgment_code(delta_ms[index], edges[index])]
+        raise UnplayableTrace(f"Base physical replay note {index} judges {actual} at {delta_ms[index]:.6f}ms")
     if tuple(sorted(input_orders)) != tuple(range(n)):
         raise ValueError("Base physical replay graph does not contain one exact input order")
 
@@ -152,6 +140,7 @@ def validate_base_physical_replay(
     fever_fill_denominator: float,
     fever_duration_ms: float,
     timing_mode: str,
+    perfect_time: int,
 ) -> BasePhysicalReplay:
     """Fail loudly unless a persisted Base witness is canonical and score-exact in `timing_mode`."""
     graph, replay = _base_graph_physical_replay(
@@ -163,6 +152,7 @@ def validate_base_physical_replay(
         fever_fill_denominator=fever_fill_denominator,
         fever_duration_ms=fever_duration_ms,
         timing_mode=timing_mode,
+        perfect_time=perfect_time,
     )
     expected_fever = tuple(bool(note["fever"]) for note in graph)
     if replay.fever_mask != expected_fever:
@@ -201,26 +191,19 @@ _REPLAY_ERR_COMBO_ORDER = 8
 
 
 @njit(cache=True, nogil=True)
-def _judgment_code(delta_ms, held_tail):
-    """Numba twin of ``_judgment_at`` returning an integer judgment code."""
-    scale = 2.0 if held_tail else 1.0
-    okay_late = 430.0 * scale
-    great_late = 190.0 * scale
-    perfect_late = 40.0 * scale
-    perfect_early = -20.0 * scale
-    great_early = -95.0 * scale
-    okay_early = -235.0 * scale
-    if delta_ms > okay_late:
+def _judgment_code(delta_ms, edges):
+    """The judgment of a hit at `delta_ms` on a note with these six edges (SPUtil.timedelta_to_result)."""
+    if delta_ms > edges[0]:
         return _MISS_CODE
-    if delta_ms > great_late:
+    if delta_ms > edges[1]:
         return _OKAY_CODE
-    if delta_ms > perfect_late:
+    if delta_ms > edges[2]:
         return _GREAT_CODE
-    if delta_ms > perfect_early:
+    if delta_ms > edges[3]:
         return _PERFECT_CODE
-    if delta_ms > great_early:
+    if delta_ms > edges[4]:
         return _GREAT_CODE
-    if delta_ms > okay_early:
+    if delta_ms > edges[5]:
         return _OKAY_CODE
     return _MISS_CODE
 
@@ -282,7 +265,7 @@ def _force_greats_replay_kernel(
     input_order,
     expected_result_code,
     expected_fever,
-    note_types,
+    edges,
     lanes,
     fever_fill_denominator,
     real_fever_time,
@@ -300,7 +283,7 @@ def _force_greats_replay_kernel(
     # Per-note judgment agreement plus event-time accumulation (was the :267-279 Python loop).
     event_times_ms = np.empty(n, dtype=np.float64)
     for i in range(n):
-        actual = _judgment_code(delta_ms[i], note_types[i] == _HELD_TAIL_TYPE)
+        actual = _judgment_code(delta_ms[i], edges[i])
         if actual != expected_result_code[i]:
             return _REPLAY_ERR_JUDGMENT, i, actual
         event_times_ms[i] = hit_time_ms[i] + delta_ms[i]
@@ -377,6 +360,7 @@ def validate_force_greats_physical_replay(
     fever_fill_denominator: float,
     real_fever_time: float,
     timing_mode: str,
+    perfect_time: int,
 ) -> FgPhysicalReplay:
     """Fail loudly unless the mode's persisted witness replays to its exact score-bearing surface."""
     ts = np.asarray(timestamps, dtype=np.float64).reshape(-1)
@@ -393,6 +377,7 @@ def validate_force_greats_physical_replay(
         note_types=nt,
         lanes=lane_arr,
         timing_mode=timing_mode,
+        perfect_time=perfect_time,
     )
     reconcile_force_greats_note_graph(
         graph,
@@ -434,7 +419,7 @@ def validate_force_greats_physical_replay(
         input_order,
         expected_result_code,
         expected_fever,
-        nt,
+        _note_edges(nt, perfect_time),
         lane_arr,
         float(fever_fill_denominator),
         float(real_fever_time),

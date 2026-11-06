@@ -95,12 +95,14 @@ def _chart_path(song_name_or_prefix: str) -> tuple[str, str]:
     return matches[0]
 
 
-def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, str, int, int, str, str]:
+def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, str, int, int, str, str, int]:
     """Return (force_details, exact_song_name, surface_fg_score, surface_base_score,
-    primary_color, secondary_color) at rank N. The color pair (`details_json` `pc`/`sc`) is
+    primary_color, secondary_color, perfect_time) at rank N. The color pair (`details_json` `pc`/`sc`) is
     needed so the oracle gets BOTH chart colors -- feeding only the Selected Element manufactures a
     single-color colorPointBonus and a spurious delta on two-color loadouts."""
     from gear_optimizer.core.timing_modes import PRECISE
+    from gear_optimizer.gamedata import load_gears, perfect_time_of
+    from gear_optimizer.settings import paths
     from gear_optimizer.store import schema
     from gear_optimizer.store.db import load_boards, load_traces, song_names
     from gear_optimizer.store.legacy import fg_payload
@@ -120,7 +122,9 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
         trace = load_traces(conn, PRECISE, best.song, "T5", [best.loadout_hash])[best.loadout_hash].fg
     finally:
         conn.close()
-    return fg_payload(best, trace), best.song, int(best.fg_score), int(best.score), best.primary, best.secondary
+    perfect_time = perfect_time_of(best.gear, load_gears(paths().gears_csv))
+    return (fg_payload(best, trace), best.song, int(best.fg_score), int(best.score), best.primary, best.secondary,
+            perfect_time)
 
 
 def _visible_stats(fd: dict) -> tuple[dict, str]:
@@ -214,7 +218,7 @@ def main(argv=None) -> int:
     )
     args = ap.parse_args(argv)
 
-    fd, song_name, surface_fg, surface_base, primary_color, secondary_color = _load_loadout(
+    fd, song_name, surface_fg, surface_base, primary_color, secondary_color, perfect_time = _load_loadout(
         args.db, args.song, args.rank)
     chart_fp, chart_name = _chart_path(song_name)
 
@@ -254,6 +258,7 @@ def main(argv=None) -> int:
         note_types=nt,
         lanes=lanes,
         timing_mode="precise",
+        perfect_time=perfect_time,
     )
     physical_replay = validate_force_greats_physical_replay(
         frontier_trace=fd["ForceGreats"]["frontier_trace"],
@@ -264,6 +269,7 @@ def main(argv=None) -> int:
         fever_fill_denominator=float(fd["ForceGreats"]["raw_fever_fill"]),
         real_fever_time=float(fd["ForceGreats"]["real_fever_time"]),
         timing_mode="precise",
+        perfect_time=perfect_time,
     )
     events = _events_from_note_graph(note_graph, nt)
 

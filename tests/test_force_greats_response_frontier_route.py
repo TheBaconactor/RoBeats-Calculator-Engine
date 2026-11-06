@@ -236,6 +236,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         song=song,
         curves=stat_curves(),
         trace_cache=trace_cache,
+        perfect_time=0,
     )
     second_payload = materialize_force_payload_from_response_frontier(
         base_stats={"Perfect Points": 1},
@@ -245,6 +246,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         song=song,
         curves=stat_curves(),
         trace_cache=trace_cache,
+        perfect_time=0,
     )
 
     assert seen["non_fever_base"] == scoring_frontier.non_fever_base
@@ -267,6 +269,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
             song=_stub_song(1),
             curves=stat_curves(),
             trace_cache=trace_cache,
+            perfect_time=0,
         )
 
 
@@ -318,6 +321,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         song=_stub_song(1),
         curves=stat_curves(),
         trace_cache=FgTraceMaterializationCache(),
+        perfect_time=0,
     )
 
     assert payload["BaseScore"] == 1000
@@ -408,6 +412,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         song=song,
         curves=stat_curves(),
         trace_cache=FgTraceMaterializationCache(),
+        perfect_time=0,
     )
 
     assert payload["BaseScore"] == 4000

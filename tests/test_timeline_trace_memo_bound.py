@@ -38,7 +38,7 @@ def _install_stubs(monkeypatch) -> list[tuple[int, int, int]]:
 
 def _score(ft: int, ff: int) -> dict:
     stats = {"Fever Time": ft, "Fever Fill Rate": ff}
-    return exact_rescore.score_stats_exact_with_timeline_trace(stats, make_song([0.0, 0.5]), {})
+    return exact_rescore.score_stats_exact_with_timeline_trace(stats, make_song([0.0, 0.5]), {}, perfect_time=0)
 
 
 def test_timeline_trace_memo_is_bounded_hits_and_copies(monkeypatch) -> None:

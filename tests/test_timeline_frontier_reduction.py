@@ -43,6 +43,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         },
         song,
         curves,
+        perfect_time=0,
     )
     timeline = replay["TimelineFrontier"]
     assert int(replay["score"]) == 23_944_097
@@ -69,6 +70,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         fever_fill_denominator=float(timeline["raw_fever_fill"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
         timing_mode="precise",
+        perfect_time=0,
     )
     assert sum(physical.fever_mask) == 758
 
@@ -79,6 +81,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         note_types=note_types,
         lanes=lanes,
         timing_mode="precise",
+        perfect_time=0,
     )
     chart = NoteChart(
         timestamps_ms=[float(value) * 1000.0 for value in timestamps],
@@ -155,6 +158,7 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         },
         song,
         curves,
+        perfect_time=0,
     )
     timeline = replay["TimelineFrontier"]
     assert int(replay["score"]) == 6_641_958
@@ -173,6 +177,7 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         fever_fill_denominator=float(timeline["raw_fever_fill"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
         timing_mode="precise",
+        perfect_time=0,
     )
     reset_timeline_state()
 
@@ -211,6 +216,7 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         },
         song,
         curves,
+        perfect_time=0,
     )
     timeline = replay["TimelineFrontier"]
     assert int(replay["score"]) == 29_780_345
@@ -228,6 +234,7 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         fever_fill_denominator=float(timeline["raw_fever_fill"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
         timing_mode="precise",
+        perfect_time=0,
     )
     assert physical.event_order.index(586) < physical.event_order.index(587)
     reset_timeline_state()

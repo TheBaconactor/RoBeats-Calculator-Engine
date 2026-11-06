@@ -19,8 +19,8 @@ from ...gamedata import STATS, StatCurves
 from ..fever_timeline import fixed_timeline_cell
 from ..timing_envelope import TimedSong, fever_axes, fever_fill_denominators
 
-# Base timeline-trace memo: the reconstructed trace is a pure function of
-# (frontier payload cache_key, FT cell, FF cell, winning pool row) -- stats enter only
+# Base timeline-trace memo: the validated trace is a pure function of
+# (frontier payload cache_key, FT cell, FF cell, winning pool row, Perfect Time) -- stats enter only
 # through those. The cache_key is content-addressed (song + ref axes + cache version),
 # so entries can never alias across songs or ref tables. Memoized values are kept
 # pristine; every hand-out is a fresh copy because callers graft the per-note dicts
@@ -64,6 +64,7 @@ def score_stats_exact_with_timeline_trace(
     stats: Mapping[str, Any],
     song: TimedSong,
     curves: StatCurves,
+    perfect_time: int,
 ) -> dict[str, Any]:
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
@@ -77,7 +78,7 @@ def score_stats_exact_with_timeline_trace(
     )
     ft_i = max(0, min(row["Fever Time"], MAX_STAT))
     ff_i = max(0, min(row["Fever Fill Rate"], MAX_STAT))
-    memo_key = (frontier_result.cache_key, ft_i, ff_i, int(pool_idx))
+    memo_key = (frontier_result.cache_key, ft_i, ff_i, int(pool_idx), perfect_time)
     frontier_meta = _TIMELINE_TRACE_MEMO.get(memo_key)
     if frontier_meta is None:
         frontier_meta = _timeline_trace_for_payload_surface(
@@ -87,6 +88,7 @@ def score_stats_exact_with_timeline_trace(
             ff_idx=ff_i,
             song=song,
             curves=curves,
+            perfect_time=perfect_time,
         )
         while len(_TIMELINE_TRACE_MEMO) >= _TIMELINE_TRACE_MEMO_MAX:
             _TIMELINE_TRACE_MEMO.pop(next(iter(_TIMELINE_TRACE_MEMO)))
@@ -198,6 +200,7 @@ def _timeline_trace_for_payload_surface(
     ff_idx: int,
     song: TimedSong,
     curves: StatCurves,
+    perfect_time: int,
 ) -> dict[str, Any]:
     from gear_optimizer.trace.physical_replay import validate_base_physical_replay
     from gear_optimizer.trace.reconstruct import reconstruct_base_trace
@@ -241,6 +244,7 @@ def _timeline_trace_for_payload_surface(
         fever_fill_denominator=fever_fill_denominator,
         fever_duration_ms=float(real_fever_time) * 1000.0,
         timing_mode=song.mode,
+        perfect_time=perfect_time,
     )
     return {
         "frontier_trace": [dict(section) for section in trace],

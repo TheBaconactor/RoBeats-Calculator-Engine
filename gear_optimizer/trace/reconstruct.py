@@ -13,7 +13,6 @@ from gear_optimizer.frontier.fill_crossing import server_fill_crossing_run
 from gear_optimizer.frontier import producer_kernels as _rb_numba
 from gear_optimizer.frontier.producer_batch import action_table, early_exit_min_fill, song_arrays
 from gear_optimizer.frontier.types import FgResponseSurface
-from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS
 
 
 _EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)

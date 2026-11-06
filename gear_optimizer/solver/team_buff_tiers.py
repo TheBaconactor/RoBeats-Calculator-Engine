@@ -16,6 +16,7 @@ section 11).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from heapq import nsmallest
 from typing import Any
@@ -37,11 +38,14 @@ from gear_optimizer.stats import total
 from gear_optimizer.store.fg_payload import require_response_surface
 from gear_optimizer.trace.fixed_timing import build_fixed_timing_fg_replays
 from gear_optimizer.trace.materialize import FgTraceMaterializationCache
+from gear_optimizer.trace.reconstruct import UnplayableTrace
 
 from .scoring.exact_rescore import score_stats_exact_with_timeline_trace
 from .scoring.fever_solver import solve_best_fever_combination_batch
 from .song_config import baseline_fixed_stats
 from .timing_envelope import TimedSong
+
+logger = logging.getLogger(__name__)
 
 
 def _item_names(items: list) -> list[str]:
@@ -62,6 +66,7 @@ class _ReplayEntry:
     source_fg_base_score: int
     source_fg_score: int
     has_fg: bool  # it carries a valid FG payload (a response surface) and FG is replayed
+    perfect_time: int  # its gear's Perfect Time: the hit windows its plans are played at
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,10 +140,11 @@ def _replay_entries(entries: list[dict], song: TimedSong, *, replay_fg: bool) ->
                     "from native. The re-solve must honor the per-loadout selected element before this can serve."
                 )
         score = entry.get("score", 0)
+        items = _entry_loadout_items(entry, chart)
         rows.append(
             _ReplayEntry(entry, entry["loadout_hash"], _item_names(entry["gear"]), _item_names(entry["minis"]),
-                         _entry_loadout_items(entry, chart), score, entry.get("fg_base_score", score),
-                         entry.get("fg_score", 0), replay_fg and force is not None)
+                         items, score, entry.get("fg_base_score", score), entry.get("fg_score", 0),
+                         replay_fg and force is not None, sum(gear.perfect_time for gear in items[:6]))
         )
     return rows
 
@@ -179,14 +185,15 @@ def _resolve_tier(
         for i in fg_rows:
             forces[i], fg_scores[i] = rows[i].entry["force"], _carried_fg_score(rows[i])
     else:
-        replays = build_fixed_timing_fg_replays([pre_gem[i] for i in fg_rows], song, curves, primary, trace_cache)
+        replays = build_fixed_timing_fg_replays([pre_gem[i] for i in fg_rows], song, curves, primary, trace_cache,
+                                                [rows[i].perfect_time for i in fg_rows])
         for i, force in zip(fg_rows, replays, strict=True):
             # A loadout without an FG result (its plan is unplayable at this timing) ranks nowhere on the FG board.
             forces[i], fg_scores[i] = force, (force or {}).get("Score", 0)
     return _TierResult(bases, base_scores, forces, fg_scores)
 
 
-def _tier_details(entry: dict, base: dict, song: TimedSong, curves: StatCurves) -> dict:
+def _tier_details(entry: dict, base: dict, song: TimedSong, curves: StatCurves, perfect_time: int) -> dict:
     """A served row's details at a tier: the stored details with the tier's re-solved Stats, GemCounts, FT and FF (never
     the stored T5 allocation, its compact st/gc/gk copies or its witness) and a TimelineFrontier recomputed for those
     Stats. non-precise rows carry no TimelineFrontier: the consumer draws the chart-time timeline from Stats."""
@@ -194,7 +201,8 @@ def _tier_details(entry: dict, base: dict, song: TimedSong, curves: StatCurves) 
     details = {key: value for key, value in entry["details"].items() if key not in stale} | base
     details["Stats"], details["GemCounts"] = dict(base["Stats"]), dict(base["GemCounts"])
     if song.mode != "non-precise":
-        frontier = score_stats_exact_with_timeline_trace(details["Stats"], song, curves)["TimelineFrontier"]
+        replay = score_stats_exact_with_timeline_trace(details["Stats"], song, curves, perfect_time)
+        frontier = replay["TimelineFrontier"]
         if frontier.get("frontier_trace"):
             details["TimelineFrontier"] = frontier
     return details
@@ -213,12 +221,18 @@ def _served_rows(
     served = []
     for i in meta_top + [i for i in fg_top if i not in in_meta]:
         row = rows[i]
+        try:
+            details = _tier_details(row.entry, result.bases[i], song, curves, row.perfect_time)
+        except UnplayableTrace as exc:
+            logger.warning("%s: no tier row for loadout %s, its Base play is unplayable: %s", song.chart.name,
+                           row.loadout_hash, exc)
+            continue
         out = {
             "loadout_hash": row.loadout_hash,
             "gear": row.gear,
             "minis": row.minis,
             "score": result.base_scores[i] if i in in_meta else 0,
-            "details": _tier_details(row.entry, result.bases[i], song, curves),
+            "details": details,
             "source_score": row.source_score,
         }
         if replay_fg:

@@ -90,6 +90,7 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
         note_types=note_types,
         lanes=lanes,
         timing_mode="precise",
+        perfect_time=0,
     )
     surface = tuple(map(int, result.surface))
     reconcile_force_greats_note_graph(
@@ -237,6 +238,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     payload = materialize_force_payload_from_response_frontier(
         base_stats=final_stats, paired_base_score=1, selected_element="Vibe", result=result, song=song, curves=curves,
         trace_cache=FgTraceMaterializationCache(),
+        perfect_time=0,
     )
     hits = int(song.chart.total_notes) - int(song.chart.long_notes)
     assert payload["ForceGreats"]["raw_fever_fill"] == hits * float(curves.f64["Fever Fill Rate"][58])

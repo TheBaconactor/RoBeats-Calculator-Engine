@@ -11,6 +11,7 @@ from tests.curves_support import synthetic_curves
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
@@ -211,5 +212,24 @@ def test_fixed_timing_fg_asks_only_for_the_reachable_cells(monkeypatch):
     monkeypatch.setattr(fixed_timing, "fg_solve_results", lambda *_a, **kwargs: seen.update(bundle=kwargs["scoring_bundle"]) or [])
     monkeypatch.setattr(fixed_timing, "score_base_exact_batch", lambda *_a: [])
 
-    assert fixed_timing.build_fixed_timing_fg_replays([_stats()], _song(), _curves(), "Rush", None) == []
+    assert fixed_timing.build_fixed_timing_fg_replays([_stats()], _song(), _curves(), "Rush", None, []) == []
     assert seen == {"keys": [[70, 90]], "bundle": bundle}
+
+
+# GearStats.get_note_times through an independent port of stat_eased_curve_extended (tools/verify/game_sim.py).
+@pytest.mark.parametrize("perfect_time", [-4, -1, 0, 1, 2, 3, 6, 13])
+def test_judgment_edges_are_the_games_at_every_perfect_time(perfect_time):
+    from gear_optimizer.solver.timing_envelope import judgment_edges
+    from tools.verify.game_sim import _note_times, _statsdict_from
+
+    assert judgment_edges(perfect_time) == pytest.approx(_note_times(_statsdict_from({"PerfectTime": perfect_time})))
+
+
+def test_perfect_time_moves_every_band_and_keeps_the_note_removal():
+    from gear_optimizer.solver.timing_envelope import judgment_bounds, judgment_edges
+
+    assert judgment_edges(0) == (430, 190, 40, -20, -95, -235)
+    assert judgment_edges(2)[2:4] == pytest.approx((45.767, -22.884), abs=1e-3)
+    tap, tail = judgment_bounds(1, 2), judgment_bounds(2, 2)
+    assert tap == ((-22, 45), (-97, -23), (46, 195))
+    assert tail == ((-45, 91), (-195, -46), (92, 200))

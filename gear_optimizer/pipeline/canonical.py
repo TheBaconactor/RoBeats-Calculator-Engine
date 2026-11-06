@@ -85,7 +85,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
 
         meta_gems, meta_stats = solves[i].gems, {k: int(v) for k, v in solves[i].stats.items()}
         try:
-            score, meta_trace = _meta_score(meta_stats, song, curves)
+            score, meta_trace = _meta_score(meta_stats, song, curves, sum(gears[n].perfect_time for n in ident.gear))
         except UnplayableTrace as exc:
             logger.warning(
                 "%s: no row for loadout %s, its Base play is unplayable: %s", solve.song, ident.loadout_hash, exc
@@ -181,12 +181,14 @@ def _meta_resolve(
     return solve_best_fever_combination_batch(rows, song, curves, selected_color=primary)
 
 
-def _meta_score(stats: Mapping[str, int], song: TimedSong, curves: StatCurves) -> tuple[int, dict[str, Any] | None]:
+def _meta_score(
+    stats: Mapping[str, int], song: TimedSong, curves: StatCurves, perfect_time: int
+) -> tuple[int, dict[str, Any] | None]:
     """The exact score of the meta stats and, for precise, the TimelineFrontier witness (the exact replay
-    validates it physically when it reconstructs it)."""
+    validates it physically at the build's Perfect Time when it reconstructs it)."""
     if song.mode == "non-precise":
         return int(score_stats_fixed_timing_exact(stats, song, curves)), None
-    replay = score_stats_exact_with_timeline_trace(stats, song, curves)
+    replay = score_stats_exact_with_timeline_trace(stats, song, curves, perfect_time)
     return int(replay["score"]), replay["TimelineFrontier"]
 
 

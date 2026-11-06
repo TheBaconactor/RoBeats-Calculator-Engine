@@ -33,6 +33,7 @@ def _graph(note_types, cutoff_ms, activation_index=2, fever_end_index=5):
         timestamps=timestamps,
         note_types=np.asarray(note_types, dtype=np.int16),
         timing_mode="precise",
+        perfect_time=0,
     )
 
 
@@ -90,6 +91,7 @@ def test_fever_run_to_end_of_song_has_no_exit_note():
         timestamps=timestamps,
         note_types=np.ones(n, dtype=np.int16),
         timing_mode="precise",
+        perfect_time=0,
     )
     assert all(note["delta_ms"] in (0.0, None) for note in notes)
 
@@ -104,5 +106,6 @@ def test_non_precise_mode_never_pushes():
         timestamps=timestamps,
         note_types=np.ones(n, dtype=np.int16),
         timing_mode="non-precise",
+        perfect_time=0,
     )
     assert notes[5]["delta_ms"] == 0.0

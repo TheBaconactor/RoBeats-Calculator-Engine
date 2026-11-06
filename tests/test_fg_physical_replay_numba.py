@@ -2,8 +2,8 @@
 
 ``validate_force_greats_physical_replay`` runs its per-note judgment check, event-time accumulation,
 lane-cursor scan and the game's event-time fever bar in ``_force_greats_replay_kernel`` (numba, nogil).
-These tests pin the kernel to a Python golden reference (``_judgment_at`` and the fever walk below,
-written from PlayerScore's powerbar), and pin the wrapper's fail-loud messages byte-for-byte.
+These tests pin the kernel to a Python golden reference (the judgment and the fever walk below, written from
+SPUtil.timedelta_to_result and PlayerScore's powerbar), and pin the wrapper's fail-loud messages byte-for-byte.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import pytest
 from gear_optimizer.trace import physical_replay as pr
 from gear_optimizer.trace.physical_replay import (
     _GREAT_CODE,
-    _HELD_TAIL_TYPE,
     _JUDGMENT_NAME,
     _REPLAY_ERR_BACKWARD_TIME,
     _REPLAY_ERR_COMBO_ORDER,
@@ -29,12 +28,26 @@ from gear_optimizer.trace.physical_replay import (
     _REPLAY_OK,
     _RESULT_CODE,
     _force_greats_replay_kernel,
-    _judgment_at,
     _judgment_code,
     validate_force_greats_physical_replay,
 )
 from gear_optimizer.score import HEAD_NOTES
 from gear_optimizer.frontier.types import FgResponseSurface
+from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE as _HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE, judgment_edges
+
+_TAP_EDGES = (430.0, 190.0, 40.0, -20.0, -95.0, -235.0)
+
+
+def _judgment_at(delta_ms, *, held_tail):
+    """SPUtil.timedelta_to_result at base stats: bands are lower < delta <= upper; a held tail's are twice as wide."""
+    okay_late, great_late, perfect_late, perfect_early, great_early, okay_early = (
+        edge * (2.0 if held_tail else 1.0) for edge in _TAP_EDGES
+    )
+    if delta_ms > okay_late or delta_ms <= okay_early:
+        return "Miss"
+    if delta_ms > great_late or delta_ms <= great_early:
+        return "Okay"
+    return "Perfect" if perfect_early < delta_ms <= perfect_late else "Great"
 
 
 def _reference_fever_walk(event_order, event_times, judgments, denom, duration):
@@ -133,7 +146,7 @@ def _run_kernel(delta_ms, hit_time_ms, input_order, expected_code, expected_feve
         np.asarray(input_order, dtype=np.int64),
         np.asarray(expected_code, dtype=np.int8),
         np.asarray(expected_fever, dtype=np.int8),
-        np.asarray(note_types, dtype=np.int32),
+        np.asarray([_edges(note_type == _HELD_TAIL_TYPE) for note_type in note_types], dtype=np.float64).reshape(-1, 6),
         np.asarray(lanes, dtype=np.int32),
         float(denom),
         float(duration),
@@ -154,6 +167,10 @@ def _assert_agrees(case):
         assert tuple(bool(x) for x in k_fever) == tuple(r_fever)
 
 
+def _edges(held_tail):
+    return np.asarray(judgment_edges(0), dtype=np.float64) * (HELD_TAIL_WINDOW_SCALE if held_tail else 1)
+
+
 def _judgment_code_of(delta, held_tail):
     return _RESULT_CODE[_judgment_at(float(delta), held_tail=held_tail)]
 
@@ -161,7 +178,7 @@ def _judgment_code_of(delta, held_tail):
 def test_judgment_code_matches_python_across_all_window_edges():
     for held_tail in (False, True):
         for delta in np.arange(-500.0, 500.0, 0.5):
-            assert int(_judgment_code(float(delta), held_tail)) == _judgment_code_of(delta, held_tail)
+            assert int(_judgment_code(float(delta), _edges(held_tail))) == _judgment_code_of(delta, held_tail)
 
 
 def test_kernel_matches_reference_distinct_lane_permutations():
@@ -277,6 +294,7 @@ def _call(graph, *, note_types, lanes, denom=1.0, duration=10.0):
         fever_fill_denominator=denom,
         real_fever_time=duration,
         timing_mode="precise",
+        perfect_time=0,
     )
 
 

@@ -39,8 +39,7 @@ _GEAR_COLUMNS = {
     "Time": "Fever Time",
     "Fill": "Fever Fill Rate",
 }
-# Gears.csv also carries PTime (Perfect Time), a different mechanic that no score reads.
-_GEAR_IGNORED_COLUMNS = {"Type", "Gear Name", "PTime"}
+_GEAR_OTHER_COLUMNS = {"Type", "Gear Name", "PTime"}
 _MINI_COLUMNS = {
     "Chill": "Chill",
     "Flow": "Flow",
@@ -82,6 +81,9 @@ class Gear:
     name: str
     slot: str
     stats: Mapping[str, int]
+    # The Perfect Time stat: no score reads it, it moves the hit windows of the player wearing it
+    # (timing_envelope.judgment_edges). No mini carries it.
+    perfect_time: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +194,8 @@ class _Ease:
         return _bezier(*self.y, t)
 
 
+_EASE_MINUS_80_40 = _Ease(0.8, 0.0, 0.9, 0.8)
+_EASE_MINUS_40_0 = _Ease(0.4, 0.1, 1.0, 0.8)
 _EASE_0_40 = _Ease(0.0, 0.4, 0.7, 0.9)
 _EASE_40_80 = _Ease(0.2, 0.1, 0.4, 1.0)
 _EASE_80_160 = _Ease(0.0, 0.5, 0.6, 1.0)
@@ -206,6 +210,15 @@ def _stat_curve(a0: float, a40: float, a80: float, stat: int) -> float:
     if stat <= 80:
         return _lerp(a40, a80, _EASE_40_80(_line(40, 0, 80, 1, stat)))
     return _lerp(a80, a80 + (a80 - a40) * 0.35, _EASE_80_160(_line(80, 0, 160, 1, stat)))
+
+
+def signed_stat_curve(a_minus80: float, a_minus40: float, a0: float, a40: float, a80: float, stat: int) -> float:
+    """_stat_curve for a stat a gear can lower: below 0 it runs through a_minus40 at -40 down to a_minus80 at -80."""
+    if stat >= 0:
+        return _stat_curve(a0, a40, a80, stat)
+    if stat > -40:
+        return _lerp(a_minus40, a0, _EASE_MINUS_40_0(_line(-40, 0, 0, 1, stat)))
+    return _lerp(a_minus80, a_minus40, _EASE_MINUS_80_40(_line(-80, 0, -40, 1, max(stat, -80))))
 
 
 # The combo multiplier ramps to its full value over the first combos through the game's thresholds (get_combo_thresholds
@@ -246,7 +259,7 @@ def _read_rows(path: Path) -> tuple[list[str], list[list[str]]]:
 
 def read_gears(path: Path) -> dict[str, Gear]:
     header, rows = _read_rows(path)
-    unknown = set(header) - set(_GEAR_COLUMNS) - _GEAR_IGNORED_COLUMNS
+    unknown = set(header) - set(_GEAR_COLUMNS) - _GEAR_OTHER_COLUMNS
     if unknown or "Gear Name" not in header or "Type" not in header:
         raise ValueError(f"{path}: unexpected header {header}")
     gears: dict[str, Gear] = {}
@@ -258,7 +271,8 @@ def read_gears(path: Path) -> dict[str, Gear]:
             stats[stat] = _int_cell(cells[column], column=column, item=name)
         if not name or name in gears:
             raise ValueError(f"{path}: missing or duplicate gear name {name!r}")
-        gears[name] = Gear(name=name, slot=cells["Type"].strip(), stats=stats)
+        perfect_time = _int_cell(cells["PTime"], column="PTime", item=name)
+        gears[name] = Gear(name=name, slot=cells["Type"].strip(), stats=stats, perfect_time=perfect_time)
     return gears
 
 
@@ -358,6 +372,11 @@ def load_gears(path: Path) -> dict[str, Gear]:
 def load_minis(path: Path) -> dict[str, Mini]:
     """Minis.csv by name, in file order."""
     return _load_cached(path, read_minis)
+
+
+def perfect_time_of(gear_names: Iterable[str], gears: Mapping[str, Gear]) -> int:
+    """A stored loadout's Perfect Time; a job's custom gear, absent from the catalog, has none."""
+    return sum(gears[name].perfect_time for name in gear_names if name in gears)
 
 
 def song_secondary(primary: str, secondary: str | None) -> str:

@@ -229,7 +229,8 @@ def _graph_outputs(key: str, entry: dict, chart: Any, song: Any, curves: Any) ->
 
     details, force, mode, hash_key = entry["details"], entry["force"], song.mode, f"{key}/{entry['loadout_hash']}"
     timestamps, n = chart.timestamps, chart.total_notes
-    arrays = dict(total_notes=n, note_types=chart.note_types, lanes=chart.lanes, timing_mode=mode)
+    arrays = dict(total_notes=n, note_types=chart.note_types, lanes=chart.lanes, timing_mode=mode,
+                  perfect_time=sum(gear.perfect_time for gear in entry["gear"]))
     outputs = {}
     if "BaseScore" not in details:  # a meta board entry
         trace = details.get("TimelineFrontier", {}).get("frontier_trace")
@@ -241,7 +242,8 @@ def _graph_outputs(key: str, entry: dict, chart: Any, song: Any, curves: Any) ->
             threshold = int(np.ceil(thresholds[min(MAX_STAT, details["Stats"]["Fever Fill Rate"])]))
             mask = np.zeros(n, dtype=bool)
             calculate_fever_timeline_indices(timestamps, n, threshold, duration, mask)
-            graph = base_note_graph(total_notes=n, timestamps=timestamps, is_fever_mask=mask, timing_mode=mode)
+            graph = base_note_graph(total_notes=n, timestamps=timestamps, is_fever_mask=mask, timing_mode=mode,
+                                    perfect_time=arrays["perfect_time"])
         score = score_stats_fixed_timing_exact if mode == NON_PRECISE else score_stats_exact
         outputs[f"graphs/base/{hash_key}"] = digest(graph)
         outputs[f"scores/base/{hash_key}"] = digest(int(score(details["Stats"], song, curves)))

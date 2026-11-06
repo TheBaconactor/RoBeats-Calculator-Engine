@@ -153,10 +153,12 @@ def finish_fg(song: NativeSong, ga_result: dict) -> SongSolve:
     payload = np.asarray(ga_result["runs_payload"], dtype=np.int32)
     fg_rows = ga_result["fg_owner_score"]
     try:
-        loadouts, base_stats, paired_stats = [], [], []
-        for _genome, _score, (_s, ft, ff, pp, cm, fm, ov), names, pre_gem in _selected_surface(song, payload, fg_rows):
+        loadouts, base_stats, paired_stats, perfect_times = [], [], [], []
+        items = gpu_inputs.registry.id_to_item
+        for genome, _score, (_s, ft, ff, pp, cm, fm, ov), names, pre_gem in _selected_surface(song, payload, fg_rows):
             loadouts.append(SolvedLoadout(tuple(names[:6]), tuple(names[6:])))
             base_stats.append(pre_gem)
+            perfect_times.append(sum(items[item_id].perfect_time for item_id in genome[:6]))
             paired_stats.append(apply_gems(pre_gem, gems(pp=pp, cm=cm, fm=fm, ft=ft, ff=ff, element=ov), selected))
         paired = score_stats_exact_batch(paired_stats, timed, curves)
         song_inputs = timed.fg_inputs
@@ -175,6 +177,7 @@ def finish_fg(song: NativeSong, ga_result: dict) -> SongSolve:
             payload_fg = materialize_force_payload_from_response_frontier(
                 base_stats=base_stats[index], paired_base_score=paired[index], selected_element=selected,
                 result=result, song=timed, curves=curves, trace_cache=trace_cache,
+                perfect_time=perfect_times[index],
             )
             return solved_fg(payload_fg, default_element=selected)
 

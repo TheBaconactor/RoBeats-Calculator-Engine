@@ -55,7 +55,8 @@ import heapq
 import math
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator, Mapping, Sequence
+from functools import lru_cache
+from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
@@ -67,7 +68,6 @@ from gear_optimizer.solver.timing_envelope import (
     FRAME_MARGIN_MS,
     HELD_TAIL_TYPE,
     HELD_TAIL_WINDOW_SCALE,
-    PERFECT_UPPER_MS,
     TIMING_MODES,
     judgment_bounds,
 )
@@ -86,16 +86,30 @@ _HEAD_NOTES = 100
 # Wider than any planned hit offset (a held tail's late Great ends at 182 ms): notes further apart in chart time never
 # swap inputs.
 _PLANNED_OFFSET_SPAN_MS = 200.0
-_BOUNDS = {
-    scale: tuple((float(band.earliest), float(band.latest)) for band in judgment_bounds(scale))
-    for scale in (1, HELD_TAIL_WINDOW_SCALE)
-}
-_BUILD: ContextVar[str] = ContextVar("note_graph_build", default="precise")
+
+
+@lru_cache(maxsize=None)
+def _bounds_by_scale(perfect_time: int) -> dict[int, tuple[tuple[float, float], ...]]:
+    """Per window scale, a note's (Perfect, early Great, late Great) reachable planned offsets at a Perfect Time stat."""
+    return {
+        scale: tuple((float(band.earliest), float(band.latest)) for band in judgment_bounds(scale, perfect_time))
+        for scale in (1, HELD_TAIL_WINDOW_SCALE)
+    }
+
+
+class _Build(NamedTuple):
+    """What a graph is built for: the timing mode and the hit windows of the build's Perfect Time."""
+
+    mode: str
+    bounds: dict[int, tuple[tuple[float, float], ...]]
+
+
+_BUILD: ContextVar[_Build] = ContextVar("note_graph_build", default=_Build("precise", _bounds_by_scale(0)))
 
 
 @contextmanager
-def _building(mode: str) -> Iterator[None]:
-    token = _BUILD.set(mode)
+def _building(mode: str, perfect_time: int) -> Iterator[None]:
+    token = _BUILD.set(_Build(mode, _bounds_by_scale(perfect_time)))
     try:
         yield
     finally:
@@ -126,7 +140,7 @@ def _bounds_at(note_types: np.ndarray, j: int) -> tuple[tuple[float, float], ...
             "note_graph: note_types (length == total_notes) is required to place a hit at the note's "
             "legal judgment bounds -- it is never guessed"
         )
-    return _BOUNDS[HELD_TAIL_WINDOW_SCALE if int(note_types[j]) == HELD_TAIL_TYPE else 1]
+    return _BUILD.get().bounds[HELD_TAIL_WINDOW_SCALE if int(note_types[j]) == HELD_TAIL_TYPE else 1]
 
 
 def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
@@ -213,7 +227,8 @@ def _activation_materialized_delta_ms(
         elif float(window_hi) < float(judge_lo) and _snap_engine_time_ms(window_hi) == float(judge_lo):
             lo = hi = float(judge_lo)
         else:
-            raise ValueError(
+            # The frontier plans on the base windows: a build's Perfect Time can leave its activation no hit.
+            raise UnplayableTrace(
                 f"note_graph: activation witness interval is empty at note {a} "
                 f"({lo:.3f}ms > {hi:.3f}ms)"
             )
@@ -238,7 +253,7 @@ def _activation_materialized_delta_ms(
             )
             lo = max(float(lo), strict_activation_hit_lo - float(chart_ms))
         if lo > hi:
-            raise ValueError(
+            raise UnplayableTrace(
                 "note_graph: activation witness has no score-parity room for an early-Great "
                 f"fever-end note at activation {a} ({lo:.3f}ms > {hi:.3f}ms)"
             )
@@ -479,7 +494,7 @@ def _mark_same_time_selector_order_deltas(
         return
 
     # Include the complete cluster crossing the combo ramp.
-    n = graph_n if _BUILD.get() == "non-precise" else min(graph_n, 100)
+    n = graph_n if _BUILD.get().mode == "non-precise" else min(graph_n, 100)
     while n < graph_n and _same_chart_time_ms(notes[n - 1]["hit_time_ms"], notes[n]["hit_time_ms"]):
         n += 1
 
@@ -513,7 +528,7 @@ def _mark_same_time_selector_order_deltas(
                 )
             nt = np.asarray(note_types).reshape(-1)
 
-        if _BUILD.get() == "non-precise":
+        if _BUILD.get().mode == "non-precise":
             stop = min((j for j in cluster if notes[j]["note_result"] == "Perfect"), default=cluster[0])
             for j in range(cluster[0], stop):
                 notes[j]["delta_ms"] = _guaranteed_early_great_ms(nt, j)
@@ -1387,7 +1402,7 @@ def _mark_fever_end_cluster_safe_delta(
         return
     strict_cutoff = _strictly_before_cutoff_ms(cutoff)
     fever_upper_witness = strict_cutoff - hit
-    if fever_upper_witness >= PERFECT_UPPER_MS:
+    if fever_upper_witness >= _BUILD.get().bounds[1][0][1]:
         return
     witness_result = str(witness.get("note_result", "Perfect"))
     if witness_result != "Perfect":
@@ -1564,6 +1579,7 @@ def timeline_frontier_note_graph(
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
     timing_mode: str,
+    perfect_time: int,
 ) -> list[dict[str, Any]]:
     """BASE note-graph from the selected timeline-frontier witness trace.
 
@@ -1579,7 +1595,7 @@ def timeline_frontier_note_graph(
         frontier_trace
         and all(int(section.get("activation_schedule_schema_version", 0) or 0) == 1 for section in frontier_trace)
     )
-    with _building(mode):
+    with _building(mode, perfect_time):
         if apply_guidance and has_exact_schedule and lanes is None:
             raise ValueError("note_graph: canonical Base producer trace requires chart lanes")
         notes = _perfect_note_graph(n, timestamps)
@@ -1642,6 +1658,7 @@ def base_note_graph(
     note_types: Sequence[int] | np.ndarray | None = None,
     lanes: Sequence[int] | np.ndarray | None = None,
     timing_mode: str,
+    perfect_time: int,
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
 
@@ -1662,6 +1679,7 @@ def base_note_graph(
             note_types=note_types,
             lanes=lanes,
             timing_mode=timing_mode,
+            perfect_time=perfect_time,
         )
     n = int(total_notes)
     fev = np.asarray(is_fever_mask).reshape(-1)
@@ -1681,11 +1699,12 @@ def force_greats_note_graph(
     note_types: Sequence[int] | np.ndarray,
     lanes: Sequence[int] | np.ndarray,
     timing_mode: str,
+    perfect_time: int,
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
 
     ``note_types`` and ``lanes`` are the chart's (like ``timestamps``): a hit is planned inside its note's
-    held-tail-aware judgment bands and after its lane's previous input.
+    held-tail-aware judgment bands, at the build's ``perfect_time``, and after its lane's previous input.
 
     `frontier_trace` is the per-loadout `ForceGreats.frontier_trace` (list of section
     dicts emitted by `reconstruct_force_greats_response_trace`). Each section carries a
@@ -1704,7 +1723,7 @@ def force_greats_note_graph(
     lane_arr = np.asarray(lanes).reshape(-1)
     if int(nt.shape[0]) != n or int(lane_arr.shape[0]) != n:
         raise ValueError("note_graph: note_types and lanes must match total_notes")
-    with _building(mode):
+    with _building(mode, perfect_time):
         notes = _perfect_note_graph(n, timestamps)
 
         # Score-bearing labels are global inputs to every activation cap. Materialize the complete map

@@ -95,6 +95,7 @@ def _exact_force_greats_note_graph(
         note_types=note_types,
         lanes=lane_arr,
         timing_mode=timing_mode,
+        perfect_time=kwargs.pop("perfect_time", 0),
         **kwargs,
     )
 
@@ -509,6 +510,7 @@ def test_fg_note_graph_plans_a_capped_early_great_frame_safe():
     graph = force_greats_note_graph(
         frontier_trace=trace, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16), lanes=lanes,
         timing_mode="precise",
+        perfect_time=0,
     )
 
     assert graph[104]["note_result"] == "Great" and graph[104]["delta_ms"] == -38.0
@@ -694,6 +696,7 @@ def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
         fever_fill_denominator=raw_fever_fill,
         real_fever_time=real_fever_time,
         timing_mode="precise",
+        perfect_time=0,
     )
 
     assert trace[1]["preactivation_order"][:3] == [143, 142, 146]
@@ -734,6 +737,7 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
         fever_fill_denominator=raw_fever_fill,
         real_fever_time=real_fever_time,
         timing_mode="precise",
+        perfect_time=0,
     )
 
     cluster = (951, 952, 953, 954, 955)
@@ -782,6 +786,7 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
         fever_fill_denominator=raw_fever_fill,
         real_fever_time=real_fever_time,
         timing_mode="precise",
+        perfect_time=0,
     )
 
     cluster = (82, 83, 84, 85)
@@ -1036,6 +1041,7 @@ def test_fg_note_graph_exact_order_uses_inclusive_float32_label_boundary():
         note_types=np.asarray([1, 2], dtype=np.int16),
         lanes=np.asarray([3, 1], dtype=np.int32),
         timing_mode="precise",
+        perfect_time=0,
     )
 
     event_times = [float(note["hit_time_ms"]) + float(note["delta_ms"]) for note in graph]
@@ -1083,6 +1089,7 @@ def test_fg_note_graph_preserves_fractional_window_near_integer_boundary():
         note_types=np.ones(2, dtype=np.int16),
         lanes=np.asarray([3, 2], dtype=np.int32),
         timing_mode="precise",
+        perfect_time=0,
     )
 
     activation_event = float(graph[0]["hit_time_ms"]) + float(graph[0]["delta_ms"])
@@ -1131,6 +1138,7 @@ def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation(
         note_types=np.ones(2, dtype=np.int16),
         lanes=np.asarray([1, 2], dtype=np.int32),
         timing_mode="precise",
+        perfect_time=0,
     )
 
     assert graph[1]["input_order"] < graph[0]["input_order"]
@@ -1198,6 +1206,7 @@ def test_fg_note_graph_materializes_all_section_labels_before_activation_caps():
         note_types=np.ones(3, dtype=np.int16),
         lanes=np.asarray([1, 2, 3], dtype=np.int32),
         timing_mode="precise",
+        perfect_time=0,
     )
 
     assert [note["note_result"] for note in graph] == ["Great", "Great", "Perfect"]
@@ -1258,7 +1267,7 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
     nt = np.ones(n, dtype=np.int16)  # all-normal notes for this case
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt, timing_mode="precise", perfect_time=0),
     ):
         # note 7 @ chart 1245ms is past the 1240ms cutoff -> in fever ONLY via an early hit.
         assert g[7]["fever"] is True
@@ -1308,7 +1317,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     nt_normal = [1, 1, 1, 1, 1]
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt_normal),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt_normal, timing_mode="precise"),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt_normal, timing_mode="precise", perfect_time=0),
     ):
         assert g[3]["delta_ms"] >= -19.0                  # never below the Perfect lower bound (BUG-1)
         assert g[3]["delta_ms"] == pytest.approx(-19.0)   # tight edge -> clamped to the bound
@@ -1318,7 +1327,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     nt = [1, 1, 1, 3, 1]
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt, timing_mode="precise", perfect_time=0),
     ):
         assert g[3]["delta_ms"] >= -39.0                   # never below the held-tail lower bound (BUG-1)
         strict_cutoff = float(np.nextafter(np.float64(1000.0), np.float64(-np.inf)))
@@ -1361,7 +1370,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     nt = np.asarray([1, 1, 1, 1, 1, 3, 1], dtype=np.int16)  # idx5 is the held tail
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt, timing_mode="precise", perfect_time=0),
     ):
         hit = g[5]["hit_time_ms"]
         shown = hit + g[5]["delta_ms"]
@@ -1438,7 +1447,7 @@ def test_base_note_graph_maps_fever_timeline():
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
     mask = np.asarray([False, True, True, True, False, False])
-    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, timing_mode="precise")
+    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, timing_mode="precise", perfect_time=0)
     assert len(graph) == n
     assert all(g["note_result"] == "Perfect" for g in graph)  # base = no greats
     assert all(g["delta_ms"] == 0.0 for g in graph)
@@ -1469,6 +1478,7 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
         frontier_trace=trace,
         note_types=np.ones(n, dtype=np.int16),
         timing_mode="precise",
+        perfect_time=0,
     )
 
     assert all(g["note_result"] == "Perfect" for g in graph)
@@ -1498,6 +1508,7 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
         total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace,
         note_types=np.ones(n, dtype=np.int16),
         timing_mode="precise",
+        perfect_time=0,
     )
 
     # Fever run is notes [2, 5); the last fevered note (4) is the fever-end witness,
@@ -1535,6 +1546,7 @@ def test_base_note_graph_rejects_reattributed_activation_witness():
             frontier_trace=trace,
             note_types=nt,
             timing_mode="precise",
+            perfect_time=0,
         )
 
 
@@ -1562,6 +1574,7 @@ def test_base_delayed_activation_materializes_physical_chord_order():
         frontier_trace=trace,
         note_types=np.ones(4, dtype=np.int16),
         timing_mode="precise",
+        perfect_time=0,
     )
 
     assert graph[1]["delta_ms"] == pytest.approx(40.0)
@@ -1592,6 +1605,7 @@ def test_base_non_precise_activation_does_not_retime_chord():
         frontier_trace=trace,
         note_types=np.ones(4, dtype=np.int16),
         timing_mode="non-precise",
+        perfect_time=0,
     )
 
     assert [note["delta_ms"] for note in graph] == [0.0, 0.0, 0.0, 0.0]
@@ -1608,7 +1622,7 @@ def test_base_note_graph_matches_production_fever_timeline():
     fever_mask_head, count_body_fever, count_body_normal, _act, _end = calculate_fever_timeline_indices(
         ts, n, 44, 2.084999942779541, buf
     )
-    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=buf, timing_mode="precise")
+    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=buf, timing_mode="precise", perfect_time=0)
     # body fever count in the reconstructed graph matches the production timeline body count
     body_fever_graph = sum(1 for g in graph if g["fever"] and g["note_index"] >= 100)
     assert body_fever_graph == int(count_body_fever)
@@ -1910,7 +1924,8 @@ def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
         frontier_trace=trace_with_tight_fever_end,
         total_notes=n,
         timestamps=ts,
-        note_types=nt, lanes=np.arange(n, dtype=np.int32), timing_mode="non-precise"
+        note_types=nt, lanes=np.arange(n, dtype=np.int32), timing_mode="non-precise",
+        perfect_time=0,
     )
     assert all(note["delta_ms"] in (0.0, None) for note in fg_graph)
     assert fg_graph[0]["is_activation_witness"] is False
@@ -1931,7 +1946,8 @@ def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
         timestamps=ts,
         is_fever_mask=np.zeros(n, bool),
         frontier_trace=trace_with_tight_fever_end,
-        note_types=nt, timing_mode="non-precise"
+        note_types=nt, timing_mode="non-precise",
+        perfect_time=0,
     )
     assert all(note["delta_ms"] in (0.0, None) for note in base_graph)
     assert base_graph[0]["is_activation_witness"] is False
@@ -2338,6 +2354,7 @@ def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:
         fever_fill_denominator=1.0,
         real_fever_time=10.0,
         timing_mode="precise",
+        perfect_time=0,
     )
     assert replay.event_order == (0, 1)
     assert replay.fever_mask == (True, True)
@@ -2391,6 +2408,7 @@ def test_physical_replay_preserves_exact_body_cross_lane_prefix_swap() -> None:
         fever_fill_denominator=102.5,
         real_fever_time=1.0,
         timing_mode="precise",
+        perfect_time=0,
     )
 
     assert replay.event_order[-4:] == (101, 103, 102, 100)
@@ -2438,4 +2456,5 @@ def test_precise_fg_rejects_legacy_trace_without_exact_schedule() -> None:
             note_types=np.ones(2, dtype=np.int16),
             lanes=np.asarray([0, 1], dtype=np.int32),
             timing_mode="precise",
+            perfect_time=0,
         )

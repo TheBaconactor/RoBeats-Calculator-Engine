@@ -362,6 +362,7 @@ class GameScoreEngine:
 
 _JUDGE_EDGES_TAP = (430, 190, 40, -20, -95, -235)
 _JUDGE_EDGES_TAIL = tuple(e * 2 for e in _JUDGE_EDGES_TAP)
+_TAIL_WINDOW_SCALE = 2  # note_hit_mode_get_time_multiplier
 _NOTE_REMOVE_MS = 200  # a note time-misses at now - hit > 200 (Constants.lua NOTE_REMOVE_TIME=-200)
 
 
@@ -382,12 +383,14 @@ def _judge_with_edges(delta, edges):
     return "miss"
 
 
-def _judge_tap(delta):
-    return _judge_with_edges(delta, _JUDGE_EDGES_TAP)
-
-
-def _judge_tail(delta):
-    return _judge_with_edges(delta, _JUDGE_EDGES_TAIL)
+def _note_times(s):
+    """GearStats get_note_times: a tap's six edges from the stats (cumulative: each band adds its extra to the last)."""
+    perfect_late, perfect_early = _fN(0, 10, 40, 120, 140, s["PerfectTime"]), _fN(0, -5, -20, -60, -80, s["PerfectTime"])
+    great_extra_late, great_extra_early = _fN(0, 30, 150, 600, 700, s["GreatTime"]), _fN(0, -15, -75, -300, 360, s["GreatTime"])
+    okay_extra_late, okay_extra_early = _fN(0, 40, 240, 960, 1040, s["OkayTime"]), _fN(0, -20, -140, -560, -640, s["OkayTime"])
+    great_late, great_early = perfect_late + great_extra_late, perfect_early + great_extra_early
+    return (great_late + okay_extra_late, great_late, perfect_late, perfect_early, great_early,
+            great_early + okay_extra_early)
 
 
 # HeldNoteState (noteSystem.ts HState): Pre=0, Holding=1, HoldMissed=2, Passed=3.
@@ -442,7 +445,9 @@ class NoteSim:
     note in that lane. Notes leave the list at hit/tail + 200ms (time-miss).
     """
 
-    def __init__(self, chart: NoteChart, prebuffer_ms: float = 1500.0):
+    def __init__(self, chart: NoteChart, tap_edges: tuple = _JUDGE_EDGES_TAP, prebuffer_ms: float = 1500.0):
+        self.tap_edges = tap_edges
+        self.tail_edges = tuple(edge * _TAIL_WINDOW_SCALE for edge in tap_edges)
         self.chart = chart
         self.prebuffer_ms = prebuffer_ms
         self.active: list[_ActiveNote] = []
@@ -530,20 +535,20 @@ class NoteSim:
             if not a.is_hold:
                 if a.consumed:
                     continue
-                result = _judge_tap(chart_ms - a.hit_ms)
+                result = _judge_with_edges(chart_ms - a.hit_ms, self.tap_edges)
                 if result == "miss":
                     continue
                 self.active.pop(idx)
                 return RegisteredHit(a.note_index, result, a.hit_ms, chart_ms, False, False)
             if a.state == _PRE:
-                result = _judge_tap(chart_ms - a.hit_ms)
+                result = _judge_with_edges(chart_ms - a.hit_ms, self.tap_edges)
                 if result == "miss":
                     continue
                 a.state = _HOLDING
                 a.did_trigger_head = True
                 return RegisteredHit(a.note_index, result, a.hit_ms, chart_ms, False, False)
             if a.state == _HOLD_MISSED:
-                result = _judge_tail(chart_ms - a.tail_hit_ms)
+                result = _judge_with_edges(chart_ms - a.tail_hit_ms, self.tail_edges)
                 if result == "miss":
                     continue
                 a.state = _PASSED
@@ -558,7 +563,7 @@ class NoteSim:
                 continue
             if a.state not in (_HOLDING, _HOLD_MISSED):
                 continue
-            result = _judge_tail(chart_ms - a.tail_hit_ms)
+            result = _judge_with_edges(chart_ms - a.tail_hit_ms, self.tail_edges)
             if result == "miss":
                 if a.state == _HOLD_MISSED:
                     continue
@@ -640,7 +645,7 @@ def simulate(
     stats = _statsdict_from(statsdict)
     engine = GameScoreEngine(config, stats, colors)
     engine.manualFever = manual_fever
-    notes = NoteSim(chart)
+    notes = NoteSim(chart, _note_times(stats))
 
     ordered = sorted(enumerate(presses), key=lambda kv: (kv[1].time_ms, kv[1].is_release, kv[0]))
     press_times = [p.time_ms for _, p in ordered]
@@ -837,7 +842,7 @@ def _build_aurora_intended():
     from tools.verify.loadout_oracle_replay import _load_loadout
 
     db = str(ROOT / ".calc" / "aurora_fix.db")
-    fd, song_name, surface_fg, surface_base, primary, secondary = _load_loadout(db, "Aurora", 0)
+    fd, song_name, surface_fg, surface_base, primary, secondary, perfect_time = _load_loadout(db, "Aurora", 0)
 
     # chart
     fp = None
@@ -861,7 +866,7 @@ def _build_aurora_intended():
 
     ng = force_greats_note_graph(
         frontier_trace=fd["ForceGreats"]["frontier_trace"],
-        total_notes=n, timestamps=ts, note_types=nt, lanes=lanes, timing_mode="precise",
+        total_notes=n, timestamps=ts, note_types=nt, lanes=lanes, timing_mode="precise", perfect_time=perfect_time,
     )
     intended: list[IntendedNote] = []
     for node in ng:
@@ -903,6 +908,7 @@ def _build_aurora_intended():
     color_to_wp = {"Chill": "ColorBlue", "Vibe": "ColorGreen", "Flow": "ColorPurple",
                    "Rush": "ColorRed", "Beat": "ColorOrange"}
     statsdict = {wp: int(final.get(opt, 0) or 0) for opt, wp in stat_to_wp.items()}
+    statsdict["PerfectTime"] = perfect_time
     colors: list[str] = []
     for col in dict.fromkeys((primary, secondary)):
         if not col:

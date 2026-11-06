@@ -102,6 +102,7 @@ def materialize_force_payload_from_response_frontier(
     song: TimedSong,
     curves: StatCurves,
     trace_cache: FgTraceMaterializationCache,
+    perfect_time: int,
 ) -> dict[str, Any]:
     if paired_base_score <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
@@ -121,14 +122,15 @@ def materialize_force_payload_from_response_frontier(
     )
     # The trace is a pure function of the surface and the fever geometry, and rebuilding it is the dominant post-score
     # host cost, so the loadouts of one song share it. The key MUST include the fill denominator and non_fever_base: they
-    # fix the action table and the replay. A trace is validated once, before it enters the cache: a repeat would add no
-    # independent check.
+    # fix the action table and the replay, and Perfect Time: it fixes the hit windows the replay plays. A trace is validated
+    # once, before it enters the cache: a repeat would add no independent check.
     trace_key = (
         frontier.non_fever_base,
         tuple(surface),
         fever_fill_denominator,
         result.real_fever_time,
         bool(song_inputs.use_forced_great_timing),
+        perfect_time,
     )
     base_trace = trace_cache.traces.get(trace_key)
     if base_trace is None:
@@ -150,6 +152,7 @@ def materialize_force_payload_from_response_frontier(
             fever_fill_denominator=fever_fill_denominator,
             real_fever_time=result.real_fever_time,
             timing_mode=song.mode,
+            perfect_time=perfect_time,
         )
         trace_cache.traces[trace_key] = base_trace
     final_score = int(score_force_greats_response_surface_exact(result.stats, song, curves, surface))

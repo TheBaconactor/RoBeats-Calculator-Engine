@@ -52,7 +52,7 @@ def _install(monkeypatch, base_scores: dict[str, int], fg_scores: dict[str, int]
             for row in rows
         ]
 
-    def fake_replays(rows, song, curves, selected_color, trace_cache):
+    def fake_replays(rows, song, curves, selected_color, trace_cache, perfect_times):
         out = []
         for row in rows:
             score = fg_scores.get(loadout_of(row))
@@ -63,7 +63,7 @@ def _install(monkeypatch, base_scores: dict[str, int], fg_scores: dict[str, int]
     monkeypatch.setattr(tbt, "solve_best_fever_combination_batch", fake_solve)
     monkeypatch.setattr(tbt, "build_fixed_timing_fg_replays", fake_replays)
     monkeypatch.setattr(tbt, "score_stats_exact_with_timeline_trace",
-                        lambda stats, song, curves: {"TimelineFrontier": {"frontier_trace": [{"fresh": True}]}})
+                        lambda stats, song, curves, perfect_time: {"TimelineFrontier": {"frontier_trace": [{"fresh": True}]}})
     monkeypatch.setattr(tbt, "fg_response_frontier_bundle_cache_key", lambda _song, _curves: ())
     monkeypatch.setattr(tbt, "release_fg_response_song_memory", lambda _key: None)
 
@@ -80,7 +80,7 @@ def _item_names(monkeypatch):
 
     def items(entry, chart):
         first, *rest = real(entry, chart)
-        return [SimpleNamespace(stats={**first.stats, "__name__": entry["loadout_hash"]}), *rest]
+        return [SimpleNamespace(stats={**first.stats, "__name__": entry["loadout_hash"]}, perfect_time=0), *rest]
 
     monkeypatch.setattr(tbt, "_entry_loadout_items", items)
 
@@ -113,7 +113,7 @@ def test_details_carry_the_tiers_solve_never_the_stored_allocation(monkeypatch, 
 def test_a_tier_without_a_fresh_trace_drops_the_stored_one(monkeypatch, song):
     _install(monkeypatch, {"a": 30})
     monkeypatch.setattr(tbt, "score_stats_exact_with_timeline_trace",
-                        lambda stats, song, curves: {"TimelineFrontier": {"frontier_trace": []}})
+                        lambda stats, song, curves, perfect_time: {"TimelineFrontier": {"frontier_trace": []}})
 
     (row,) = tbt.build_team_buff_tier_db_batches(entries=[_entry("a")], song=song, curves=None, tiers=("T1",),
                                                  replay_surface="meta")["T1"]

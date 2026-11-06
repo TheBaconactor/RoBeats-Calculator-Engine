@@ -10,6 +10,7 @@ held tail keeps its own x2 reach.
 from __future__ import annotations
 
 import hashlib
+import math
 import threading
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
@@ -22,15 +23,15 @@ from ..core.timing_modes import TIMING_MODES
 from ..chart import Chart
 from ..core.array_signature import array_sig16
 from ..core.time_quantize import quantize_to_int_ms
-from ..gamedata import StatCurves
+from ..gamedata import StatCurves, signed_stat_curve
 
 # The game removes an unhit note once `now - hit > 200` ms (decompiled Constants.lua:19 NOTE_REMOVE_TIME = -200; the
 # same edge for taps (Note.lua:191), hold heads and the hold despawn (HeldNote.lua:219/231)). A held tail's late-Great
 # classification edge reaches +380, but an input scheduled past +200 races the per-frame sweep and lands only if no
 # frame ticks inside the gap, which no frame rate guarantees: no hit is ever planned later than this.
 NOTE_REMOVE_LATE_CAP_MS = 200
-PERFECT_LOWER_MS, PERFECT_UPPER_MS = -20, 40
 GREAT_LOWER_EXTRA_MS, GREAT_UPPER_EXTRA_MS = -75, 150
+OKAY_LOWER_EXTRA_MS, OKAY_UPPER_EXTRA_MS = -140, 240
 HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE = 3, 2
 FRAME_MARGIN_MS = 1000.0 / 60.0 + 1.0
 
@@ -46,17 +47,30 @@ class JudgmentBounds(NamedTuple):
     late_great: Band
 
 
+def judgment_edges(perfect_time: int) -> tuple[float, float, float, float, float, float]:
+    """A tap's judgment edges (ms, the held tail's are twice these), GearStats get_note_times at a Perfect Time stat:
+    late Okay, late Great, late Perfect, early Perfect, early Great, early Okay. Each band ends at the next edge
+    (SPUtil.timedelta_to_result); no item carries the Great Time or Okay Time stats."""
+    perfect_lower = signed_stat_curve(0, -5, -20, -60, -80, perfect_time)
+    perfect_upper = signed_stat_curve(0, 10, 40, 120, 140, perfect_time)
+    great_lower, great_upper = perfect_lower + GREAT_LOWER_EXTRA_MS, perfect_upper + GREAT_UPPER_EXTRA_MS
+    return (
+        great_upper + OKAY_UPPER_EXTRA_MS, great_upper, perfect_upper,
+        perfect_lower, great_lower, great_lower + OKAY_LOWER_EXTRA_MS,
+    )
+
+
 @lru_cache(maxsize=None)
-def judgment_bounds(scale: int) -> JudgmentBounds:
-    """A note's reachable planned hit offsets (ms) per judgment; `scale` is its window scale (2 for a held tail). The
-    late-Great band ends at the note removal."""
+def judgment_bounds(scale: int, perfect_time: int = 0) -> JudgmentBounds:
+    """A note's reachable planned hit offsets (whole ms) per judgment; `scale` is its window scale (2 for a held tail).
+    The late-Great band ends at the note removal."""
+    _late_okay, late_great, late_perfect, early_perfect, early_great, _early_okay = (
+        math.floor(edge * scale) for edge in judgment_edges(perfect_time)
+    )
     return JudgmentBounds(
-        perfect=Band(PERFECT_LOWER_MS * scale + 1, PERFECT_UPPER_MS * scale),
-        early_great=Band((PERFECT_LOWER_MS + GREAT_LOWER_EXTRA_MS) * scale + 1, PERFECT_LOWER_MS * scale),
-        late_great=Band(
-            PERFECT_UPPER_MS * scale + 1,
-            min((PERFECT_UPPER_MS + GREAT_UPPER_EXTRA_MS) * scale, NOTE_REMOVE_LATE_CAP_MS),
-        ),
+        perfect=Band(early_perfect + 1, late_perfect),
+        early_great=Band(early_great + 1, early_perfect),
+        late_great=Band(late_perfect + 1, min(late_great, NOTE_REMOVE_LATE_CAP_MS)),
     )
 
 

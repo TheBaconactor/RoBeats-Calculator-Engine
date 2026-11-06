@@ -35,7 +35,8 @@ It runs from the command line over a queue of charts or as an HTTP service, and 
 | Scoring | Per-note integer floors, combo order, fever membership, Great penalties | Exact |
 
 **Limits:** the search covers Perfect and Great plays; deliberate Okay, Miss and combo-break strategies are out of
-scope. Plans use the base hit windows: the Perfect Time stat, which widens them on a few gears, is not modeled yet.
+scope. Frontiers use the base hit windows. A build's Perfect Time stat moves its windows: its note plans follow them,
+while its scores can under-report what the wider windows reach.
 
 ## Quick start
 

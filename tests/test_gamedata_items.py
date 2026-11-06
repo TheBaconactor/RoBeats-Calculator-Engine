@@ -100,11 +100,12 @@ def test_load_minis_reloads_when_the_file_changes(tmp_path):
     assert list(load_minis(path)) == ["Second"]
 
 
-def test_read_gears_maps_the_gear_columns_and_ignores_perfect_time(tmp_path):
+def test_read_gears_maps_the_gear_columns_and_keeps_perfect_time_apart(tmp_path):
     path = tmp_path / "Gears.csv"
     _write(path, _GEAR_HEADER, [["Hat", "Goggles", "", "6", "13", "", "", "", "6", "", "", "", "40"]])
     gear = read_gears(path)["Goggles"]
     assert gear.slot == "Hat"
     assert (gear.stats["Flow"], gear.stats["Rush"], gear.stats["Combo Multiplier"]) == (6, 13, 6)
-    # PTime (Perfect Time) is a different mechanic from Fever Time.
+    # PTime (Perfect Time) moves the hit windows; it is not Fever Time and no score reads it.
+    assert gear.perfect_time == 40
     assert gear.stats["Fever Time"] == 0

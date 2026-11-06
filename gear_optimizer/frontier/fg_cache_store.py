@@ -51,10 +51,12 @@ _UNREADABLE = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZ
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's bundles only when it lists
 # that version here, after a byte gate proved the persisted bundles identical. The version history is in git.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # The modules moved to frontier/ and their cache bookkeeping was rewritten; no producer output changed: the 2026-11-05
-    # gate (16 charts) and sample (40 charts, both modes) bundles hold the same arrays as the 2653d51a312d producer's,
-    # which itself ratified the 38e82e26a8ec recompute's. workspace/_rewrite_state_2026-11-05.
-    "fg-response-frontier-visible-first-v32+logic-ef40896fb48b": (
+    # judgment_bounds reads the game's Perfect Time curve, which at stat 0 gives the frontiers the same bands; no producer
+    # output changed: the 2026-11-05 gate (16 charts) and sample (40 charts, both modes) bundles hold the same arrays as
+    # the ef40896fb48b producer's, which ratified 2653d51a312d's and so the 38e82e26a8ec recompute's.
+    # workspace/_rewrite_state_2026-11-05.
+    "fg-response-frontier-visible-first-v32+logic-ca3f853d4e52": (
+        "fg-response-frontier-visible-first-v32+logic-ef40896fb48b",
         "fg-response-frontier-visible-first-v32+logic-2653d51a312d",
         "fg-response-frontier-visible-first-v32+logic-38e82e26a8ec",
     ),

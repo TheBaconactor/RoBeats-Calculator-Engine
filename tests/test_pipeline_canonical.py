@@ -108,7 +108,7 @@ def scored(monkeypatch):
         ]
 
     monkeypatch.setattr(canonical, "_meta_resolve", meta_resolve)
-    monkeypatch.setattr(canonical, "_meta_score", lambda stats, song, curves: (meta_scores.pop(0), {"trace": 1}))
+    monkeypatch.setattr(canonical, "_meta_score", lambda stats, song, curves, perfect_time: (meta_scores.pop(0), {"trace": 1}))
     return meta_scores
 
 
@@ -152,7 +152,7 @@ def test_a_loadout_whose_base_play_no_hit_timing_plays_keeps_no_row(scored, monk
     b = SolvedLoadout(("Cap", "Vest"), ("Chroma", "Marie"))
     outcomes = [UnplayableTrace("no float32 hit of note 594 in [102.944999695, 102.984991981] s ends its fever"), 800]
 
-    def meta_score(stats, song, curves):
+    def meta_score(stats, song, curves, perfect_time):
         outcome = outcomes.pop(0)
         if isinstance(outcome, UnplayableTrace):
             raise outcome
