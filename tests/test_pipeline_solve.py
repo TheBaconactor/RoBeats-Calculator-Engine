@@ -41,7 +41,7 @@ def test_the_ga_runs_as_one_executor_call_with_the_payload_as_the_ga_arguments(m
             assert song.runtime.song_slot == solve_module._GA_SLOT
             return fn(*args)
 
-    assert solve_module.run_ga(song, _Executor()) == {"runs_payload": "runs payload", "fg_owner_score": "fg owner score"}
+    assert solve_module.run_ga(song, _Executor()) == ("runs payload", "fg owner score")
     assert song.runtime.song_slot == 0
     assert ga_calls[0]["song"] == "timed song" and ga_calls[0]["n_generations"] == 42 and ga_calls[0]["ga_seed"] == 7
     assert ga_calls[0]["abort_requested"] == abort.is_set
