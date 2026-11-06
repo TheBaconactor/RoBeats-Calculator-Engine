@@ -42,9 +42,8 @@ def score_fg_base_components(
 ) -> dict[tuple[int, ...], GemWinner]:
     """The FG score row of each distinct 7-vector of pre-gem totals (PP, CM, FM, primary, secondary, FT, FF), keyed by
     it (CPU only); equal 7-vectors have equal FG results, so each is scored once. ``selected_color`` is the song's
-    selected element; every other input is song-level (the scoring bundle). With `floors` (a score per row) a row is
-    exact only when it reaches its floor (the lowest of a 7-vector's floors); below it, its score is only known to be
-    lower."""
+    selected element; every other input is song-level (the scoring bundle). With `floors` (a score per row) a 7-vector
+    below its floor (the lowest of its floors) has no row."""
     floor_of: dict[tuple[int, ...], int] = {}
     for idx, row in enumerate(np.asarray(base_components, dtype=np.int32).tolist()):
         key = tuple(row)
@@ -67,7 +66,7 @@ def score_fg_base_components(
         curves=curves,
         floors=None if floors is None else np.asarray(list(floor_of.values())),
     )
-    return dict(zip(floor_of, winners, strict=True))
+    return {key: winner for key, winner in zip(floor_of, winners, strict=True) if winner is not None}
 
 
 def fg_solve_result(

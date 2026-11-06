@@ -452,8 +452,7 @@ def test_response_frontier_best_position_prune_matches_sort_reference_randomized
 def test_response_frontier_group_builder_matches_prune_reference():
     from gear_optimizer.rules import MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
     from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-    from gear_optimizer.solver.gem_search import build_response_group_rows
-    from tests.fg_group_build_reference import build_response_group_rows_reference
+    from tests.fg_group_build_reference import build_response_group_rows_reference, kept_group_rows
 
     ft_values, ff_values, residual_values = ftff_combo_arrays(3)
     base_components = np.asarray(
@@ -492,7 +491,7 @@ def test_response_frontier_group_builder_matches_prune_reference():
             4,
             9,
         )
-        got = build_response_group_rows(*args)
+        got = kept_group_rows(*args)
         expected = build_response_group_rows_reference(*args)
         for got_arr, expected_arr in zip(got, expected, strict=True):
             np.testing.assert_array_equal(got_arr, expected_arr)

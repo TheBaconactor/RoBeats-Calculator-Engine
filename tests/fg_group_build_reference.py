@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER
+from gear_optimizer.solver.gem_search import _kept_splits
 from tests.parity.response_ftff_prune import (
     prune_best_positions_by_frontier,
     prune_dominated_ftff_response_positions,
@@ -92,3 +93,39 @@ def build_response_group_rows_reference(
         np.concatenate(ff_stat_blocks),
         np.asarray(slices, dtype=np.int32),
     )
+
+
+def kept_group_rows(
+    base_components: np.ndarray,
+    ft_values: np.ndarray,
+    ff_values: np.ndarray,
+    residual_values: np.ndarray,
+    frontier_idx_by_stat: np.ndarray,
+    primary_ftff_delta_values: np.ndarray,
+    secondary_ftff_delta_values: np.ndarray,
+    score_elements_constant: bool,
+    head_len: int,
+    body_total: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The groups the search keeps per pre-gem (FT, FF), written out per loadout as the reference writes them."""
+    base_components = np.ascontiguousarray(base_components, dtype=np.int32)
+    keys, key_of = np.unique(base_components[:, 5:7], axis=0, return_inverse=True)
+    positions, _frontiers, counts = _kept_splits(
+        keys, ft_values, ff_values, residual_values, frontier_idx_by_stat, primary_ftff_delta_values,
+        secondary_ftff_delta_values, score_elements_constant,
+    )
+    starts = np.cumsum(counts) - counts
+    meta, group_ft, group_ff, ft_stat, ff_stat, slices = [], [], [], [], [], []
+    written = 0
+    for base, key in zip(base_components, key_of.reshape(-1)):
+        kept = positions[starts[key] : starts[key] + counts[key]]
+        slices.append((written, kept.shape[0]))
+        written += kept.shape[0]
+        for position in kept:
+            meta.append((residual_values[position], base[0], base[1], base[2], base[3] + primary_ftff_delta_values[position],
+                         base[4] + secondary_ftff_delta_values[position], head_len, body_total))
+            group_ft.append(ft_values[position])
+            group_ff.append(ff_values[position])
+            ft_stat.append(min(max(base[5] + ft_values[position] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT))
+            ff_stat.append(min(max(base[6] + ff_values[position] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT))
+    return tuple(np.asarray(column, dtype=np.int32) for column in (meta, group_ft, group_ff, ft_stat, ff_stat, slices))

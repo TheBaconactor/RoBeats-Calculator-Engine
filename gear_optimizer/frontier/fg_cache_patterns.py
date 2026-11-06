@@ -44,6 +44,17 @@ def surface_head_coeffs(pattern_words: np.ndarray, *, head_len: int) -> np.ndarr
     return coeffs
 
 
+def surface_head_greats(pattern_words: np.ndarray) -> np.ndarray:
+    """(n, 2) int32 per head pattern: its Great notes outside fever, its Great notes in fever."""
+    words = np.asarray(pattern_words, dtype=np.uint32)
+    fever, great = words[:, :4], words[:, 4:8]
+
+    def count(masks: np.ndarray) -> np.ndarray:
+        return (_U16_COUNT[masks & np.uint32(0xFFFF)] + _U16_COUNT[masks >> np.uint32(16)]).sum(axis=1)
+
+    return np.stack((count(great & ~fever), count(great & fever)), axis=1).astype(np.int32)
+
+
 def intern_surface_row_words(surface_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Exact head words interned, every logical row kept in producer order: (row references, unique words).
     ``np.unique(..., axis=0)`` owns the pattern IDs, so their lexicographic order is the persisted one."""

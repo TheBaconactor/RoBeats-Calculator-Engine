@@ -12,7 +12,7 @@ from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.timing_envelope import TimedSong
 
 from .fg_cache_keys import _response_axes, fg_response_frontier_bundle_cache_key
-from .fg_cache_patterns import unpack_surface_patterns
+from .fg_cache_patterns import surface_head_greats, unpack_surface_patterns
 from .fg_cache_store import (
     FG_RESPONSE_FRONTIER_CACHE,
     _dense_rank_pattern_ids_inplace,
@@ -147,6 +147,7 @@ def session_prune_scoring_bundle(
             pattern_words=np.ascontiguousarray(pool.pattern_words[used_pattern_ids], dtype=np.uint32),
             counts=np.ascontiguousarray(pool.counts[keep], dtype=np.int32),
             head_coeffs=np.ascontiguousarray(pool.head_coeffs[used_pattern_ids], dtype=np.int32),
+            head_greats=np.ascontiguousarray(pool.head_greats[used_pattern_ids], dtype=np.int32),
         ),
     )
 
@@ -218,6 +219,7 @@ def _scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgRespon
             pattern_words=pattern_words,
             counts=np.ascontiguousarray(rows[1:4].T, dtype=np.int32),
             head_coeffs=head_coeffs,
+            head_greats=surface_head_greats(pattern_words),
         ),
         total_notes=total_notes,
         long_notes=int(arrays["long_notes"].item()),

@@ -36,8 +36,7 @@ def search_fg_loadouts(
     """Every loadout the search scored exactly, by its pre-gem totals: (its first genome, its FG score row).
 
     seeds: (N, 9) genomes whose totals key their FG score rows in seed_rows. totals: genomes -> their (M, 7) pre-gem
-    totals. score: (totals rows, floors) -> each row's FG score row (row.inner_row[0] is exact when it reaches the
-    row's floor, else only below it)."""
+    totals. score: (totals rows, floors) -> the FG score row of each row that reaches its floor."""
     found: dict[tuple[int, ...], tuple[tuple[int, ...], Any]] = {}
     for genome, key in zip(seeds.tolist(), map(tuple, totals(seeds).tolist()), strict=True):
         if key not in found:
@@ -72,7 +71,7 @@ def search_fg_loadouts(
                     scored.append(key)
             rows = score(np.asarray(scored, dtype=np.int32), np.full(len(scored), floor, dtype=np.int64))
             for key in scored:
-                if rows[key].inner_row[0] >= floor:
+                if key in rows:
                     found[key] = (fresh[key], rows[key])
                     contenders.append(key)
                 else:

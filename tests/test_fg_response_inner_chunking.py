@@ -35,7 +35,7 @@ def test_response_surface_head_coeffs_match_bruteforce():
 
 def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
+    from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs, surface_head_greats
     from gear_optimizer.solver.gem_search import GemGroups, SurfacePool, gem_winners
 
     pattern_a = np.zeros((8,), dtype=np.uint32)
@@ -46,13 +46,12 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     counts = np.asarray(((0, 0, 0), (2, 0, 0), (1, 0, 0)), dtype=np.int32)
     zero = np.zeros(1, dtype=np.int32)
     groups = GemGroups(
-        meta=np.asarray(((0, 10, 10, 10, 120, 60, 4, 3),), dtype=np.int32),
-        ft=zero,
-        ff=zero,
-        ft_stat=zero,
-        ff_stat=zero,
-        frontiers=zero,
-        candidate_slices=np.asarray(((0, 1),), dtype=np.int32),
+        loadouts=np.asarray(((10, 10, 10, 120, 60, 0),), dtype=np.int32),
+        keys=np.zeros((1, 2), dtype=np.int32),
+        key_starts=np.asarray((0, 1), dtype=np.int64),
+        groups=np.zeros((1, 5), dtype=np.int32),
+        head_len=4,
+        body_total=3,
     )
     curves = synthetic_curves({
         "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float64),
@@ -62,7 +61,7 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
 
     def winner(pattern_ids, words):
         pool = SurfacePool(zero, np.asarray((3,), dtype=np.int32), np.asarray(pattern_ids, dtype=np.int32), words,
-                           counts, surface_head_coeffs(words, head_len=4))
+                           counts, surface_head_coeffs(words, head_len=4), surface_head_greats(words))
         return gem_winners(groups, pool, colors=("Rush", "Flow", "Rush"), curves=curves)
 
     assert winner((0, 0, 1), shared_words) == winner((0, 1, 2), identity_words)

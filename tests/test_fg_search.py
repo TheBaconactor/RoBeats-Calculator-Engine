@@ -28,7 +28,8 @@ def _landscape(seed: int, sign: float = 1.0):
         for row, floor in zip(rows.tolist(), floors.tolist(), strict=True):
             # Rugged across FT / FF (many local optima), monotone in the other totals.
             value = int(np.dot(weights, row[:5]) + 1000 * np.sin((7 * row[5] + 3 * row[6]) / 40.0) + 2000)
-            out[tuple(row)] = SimpleNamespace(inner_row=(value if value >= floor else floor - 1,))
+            if value >= floor:
+                out[tuple(row)] = SimpleNamespace(inner_row=(value,))
         return out
 
     # Four seed loadouts: one random item per gear slot, minis 30-32.

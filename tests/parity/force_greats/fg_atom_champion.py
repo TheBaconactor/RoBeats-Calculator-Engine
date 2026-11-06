@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.frontier.fg_cache_patterns import surface_head_greats
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
     MAX_STAT,
@@ -46,15 +47,14 @@ def _score_single_frontier_domain(
     curves: dict,
 ) -> np.ndarray:
     count = int(group_meta.shape[0])
-    zeros = np.zeros(count, dtype=np.int32)
+    meta = np.ascontiguousarray(group_meta, dtype=np.int32)
     groups = GemGroups(  # each group its own loadout, all on one frontier: every row is exact
-        meta=np.ascontiguousarray(group_meta, dtype=np.int32),
-        ft=zeros,
-        ff=zeros,
-        ft_stat=zeros,
-        ff_stat=zeros,
-        frontiers=zeros,
-        candidate_slices=np.stack((np.arange(count), np.ones(count, dtype=np.int64)), axis=1),
+        loadouts=np.column_stack((meta[:, 1:6], np.arange(count))).astype(np.int32),
+        keys=np.zeros((count, 2), dtype=np.int32),
+        key_starts=np.arange(count + 1, dtype=np.int64),
+        groups=np.column_stack((meta[:, 0], np.zeros((count, 4), dtype=np.int32))).astype(np.int32),
+        head_len=int(meta[0, 6]),
+        body_total=int(meta[0, 7]),
     )
     pool = SurfacePool(
         frontier_offsets=np.zeros(1, dtype=np.int32),
@@ -63,6 +63,7 @@ def _score_single_frontier_domain(
         pattern_words=np.ascontiguousarray(surface_words, dtype=np.uint32),
         counts=np.ascontiguousarray(surface_counts, dtype=np.int32),
         head_coeffs=np.ascontiguousarray(surface_head_coeffs, dtype=np.int32),
+        head_greats=surface_head_greats(surface_words),
     )
     winners = gem_winners(
         groups,

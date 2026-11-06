@@ -59,7 +59,8 @@ class FgResponseFrontierSolveResult:
 class SurfacePool:
     """The surfaces a gem search scores. Frontier f holds rows frontier_offsets[f] .. frontier_offsets[f] +
     frontier_lengths[f]; row r is head pattern pattern_ids[r] (pattern_words: its 4 fever and 4 Great words over the
-    head notes; head_coeffs: its surface_head_coeffs) with body counts counts[r] (fever notes, Great notes, both)."""
+    head notes; head_coeffs: its surface_head_coeffs; head_greats: its surface_head_greats) with body counts counts[r]
+    (fever notes, Great notes, both)."""
 
     frontier_offsets: np.ndarray
     frontier_lengths: np.ndarray
@@ -67,4 +68,5 @@ class SurfacePool:
     pattern_words: np.ndarray
     counts: np.ndarray
     head_coeffs: np.ndarray
+    head_greats: np.ndarray
 

@@ -97,6 +97,7 @@ def _base_surface_pool(song: TimedSong, curves: StatCurves) -> tuple[np.ndarray,
         pattern_words=pattern_words,
         counts=counts,
         head_coeffs=payload.grid_frontier_head_coeffs_pool[0, first_rows, :].astype(np.int32),
+        head_greats=np.zeros((heads.shape[0], 2), dtype=np.int32),
     )
     frontier_idx = frontier_idx.reshape(MAX_STAT + 1, MAX_STAT + 1).astype(np.int32)
     _last_base_pool = (payload, frontier_idx, pool)

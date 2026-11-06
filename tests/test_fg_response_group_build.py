@@ -6,8 +6,7 @@ import pytest
 
 from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-from gear_optimizer.solver.gem_search import build_response_group_rows
-from tests.fg_group_build_reference import build_response_group_rows_reference
+from tests.fg_group_build_reference import build_response_group_rows_reference, kept_group_rows
 
 
 def _frontier_idx_per_pos(ft_values, ff_values):
@@ -89,7 +88,7 @@ def _run_case(*, budget, base_components, score_elements_constant, geometry, hea
         int(body_total),
     )
     ref_out = build_response_group_rows_reference(*args)
-    _assert_six_equal(build_response_group_rows(*args), ref_out)
+    _assert_six_equal(kept_group_rows(*args), ref_out)
 
 
 def test_group_build_constant_path_per_pos_geometry():

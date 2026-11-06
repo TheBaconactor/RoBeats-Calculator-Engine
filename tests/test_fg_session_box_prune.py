@@ -259,6 +259,7 @@ def test_session_head_dominance_box_reads_luts_and_fails_loud():
 
 def _bundle_with_tables(pattern_ids, counts, pattern_words, pattern_coeffs, *, offsets, lengths, head_len, cache_key):
     """A loaded (unpruned) scoring bundle holding these rows and patterns."""
+    from gear_optimizer.frontier.fg_cache_patterns import surface_head_greats
     from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierScoringBundle
     from gear_optimizer.frontier.types import SurfacePool
 
@@ -270,7 +271,7 @@ def _bundle_with_tables(pattern_ids, counts, pattern_words, pattern_coeffs, *, o
         real_time_by_ft=np.zeros(1),
         frontier_meta=np.zeros((int(offsets.shape[0]), 1), dtype=np.int32),
         pool=SurfacePool(offsets, lengths, pattern_ids.astype(np.int32), pattern_words, counts.astype(np.int32),
-                         pattern_coeffs.astype(np.int32)),
+                         pattern_coeffs.astype(np.int32), surface_head_greats(pattern_words)),
         total_notes=head_len,
         long_notes=0,
         use_forced_great_timing=True,
