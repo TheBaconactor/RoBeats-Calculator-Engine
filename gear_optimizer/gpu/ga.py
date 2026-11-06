@@ -31,16 +31,6 @@ def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
     return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
 
-def _evaluate(n_genomes: int, flags, shortlist: tuple) -> None:
-    """The exact evaluation of the population: memo hits restored, each unique uncached row searched, duplicates scattered."""
-    kernels.aggregate_stats_kernel(n_genomes, flags)
-    kernels.find_representatives_kernel(n_genomes)
-    kernels.list_unique_rows_kernel(n_genomes)
-    kernels.search_combos_kernel(n_genomes, flags, *shortlist)
-    kernels.finish_lanes_kernel(n_genomes)
-    kernels.scatter_results_kernel(n_genomes)
-
-
 def _polish_runs_best(
     num_runs: int,
     slot_start: np.ndarray,
@@ -80,7 +70,7 @@ def _polish_runs_best(
                     np.ascontiguousarray(np.concatenate([hood[offset : offset + k] for hood in group]), dtype=np.int32),
                     len(group) * k,
                 )
-                _evaluate(len(group) * k, flags, shortlist)
+                kernels.evaluate_kernel(len(group) * k, flags, *shortlist)
                 kernels.update_runs_best_kernel(run, len(group), k)
         cur = fields.ga_run_best.to_numpy()[:num_runs]
         if not np.any(cur[:, 0] > prev[:, 0]):
@@ -106,7 +96,7 @@ def _run_ga(inputs: GaInputs, seed: int, payload, check: Callable[[str], None]) 
         kernels.start_batch_kernel(run, batch, n_genomes, seed, inputs.init_heuristic_copies)
         for generation in range(inputs.gens_per_run):
             check(f"before GA generation {generation}")
-            _evaluate(n_total, flags, shortlist)
+            kernels.evaluate_kernel(n_total, flags, *shortlist)
             # Selection scores stay exact every generation; the last one refreshes without breeding.
             if generation < inputs.gens_per_run - 1:
                 kernels.next_generation_kernel(run, batch, n_genomes)

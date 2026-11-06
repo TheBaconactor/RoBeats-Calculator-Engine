@@ -14,12 +14,26 @@ MAX_ITEMS = 65536  # Items per song (id 0 is the empty slot).
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_GA_RUNS = 128  # Runs per song.
 MAX_FTFF_COMBOS = (GEM_BUDGET + 1) * (GEM_BUDGET + 2) // 2
-GA_FTFF_LANES = 256  # Lanes of one genome's FT/FF combo search.
+GA_FTFF_LANES = 64  # A genome's search threads: one per listed combo, each a stride of its shortlist past that.
 GA_EVAL_CACHE_SIZE = 16384  # Device memo of evaluations; full stats verify every hit.
 GA_RESULT_COLS = 7  # score, FT, FF, PP, CM, FM and element gems
 GA_RUN_BEST_COLS = 1 + MAX_SLOTS + GA_RESULT_COLS  # score, item ids, result
 GA_FG_CANDIDATES_PER_RUN = 64
 GA_FG_CANDIDATE_COLS = GA_RUN_BEST_COLS + 7  # the run-best columns, then the pre-gem stats
+
+# A row's reference (kernels.reference_search_kernel, scoring.reference_bound): `base` is its surface's base value without
+# (CM, FM) gems, `scale` what it reaches at most over its value at the corners of those multipliers (low or high combo,
+# low or high fever), and the inverses those of its lowest and highest base value.
+GemReference = ti.types.struct(
+    base=ti.f32,
+    scale=ti.types.vector(4, ti.f32),
+    combo_lo=ti.f32,
+    combo_hi=ti.f32,
+    fever_lo=ti.f32,
+    fever_hi=ti.f32,
+    inverse_base_lo=ti.f32,
+    inverse_base_hi=ti.f32,
+)
 
 # Name: (type, shape), or (type, shape, vector size).
 _FIELDS = {
@@ -31,14 +45,13 @@ _FIELDS = {
     "ftff_combo_ft": (ti.i32, MAX_FTFF_COMBOS),
     "ftff_combo_ff": (ti.i32, MAX_FTFF_COMBOS),
     # The song's timeline frontier: per (FT, FF) cell, then its surfaces in one pool.
-    "grid_body_total": (ti.i32, (GRID_SIZE, GRID_SIZE)),
-    "grid_head_len": (ti.i8, (GRID_SIZE, GRID_SIZE)),
+    "song_head_len": (ti.i32, 1),
     "grid_frontier_count": (ti.i32, (GRID_SIZE, GRID_SIZE)),
     "grid_frontier_offset": (ti.i32, (GRID_SIZE, GRID_SIZE)),
     "grid_frontier_body_fever_pool": (ti.i32, MAX_TIMELINE_FRONTIER_SURFACES),
     "grid_frontier_body_normal_pool": (ti.i32, MAX_TIMELINE_FRONTIER_SURFACES),
     "grid_frontier_masks_bits_pool": (ti.u32, (MAX_TIMELINE_FRONTIER_SURFACES, 4)),
-    "grid_frontier_head_coeffs_pool": (ti.i16, (MAX_TIMELINE_FRONTIER_SURFACES, 4)),  # n_hn, n_hf, sigma_hn, sigma_hf
+    "grid_frontier_shape_pool": (ti.f32, MAX_TIMELINE_FRONTIER_SURFACES, 4),  # A, E, F, G (scoring)
     # The song's items.
     "item_stats": (ti.i32, (MAX_ITEMS, ITEM_STAT_DIM)),
     "base_fixed_stats": (ti.i32, ITEM_STAT_DIM),
@@ -57,9 +70,13 @@ _FIELDS = {
     "ga_eval_cache_results": (ti.i32, GA_EVAL_CACHE_SIZE, 4),
     "ga_eval_cache_owner": (ti.i32, GA_EVAL_CACHE_SIZE),
     "ga_exact_eval_rep_idx": (ti.i32, MAX_GENOMES),
-    "ga_exact_eval_unique_count": (ti.i32, 1),
-    "ga_unique_slot_to_genome": (ti.i32, MAX_GENOMES),
     "ga_eval_incumbent_score": (ti.i32, MAX_GENOMES),
+    # The combos of a row that can reach its incumbent; a count past GA_FTFF_LANES: too many to list, the threads stride the
+    # row's shortlist. The search's threads, packed so that active threads share SIMD groups: genome * lanes + lane.
+    "ga_survivor_count": (ti.i32, MAX_GENOMES),
+    "ga_survivors": (ti.i32, (MAX_GENOMES, GA_FTFF_LANES)),
+    "ga_search_list": (ti.i32, MAX_GENOMES * GA_FTFF_LANES),
+    "ga_search_count": (ti.i32, 1),
     "ga_lane_best_key": (ti.u64, (MAX_GENOMES, GA_FTFF_LANES)),
     "ga_lane_best_results": (ti.i32, (MAX_GENOMES, GA_FTFF_LANES, 4)),
     "chunk_best_key": (ti.u64, MAX_GENOMES),
@@ -75,3 +92,4 @@ def allocate_fields() -> None:
         globals()[name] = (
             ti.Vector.field(vector[0], dtype=dtype, shape=shape) if vector else ti.field(dtype=dtype, shape=shape)
         )
+    globals()["ga_gem_reference"] = GemReference.field(shape=MAX_GENOMES)

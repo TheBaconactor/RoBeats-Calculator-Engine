@@ -15,13 +15,15 @@ from tests.songs_support import make_song
 PRIMARY, SECONDARY = "Beat", "Flow"
 
 
-def registry() -> ItemRegistry:
+def registry(multipliers: int = 1, elements: int = 1) -> ItemRegistry:
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gears = {
         slot: [
             make_gear(f"{slot}{i}", **{
-                "Perfect Points": 7 + s + i, "Combo Multiplier": 3 + i, "Fever Multiplier": 2 + s, "Fever Time": 4 + i,
-                "Fever Fill Rate": 5 + s, "Beat": 6 + i, "Vibe": 2 + s, "Rush": 3 + i, "Flow": 4 + s, "Chill": 1 + i,
+                "Perfect Points": 7 + s + i, "Combo Multiplier": (3 + i) * multipliers,
+                "Fever Multiplier": (2 + s) * multipliers, "Fever Time": 4 + i,
+                "Fever Fill Rate": 5 + s, "Beat": (6 + i) * elements, "Vibe": 2 + s, "Rush": 3 + i,
+                "Flow": (4 + s) * elements, "Chill": 1 + i,
             })
             for i in range(4)
         ]
@@ -29,7 +31,8 @@ def registry() -> ItemRegistry:
     }
     minis = [
         make_song_mini(f"M{i}", **{
-            "Perfect Points": 2 + (i % 5), "Combo Multiplier": 1 + (i % 3), "Fever Multiplier": 1 + (i % 4),
+            "Perfect Points": 2 + (i % 5), "Combo Multiplier": (1 + (i % 3)) * multipliers,
+            "Fever Multiplier": (1 + (i % 4)) * multipliers,
             "Fever Time": 1 + (i % 2), "Fever Fill Rate": 2 + (i % 3), "Beat": 1 + (i % 4), "Vibe": 2 + (i % 2),
             "Rush": 1 + (i % 5), "Flow": 3 + (i % 2), "Chill": 1 + (i % 3),
         })
@@ -49,10 +52,12 @@ def song(*, n_notes: int = 400, name: str = "GPU test song"):
     )
 
 
-def ga_inputs(timed=None, *, num_runs: int = 2, n_genomes: int = 64, generations: int = 3) -> GaInputs:
+def ga_inputs(
+    timed=None, *, num_runs: int = 2, n_genomes: int = 64, generations: int = 3, multipliers: int = 1, elements: int = 1
+) -> GaInputs:
     timed = timed if timed is not None else song()
     curves = stat_curves()
-    arrays = registry().to_gpu_arrays()
+    arrays = registry(multipliers, elements).to_gpu_arrays()
     item_stats = np.asarray(arrays["item_stats"], dtype=np.int32)
     slot_start = np.asarray(arrays["slot_start"], dtype=np.int32)
     slot_count = np.asarray(arrays["slot_count"], dtype=np.int32)

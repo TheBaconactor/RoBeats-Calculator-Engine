@@ -71,10 +71,7 @@ def upload_timeline(key: tuple, payload: TimelineFrontierGridPayload) -> None:
     def cell(array: np.ndarray, dtype) -> np.ndarray:
         return np.ascontiguousarray(np.asarray(array, dtype=dtype)[0])
 
-    fields.grid_body_total.from_numpy(
-        cell(payload.grid_count_body_fever, np.int32) + cell(payload.grid_count_body_normal, np.int32)
-    )
-    fields.grid_head_len.from_numpy(cell(payload.grid_head_len, np.int8))
+    fields.song_head_len[0] = int(payload.grid_head_len[0, 0, 0])
     fields.grid_frontier_count.from_numpy(cell(payload.grid_frontier_count, np.int32))
     fields.grid_frontier_offset.from_numpy(cell(payload.grid_frontier_offset, np.int32))
     used = int(payload.frontier_pool_used)
