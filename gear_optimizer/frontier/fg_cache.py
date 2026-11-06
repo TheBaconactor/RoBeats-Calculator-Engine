@@ -15,7 +15,6 @@ from .fg_cache_keys import _response_axes, fg_response_frontier_bundle_cache_key
 from .fg_cache_patterns import surface_head_greats, unpack_surface_patterns
 from .fg_cache_store import (
     FG_RESPONSE_FRONTIER_CACHE,
-    _dense_rank_pattern_ids_inplace,
     _load_payload,
     _payload_file_is_complete,
     _response_bundle_build_slot,
@@ -29,7 +28,7 @@ from .fg_cache_types import (
     all_response_stat_keys,
 )
 from .producer_batch import build_first_frontiers
-from .producer_kernels import _HEAD_DOM_C, _HEAD_DOM_F, _HEAD_DOM_G, _HEAD_DOM_V, _numba_session_box_keep_mask
+from .producer_kernels import _HEAD_DOM_C, _HEAD_DOM_F
 from .types import SurfacePool
 
 
@@ -66,83 +65,6 @@ def _assert_head_dominance_box_covers(curves: StatCurves) -> None:
             f"[{float(fm.min()):.4f},{float(fm.max()):.4f}] -- update _HEAD_DOM_C/_HEAD_DOM_F in "
             f"producer_kernels.py (the lossless head prune requires the box to be a superset)."
         )
-
-
-def session_head_dominance_box(curves: StatCurves) -> tuple[float, float, float, float, float, float, float, float]:
-    """The SESSION's 16-corner dominance box: combo/fever corners tightened to the inventory's
-    measured LUT ranges (the same arrays `_assert_head_dominance_box_covers` validates), value and
-    great corners kept at the global box (v1: their per-note derivation is color-coupled; the
-    global corners stay a sound cover). Reads the float32 curves the solve uses."""
-    cm = np.asarray(curves.f32["Combo Multiplier"], dtype=np.float64)
-    fm = np.asarray(curves.f32["Fever Multiplier"], dtype=np.float64)
-    c_lo, c_hi = float(cm.min()), float(cm.max())
-    f_lo, f_hi = float(fm.min()), float(fm.max())
-    # The payload's envelope was pruned against the GLOBAL box; a session box escaping it means the
-    # payload never covered these cells -- the same invariant _assert_head_dominance_box_covers
-    # enforces at build time. Never widen silently.
-    if c_lo < float(_HEAD_DOM_C[0]) or c_hi > float(_HEAD_DOM_C[1]) or f_lo < float(_HEAD_DOM_F[0]) or f_hi > float(_HEAD_DOM_F[1]):
-        raise ValueError(
-            f"session dominance box combo[{c_lo:.4f},{c_hi:.4f}] fever[{f_lo:.4f},{f_hi:.4f}] escapes the "
-            f"global box combo{_HEAD_DOM_C} fever{_HEAD_DOM_F} the payload envelope was built against"
-        )
-    return (
-        float(_HEAD_DOM_V[0]), float(_HEAD_DOM_V[1]),
-        c_lo, c_hi,
-        f_lo, f_hi,
-        float(_HEAD_DOM_G[0]), float(_HEAD_DOM_G[1]),
-    )
-
-
-def session_prune_scoring_bundle(
-    bundle: FgResponseFrontierScoringBundle,
-    curves: StatCurves,
-) -> FgResponseFrontierScoringBundle:
-    """Session-box cone prune of a scoring bundle for ONE solve run (GA path only; persist/audit
-    consumers load the full bundle). Re-runs the 16-corner dominance filter with corners at the
-    session's realizable stat box: every dropped row is dominated at every cell this inventory can
-    evaluate, so scoring winners are identical while the score loop shrinks to the session-relevant rows."""
-    pool = bundle.pool
-    row_count = int(pool.pattern_ids.shape[0])
-    if row_count <= 0:
-        return bundle
-    keep = _numba_session_box_keep_mask(
-        (pool.pattern_ids, pool.pattern_words, pool.counts, pool.frontier_offsets, pool.frontier_lengths),
-        0, min(int(bundle.total_notes), 100), session_head_dominance_box(curves),
-    )
-    keep = np.asarray(keep, dtype=bool)
-    if tuple(keep.shape) != (row_count,):
-        raise ValueError("session-box prune keep mask has the wrong shape")
-    lengths_all = np.asarray(pool.frontier_lengths, dtype=np.int64)
-    offsets_all = np.asarray(pool.frontier_offsets, dtype=np.int64)
-    ends_all = offsets_all + lengths_all
-    if bool(np.any(offsets_all < 0)) or bool(np.any(lengths_all < 0)) or bool(np.any(ends_all > row_count)):
-        raise ValueError("session-box prune received a frontier outside the surface pool")
-    kept_prefix = np.empty(row_count + 1, dtype=np.int64)
-    kept_prefix[0] = 0
-    # Cast the mask straight into the prefix buffer and accumulate in place (no N-row int64 copy).
-    kept_prefix[1:] = keep
-    np.cumsum(kept_prefix[1:], out=kept_prefix[1:])
-    kept_lengths = kept_prefix[ends_all] - kept_prefix[offsets_all]
-    if bool(np.any((lengths_all > 0) & (kept_lengths <= 0))):
-        raise ValueError("session-box prune emptied a frontier -- the greedy filter must keep at least one row")
-    new_offsets = kept_prefix[offsets_all]
-    if int(kept_prefix[-1]) > int(np.iinfo(np.int32).max):
-        raise OverflowError("session-box prune compact surface pool exceeds int32 offsets")
-    # Dense-ranking the surviving pattern IDs keeps the persisted lexicographic pattern order.
-    pruned_pattern_ids = np.ascontiguousarray(pool.pattern_ids[keep], dtype=np.int32)
-    used_pattern_ids = _dense_rank_pattern_ids_inplace(pruned_pattern_ids, int(pool.pattern_words.shape[0]))
-    return dataclasses.replace(
-        bundle,
-        pool=SurfacePool(
-            frontier_offsets=np.ascontiguousarray(new_offsets, dtype=np.int32),
-            frontier_lengths=np.ascontiguousarray(kept_lengths, dtype=np.int32),
-            pattern_ids=pruned_pattern_ids,
-            pattern_words=np.ascontiguousarray(pool.pattern_words[used_pattern_ids], dtype=np.uint32),
-            counts=np.ascontiguousarray(pool.counts[keep], dtype=np.int32),
-            head_coeffs=np.ascontiguousarray(pool.head_coeffs[used_pattern_ids], dtype=np.int32),
-            head_greats=np.ascontiguousarray(pool.head_greats[used_pattern_ids], dtype=np.int32),
-        ),
-    )
 
 
 def _build_response_frontier_cache_payload(
@@ -204,7 +126,6 @@ def _scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgRespon
         raw_fill_by_ff=np.asarray(arrays["raw_fill_by_ff"], dtype=np.float64),
         non_fever_base_by_ff=np.asarray(arrays["non_fever_base_by_ff"], dtype=np.int32),
         real_time_by_ft=np.asarray(arrays["real_time_by_ft"], dtype=np.float64),
-        frontier_meta=np.asarray(arrays["frontier_meta"], dtype=np.int32),
         pool=SurfacePool(
             frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
             frontier_lengths=np.asarray(arrays["first_counts"], dtype=np.int32),

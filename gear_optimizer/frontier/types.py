@@ -32,16 +32,6 @@ class FgResponseFrontierResult:
     non_fever_base: int
 
 
-class FrontierCounts(NamedTuple):
-    """What a materialized FG row reports of the frontier it was scored on."""
-
-    first_surfaces: int
-    states_evaluated: int
-    transitions_evaluated: int
-    max_state_frontier: int
-    non_fever_base: int
-
-
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierSolveResult:
     best_score: int
@@ -50,7 +40,7 @@ class FgResponseFrontierSolveResult:
     gem_counts: dict[str, int]
     stats: dict[str, Any]
     surface: FgResponseSurface
-    frontier: FrontierCounts
+    non_fever_base: int
     raw_fever_fill: float
     real_fever_time: float
 

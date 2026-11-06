@@ -28,10 +28,7 @@ from gear_optimizer.trace.materialize import (
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
 from gear_optimizer.trace.reconstruct import UnplayableTrace
-from gear_optimizer.frontier.fg_cache import (
-    load_response_frontier_scoring_bundle,
-    session_prune_scoring_bundle,
-)
+from gear_optimizer.frontier.fg_cache import load_response_frontier_scoring_bundle
 from gear_optimizer.frontier.fg_cache_store import release_fg_response_song_memory
 from gear_optimizer.solver.fg_scoring import fg_solve_result, score_fg_base_components
 from gear_optimizer.stats import GEM_KINDS, apply_gems, gems
@@ -42,11 +39,10 @@ FG_SEARCH_BEAM_PER_GA_RUN = 1
 
 
 def prepare_fg_static(song: NativeSong) -> None:
-    """The song's FG scoring bundle, loaded and session-pruned while nothing waits on it: rows no cell this inventory
-    can reach could win are dropped (identical winners, fewer scored rows)."""
+    """The song's FG scoring bundle, loaded while nothing waits on it."""
     gpu_inputs = song.gpu_inputs
-    bundle = load_response_frontier_scoring_bundle(gpu_inputs.timed_song, gpu_inputs.curves)
-    song.runtime.fg.fg_response_scoring_bundle = session_prune_scoring_bundle(bundle, gpu_inputs.curves)
+    song.runtime.fg.fg_response_scoring_bundle = load_response_frontier_scoring_bundle(gpu_inputs.timed_song,
+                                                                                       gpu_inputs.curves)
 
 
 def fg_turn(song: NativeSong, selection: GaSelection) -> tuple[GaSelection, dict]:

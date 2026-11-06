@@ -51,10 +51,11 @@ _UNREADABLE = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZ
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's bundles only when it lists
 # that version here, after a byte gate proved the persisted bundles identical. The version history is in git.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # The 2026-11-06 producer cleanup (casts, parameter tuples, the trace kernels moved out) changed no output: the gate
-    # (16 charts) and the 40-chart sample (2,160 arrays) are identical to the ca3f853d4e52 producer's, which ratified the
-    # versions listed after it. Evidence in workspace/_rewrite_state_2026-11-05.
-    "fg-response-frontier-visible-first-v32+logic-142d750c3e01": (
+    # Taking the session prune and the trace counters out changed no frontier: the gate (16 charts) and the 40-chart
+    # sample (2,160 arrays) are identical to the 142d750c3e01 producer's, which ratified the versions listed after it.
+    # Evidence in workspace/_rewrite_state_2026-11-05.
+    "fg-response-frontier-visible-first-v32+logic-6541a5ca2637": (
+        "fg-response-frontier-visible-first-v32+logic-142d750c3e01",
         "fg-response-frontier-visible-first-v32+logic-ca3f853d4e52",
         "fg-response-frontier-visible-first-v32+logic-ef40896fb48b",
         "fg-response-frontier-visible-first-v32+logic-2653d51a312d",
@@ -132,31 +133,6 @@ def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
         except OSError:
             pass
     return removed
-
-
-_DENSE_RANK_BLOCK_ROWS = 1 << 18
-
-
-def _dense_rank_pattern_ids_inplace(ids: np.ndarray, pattern_count: int) -> np.ndarray:
-    """Rewrite in-range head-pattern IDs in place to their dense rank among the IDs present.
-
-    Returns the sorted used IDs and leaves ``ids`` equal to the int32 inverse -- exactly
-    ``np.unique(ids, return_inverse=True)`` -- via a ``pattern_count``-sized presence table instead
-    of an N-row sort. ``ids`` must be a contiguous 1-D int32 array; blocks bound the intp index
-    temporaries. Out-of-range IDs (a u32 >= 2**31 wraps negative in int32) fail loud."""
-    row_count = int(ids.shape[0])
-    used = np.zeros(int(pattern_count), dtype=np.bool_)
-    for start in range(0, row_count, _DENSE_RANK_BLOCK_ROWS):
-        block = ids[start : start + _DENSE_RANK_BLOCK_ROWS]
-        if int(block.min()) < 0 or int(block.max()) >= int(pattern_count):
-            raise ValueError("FG response surface row references an invalid head-pattern ID")
-        used[block] = True
-    dense_by_id = np.cumsum(used, dtype=np.int32)
-    dense_by_id -= 1
-    for start in range(0, row_count, _DENSE_RANK_BLOCK_ROWS):
-        block = ids[start : start + _DENSE_RANK_BLOCK_ROWS]
-        block[...] = dense_by_id[block]
-    return np.flatnonzero(used)
 
 
 def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:

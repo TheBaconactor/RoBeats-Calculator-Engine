@@ -250,7 +250,6 @@ def _timeline_trace_for_payload_surface(
         "frontier_trace": [dict(section) for section in trace],
         "response_surface": response_surface,
         "frontier_pool_index": int(pool_idx_i),
-        "frontier_first_surfaces": int(payload.grid_frontier_count[0, ft_idx, ff_idx]),
         "activation_judgment": "perfect",
         "raw_fever_fill": fever_fill_denominator,
         "fever_duration_ms": float(real_fever_time) * 1000.0,

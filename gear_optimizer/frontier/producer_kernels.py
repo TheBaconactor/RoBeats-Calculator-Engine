@@ -1412,10 +1412,9 @@ def _numba_head_basis_corner_score(basis, v, c, f, g, use_hi_c: int) -> float:
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_corner_scores(rows, terms, term_of, box):
-    """(m, 16) each surface row's relative score at the 16 corners of box (v, c, f, g, each low and high); row i's head
-    terms are terms[term_of[i]] (_numba_session_pattern_basis's b, c, d at the low and high combo)."""
-    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = box
+def _numba_head_corner_scores(rows, terms, term_of):
+    """(m, 16) each surface row's relative score at the 16 corners of the _HEAD_DOM box (v, c, f, g, each low and high);
+    row i's head terms are terms[term_of[i]] (_numba_head_pattern_basis's b, c, d at the low and high combo)."""
     m = rows.shape[0]
     scores = np.empty((m, 16), dtype=np.float64)
     for i in range(m):
@@ -1436,15 +1435,11 @@ def _numba_head_corner_scores(rows, terms, term_of, box):
             head[5],
         )
         col = 0
-        for iv in range(2):
-            v = v_lo if iv == 0 else v_hi
+        for v in _HEAD_DOM_V:
             for ic in range(2):
-                c = c_lo if ic == 0 else c_hi
-                for iff in range(2):
-                    f = f_lo if iff == 0 else f_hi
-                    for ig in range(2):
-                        g = g_lo if ig == 0 else g_hi
-                        scores[i, col] = _numba_head_basis_corner_score(basis, v, c, f, g, ic)
+                for f in _HEAD_DOM_F:
+                    for g in _HEAD_DOM_G:
+                        scores[i, col] = _numba_head_basis_corner_score(basis, v, _HEAD_DOM_C[ic], f, g, ic)
                         col += 1
     return scores
 
@@ -1522,22 +1517,12 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
             or gl != frontier[i - 1, 2]
             or gh != frontier[i - 1, 3]
         ):
-            head = _numba_session_pattern_basis(fl, fh, gl, gh, lo_pos, hi_pos, _HEAD_DOM_C[0], _HEAD_DOM_C[1])
+            head = _numba_head_pattern_basis(fl, fh, gl, gh, lo_pos, hi_pos)
             for t in range(6):
                 terms[runs, t] = head[t]
             runs += 1
         term_of[i] = runs - 1
-    box = (
-        float(_HEAD_DOM_V[0]),
-        float(_HEAD_DOM_V[1]),
-        float(_HEAD_DOM_C[0]),
-        float(_HEAD_DOM_C[1]),
-        float(_HEAD_DOM_F[0]),
-        float(_HEAD_DOM_F[1]),
-        float(_HEAD_DOM_G[0]),
-        float(_HEAD_DOM_G[1]),
-    )
-    kept_rows = _numba_cone_kept(frontier, _numba_head_corner_scores(frontier, terms, term_of, box))
+    kept_rows = _numba_cone_kept(frontier, _numba_head_corner_scores(frontier, terms, term_of))
     out = np.empty((kept_rows.shape[0], 7), dtype=np.uint64)
     for ki in range(kept_rows.shape[0]):
         out[ki] = frontier[kept_rows[ki]]
@@ -1545,14 +1530,15 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
 
 
 @njit(cache=True, nogil=True)
-def _numba_session_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int, c_lo: float, c_hi: float):
-    """Head-only portion of the session basis, shared by every row with this mask pattern."""
+def _numba_head_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int):
+    """Head-only portion of a surface's basis at the box's low and high combo, shared by every row with this mask
+    pattern."""
     lo = lo_pos
     hi = hi_pos
     hlen = hi - lo
     one = np.uint64(1)
-    k_lo = (c_lo - 1.0) / 100.0
-    k_hi = (c_hi - 1.0) / 100.0
+    k_lo = (_HEAD_DOM_C[0] - 1.0) / 100.0
+    k_hi = (_HEAD_DOM_C[1] - 1.0) / 100.0
     b_lo = 0.0
     c_lo_arr = 0.0
     d_lo = 0.0
@@ -1581,49 +1567,6 @@ def _numba_session_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int, c_lo:
             d_lo += slo
             d_hi += shi
     return b_lo, c_lo_arr, d_lo, b_hi, c_hi_arr, d_hi
-
-
-@njit(cache=True, nogil=True)
-def _numba_session_box_keep_mask(surfaces, lo_pos: int, hi_pos: int, box) -> np.ndarray:
-    """Serve-time session-box cone prune over the PACKED first-frontier pool: per frontier, the
-    same greedy 16-corner dominance-with-margin filter as `_numba_head_envelope_filter`, with the
-    corners at the SESSION's realizable stat box instead of the global _HEAD_DOM box. A dropped
-    row is dominated at every session-reachable cell (multilinear extrema at the covering box's
-    corners; the per-pair floor margin is box-independent), so the pruned pool serves the SAME
-    winner for every cell this solve can evaluate. Rows stay compact: pattern_ids (N,) selects
-    one pattern_words (P,8) uint32 head mask, while counts (N,3) carries row-local body counts.
-    The head basis is computed once per pattern rather than once per row."""
-    pattern_ids, pattern_words, counts, offsets, lengths = surfaces
-    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = box
-    total = pattern_ids.shape[0]
-    keep = np.zeros(total, dtype=np.bool_)
-    pattern_count = pattern_words.shape[0]
-    pattern_masks = np.empty((pattern_count, 4), dtype=np.uint64)
-    pattern_terms = np.empty((pattern_count, 6), dtype=np.float64)
-    for pattern_idx in range(pattern_count):
-        words = pattern_words[pattern_idx]
-        for t in range(4):
-            pattern_masks[pattern_idx, t] = np.uint64(words[2 * t]) | (np.uint64(words[2 * t + 1]) << np.uint64(32))
-        masks = pattern_masks[pattern_idx]
-        head = _numba_session_pattern_basis(masks[0], masks[1], masks[2], masks[3], lo_pos, hi_pos, c_lo, c_hi)
-        for t in range(6):
-            pattern_terms[pattern_idx, t] = head[t]
-    for frontier_idx in range(lengths.shape[0]):
-        start = int(offsets[frontier_idx])
-        length = int(lengths[frontier_idx])
-        if length > 0:
-            rows = np.empty((length, 7), dtype=np.uint64)
-            for local_idx in range(length):
-                pattern_idx = pattern_ids[start + local_idx]
-                row = rows[local_idx]
-                masks = pattern_masks[pattern_idx]
-                row[0], row[1], row[2], row[3] = masks[0], masks[1], masks[2], masks[3]
-                row_counts = counts[start + local_idx]
-                row[4], row[5], row[6] = row_counts[0], row_counts[1], row_counts[2]
-            kept_rows = _numba_cone_kept(rows, _numba_head_corner_scores(rows, pattern_terms, pattern_ids[start:], box))
-            for local_idx in kept_rows:
-                keep[start + local_idx] = True
-    return keep
 
 
 @njit(cache=True, nogil=True, inline="always")

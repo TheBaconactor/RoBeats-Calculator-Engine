@@ -73,7 +73,7 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
     song_inputs = song.fg_inputs
     trace = reconstruct_force_greats_response_trace(
         inputs=song_inputs,
-        non_fever_base=int(result.frontier.non_fever_base),
+        non_fever_base=result.non_fever_base,
         target_surface=result.surface,
         raw_fever_fill=float(result.raw_fever_fill),
         real_fever_time=float(result.real_fever_time),

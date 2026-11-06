@@ -107,7 +107,7 @@ def _decode_keep(keep_bits, kept):
         for w in range(keep_bits.shape[1]):
             x = keep_bits[key, w]
             while x:
-                combos[pos] = w * 64 + trailing_zeros(x)
+                combos[pos] = w * 64 + np.int64(trailing_zeros(x))
                 pos += 1
                 x &= x - np.uint64(1)
     return combos
@@ -195,7 +195,7 @@ def _shortlist_keep(reach, combo_index, frontier, surfaces, weights, keep_bits):
                 own_top = top - (X == xo or (X < xo and wx == wy))
                 found = (beaters[word] & low_bits[top + 1]) | (own[word] & low_bits[own_top + 1])
                 if found:
-                    beaten_up_to = max(beaten_up_to, min(63 - int(leading_zeros(found)), yo))
+                    beaten_up_to = max(beaten_up_to, min(63 - np.int64(leading_zeros(found)), yo))
                     if beaten_up_to == yo:
                         break
                 if X <= xo:

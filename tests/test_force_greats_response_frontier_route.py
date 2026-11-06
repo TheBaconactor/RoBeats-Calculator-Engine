@@ -188,14 +188,9 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         materialize_force_payload_from_response_frontier,
     )
     import gear_optimizer.trace.materialize as reducer_mod
-    from gear_optimizer.frontier.types import (
-        FgResponseFrontierSolveResult,
-        FgResponseSurface,
-        FrontierCounts,
-    )
+    from gear_optimizer.frontier.types import FgResponseFrontierSolveResult, FgResponseSurface
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    scoring_frontier = FrontierCounts(1, 1, 1, 1, 7)
     result = FgResponseFrontierSolveResult(
         best_score=1234,
         ft=1,
@@ -203,7 +198,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         gem_counts={"Perfect Points": 0},
         stats={"Fever Time": 12, "Fever Fill Rate": 34},
         surface=surface,
-        frontier=scoring_frontier,
+        non_fever_base=7,
         raw_fever_fill=1.0,
         real_fever_time=2.0,
     )
@@ -245,12 +240,11 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         perfect_time=0,
     )
 
-    assert seen["non_fever_base"] == scoring_frontier.non_fever_base
+    assert seen["non_fever_base"] == 7
     assert payload["BaseScore"] == 1000
     assert [row["forced_count"] for row in payload["ForceGreats"]["frontier_trace"]] == [1, 0, 1]
     assert payload["Score"] == 1230
     assert payload["ForceGreats"]["final_score"] == 1230
-    assert payload["ForceGreats"]["frontier_states"] == 1
     assert payload["ForceGreats"]["non_fever_base"] == 7
     assert second_payload["ForceGreats"]["frontier_trace"] == payload["ForceGreats"]["frontier_trace"]
     assert seen["reconstruct_calls"] == 1
@@ -265,11 +259,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         materialize_force_payload_from_response_frontier,
     )
     import gear_optimizer.trace.materialize as reducer_mod
-    from gear_optimizer.frontier.types import (
-        FgResponseFrontierSolveResult,
-        FgResponseSurface,
-        FrontierCounts,
-    )
+    from gear_optimizer.frontier.types import FgResponseFrontierSolveResult, FgResponseSurface
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     result = FgResponseFrontierSolveResult(
@@ -279,7 +269,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         gem_counts={"Perfect Points": 0},
         stats={"Fever Time": 12, "Fever Fill Rate": 34},
         surface=surface,
-        frontier=FrontierCounts(1, 1, 1, 1, 7),
+        non_fever_base=7,
         raw_fever_fill=1.0,
         real_fever_time=2.0,
     )
@@ -320,10 +310,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     import gear_optimizer.trace.materialize as reducer_mod
     from gear_optimizer.frontier.producer_batch import action_table
     from tests.fg_response_frontier_oracles import edge_surface_option_details
-    from gear_optimizer.frontier.types import (
-        FgResponseFrontierSolveResult,
-        FrontierCounts,
-    )
+    from gear_optimizer.frontier.types import FgResponseFrontierSolveResult
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
     perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
@@ -359,7 +346,6 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         if row["activation_judgment"] == "late_great"
     )
     surface = response_surface(target_option["surface"])
-    frontier = FrontierCounts(1, 1, 1, 1, non_fever_base)
     result = FgResponseFrontierSolveResult(
         best_score=4321,
         ft=1,
@@ -367,7 +353,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         gem_counts={"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 1},
         stats={"Perfect Points": 1, "Rush": 10, "Fever Time": 3, "Fever Fill Rate": 4},
         surface=surface,
-        frontier=frontier,
+        non_fever_base=non_fever_base,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
     )

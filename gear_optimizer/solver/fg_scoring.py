@@ -86,7 +86,7 @@ def fg_solve_result(
         stats=apply_gems(base_stats, gems(pp=pp, cm=cm, fm=fm, ft=score_row.ft, ff=score_row.ff, element=element),
                          str(selected_color or "")),
         surface=FgResponseSurface(*score_row.surface),
-        frontier=scoring_bundle.frontier_counts(score_row.ft_stat, score_row.ff_stat),
+        non_fever_base=int(scoring_bundle.non_fever_base_by_ff[score_row.ff_stat]),
         raw_fever_fill=float(scoring_bundle.raw_fill_by_ff[score_row.ff_stat]),
         real_fever_time=float(scoring_bundle.real_time_by_ft[score_row.ft_stat]),
     )

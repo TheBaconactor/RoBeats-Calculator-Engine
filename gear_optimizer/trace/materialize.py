@@ -35,7 +35,6 @@ def materialize_force_payload_from_response_frontier(
 ) -> dict[str, Any]:
     if paired_base_score <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
-    frontier = result.frontier
     song_inputs = song.fg_inputs
     surface = result.surface
     # The frontier plans against the fill threshold (result.raw_fever_fill); the replay and the persisted trace use the
@@ -52,7 +51,7 @@ def materialize_force_payload_from_response_frontier(
     # fix the action table and the replay, and Perfect Time: it fixes the hit windows the replay plays. A trace is validated
     # once, before it enters the cache: a repeat would add no independent check.
     trace_key = (
-        frontier.non_fever_base,
+        result.non_fever_base,
         tuple(surface),
         fever_fill_denominator,
         result.real_fever_time,
@@ -63,7 +62,7 @@ def materialize_force_payload_from_response_frontier(
     if base_trace is None:
         base_trace = reconstruct_force_greats_response_trace(
             inputs=song_inputs,
-            non_fever_base=frontier.non_fever_base,
+            non_fever_base=result.non_fever_base,
             target_surface=surface,
             raw_fever_fill=result.raw_fever_fill,
             real_fever_time=result.real_fever_time,
@@ -100,10 +99,6 @@ def materialize_force_payload_from_response_frontier(
             "raw_fever_fill": fever_fill_denominator,
             "real_fever_time": result.real_fever_time,
             "frontier_trace": [dict(row) for row in base_trace],
-            "frontier_first_surfaces": frontier.first_surfaces,
-            "frontier_states": frontier.states_evaluated,
-            "frontier_max_state": frontier.max_state_frontier,
-            "frontier_transitions": frontier.transitions_evaluated,
-            "non_fever_base": frontier.non_fever_base,
+            "non_fever_base": result.non_fever_base,
         },
     }

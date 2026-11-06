@@ -9,7 +9,7 @@ import numpy as np
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 
-from .types import FgResponseFrontierResult, FrontierCounts, SurfacePool
+from .types import FgResponseFrontierResult, SurfacePool
 
 # The FG response-frontier cache version: a hand-kept base version plus a fingerprint (an AST digest, see
 # logic_fingerprint.py) of every module that co-determines the cached bundles (_FG_DP_SOURCES), so a logic change there
@@ -106,20 +106,14 @@ class FgResponseFrontierCachePayload:
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierScoringBundle:
     """A bundle file as the gem search reads it: `frontier_idx_by_stat` is -1 at a stat key the file does not hold, and
-    `pool` holds its surfaces, or only the rows a session prune kept."""
+    `pool` holds its surfaces."""
 
     cache_key: tuple
     frontier_idx_by_stat: np.ndarray
     raw_fill_by_ff: np.ndarray
     non_fever_base_by_ff: np.ndarray
     real_time_by_ft: np.ndarray
-    frontier_meta: np.ndarray
     pool: SurfacePool
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool
-
-    def frontier_counts(self, ft_stat: int, ff_stat: int) -> FrontierCounts:
-        frontier = self.frontier_idx_by_stat[ft_stat, ff_stat]
-        states, _actions, transitions, _generated, _retained, max_state, non_fever_base = self.frontier_meta[frontier].tolist()
-        return FrontierCounts(int(self.pool.frontier_lengths[frontier]), states, transitions, max_state, non_fever_base)
