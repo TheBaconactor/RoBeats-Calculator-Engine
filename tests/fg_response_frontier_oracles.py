@@ -48,6 +48,13 @@ def build_activation_reachability_context(
     )
 
 
+def response_surface(edge) -> FgResponseSurface:
+    """A section's reconstruction edge as the frontier's response surface."""
+    words = [(edge.fever >> (32 * word)) & 0xFFFFFFFF for word in range(4)]
+    words += [(edge.great >> (32 * word)) & 0xFFFFFFFF for word in range(4)]
+    return FgResponseSurface(*words, edge.body_fever, edge.body_great, edge.body_fever_great)
+
+
 def _combine_surfaces(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
     return FgResponseSurface(
         int(edge.fever0 | tail.fever0),
@@ -313,7 +320,7 @@ def input_engine_rebuild_first_frontier(
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
         ):
-            edge = option["surface"]
+            edge = response_surface(option["surface"])
             next_state = int(option["next_state"])
             if next_state <= int(state):
                 raise ValueError("response test oracle emitted a non-advancing section")

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from gear_optimizer.core.timing_modes import PRECISE
+from tests.fg_response_frontier_oracles import response_surface
 from tests.fg_song_inputs import fg_song_inputs
 
 
@@ -102,7 +103,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     note_types = np.ones(n, dtype=np.int16)
     edge_options_cache = FgTraceEdgeOptionsCache()
     for opt in options:
-        surface = opt["surface"]
+        surface = response_surface(opt["surface"])
         try:
             trace = reconstruct_force_greats_response_trace(
                 inputs=fg_song_inputs(

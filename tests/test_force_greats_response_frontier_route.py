@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from tests.fg_cache_support import surface_frontier
+from tests.fg_response_frontier_oracles import response_surface
 
 from gear_optimizer.gamedata import stat_curves
 
@@ -206,7 +207,7 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
         raw_fever_fill=1.0,
         real_fever_time=2.0,
     )
-    seen = {"reconstruct_calls": 0, "validate_calls": 0}
+    seen = {"reconstruct_calls": 0, "physical_calls": 0}
 
     def _fake_reconstruct_trace(**kwargs):
         seen["reconstruct_calls"] += 1
@@ -216,13 +217,8 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
     monkeypatch.setattr(reducer_mod, "reconstruct_force_greats_response_trace", _fake_reconstruct_trace)
     monkeypatch.setattr(
         reducer_mod,
-        "_assert_trace_hit_time_reachable",
-        lambda *_args, **_kwargs: seen.__setitem__("validate_calls", seen["validate_calls"] + 1),
-    )
-    monkeypatch.setattr(
-        reducer_mod,
         "validate_force_greats_physical_replay",
-        lambda **_kwargs: seen.__setitem__("physical_calls", seen.get("physical_calls", 0) + 1),
+        lambda **_kwargs: seen.__setitem__("physical_calls", seen["physical_calls"] + 1),
     )
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
@@ -258,7 +254,6 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
     assert payload["ForceGreats"]["non_fever_base"] == 7
     assert second_payload["ForceGreats"]["frontier_trace"] == payload["ForceGreats"]["frontier_trace"]
     assert seen["reconstruct_calls"] == 1
-    assert seen["validate_calls"] == 1
     assert seen["physical_calls"] == 1
 
 
@@ -299,7 +294,6 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         "validate_force_greats_physical_replay",
         lambda **_kwargs: None,
     )
-    monkeypatch.setattr(reducer_mod, "_assert_trace_hit_time_reachable", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = materialize_force_payload_from_response_frontier(
@@ -364,7 +358,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         )
         if row["activation_judgment"] == "late_great"
     )
-    surface = target_option["surface"]
+    surface = response_surface(target_option["surface"])
     frontier = FrontierCounts(1, 1, 1, 1, non_fever_base)
     result = FgResponseFrontierSolveResult(
         best_score=4321,

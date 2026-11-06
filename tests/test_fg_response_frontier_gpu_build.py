@@ -56,6 +56,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         _edge_surface,
     )
     from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
+    from tests.fg_response_frontier_oracles import response_surface
 
     n = int(timestamps.shape[0])
     lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
@@ -143,18 +144,18 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         )
         activation_great_idx = int(activation_index) if bool(activation_great) else -1
         surfaces.append(
-            _edge_surface(
+            response_surface(_edge_surface(
                 n=n,
                 fever_start=int(activation_index),
                 fever_end=int(fever_end),
                 great_start=int(great_start),
                 great_end=int(great_end),
                 activation_great_idx=int(activation_great_idx),
-            )
+            ))
         )
         for early_great_end in range(int(fever_end) + 1, _great_floor_end(float(start_time), int(activation_index)) + 1):
             surfaces.append(
-                _edge_surface(
+                response_surface(_edge_surface(
                     n=n,
                     fever_start=int(activation_index),
                     fever_end=int(early_great_end),
@@ -163,7 +164,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
                     activation_great_idx=int(activation_great_idx),
                     early_great_start=int(fever_end),
                     early_great_end=int(early_great_end),
-                )
+                ))
             )
 
     def _edge_surfaces(state: int, first: bool) -> tuple:
@@ -2376,6 +2377,7 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
         reconstruct_force_greats_response_trace,
     )
     from gear_optimizer.frontier.types import FgResponseSurface
+    from tests.fg_response_frontier_oracles import response_surface
 
     def _combine_surface(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
         return FgResponseSurface(
@@ -2486,7 +2488,7 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
                 and int(option.get("early_great_start", -1)) == int(row.get("early_great_start", -1))
                 and int(option.get("early_great_end", -1)) == int(row.get("early_great_end", -1))
             ):
-                edge_match = (int(option["next_state"]), option["surface"])
+                edge_match = (int(option["next_state"]), response_surface(option["surface"]))
                 break
         assert edge_match is not None
         state, edge = edge_match

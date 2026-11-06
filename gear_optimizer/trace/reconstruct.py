@@ -113,42 +113,55 @@ def _edge_end_at_hit(
     return int(e), float(start_time), int(carry_idx)
 
 
-def _range_head_mask(start: int, end: int, *, n: int) -> tuple[int, int, int, int]:
-    start_i = max(0, min(int(start), int(n), 100))
-    end_i = max(0, min(int(end), int(n), 100))
-    words = [0, 0, 0, 0]
-    if end_i <= start_i:
-        return 0, 0, 0, 0
-    for word_idx in range(4):
-        lo = word_idx * 32
-        hi = min(lo + 32, 100)
-        a = max(start_i, lo)
-        b = min(end_i, hi)
-        if b <= a:
-            continue
-        width = b - a
-        words[word_idx] = ((1 << width) - 1) << (a - lo)
-    return int(words[0]), int(words[1]), int(words[2]), int(words[3])
+def _head_mask(start: int, end: int, n: int) -> int:
+    """Bit i for each head note i in [start, end)."""
+    lo, hi = max(0, min(start, n, 100)), max(0, min(end, n, 100))
+    return ((1 << (hi - lo)) - 1) << lo if hi > lo else 0
 
 
-def _range_body_count(start: int, end: int, *, n: int) -> int:
-    return max(0, min(int(end), int(n)) - max(int(start), 100))
+def _body_count(start: int, end: int, n: int) -> int:
+    return max(0, min(end, n) - max(start, 100))
 
 
-def _range_body_overlap_count(first_start: int, first_end: int, second_start: int, second_end: int, *, n: int) -> int:
-    start = max(int(first_start), int(second_start), 100)
-    end = min(int(first_end), int(second_end), int(n))
-    return max(0, int(end) - int(start))
+def _body_overlap(first_start: int, first_end: int, second_start: int, second_end: int, n: int) -> int:
+    return max(0, min(first_end, second_end, n) - max(first_start, second_start, 100))
 
 
-def _single_head_mask(idx: int, *, n: int) -> tuple[int, int, int, int]:
-    idx_i = int(idx)
-    if idx_i < 0 or idx_i >= min(int(n), 100):
-        return 0, 0, 0, 0
-    words = [0, 0, 0, 0]
-    word_idx = idx_i // 32
-    words[word_idx] = 1 << (idx_i % 32)
-    return int(words[0]), int(words[1]), int(words[2]), int(words[3])
+class _Edge(NamedTuple):
+    """A section's response surface: its head's fever and Great notes as bit masks, and its body counts."""
+
+    fever: int
+    great: int
+    body_fever: int
+    body_great: int
+    body_fever_great: int
+
+
+def _edge_of_surface(surface: FgResponseSurface) -> _Edge:
+    fever = great = 0
+    for word in range(4):
+        fever |= surface[word] << (32 * word)
+        great |= surface[4 + word] << (32 * word)
+    return _Edge(fever, great, surface.body_fever, surface.body_great, surface.body_fever_great)
+
+
+def _subtract_edge(remaining: _Edge, edge: _Edge) -> _Edge | None:
+    """The surface left after an edge; None when the edge does not fit."""
+    if (
+        edge.fever & ~remaining.fever
+        or edge.great & ~remaining.great
+        or edge.body_fever > remaining.body_fever
+        or edge.body_great > remaining.body_great
+        or edge.body_fever_great > remaining.body_fever_great
+    ):
+        return None
+    return _Edge(
+        remaining.fever & ~edge.fever,
+        remaining.great & ~edge.great,
+        remaining.body_fever - edge.body_fever,
+        remaining.body_great - edge.body_great,
+        remaining.body_fever_great - edge.body_fever_great,
+    )
 
 
 def _edge_surface(
@@ -161,47 +174,23 @@ def _edge_surface(
     activation_great_idx: int = -1,
     early_great_start: int = -1,
     early_great_end: int = -1,
-) -> FgResponseSurface:
-    f0, f1, f2, f3 = _range_head_mask(fever_start, fever_end, n=int(n))
-    g0, g1, g2, g3 = _range_head_mask(great_start, great_end, n=int(n))
-    if int(activation_great_idx) >= 0:
-        a0, a1, a2, a3 = _single_head_mask(int(activation_great_idx), n=int(n))
-        g0 |= a0
-        g1 |= a1
-        g2 |= a2
-        g3 |= a3
-    body_great = _range_body_count(great_start, great_end, n=int(n))
-    body_fever_great = _range_body_overlap_count(fever_start, fever_end, great_start, great_end, n=int(n))
-    if int(activation_great_idx) >= max(100, int(fever_start)) and int(activation_great_idx) < min(int(fever_end), int(n)):
-        if int(activation_great_idx) < int(great_start) or int(activation_great_idx) >= int(great_end):
-            body_great += 1
-            body_fever_great += 1
-    # Issue #44 early-Great tail [early_great_start, early_great_end): boundary notes pulled into
-    # fever ONLY as Greats. In-fever-and-Great, disjoint from the forced-Great prefix, so OR into
-    # the Great mask and add to both body_great and body_fever_great.
-    if int(early_great_end) > int(early_great_start):
-        e0, e1, e2, e3 = _range_head_mask(int(early_great_start), int(early_great_end), n=int(n))
-        g0 |= e0
-        g1 |= e1
-        g2 |= e2
-        g3 |= e3
-        body_great += _range_body_count(int(early_great_start), int(early_great_end), n=int(n))
-        body_fever_great += _range_body_overlap_count(
-            fever_start, fever_end, int(early_great_start), int(early_great_end), n=int(n)
-        )
-    return FgResponseSurface(
-        f0,
-        f1,
-        f2,
-        f3,
-        g0,
-        g1,
-        g2,
-        g3,
-        _range_body_count(fever_start, fever_end, n=int(n)),
-        int(body_great),
-        int(body_fever_great),
-    )
+) -> _Edge:
+    great = _head_mask(great_start, great_end, n)
+    if 0 <= activation_great_idx < min(n, 100):
+        great |= 1 << activation_great_idx
+    body_great = _body_count(great_start, great_end, n)
+    body_fever_great = _body_overlap(fever_start, fever_end, great_start, great_end, n)
+    if max(100, fever_start) <= activation_great_idx < min(fever_end, n) and not great_start <= activation_great_idx < great_end:
+        body_great += 1
+        body_fever_great += 1
+    # Issue #44 early-Great tail [early_great_start, early_great_end): boundary notes pulled into fever only as Greats:
+    # in fever and Great, disjoint from the forced-Great prefix.
+    if early_great_end > early_great_start:
+        great |= _head_mask(early_great_start, early_great_end, n)
+        body_great += _body_count(early_great_start, early_great_end, n)
+        body_fever_great += _body_overlap(fever_start, fever_end, early_great_start, early_great_end, n)
+    return _Edge(_head_mask(fever_start, fever_end, n), great, _body_count(fever_start, fever_end, n), body_great,
+                 body_fever_great)
 
 
 def _trace_timing_fields(
@@ -1045,22 +1034,6 @@ def _option_with_witness(
     }
 
 
-def _empty(words: tuple[int, ...]) -> bool:
-    return not any(int(value) for value in words)
-
-
-def _subtract_edge(words: tuple[int, ...], edge: FgResponseSurface) -> tuple[int, ...] | None:
-    """The surface words left after an edge's (head bits and body counts); None when the edge does not fit."""
-    edge_values = tuple(int(value) for value in edge)
-    if any(edge_values[idx] & ~words[idx] for idx in range(8)) or any(
-        edge_values[idx] > words[idx] for idx in range(8, 11)
-    ):
-        return None
-    return tuple(words[idx] & ~edge_values[idx] for idx in range(8)) + tuple(
-        words[idx] - edge_values[idx] for idx in range(8, 11)
-    )
-
-
 def reconstruct_force_greats_response_trace(
     *,
     inputs: FGSongInputs,
@@ -1093,7 +1066,6 @@ def reconstruct_force_greats_response_trace(
         use_forced_great_timing=bool(use_forced_great_timing),
     )
 
-    target_words = tuple(int(value) for value in target_surface)
     # The ordered edge list is independent of the target surface, so the up-to-51 surfaces of one song reuse it.
     shared_edge_options = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
     edge_cache_prefix = (
@@ -1103,10 +1075,10 @@ def reconstruct_force_greats_response_trace(
         bool(use_forced_great_timing),
     )
 
-    memo: set[tuple[int, bool, tuple[int, ...]]] = set()
+    memo: set[tuple[int, bool, _Edge]] = set()
     unplayable: list[UnplayableTrace] = []
 
-    def _accepted_section(option: dict[str, Any], edge: FgResponseSurface) -> dict[str, Any]:
+    def _accepted_section(option: dict[str, Any], edge: _Edge) -> dict[str, Any]:
         # The centered witness is computed only here — for sections accepted
         # into the final trace — not for every option the DFS explores.
         section = dict(
@@ -1125,8 +1097,8 @@ def reconstruct_force_greats_response_trace(
         section["body_fever_great"] = int(edge.body_fever_great)
         return section
 
-    def _search(state: int, first: bool, remaining: tuple[int, ...]) -> tuple[dict[str, Any], ...] | None:
-        if _empty(remaining):
+    def _search(state: int, first: bool, remaining: _Edge) -> tuple[dict[str, Any], ...] | None:
+        if not any(remaining):
             return ()
         key = (int(state), bool(first), remaining)
         if key in memo:
@@ -1139,7 +1111,7 @@ def reconstruct_force_greats_response_trace(
             next_remaining = _subtract_edge(remaining, edge)
             if next_remaining is None:
                 return False
-            if _empty(next_remaining):
+            if not any(next_remaining):
                 tail = ()
             elif int(option["next_state"]) >= int(n):
                 return False
@@ -1178,7 +1150,7 @@ def reconstruct_force_greats_response_trace(
         memo.add(key)
         return None
 
-    trace = _search(0, True, target_words)
+    trace = _search(0, True, _edge_of_surface(target_surface))
     if trace is None and unplayable:
         raise unplayable[0]
     if trace is None:

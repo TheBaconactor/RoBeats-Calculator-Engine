@@ -1,7 +1,6 @@
 """Exact activation witnesses: the notes a full-combo play hits before a fever activation, lane by lane.
 
-The FG trace reconstruction (reconstruct) and the FG persist guard (reducer) ask one question of a concrete
-Perfect/Great label stream: hit at ``activation_hit_timestamp``, can ``activation_index`` be the note whose own fill
+The FG trace reconstruction (reconstruct) asks one question of a concrete Perfect/Great label stream: hit at ``activation_hit_timestamp``, can ``activation_index`` be the note whose own fill
 takes the bar to full, with every note hit inside its label's window and full combo in chart order on every lane?
 The witnesses are the answer (none: the activation is unreachable). The frontier producer and its caches never read
 this module.
@@ -136,8 +135,8 @@ class ActivationScheduleWitness:
 
 
 class _Section:
-    """One activation's question over the section [start, n): each note's hit bands as Python floats (the loops read
-    one note at a time), the activation hit, and the clocks the section's inputs start from."""
+    """One activation's question over the notes [start, end): each note's hit bands as Python floats (the loops read one
+    note at a time), the activation hit, and the clocks the section's inputs start from."""
 
     __slots__ = (
         "start", "activation", "hit", "first_clock", "head_clock", "half_units", "primary_ok", "primary_low",
@@ -149,11 +148,12 @@ class _Section:
         labels: LabelHitIntervals,
         *,
         start: int,
+        end: int,
         activation: int,
         hit: float,
         first_clock: float,
     ) -> None:
-        part = slice(start, None)
+        part = slice(start, end)
         primary_low = labels.primary_low[part].astype(np.float64)
         primary_high = labels.primary_high[part].astype(np.float64)
         secondary_low = labels.secondary_low[part].astype(np.float64)
@@ -221,9 +221,6 @@ class _Section:
         The activation lane has one prefix, the notes before the activation. Another lane must consume every note whose
         windows close before the activation hit and none whose windows open after it.
         """
-        # Producer state that cannot realize full combo in its own lane order is a bug, not an unreachable activation.
-        if self.walk(notes, self.first_clock, np.inf) is None:
-            raise ValueError("lane label windows cannot realize chart-order full combo")
         prefix_half = [0]
         for note in notes:
             prefix_half.append(prefix_half[-1] + self.half_units[note - self.start])
@@ -374,9 +371,14 @@ def activation_schedule_witnesses(
     if not start <= a < n:
         raise ValueError("activation_index must be inside [section_start, note count)")
     h_a = np.float32(activation_hit_timestamp)
+    # The notes that open after the hit, and every note after them, are out of the question: no prefix reaches them, and
+    # their windows cannot close before the hit. The head stays whole, its notes are counted against the signature.
+    opens_after = np.minimum.accumulate(np.minimum(labels.primary_low, labels.secondary_low)[::-1])[::-1]
+    end = max(a + 1, min(n, _HEAD_NOTES), int(np.searchsorted(opens_after, h_a, side="right")))
     section = _Section(
         labels,
         start=start,
+        end=end,
         activation=a,
         hit=float(h_a),
         first_clock=-np.inf if predecessor_hit_timestamp is None else float(predecessor_hit_timestamp),
@@ -392,12 +394,11 @@ def activation_schedule_witnesses(
         if section.head_clock is None:
             return ()
 
-    by_lane: dict[int, list[int]] = {}
-    for note, lane in enumerate(lane_values[start:].tolist(), start):
-        notes = by_lane.get(lane)
-        if notes is None:
-            by_lane[lane] = notes = []
-        notes.append(note)
+    # Every lane of the section, in order of its first note: a lane that plays nothing before the hit has an empty prefix.
+    section_lanes, first_notes = np.unique(lane_values[start:], return_index=True)
+    by_lane: dict[int, list[int]] = {int(section_lanes[i]): [] for i in np.argsort(first_notes)}
+    for note, lane in enumerate(lane_values[start:end].tolist(), start):
+        by_lane[lane].append(note)
     lanes_in_order = list(by_lane.items())
     activation_lane = int(lane_values[a])
     options = []

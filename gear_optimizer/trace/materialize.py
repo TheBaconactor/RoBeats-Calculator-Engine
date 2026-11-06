@@ -3,17 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-
 from gear_optimizer.solver.timing_envelope import TimedSong, fever_fill_denominators
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.frontier.types import FgResponseFrontierSolveResult
-from gear_optimizer.trace.activation_witness import (
-    activation_schedule_witnesses,
-    exact_label_hit_intervals,
-)
 from gear_optimizer.trace.reconstruct import FgTraceEdgeOptionsCache, reconstruct_force_greats_response_trace
 
 
@@ -26,64 +20,6 @@ class FgTraceMaterializationCache:
 
     traces: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
     edge_options: FgTraceEdgeOptionsCache = field(default_factory=FgTraceEdgeOptionsCache)
-
-
-def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_fill: float) -> None:
-    """FAIL LOUD if a persisted activation is not input-engine reachable.
-
-    This is the persistence-side invariant for the canonical owner: the activation clock and drain
-    window must be produced by the same weighted, lane-aware hit-time walk the surface prices. It never
-    mutates the surface; a rejection here means the producer emitted a phantom surface and must be fixed.
-    """
-    ts = np.asarray(song_inputs.timestamps, dtype=np.float32).reshape(-1)
-    pc = np.asarray(song_inputs.perfect_candidates, dtype=np.float32).reshape(-1)
-    gc = np.asarray(song_inputs.great_candidates, dtype=np.float32).reshape(-1)
-    pf = np.asarray(song_inputs.perfect_floor, dtype=np.float32).reshape(-1)
-    gf = np.asarray(song_inputs.great_floor, dtype=np.float32).reshape(-1)
-    lanes = np.asarray(song_inputs.lanes, dtype=np.int32).reshape(-1)
-    n = int(ts.shape[0])
-    if any(int(arr.shape[0]) != n for arr in (pc, gc, pf, gf, lanes)):
-        raise ValueError("FG persist guard: timing arrays and lanes must match timestamps")
-
-    for row in frontier_trace:
-        a = int(row["activation_index"])
-        if not (0 <= a < n):
-            continue
-        section_start = max(0, int(row["forced_start_index"]))
-        forced_start = max(0, int(row["forced_run_start_index"]))
-        forced_count = max(0, int(row["forced_run_count"]))
-        forced_end = min(n, forced_start + forced_count)
-        is_great = np.zeros((n,), dtype=np.bool_)
-        if forced_end > forced_start:
-            is_great[forced_start:forced_end] = True
-        if str(row.get("activation_judgment")) == "late_great":
-            is_great[a] = True
-        labels = exact_label_hit_intervals(
-            is_great=is_great,
-            timestamps=ts,
-            perfect_floor_timestamps=pf,
-            perfect_candidate_timestamps=pc,
-            great_floor_timestamps=gf,
-            great_candidate_timestamps=gc,
-        )
-        h_a = float(row.get("activation_hit_window_upper_ms", float(labels.primary_high[a]) * 1000.0)) / 1000.0
-        if not activation_schedule_witnesses(
-            labels=labels,
-            lanes=lanes,
-            activation_index=a,
-            activation_hit_timestamp=h_a,
-            fever_fill_denom=float(raw_fever_fill),
-            section_start=section_start,
-            predecessor_hit_timestamp=(
-                None if int(section_start) == 0 else float(pf[int(section_start) - 1])
-            ),
-        ):
-            raise ValueError(
-                f"FG persist guard: activation @{a} (section {row.get('section')}, "
-                f"judgment={row.get('activation_judgment')}) is not reachable under the weighted, "
-                f"lane-aware input-engine owner. The frontier build must foreclose this; a trace "
-                f"reaching persistence with it is a producer regression, not a persist fixup."
-            )
 
 
 def materialize_force_payload_from_response_frontier(
@@ -133,7 +69,6 @@ def materialize_force_payload_from_response_frontier(
             real_fever_time=result.real_fever_time,
             edge_options_cache=trace_cache.edge_options,
         )
-        _assert_trace_hit_time_reachable(base_trace, song_inputs, raw_fever_fill=result.raw_fever_fill)
         validate_force_greats_physical_replay(
             frontier_trace=base_trace,
             surface=surface,
