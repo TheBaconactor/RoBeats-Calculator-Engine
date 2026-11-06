@@ -16,7 +16,7 @@ def _load_case(chart_path: Path):
 
 def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) -> None:
     """Issue #154: physical engine semantics must own the surface before Pareto reduction."""
-    from gear_optimizer.trace.note_graph import timeline_frontier_note_graph
+    from tests.trace_support import timeline_frontier_note_graph
     from gear_optimizer.trace.physical_replay import (
         validate_base_physical_replay,
     )

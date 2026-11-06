@@ -1,7 +1,7 @@
 """Bit-exactness guards for the numba-fied FG physical-replay pass.
 
 ``validate_force_greats_physical_replay`` runs its per-note judgment check, event-time accumulation,
-lane-cursor scan and the game's event-time fever bar in ``_force_greats_replay_kernel`` (numba, nogil).
+lane-cursor scan and the game's event-time fever bar in ``_replay_kernel`` (numba, nogil).
 These tests pin the kernel to a Python golden reference (the judgment and the fever walk below, written from
 SPUtil.timedelta_to_result and PlayerScore's powerbar), and pin the wrapper's fail-loud messages byte-for-byte.
 """
@@ -27,7 +27,7 @@ from gear_optimizer.trace.physical_replay import (
     _REPLAY_ERR_LANE,
     _REPLAY_OK,
     _RESULT_CODE,
-    _force_greats_replay_kernel,
+    _replay_kernel,
     _judgment_code,
     validate_force_greats_physical_replay,
 )
@@ -140,7 +140,7 @@ def _run_kernel(delta_ms, hit_time_ms, input_order, expected_code, expected_feve
     n = len(delta_ms)
     event_order = np.empty(n, dtype=np.int64)
     replay_fever = np.empty(n, dtype=np.int8)
-    status, a, b = _force_greats_replay_kernel(
+    status, a, b = _replay_kernel(
         np.asarray(delta_ms, dtype=np.float64),
         np.asarray(hit_time_ms, dtype=np.float64),
         np.asarray(input_order, dtype=np.int64),
@@ -152,6 +152,7 @@ def _run_kernel(delta_ms, hit_time_ms, input_order, expected_code, expected_feve
         float(duration),
         event_order,
         replay_fever,
+        True,
     )
     return int(status), int(a), int(b), event_order, replay_fever
 
@@ -318,16 +319,6 @@ def test_wrapper_judgment_mismatch_message(monkeypatch):
     ]
     _install_graph(monkeypatch, graph)
     with pytest.raises(ValueError, match=r"FG physical replay note 1 judges Perfect, expected Great at 0\.000000ms"):
-        _call(graph, note_types=[1, 1], lanes=[0, 1])
-
-
-def test_wrapper_missing_delta_message(monkeypatch):
-    graph = [
-        {"delta_ms": 0.0, "note_result": "Perfect", "hit_time_ms": 0.0, "input_order": 0, "fever": False},
-        {"delta_ms": None, "note_result": "Perfect", "hit_time_ms": 100.0, "input_order": 1, "fever": False},
-    ]
-    _install_graph(monkeypatch, graph)
-    with pytest.raises(ValueError, match=r"FG physical replay note 1 has no canonical timing witness"):
         _call(graph, note_types=[1, 1], lanes=[0, 1])
 
 

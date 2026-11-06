@@ -8,7 +8,7 @@ no GPU) so the behavior is pinned independently of the WebPort replay fixture. C
 
 import numpy as np
 
-from gear_optimizer.trace.note_graph import timeline_frontier_note_graph
+from tests.trace_support import timeline_frontier_note_graph
 
 
 def _trace(activation_index, fever_end_index, cutoff_ms, *, section=1):

@@ -15,89 +15,16 @@ from gear_optimizer.core.timing_modes import PRECISE
 from tests.fg_song_inputs import fg_song_inputs
 
 
-def _exact_force_greats_note_graph(
-    *,
-    frontier_trace,
-    total_notes,
-    timestamps,
-    note_types=None,
-    lanes=None,
-    timing_mode="precise",
-    **kwargs,
-):
-    """Give hand-authored fixtures the same schema-v1 schedule as canonical reconstruction."""
-    from gear_optimizer.trace.note_graph import (
-        force_greats_note_graph as production_force_greats_note_graph,
-    )
+from gear_optimizer.solver.timing_envelope import judgment_bounds
+from gear_optimizer.trace import note_graph as production
+from tests.trace_support import force_greats_note_graph as _exact_force_greats_note_graph
+from tests.trace_support import plan_of, stored_sections, timeline_frontier_note_graph
 
-    n = int(total_notes)
-    timestamp_arr = np.asarray(timestamps, dtype=np.float64).reshape(-1)
-    lane_arr = (
-        np.arange(n, dtype=np.int32)
-        if lanes is None
-        else np.asarray(lanes, dtype=np.int32).reshape(-1)
-    )
-    exact_trace = []
-    for source in frontier_trace:
-        row = dict(source)
-        activation = int(row["activation_index"])
-        section_start = int(row["forced_start_index"])
-        forced_start = int(row["forced_run_start_index"])
-        forced_count = int(row["forced_run_count"])
-        order = tuple(range(section_start, activation))
-        great_count = sum(
-            1 for index in order if forced_start <= int(index) < forced_start + forced_count
-        )
-        lane_counts: dict[int, int] = {}
-        lane_order: list[int] = []
-        for index in range(section_start, n):
-            lane_id = int(lane_arr[index])
-            if lane_id not in lane_counts:
-                lane_counts[lane_id] = 0
-                lane_order.append(lane_id)
-            if index < activation:
-                lane_counts[lane_id] += 1
-        row.update(
-            {
-                "activation_schedule_schema_version": 1,
-                "preactivation_order": list(order),
-                "preactivation_lane_prefixes": [
-                    {"lane": int(lane_id), "count": int(lane_counts[lane_id])}
-                    for lane_id in lane_order
-                ],
-                "preactivation_fill_half_units": 2 * len(order) - int(great_count),
-                "preactivation_event_count": len(order),
-                "preactivation_great_count": int(great_count),
-            }
-        )
-        activation_hit_ms = float(timestamp_arr[activation]) * 1000.0 + float(
-            row.get("activation_hit_offset_ms", 0.0) or 0.0
-        )
-        if row.get("fever_window_end_ms") is None:
-            fever_end = int(row.get("fever_end_index", n))
-            if 0 <= fever_end < n:
-                cutoff_ms = float(timestamp_arr[fever_end]) * 1000.0
-            else:
-                cutoff_ms = max(
-                    float(activation_hit_ms) + 1.0,
-                    float(timestamp_arr[-1]) * 1000.0 + 1000.0,
-                )
-            row["fever_window_end_ms"] = float(cutoff_ms)
-        row.setdefault(
-            "fever_duration_ms",
-            float(row["fever_window_end_ms"]) - float(activation_hit_ms),
-        )
-        exact_trace.append(row)
-    return production_force_greats_note_graph(
-        frontier_trace=exact_trace,
-        total_notes=n,
-        timestamps=timestamps,
-        note_types=note_types,
-        lanes=lane_arr,
-        timing_mode=timing_mode,
-        perfect_time=kwargs.pop("perfect_time", 0),
-        **kwargs,
-    )
+
+def _hold_followers(notes, trace, note_types, lanes=None, *, fg_schedule):
+    ms = np.asarray([note["hit_time_ms"] for note in notes], dtype=np.float64)
+    sections = production._sections(stored_sections([dict(row, fever_end_index=len(notes)) for row in trace], ms / 1000.0))
+    return production._hold_followers_after_activation(plan_of(notes, note_types, lanes), sections, fg_schedule=fg_schedule)
 
 
 def _build_options(n, non_fever_base, real_fever_time):
@@ -150,7 +77,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
         FgTraceEdgeOptionsCache,
         reconstruct_force_greats_response_trace,
     )
-    from gear_optimizer.trace.note_graph import (
+    from tests.trace_support import (
         force_greats_note_graph,
         reconcile_force_greats_note_graph,
     )
@@ -355,7 +282,7 @@ def _words_from_indices(indices):
 
 def test_fg_note_graph_body_counts_synthetic():
     """Construct traces with KNOWN ground-truth surfaces and prove exact body reconciliation."""
-    from gear_optimizer.trace.note_graph import (
+    from tests.trace_support import (
         force_greats_note_graph,
         reconcile_force_greats_note_graph,
     )
@@ -454,7 +381,7 @@ def test_fg_note_graph_body_counts_synthetic():
 
 
 def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 8
     ts = np.asarray([0.095, 0.581, 0.743, 0.743, 1.067, 1.392, 1.878, 2.040], dtype=np.float32)
@@ -487,7 +414,7 @@ def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
 def test_fg_note_graph_plans_a_capped_early_great_frame_safe():
     """A forced Great the plan presses before its same-time Perfect partner is capped below the partner's hit; it is
     planned at -38 ms (an early Great at every frame timing), not at the band's last ms -20, and keeps its order."""
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 110
     ts = np.arange(n, dtype=np.float64) * 0.2
@@ -537,85 +464,55 @@ def test_fg_note_graph_never_moves_an_activation_to_a_frame_safe_hit():
 
 
 def test_same_time_body_selector_uses_physical_order_not_head_chart_order():
-    from gear_optimizer.trace.note_graph import (
-        _assign_exact_input_order,
-        _mark_same_time_selector_order_deltas,
-        _materialize_remaining_selector_deltas,
-        _perfect_note_graph,
-    )
-
     n = 144
     timestamps = np.arange(n, dtype=np.float64)
     timestamps[141:] = timestamps[141]
     note_types = np.ones(n, dtype=np.int16)
     note_types[142] = 3  # held tail: canonical late-Great selector is +81 ms
-    notes = _perfect_note_graph(n, timestamps)
+    notes = production._perfect_notes(n, timestamps)
     notes[142]["note_result"] = "Great"
     notes[142]["delta_ms"] = None
 
-    _mark_same_time_selector_order_deltas(
-        notes,
-        total_notes=n,
-        note_types=note_types,
-    )
+    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
     assert notes[142]["delta_ms"] is None
 
-    _materialize_remaining_selector_deltas(notes, note_types=note_types)
-    _assign_exact_input_order(notes, ())
+    production._plan_remaining_selectors(plan_of(notes, note_types))
+    production._assign_input_order(notes, ())
 
     assert notes[142]["delta_ms"] == 81.0
     assert notes[141]["input_order"] < notes[143]["input_order"] < notes[142]["input_order"]
 
 
 def test_same_time_selector_cluster_crossing_head_boundary_keeps_chart_order():
-    from gear_optimizer.trace.note_graph import (
-        _mark_same_time_selector_order_deltas,
-        _perfect_note_graph,
-    )
-
     n = 101
     timestamps = np.arange(n, dtype=np.float64)
     timestamps[100] = timestamps[99]
     note_types = np.ones(n, dtype=np.int16)
-    notes = _perfect_note_graph(n, timestamps)
+    notes = production._perfect_notes(n, timestamps)
     notes[99]["note_result"] = "Great"
     notes[99]["delta_ms"] = None
 
-    _mark_same_time_selector_order_deltas(
-        notes,
-        total_notes=n,
-        note_types=note_types,
-    )
+    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
 
     assert notes[99]["delta_ms"] < -20.0
     assert notes[99]["delta_ms"] < notes[100]["delta_ms"]
 
 
 def test_same_time_selector_cluster_shares_late_great_boundary_in_chart_order():
-    from gear_optimizer.trace.note_graph import (
-        _assign_exact_input_order,
-        _mark_same_time_selector_order_deltas,
-        _perfect_note_graph,
-    )
-
     n = 86
     timestamps = np.arange(n, dtype=np.float64)
     timestamps[82:] = timestamps[82]
     note_types = np.ones(n, dtype=np.int16)
     note_types[82:84] = 3
-    notes = _perfect_note_graph(n, timestamps)
+    notes = production._perfect_notes(n, timestamps)
     activation_delta_ms = 189.99862670898438
     for index in range(82, 86):
         notes[index]["note_result"] = "Great"
         notes[index]["delta_ms"] = None
     notes[82]["delta_ms"] = activation_delta_ms
 
-    _mark_same_time_selector_order_deltas(
-        notes,
-        total_notes=n,
-        note_types=note_types,
-    )
-    _assign_exact_input_order(notes, ())
+    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
+    production._assign_input_order(notes, ())
 
     assert [notes[index]["delta_ms"] for index in range(82, 86)] == [
         activation_delta_ms,
@@ -627,24 +524,15 @@ def test_same_time_selector_cluster_shares_late_great_boundary_in_chart_order():
 
 
 def test_same_time_selector_cluster_projects_before_fixed_early_great():
-    from gear_optimizer.trace.note_graph import (
-        _mark_same_time_selector_order_deltas,
-        _perfect_note_graph,
-    )
-
     timestamps = np.zeros(2, dtype=np.float64)
     note_types = np.ones(2, dtype=np.int16)
-    notes = _perfect_note_graph(2, timestamps)
+    notes = production._perfect_notes(2, timestamps)
     notes[0]["note_result"] = "Great"
     notes[0]["delta_ms"] = None
     notes[1]["note_result"] = "Great"
     notes[1]["delta_ms"] = -80.0
 
-    _mark_same_time_selector_order_deltas(
-        notes,
-        total_notes=2,
-        note_types=note_types,
-    )
+    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
 
     assert notes[0]["delta_ms"] == -80.0
     assert notes[1]["delta_ms"] == -80.0
@@ -796,7 +684,7 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
 
 
 def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_order():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 6
     ts = np.asarray([0.0, 0.1, 10.0, 10.160, 10.300, 10.500], dtype=np.float32)
@@ -830,7 +718,7 @@ def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_orde
 
 
 def test_fg_note_graph_centers_score_parity_activation_window():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 4
     ts = np.asarray([10.000, 10.160, 10.300, 10.500], dtype=np.float32)
@@ -903,7 +791,7 @@ def test_fg_note_graph_decodes_float32_window_on_engine_ms_lattice():
 
 
 def test_fg_note_graph_centers_hold_head_activation_with_early_great_tail():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
     trace = [{
@@ -936,7 +824,7 @@ def test_fg_note_graph_centers_hold_head_activation_with_early_great_tail():
 
 
 def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 3
     ts = np.asarray([10.000, 10.130, 10.500], dtype=np.float32)
@@ -974,7 +862,7 @@ def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
 
 
 def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 2
     ts = np.asarray([10.000, 10.000], dtype=np.float32)
@@ -1004,7 +892,7 @@ def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
 
 
 def test_fg_note_graph_exact_order_uses_inclusive_float32_label_boundary():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     trace = [
         {
@@ -1052,7 +940,7 @@ def test_fg_note_graph_exact_order_uses_inclusive_float32_label_boundary():
 
 
 def test_fg_note_graph_preserves_fractional_window_near_integer_boundary():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     trace = [
         {
@@ -1103,7 +991,7 @@ def test_fg_note_graph_preserves_fractional_window_near_integer_boundary():
 
 
 def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     trace = [
         {
@@ -1149,7 +1037,7 @@ def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation(
 
 
 def test_fg_note_graph_materializes_all_section_labels_before_activation_caps():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     trace = [
         {
@@ -1216,7 +1104,7 @@ def test_fg_note_graph_materializes_all_section_labels_before_activation_caps():
 
 def test_fg_note_graph_marks_fever_end_witness():
     """FG note-graph tags the last note of each fever run with the cutoff ms, like base."""
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 130
     ts = (np.arange(n) * 0.1).astype(np.float32)
@@ -1246,7 +1134,7 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
     """Issue #42: a fever note at/after the cutoff carries its LARGEST-CUSHION legal early delta --
     the center of its legal in-fever range (most error margin) -- so it is in-fever and legal, and
     the scored fever set is unchanged (display-only)."""
-    from gear_optimizer.trace.note_graph import (
+    from tests.trace_support import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -1267,7 +1155,7 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
     nt = np.ones(n, dtype=np.int16)  # all-normal notes for this case
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt, timing_mode="precise", perfect_time=0),
+        timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
     ):
         # note 7 @ chart 1245ms is past the 1240ms cutoff -> in fever ONLY via an early hit.
         assert g[7]["fever"] is True
@@ -1291,7 +1179,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     bound (-20, or -40 for a held tail). In the tight-margin edge where the legal-early hit already
     sits at/after the strict cutoff predecessor (no in-fever room), the degenerate branch preserves the old
     clamp-to-bound. Needs `note_types` for the held-tail bound."""
-    from gear_optimizer.trace.note_graph import (
+    from tests.trace_support import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -1317,7 +1205,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     nt_normal = [1, 1, 1, 1, 1]
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt_normal),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt_normal, timing_mode="precise", perfect_time=0),
+        timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt_normal, timing_mode="precise"),
     ):
         assert g[3]["delta_ms"] >= -19.0                  # never below the Perfect lower bound (BUG-1)
         assert g[3]["delta_ms"] == pytest.approx(-19.0)   # tight edge -> clamped to the bound
@@ -1327,17 +1215,12 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     nt = [1, 1, 1, 3, 1]
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt, timing_mode="precise", perfect_time=0),
+        timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
     ):
         assert g[3]["delta_ms"] >= -39.0                   # never below the held-tail lower bound (BUG-1)
         strict_cutoff = float(np.nextafter(np.float64(1000.0), np.float64(-np.inf)))
         expected = 0.5 * (-39.0 + strict_cutoff - float(g[3]["hit_time_ms"]))
         assert g[3]["delta_ms"] == pytest.approx(expected)
-
-    # FAIL LOUD: a clawed-in note with NO note_types must raise -- never guess a (possibly false)
-    # bound. (A graph with no clawed-in note does not need note_types -- not asserted here.)
-    with pytest.raises(ValueError):
-        _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts)
 
 
 def test_endpoint_early_delta_is_largest_cushion_center():
@@ -1345,7 +1228,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     LARGEST-CUSHION timing -- the center of its legal in-fever range bounded by the strict cutoff
     predecessor -- not an arbitrary fixed-gap cliff. The shown hit is LEGAL (delta >= legal_low),
     IN-FEVER (hit <= cutoff), and MONOTONIC (>= the previous note's shown hit). Both frontiers."""
-    from gear_optimizer.trace.note_graph import (
+    from tests.trace_support import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -1370,7 +1253,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     nt = np.asarray([1, 1, 1, 1, 1, 3, 1], dtype=np.int16)  # idx5 is the held tail
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
-        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt, timing_mode="precise", perfect_time=0),
+        timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
     ):
         hit = g[5]["hit_time_ms"]
         shown = hit + g[5]["delta_ms"]
@@ -1417,7 +1300,7 @@ def test_endpoint_early_degenerate_clamp_is_monotonic():
     non-decreasing. A normal note clawed in at the ~1ms boundary (shown ~cutoff-0.5) followed by a
     held tail whose own legal_low_hit is lower would, under a prev_hit-blind clamp, be shown EARLIER
     -- breaking monotonicity. The fix clamps to lo_hit (>= prev_hit)."""
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 4
     # BUG-1: legal Perfect low is -19, so idx2 sits at 18.5ms past cutoff (was 19.5 at the -20 edge)
@@ -1442,12 +1325,12 @@ def test_endpoint_early_degenerate_clamp_is_monotonic():
 
 
 def test_base_note_graph_maps_fever_timeline():
-    from gear_optimizer.trace.note_graph import base_note_graph
+    from tests.trace_support import base_note_graph
 
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
     mask = np.asarray([False, True, True, True, False, False])
-    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, timing_mode="precise", perfect_time=0)
+    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask)
     assert len(graph) == n
     assert all(g["note_result"] == "Perfect" for g in graph)  # base = no greats
     assert all(g["delta_ms"] == 0.0 for g in graph)
@@ -1456,7 +1339,7 @@ def test_base_note_graph_maps_fever_timeline():
 
 
 def test_base_note_graph_uses_timeline_frontier_trace_witness():
-    from gear_optimizer.trace.note_graph import base_note_graph
+    from tests.trace_support import base_note_graph
 
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
@@ -1471,15 +1354,7 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
         }
     ]
 
-    graph = base_note_graph(
-        total_notes=n,
-        timestamps=ts,
-        is_fever_mask=mask,
-        frontier_trace=trace,
-        note_types=np.ones(n, dtype=np.int16),
-        timing_mode="precise",
-        perfect_time=0,
-    )
+    graph = timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=trace, note_types=np.ones(n, dtype=np.int16), timing_mode="precise")
 
     assert all(g["note_result"] == "Perfect" for g in graph)
     assert [g["fever"] for g in graph] == [False, False, True, True, True, False]
@@ -1488,7 +1363,7 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
 
 
 def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
-    from gear_optimizer.trace.note_graph import base_note_graph
+    from tests.trace_support import base_note_graph
 
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
@@ -1504,12 +1379,7 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
         }
     ]
 
-    graph = base_note_graph(
-        total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace,
-        note_types=np.ones(n, dtype=np.int16),
-        timing_mode="precise",
-        perfect_time=0,
-    )
+    graph = timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=trace, note_types=np.ones(n, dtype=np.int16), timing_mode="precise")
 
     # Fever run is notes [2, 5); the last fevered note (4) is the fever-end witness,
     # carrying the largest-cushion cutoff time. No score-contributing flag exists.
@@ -1522,34 +1392,6 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
     assert all("contributes_to_max_score" not in g for g in graph)
 
 
-def test_base_note_graph_rejects_reattributed_activation_witness():
-    """A base trace may not repair an impossible surface by changing activation identity."""
-    from gear_optimizer.trace.note_graph import base_note_graph
-
-    n = 6
-    # note 1 = held tail (witness, hit 500+80=580); note 2 = same-ms count boundary
-    # (swapped out of fever); note 4 = held-tail endpoint at chart 600 == cutoff,
-    # clawed in early (its -40 legal edge reaches below the 580 witness hit).
-    ts = np.asarray([0.0, 0.5, 0.5, 0.55, 0.6, 0.7], dtype=np.float32)
-    nt = np.asarray([1, 3, 1, 1, 3, 1], dtype=np.int16)
-    trace = [{
-        "section": 1, "activation_index": 2, "fever_start_note_index": 1,
-        "activation_ms": 500.0, "activation_hit_offset_ms": 80.0,
-        "fever_end_index": 5, "fever_window_end_ms": 600.0,
-    }]
-
-    with pytest.raises(ValueError, match="activation witness differs"):
-        base_note_graph(
-            total_notes=n,
-            timestamps=ts,
-            is_fever_mask=np.zeros(n, bool),
-            frontier_trace=trace,
-            note_types=nt,
-            timing_mode="precise",
-            perfect_time=0,
-        )
-
-
 def test_base_delayed_activation_materializes_physical_chord_order():
     """A delayed base activation cannot leave its following chord sibling at chart time.
 
@@ -1557,7 +1399,7 @@ def test_base_delayed_activation_materializes_physical_chord_order():
     before note 1's +40ms activation and move fever to the wrong note.  The graph must materialize
     the frontier's priced order without changing fever membership or judgments.
     """
-    from gear_optimizer.trace.note_graph import base_note_graph
+    from tests.trace_support import base_note_graph
 
     trace = [{
         "section": 1,
@@ -1567,15 +1409,7 @@ def test_base_delayed_activation_materializes_physical_chord_order():
         "fever_end_index": 4,
         "fever_window_end_ms": 500.0,
     }]
-    graph = base_note_graph(
-        total_notes=4,
-        timestamps=np.asarray([0.0, 0.1, 0.1, 0.3], dtype=np.float32),
-        is_fever_mask=np.zeros(4, bool),
-        frontier_trace=trace,
-        note_types=np.ones(4, dtype=np.int16),
-        timing_mode="precise",
-        perfect_time=0,
-    )
+    graph = timeline_frontier_note_graph(total_notes=4, timestamps=np.asarray([0.0, 0.1, 0.1, 0.3], dtype=np.float32), frontier_trace=trace, note_types=np.ones(4, dtype=np.int16), timing_mode="precise")
 
     assert graph[1]["delta_ms"] == pytest.approx(40.0)
     assert graph[2]["delta_ms"] == pytest.approx(40.0)
@@ -1588,7 +1422,7 @@ def test_base_delayed_activation_materializes_physical_chord_order():
 
 def test_base_non_precise_activation_does_not_retime_chord():
     """The physical-order materializer is an exact no-op for canonical zero-ms replay."""
-    from gear_optimizer.trace.note_graph import base_note_graph
+    from tests.trace_support import base_note_graph
 
     trace = [{
         "section": 1,
@@ -1598,15 +1432,7 @@ def test_base_non_precise_activation_does_not_retime_chord():
         "fever_end_index": 4,
         "fever_window_end_ms": 500.0,
     }]
-    graph = base_note_graph(
-        total_notes=4,
-        timestamps=np.asarray([0.0, 0.1, 0.1, 0.3], dtype=np.float32),
-        is_fever_mask=np.zeros(4, bool),
-        frontier_trace=trace,
-        note_types=np.ones(4, dtype=np.int16),
-        timing_mode="non-precise",
-        perfect_time=0,
-    )
+    graph = timeline_frontier_note_graph(total_notes=4, timestamps=np.asarray([0.0, 0.1, 0.1, 0.3], dtype=np.float32), frontier_trace=trace, note_types=np.ones(4, dtype=np.int16), timing_mode="non-precise")
 
     assert [note["delta_ms"] for note in graph] == [0.0, 0.0, 0.0, 0.0]
 
@@ -1614,7 +1440,7 @@ def test_base_non_precise_activation_does_not_retime_chord():
 def test_base_note_graph_matches_production_fever_timeline():
     """base fever mask is the production fever timeline's full per-note is_fever buffer."""
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
-    from gear_optimizer.trace.note_graph import base_note_graph
+    from tests.trace_support import base_note_graph
 
     n = 130
     ts = (np.arange(n) * 0.1).astype(np.float32)
@@ -1622,7 +1448,7 @@ def test_base_note_graph_matches_production_fever_timeline():
     fever_mask_head, count_body_fever, count_body_normal, _act, _end = calculate_fever_timeline_indices(
         ts, n, 44, 2.084999942779541, buf
     )
-    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=buf, timing_mode="precise", perfect_time=0)
+    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=buf)
     # body fever count in the reconstructed graph matches the production timeline body count
     body_fever_graph = sum(1 for g in graph if g["fever"] and g["note_index"] >= 100)
     assert body_fever_graph == int(count_body_fever)
@@ -1634,7 +1460,7 @@ def test_base_note_graph_matches_production_fever_timeline():
 
 def test_fever_end_cluster_rejects_impossible_plus_560_ms():
     """Comfortable cutoff: fever does not constrain Perfect upper -> keep 0 ms (not cutoff-hit)."""
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 5
     ts = np.asarray([0.0, 1.0, 1.2, 1.4, 1.6], dtype=np.float32)
@@ -1655,7 +1481,7 @@ def test_fever_end_cluster_rejects_impossible_plus_560_ms():
 
 def test_fever_end_cluster_barely_inside_decoy_delta():
     """Tight cutoff: safe upper is the strict fever boundary."""
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     cutoff = 61340.14382457733
     n = 4
@@ -1680,7 +1506,7 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
 
 def test_note_graph_displays_early_great_fever_end_tail():
     """Issue #68: Great-only fever-end claw-in must not collapse to Perfect-low."""
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 2
     # BUG-1: the earliest legal early-Great is now -94 (was -95). Widen the cutoff a couple ms from
@@ -1746,7 +1572,7 @@ def test_early_great_tail_accepts_submillisecond_strict_cutoff_interval():
 
 
 def test_note_graph_displays_early_great_fever_end_tail_held_tail():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 2
     cutoff = 133108.764
@@ -1775,7 +1601,7 @@ def test_note_graph_displays_early_great_fever_end_tail_held_tail():
 
 
 def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 2
     # Make the fever upper bound earlier than the Great floor (-95ms) so the safe interval is empty.
@@ -1805,7 +1631,7 @@ def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
 
 
 def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 3
     cutoff = 1240.0
@@ -1904,7 +1730,7 @@ def test_non_precise_late_great_stays_when_an_earlier_input_cannot_move():
 
 def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
     """non-precise mode must not inherit Perfect-window guidance deltas (issue #66)."""
-    from gear_optimizer.trace.note_graph import (
+    from tests.trace_support import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -1941,20 +1767,13 @@ def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
     expected = 0.5 * (-19.0 + strict_cutoff - float(pw_graph[2]["hit_time_ms"]))
     assert pw_graph[2]["delta_ms"] == pytest.approx(expected)
 
-    base_graph = base_note_graph(
-        total_notes=n,
-        timestamps=ts,
-        is_fever_mask=np.zeros(n, bool),
-        frontier_trace=trace_with_tight_fever_end,
-        note_types=nt, timing_mode="non-precise",
-        perfect_time=0,
-    )
+    base_graph = timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=trace_with_tight_fever_end, note_types=nt, timing_mode="non-precise")
     assert all(note["delta_ms"] in (0.0, None) for note in base_graph)
     assert base_graph[0]["is_activation_witness"] is False
 
 
 def test_fever_end_cluster_same_chart_time_shared_delta():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 8
     cutoff = 1240.0
@@ -1974,7 +1793,7 @@ def test_fever_end_cluster_same_chart_time_shared_delta():
 
 
 def test_fever_end_cluster_held_tail_intersection():
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     n = 7
     cutoff = 1230.0
@@ -1998,37 +1817,18 @@ def test_fever_end_cluster_held_tail_intersection():
 
 def test_fever_end_cluster_fail_loud_on_tight_non_perfect_same_time():
     """Tight cutoff + mixed Perfect/Great same-chart-time cluster must not silently keep 0 ms."""
-    from gear_optimizer.trace.note_graph import (
-        _mark_fever_end_cluster_safe_delta,
-        _mark_fever_end_witness,
-        _perfect_note_graph,
-    )
-
     n = 4
     ts = np.asarray([0.0, 0.5, 1.0, 1.0], dtype=np.float32)
-    notes = _perfect_note_graph(n, ts)
+    notes = production._perfect_notes(n, ts)
     for i in range(n):
         notes[i]["fever"] = i >= 1
-    _mark_fever_end_witness(
-        notes,
-        activation_index=1,
-        fever_end_index=4,
-        total_notes=n,
-        fever_window_end_ms=1010.0,
-        section=1,
-    )
+    notes[3]["is_fever_end_witness"] = True
     notes[2]["note_result"] = "Great"
     notes[2]["delta_ms"] = None
+    sec = production._sections(stored_sections([{"activation_index": 1, "fever_end_index": 4}], ts))[0]
 
-    with pytest.raises(ValueError, match="unsupported fever-end guidance"):
-        _mark_fever_end_cluster_safe_delta(
-            notes,
-            activation_index=1,
-            fever_end_index=4,
-            total_notes=n,
-            fever_window_end_ms=1010.0,
-            note_types=np.ones(n, dtype=np.int16),
-        )
+    with pytest.raises(ValueError, match="a Great at a tight cutoff"):
+        production._plan_tight_cutoff_cluster(plan_of(notes, np.ones(n, dtype=np.int16)), sec, 1010.0)
 
 
 def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
@@ -2063,7 +1863,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     n = si.total_notes
     trace = fd["ForceGreats"]["frontier_trace"]
 
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
+    from tests.trace_support import force_greats_note_graph
 
     ng = _exact_force_greats_note_graph(
         frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt
@@ -2134,23 +1934,16 @@ def test_note_graph_lower_edges_are_reachable_not_the_exclusive_edge():
     exactly the perfect-lower (-20/-40) is a Great and at the great-lower (-95/-190) is an Okay --
     replaying those through the oracle would certify illegal timings. Keep in lockstep with the
     production timing_envelope.py floor builders."""
-    from gear_optimizer.trace.note_graph import (
-        _perfect_bounds_ms_at,
-        _early_great_bounds_ms_at,
-    )
-
-    nt = np.array([1, 3], dtype=np.int16)  # [0]=tap, [1]=held tail (x2 windows)
-
     # Perfect lower bound: earliest reachable Perfect is -19 (tap) / -39 (tail), NOT -20 / -40.
-    p_tap_lo, p_tap_hi = _perfect_bounds_ms_at(nt, 0)
-    p_tail_lo, p_tail_hi = _perfect_bounds_ms_at(nt, 1)
+    p_tap_lo, p_tap_hi = judgment_bounds(1).perfect
+    p_tail_lo, p_tail_hi = judgment_bounds(2).perfect
     assert p_tap_lo == -19 and p_tail_lo == -39, (p_tap_lo, p_tail_lo)
     assert p_tap_hi == 40 and p_tail_hi == 80, (p_tap_hi, p_tail_hi)   # upper edge inclusive, unchanged
     assert p_tap_lo > -20 and p_tail_lo > -40                          # strictly past the exclusive edge
 
     # Early-Great lower bound: earliest reachable early-Great is -94 (tap) / -189 (tail), NOT -95 / -190.
-    g_tap_lo, g_tap_hi = _early_great_bounds_ms_at(nt, 0)
-    g_tail_lo, g_tail_hi = _early_great_bounds_ms_at(nt, 1)
+    g_tap_lo, g_tap_hi = judgment_bounds(1).early_great
+    g_tail_lo, g_tail_hi = judgment_bounds(2).early_great
     assert g_tap_lo == -94 and g_tail_lo == -189, (g_tap_lo, g_tail_lo)
     assert g_tap_lo > -95 and g_tail_lo > -190                         # strictly past the exclusive edge
     # Early-Great-only region tops out at the latest legal early-Great (-20 / -40, inclusive), a full
@@ -2170,10 +1963,6 @@ def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
     scan must delay every window note whose press precedes the chained requirement, and stop
     only on the chart-time bound.
     """
-    from gear_optimizer.trace.note_graph import (
-        _mark_activation_preemptor_order_deltas,
-    )
-
     nt = np.asarray([1, 1, 1, 1, 1], dtype=np.int16)
     notes = [
         {"note_index": 0, "hit_time_ms": 96017.0, "note_result": "Great", "delta_ms": 189.999},
@@ -2182,9 +1971,7 @@ def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
         {"note_index": 3, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
         {"note_index": 4, "hit_time_ms": 97000.0, "note_result": "Perfect", "delta_ms": 0.0},
     ]
-    _mark_activation_preemptor_order_deltas(
-        notes, frontier_trace=[{"activation_index": 0}], total_notes=5, note_types=nt
-    )
+    _hold_followers(notes, [{"activation_index": 0}], nt, fg_schedule=False)
 
     required_delta = (96017.0 + 189.999) - 96180.0  # press at/after the activation hit
     assert float(notes[2]["delta_ms"]) >= required_delta, notes[2]  # was 0.0 pre-fix (break at sibling)
@@ -2195,10 +1982,6 @@ def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
 
 
 def test_persisted_activation_schedule_orders_cross_lane_followers_after_activation():
-    from gear_optimizer.trace.note_graph import (
-        _mark_activation_preemptor_order_deltas,
-    )
-
     nt = np.asarray([1, 1], dtype=np.int16)
     notes = [
         {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 190.0},
@@ -2218,23 +2001,11 @@ def test_persisted_activation_schedule_orders_cross_lane_followers_after_activat
         "preactivation_great_count": 0,
     }]
 
-    _mark_activation_preemptor_order_deltas(
-        notes,
-        frontier_trace=trace,
-        total_notes=2,
-        note_types=nt,
-        lanes=np.asarray([1, 2], dtype=np.int32),
-        require_exact_schedule=True,
-    )
+    _hold_followers(notes, trace, nt, [1, 2], fg_schedule=True)
     assert float(notes[1]["delta_ms"]) == pytest.approx(30.0)
 
 
 def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefix():
-    from gear_optimizer.trace.note_graph import (
-        _assign_exact_input_order,
-        _mark_activation_preemptor_order_deltas,
-    )
-
     nt = np.asarray([3, 1, 2, 1], dtype=np.int16)
     notes = [
         {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Perfect", "delta_ms": 0.0},
@@ -2257,14 +2028,7 @@ def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefi
         "preactivation_great_count": 1,
     }]
 
-    constraints = _mark_activation_preemptor_order_deltas(
-        notes,
-        frontier_trace=trace,
-        total_notes=4,
-        note_types=nt,
-        lanes=np.asarray([0, 1, 2, 3], dtype=np.int32),
-        require_exact_schedule=True,
-    )
+    constraints = _hold_followers(notes, trace, nt, [0, 1, 2, 3], fg_schedule=True)
 
     assert constraints == [(0, 1), (1, 2), (2, 3)]
     event_times = [float(note["hit_time_ms"]) + float(note["delta_ms"]) for note in notes]
@@ -2273,15 +2037,10 @@ def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefi
     assert event_times[0] < event_times[1]
     assert float(notes[1]["delta_ms"]) == -20.0
     assert float(notes[2]["delta_ms"]) == 0.0
-    _assign_exact_input_order(notes, constraints)
+    production._assign_input_order(notes, constraints)
 
 
 def test_persisted_activation_schedule_chains_postactivation_notes_per_lane():
-    from gear_optimizer.trace.note_graph import (
-        _assign_exact_input_order,
-        _mark_activation_preemptor_order_deltas,
-    )
-
     nt = np.asarray([1, 1, 1], dtype=np.int16)
     notes = [
         {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 100.0},
@@ -2303,18 +2062,11 @@ def test_persisted_activation_schedule_chains_postactivation_notes_per_lane():
         "preactivation_great_count": 0,
     }]
 
-    constraints = _mark_activation_preemptor_order_deltas(
-        notes,
-        frontier_trace=trace,
-        total_notes=3,
-        note_types=nt,
-        lanes=np.asarray([1, 2, 3], dtype=np.int32),
-        require_exact_schedule=True,
-    )
+    constraints = _hold_followers(notes, trace, nt, [1, 2, 3], fg_schedule=True)
 
     assert constraints == [(0, 1), (0, 2)]
     assert float(notes[2]["delta_ms"]) == 0.0
-    _assign_exact_input_order(notes, constraints)
+    production._assign_input_order(notes, constraints)
     assert [int(note["input_order"]) for note in notes] == [0, 2, 1]
 
 
@@ -2346,7 +2098,7 @@ def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:
         "preactivation_great_count": 0,
     }]
     replay = validate_force_greats_physical_replay(
-        frontier_trace=trace,
+        frontier_trace=stored_sections(trace, np.asarray([0.0, 0.1], dtype=np.float32)),
         surface=FgResponseSurface(3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         timestamps=np.asarray([0.0, 0.1], dtype=np.float32),
         note_types=np.ones(2, dtype=np.int16),
@@ -2400,7 +2152,7 @@ def test_physical_replay_preserves_exact_body_cross_lane_prefix_swap() -> None:
     }]
 
     replay = validate_force_greats_physical_replay(
-        frontier_trace=trace,
+        frontier_trace=stored_sections(trace, timestamps),
         surface=FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0),
         timestamps=timestamps,
         note_types=np.ones(n, dtype=np.int16),
@@ -2433,28 +2185,3 @@ def test_physical_replay_models_one_wasted_exit_hit_without_frame_extension() ->
     )
     assert status == _REPLAY_OK
     assert fever.tolist() == [0, 1, 0, 0]
-
-
-def test_precise_fg_rejects_legacy_trace_without_exact_schedule() -> None:
-    from gear_optimizer.trace.note_graph import force_greats_note_graph
-
-    with pytest.raises(ValueError, match="exact activation schedule schema v1 is required"):
-        force_greats_note_graph(
-            frontier_trace=[{
-                "section": 1,
-                "activation_index": 0,
-                "fever_end_index": 2,
-                "forced_start_index": 0,
-                "forced_run_start_index": 0,
-                "forced_run_count": 0,
-                "activation_judgment": "perfect",
-                "activation_hit_offset_ms": 0.0,
-                "fever_window_end_ms": 1_000.0,
-            }],
-            total_notes=2,
-            timestamps=np.asarray([0.0, 0.1], dtype=np.float32),
-            note_types=np.ones(2, dtype=np.int16),
-            lanes=np.asarray([0, 1], dtype=np.int32),
-            timing_mode="precise",
-            perfect_time=0,
-        )
