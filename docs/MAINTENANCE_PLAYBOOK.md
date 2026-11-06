@@ -33,7 +33,8 @@ leaderboard frontier changes unexpectedly.
 
 ## Service deployment
 
-The service follows `origin/main` from its own checkout, so test before pushing and keep tracked edits out of it.
+The service follows `origin/main` from its own checkout, so test before pushing and keep tracked edits out of it. New
+game data and charts sync by themselves ([`Data/README.md`](../Data/README.md#auto-sync)); new code restarts the service.
 
 | Variable | Purpose |
 |---|---|

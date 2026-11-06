@@ -24,6 +24,12 @@ RoBeats note-chart text format (tab-separated rows).
 The optimizer reads them straight from `exported_game_data.json`, so a new export needs no regeneration step. A gear's
 export stats are final; a mini's are its level-1 stats, which the reader raises to max level.
 
+## Auto sync
+
+A new export takes effect by itself. Every run and every service solve reads the file as it is now, and the HTTP service
+follows `origin/main`: within five minutes of a push, or at once after `POST /frontiers/refresh`, it moves to the new
+`Data/` without a restart, builds the frontiers of new charts, and solves the official charts the database lacks.
+
 ## Results database
 
 Runtime results live in `evolution.db` at the repository root by default. Do not commit this file. Host operators
