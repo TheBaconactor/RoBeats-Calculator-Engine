@@ -128,8 +128,8 @@ flowchart LR
 2. **Frontiers.** Load or build the fever-timing and Force Great frontiers: every non-dominated way to play the chart,
    cached per chart and rebuilt only when the logic that produced them changes.
 3. **Search.** The genetic search runs on one GPU thread; its loadouts read the frontiers to score whole builds.
-4. **Finish.** An exact CPU search picks each surviving loadout's gems, an exact rescore settles its score, and the
-   winners go to the Base and Force Great leaderboards. A stored build keeps the replay witness that proves it is
+4. **Finish.** The search has already placed each loadout's Base gems. An exact CPU search places its Force Great gems,
+   an exact replay confirms the winners' scores, and they go to the Base and Force Great leaderboards. A stored build keeps the replay witness that proves it is
    playable, which later turns into a note-by-note plan.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the full flow, and [`docs/math/`](docs/math/) has the mathematics.
@@ -144,7 +144,7 @@ RoBeats-Calculator-Engine/
 │   ├── pipeline/             # A solve end to end: queue, preparation, search, Force Greats, storing
 │   ├── solver/               # Search and exact scoring: GA pipeline, gem search, timing envelope, score tables
 │   ├── frontier/             # Exact timing and Force Great frontiers and their caches (CPU, Numba)
-│   ├── gpu/                  # Everything Taichi: runtime, kernels, GPU API and the GPU's owner thread
+│   ├── gpu/                  # Everything Taichi: fields, kernels, the genetic search and the GPU's owner thread
 │   ├── trace/                # Stored builds to playable note plans, and their physical replay checks
 │   ├── store/                # The results database: schema, boards, reads and writes
 │   ├── core/, data/, domain/, ui/   # Shared utilities, the game export, job and board rules, progress output

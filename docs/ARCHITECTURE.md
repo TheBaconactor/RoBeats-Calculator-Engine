@@ -93,8 +93,8 @@ thread; it never initializes or accesses the GPU.
 - `gear_optimizer/gpu/ga.py` runs a song's GA; `gear_optimizer/gpu/device.py` holds a process's GPU state and a song's uploads.
 - `gear_optimizer/gpu/fields.py` declares the device fields; `gear_optimizer/gpu/kernels.py` and `gear_optimizer/gpu/scoring.py` run on them.
 
-Production scoring imports through the public Taichi API or GPU service rather
-than reaching into kernel internals.
+Only `gear_optimizer/gpu/` imports Taichi; the rest of the engine submits work to
+its executor.
 
 ### Exact score and timing authority
 

@@ -56,8 +56,7 @@ Ties and non-dominated witnesses remain in a stable canonical order.
   evaluates every retained surface for the active reference cell.
 
 The packed payload records a count and offset per cell, followed by shared
-surface pools. Upload is slot-aware: updating one active song slot must not
-overwrite another.
+surface pools. The GPU holds one song at a time.
 
 An empty retained frontier for a supported cell is invalid internal state. The
 runtime fails rather than substituting a legacy or guessed timing path.
