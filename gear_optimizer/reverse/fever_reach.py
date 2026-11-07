@@ -57,6 +57,17 @@ def event_times(chart: Chart, perfect_time: int, greats: int = 0) -> tuple[np.nd
     )
 
 
+def great_times(chart: Chart, perfect_time: int) -> tuple[np.ndarray, np.ndarray]:
+    """Per event position, the earliest and latest server event time of a play at this Perfect Time, every note Great."""
+    hit = quantize_to_int_ms(chart.timestamps).astype(np.int64)
+    tap, tail = judgment_bounds(1, perfect_time), judgment_bounds(HELD_TAIL_WINDOW_SCALE, perfect_time)
+    is_tail = chart.note_types == HELD_TAIL_TYPE
+    return (
+        np.sort(hit + np.where(is_tail, tail.early_great.earliest, tap.early_great.earliest) - 1),
+        np.sort(hit + np.where(is_tail, tail.late_great.latest, tap.late_great.latest)),
+    )
+
+
 @jit(nopython=True, cache=True)
 def _merged(left, right):
     """The union of two body fever sets (lowest, highest, bits)."""
@@ -67,21 +78,69 @@ def _merged(left, right):
 
 
 @jit(nopython=True, cache=True)
-def walk_cell(times, fill, duration, scratch, out):
-    """Into out the timelines of one cell of a play that judges every note Perfect, as rows (mask low, mask high, lowest,
-    highest, bits): one fever window per round, states of a round merged by activation and mask. times: earliest and
-    latest per position; fill: the notes that fill the bar; scratch: two state tables. Returns the rows written, -1 when
-    a table is full."""
+def _fill_delay_cost(raw_fill, delay):
+    """The fewest Greats that move a bar's crossing `delay` notes on: a Great fills half a Perfect (fill_crossing)."""
+    return 0 if delay == 0 else int(np.floor(2.0 * (delay - 1 + np.ceil(raw_fill) - raw_fill))) + 1
+
+
+@jit(nopython=True, cache=True)
+def _ends_after(times, a, duration, n):
+    """The events a fever window from position a can end on, every note Perfect: the lowest and the highest."""
     earliest, latest = times
+    first = min(max(int(np.searchsorted(latest, earliest[a] + duration, side="left")), a + 1), n)
+    return first, max(min(int(np.searchsorted(earliest, latest[a] + duration, side="left")), n), first)
+
+
+@jit(nopython=True, cache=True)
+def _great_ends_after(times, greats, a, duration, n):
+    """The same with the activation a Great, and the most one window can move with every note a Great. A note moved past
+    its Perfect band costs one Great, whichever way."""
+    earliest, latest = times
+    great_early, great_late = greats
+    first = min(max(int(np.searchsorted(latest, great_early[a] + duration, side="left")), a + 1), n)
+    last = max(min(int(np.searchsorted(earliest, great_late[a] + duration, side="left")), n), first)
+    lowest = min(max(int(np.searchsorted(great_late, great_early[a] + duration, side="left")), a + 1), n)
+    return first, last, lowest, max(min(int(np.searchsorted(great_early, great_late[a] + duration, side="left")), n), last)
+
+
+@jit(nopython=True, cache=True)
+def _keep_timeline(out, written, low, high, counts):
+    """A finished timeline into out's rows, merged with a row of its head mask while their counts fit one set; returns the
+    rows, -1 when they stop fitting."""
+    for row in range(written):
+        if out[row, 0] == low and out[row, 1] == high and max(out[row, 3], counts[1]) - min(out[row, 2], counts[0]) <= _SET_BITS:
+            out[row, 2], out[row, 3], out[row, 4] = _merged((out[row, 2], out[row, 3], out[row, 4]), counts)
+            return written
+    if written == out.shape[0]:
+        return -1
+    row = out[written]
+    row[0], row[1], row[2], row[3], row[4] = low, high, counts[0], counts[1], counts[2]
+    return written + 1
+
+
+@jit(nopython=True, cache=True)
+def walk_cell(times, greats, fill, duration, scratch, out):
+    """Into out the timelines of one cell of a play with at most fill[1] Greats, as rows (mask low, mask high, lowest,
+    highest, bits): one fever window per round, states of a round merged by activation, mask and Greats spent. A Great
+    is spent to delay a fill, to move the activation's time, or to move a note over the fever's end; an activation a fill
+    Great has reached is that Great. times: earliest and latest per position with every note Perfect; greats: the same
+    with every note Great; fill: the Perfects that fill the bar, and the Great budget; scratch: two state tables. Returns
+    the rows written, -1 when a table is full. A superset of what such a play reaches: it holds every real one."""
+    raw_fill, budget = fill
     current, following = scratch
-    n = earliest.shape[0]
-    if fill > n:
+    n = times[0].shape[0]
+    notes = int(np.ceil(raw_fill))
+    if notes > n:
         out[0, 0], out[0, 1], out[0, 2], out[0, 3], out[0, 4] = 0, 0, 0, 0, 1
         return 1
-    written = 0
-    row = current[0]
-    row[0], row[1], row[2], row[3], row[4], row[5] = fill - 1, 0, 0, 0, 0, 1
-    states = 1
+    written = states = 0
+    delay = 0
+    while notes - 1 + delay < n and _fill_delay_cost(raw_fill, delay) <= budget:
+        row = current[states]
+        row[0], row[1], row[2], row[3], row[4], row[5] = notes - 1 + delay, 0, 0, 0, 0, 1
+        row[6] = 2 * _fill_delay_cost(raw_fill, delay) + (delay > 0)
+        states += 1
+        delay += 1
     while states > 0:
         rows = np.argsort(current[:states, 0])
         pushed = 0
@@ -95,15 +154,24 @@ def walk_cell(times, fill, duration, scratch, out):
                 if state[3] < 0:
                     continue
                 a, low, high = state[0], state[1], state[2]
+                spent, activation_cost = state[6] >> 1, 1 - (state[6] & 1)
                 counts = (state[3], state[4], state[5])
                 for j in range(i + 1, group):
                     other = current[rows[j]]
-                    if other[3] >= 0 and other[1] == low and other[2] == high:
+                    if other[3] >= 0 and other[1] == low and other[2] == high and other[6] == state[6]:
                         counts = _merged(counts, (other[3], other[4], other[5]))
                         other[3] = -1
-                first = min(max(int(np.searchsorted(latest, earliest[a] + duration, side="left")), a + 1), n)
-                last = max(min(int(np.searchsorted(earliest, latest[a] + duration, side="left")), n), first)
-                for end in range(first, last + 1):
+                first, last = _ends_after(times, a, duration, n)
+                great_first, great_last, lowest, highest = first, last, first, last
+                if spent < budget or activation_cost == 0:
+                    great_first, great_last, lowest, highest = _great_ends_after(times, greats, a, duration, n)
+                for end in range(lowest, highest + 1):
+                    cost = min(
+                        max(0, first - end, end - last),
+                        activation_cost + max(0, great_first - end, end - great_last),
+                    )
+                    if spent + cost > budget:
+                        continue
                     next_low, next_high = low, high
                     for position in range(a, min(end, HEAD_NOTES)):
                         if position < _LOW_WORD_BITS:
@@ -111,19 +179,21 @@ def walk_cell(times, fill, duration, scratch, out):
                         else:
                             next_high |= 1 << (position - _LOW_WORD_BITS)
                     gain = max(0, end - max(a, HEAD_NOTES))
-                    if end + fill >= n:
-                        if written >= out.shape[0]:
-                            return -1
-                        row = out[written]
-                        row[0], row[1], row[2], row[3], row[4] = next_low, next_high, counts[0] + gain, counts[1] + gain, counts[2]
-                        written += 1
-                    else:
+                    delay = 0
+                    while spent + cost + _fill_delay_cost(raw_fill, delay) <= budget:
+                        if end + notes + delay >= n:
+                            written = _keep_timeline(out, written, next_low, next_high, (counts[0] + gain, counts[1] + gain, counts[2]))
+                            if written < 0:
+                                return -1
+                            break
                         if pushed >= following.shape[0]:
                             return -1
                         row = following[pushed]
-                        row[0], row[1], row[2] = end + fill, next_low, next_high
+                        row[0], row[1], row[2] = end + notes + delay, next_low, next_high
                         row[3], row[4], row[5] = counts[0] + gain, counts[1] + gain, counts[2]
+                        row[6] = 2 * (spent + cost + _fill_delay_cost(raw_fill, delay)) + (delay > 0)
                         pushed += 1
+                        delay += 1
             at = group
         current, following = following, current
         states = pushed
@@ -159,16 +229,16 @@ def fever_span(times, fills, duration):
 
 
 @jit(nopython=True, cache=True)
-def _walk_grid(times, fills, durations):
+def _walk_grid(times, greats, fills, durations, budget):
     """walk_cell over every (Fever Time, Fever Fill) cell: rows (mask low, mask high, body fever, cell)."""
     out = np.empty((1 << 12, 5), dtype=np.int64)
-    scratch = (np.empty((_STATE_ROWS, 6), dtype=np.int64), np.empty((_STATE_ROWS, 6), dtype=np.int64))
+    scratch = (np.empty((_STATE_ROWS, 7), dtype=np.int64), np.empty((_STATE_ROWS, 7), dtype=np.int64))
     expanded = np.empty((1 << 18, 4), dtype=np.int64)
     used = 0
     for ft in range(durations.shape[0]):
         for ff in range(fills.shape[0]):
             cell = ft * fills.shape[0] + ff
-            rows = walk_cell(times, fills[ff], durations[ft], scratch, out)
+            rows = walk_cell(times, greats, (fills[ff], budget), durations[ft], scratch, out)
             if rows < 0:
                 raise ValueError("fever walk: a cell outgrew its tables")
             for row in range(rows):
@@ -223,10 +293,11 @@ def pattern_words(low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return words
 
 
-def fever_surfaces(chart: Chart, curves: StatCurves, times: tuple[np.ndarray, np.ndarray]) -> FeverSurfaces:
-    """The timelines of every cell of `chart` when its k-th event lies between times[0][k] and times[1][k]."""
+def fever_surfaces(chart: Chart, curves: StatCurves, perfect_time: int, greats: int = 0) -> FeverSurfaces:
+    """The timelines of every cell of `chart` of a play at this Perfect Time with at most `greats` Greats."""
     durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
-    rows = _walk_grid(times, np.ceil(thresholds).astype(np.int64), durations * 1000.0)
+    times = event_times(chart, perfect_time), great_times(chart, perfect_time)
+    rows = _walk_grid(*times, thresholds.astype(np.float64), durations * 1000.0, greats)
     first, ids = _distinct((rows[:, 0], rows[:, 1], rows[:, 2]))
     patterns, pattern_ids = _distinct((rows[first, 0], rows[first, 1]))
     words = pattern_words(rows[first[patterns], 0], rows[first[patterns], 1])

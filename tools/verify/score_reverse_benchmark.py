@@ -35,8 +35,8 @@ from gear_optimizer.chart import Chart, load_chart, read_header
 from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_ORDER, team_buff_effect
 from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.gamedata import ELEMENTS, STATS, stat_curves
-from gear_optimizer.reverse.fever_reach import event_times, walk_cell
-from gear_optimizer.reverse.lookup import ReverseSong, ShownPlay, prepare_song, reverse_score
+from gear_optimizer.reverse.fever_reach import event_times, great_times, walk_cell
+from gear_optimizer.reverse.lookup import PlayInfo, ReverseSong, prepare_song, reverse_score
 from gear_optimizer.score import best_timeline_score, factors
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import fixed_timeline_cell
@@ -48,7 +48,7 @@ _LINE = ("Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate"
 _FIVE = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
 _BUILDS = ("any", "colored", "climbed")
 _TIERS = tuple(TEAM_BUFF_TIER_ORDER)
-_SHOWN = ("score", "score+power", "full")
+_SHOWN = ("score", "row", "play-info")
 
 
 def gear_power(stats: dict[str, int], chart: Chart) -> int:
@@ -240,15 +240,14 @@ SITUATIONS: dict[str, Situation] = {
 }
 
 
-def _shown_play(played: Played, stats: dict[str, int], chart: Chart, shown: str, match_mode: str = "Compete") -> ShownPlay:
+def play_info(played: Played, stats: dict[str, int], chart: Chart, shown: str, match_mode: str = "Compete") -> PlayInfo:
+    """What the Top Scores menu shows of a play: a bare score, its row, or its row and View popup."""
     if shown == "score":
-        return ShownPlay(score=played.score, match_mode=match_mode)
-    if shown == "score+power":
-        return ShownPlay(score=played.score, gear_power=gear_power(stats, chart), match_mode=match_mode)
-    return ShownPlay(
-        score=played.score, casual_score=played.casual, accuracy=round(played.accuracy * 100.0, 2), perfect=played.perfect,
-        great=played.great, okay=played.okay, miss=played.miss, gear_power=gear_power(stats, chart), match_mode=match_mode,
-    )
+        return PlayInfo(score=played.score, match_mode=match_mode)
+    accuracy, multiplier = float(f"{played.accuracy * 100.0:.2f}"), float(f"{played.score / max(played.casual, 1):.2f}")
+    if shown == "row":
+        return PlayInfo(played.score, accuracy, gear_multiplier=multiplier, match_mode=match_mode)
+    return PlayInfo(played.score, accuracy, played.casual, multiplier, gear_power(stats, chart), match_mode)
 
 
 def _reaches(song: ReverseSong, stats: dict[str, int], perfect_time: int, played: Played) -> bool:
@@ -256,9 +255,9 @@ def _reaches(song: ReverseSong, stats: dict[str, int], perfect_time: int, played
     chart = song.chart
     durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, song.curves)
     ft, ff = min(stats["Fever Time"], 160), min(stats["Fever Fill Rate"], 160)
-    scratch = (np.empty((1 << 15, 6), dtype=np.int64), np.empty((1 << 15, 6), dtype=np.int64))
+    scratch = (np.empty((1 << 15, 7), dtype=np.int64), np.empty((1 << 15, 7), dtype=np.int64))
     out = np.empty((1 << 15, 5), dtype=np.int64)
-    written = walk_cell(event_times(chart, perfect_time), math.ceil(thresholds[ff]), float(durations[ft]) * 1000.0, scratch, out)
+    written = walk_cell(event_times(chart, perfect_time), great_times(chart, perfect_time), (float(thresholds[ff]), 0), float(durations[ft]) * 1000.0, scratch, out)
     head = sum(1 << position for position in played.fever_positions if position < 100)
     body = sum(position >= 100 for position in played.fever_positions)
     for low, high, lowest, highest, bits in out[:written].tolist():
@@ -388,7 +387,7 @@ def _past_the_catalog(tally: Tally, song: ReverseSong, stats: dict[str, int], rn
     for extra, expected in ((25, "unreleased"), (400, "exploited")):
         lifted = dict(stats, **{chart.primary: stats[chart.primary] + extra})
         played = play(chart, lifted, 0, Plan(np.zeros(chart.total_notes)), frames)
-        _lookup(tally, f"catalog/plus-{extra}/score+power", song, ShownPlay(score=played.score, gear_power=gear_power(lifted, chart)), None, (), expected)
+        _lookup(tally, f"catalog/plus-{extra}/score+power", song, PlayInfo(played.score, gear_power=gear_power(lifted, chart)), None, (), expected)
 
 
 def _near_meta(tally: Tally, song: ReverseSong, row: tuple, rng: random.Random) -> None:
@@ -408,16 +407,16 @@ def _near_meta(tally: Tally, song: ReverseSong, row: tuple, rng: random.Random) 
     if played.great + played.okay + played.miss == 0:
         tally.heights["near-meta"].append(played.score / float(song.surface_tops.max()))
         for shown in _SHOWN:
-            _lookup(tally, f"near-meta/tight/{shown}", song, _shown_play(played, stats, chart, shown), stats, gear)
+            _lookup(tally, f"near-meta/tight/{shown}", song, play_info(played, stats, chart, shown), stats, gear)
     worn = _with_perfect_time(Build(stats, tuple(gear), tuple(minis), 0), song, rng)
     edge = play(chart, worn.stats, worn.perfect_time, Plan(_edges(worn.perfect_time)(noise, chart)), frames)
     if edge.great + edge.okay + edge.miss == 0:
-        _lookup(tally, "near-meta/perfect-time-edges/full", song, _shown_play(edge, worn.stats, chart, "full"), worn.stats, worn.gear, "honest")
+        _lookup(tally, "near-meta/perfect-time-edges/full", song, play_info(edge, worn.stats, chart, "full"), worn.stats, worn.gear, "honest")
     for name, situation in SITUATIONS.items():
         if situation.cheats:
             hacked = play(chart, stats, 0, Plan(situation.offsets(noise, chart), states_perfect=True), frames)
             tally.forged[f"near-meta/{name}"].append(hacked.forged / chart.total_notes)
-            _lookup(tally, f"near-meta/{name}/full", song, _shown_play(hacked, stats, chart, "full"), stats, gear, "exploited")
+            _lookup(tally, f"near-meta/{name}/full", song, play_info(hacked, stats, chart, "full"), stats, gear, "exploited")
 
 
 def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, tally: Tally, rng: random.Random, rows: int) -> None:
@@ -430,8 +429,8 @@ def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, tally: Tally, 
             record = json.loads(result)
             stats = dict(zip(STATS, record["stats"]))
             _near_meta(tally, song, (json.loads(gear), [group[0] for group in json.loads(minis)], record["gems"], record["element"]), rng)
-            _lookup(tally, f"stored/meta/{mode}/score", song, ShownPlay(score=int(score)), stats, json.loads(gear))
-            _lookup(tally, f"stored/meta/{mode}/score+power", song, ShownPlay(score=int(score), gear_power=gear_power(stats, chart)), stats, json.loads(gear))
+            _lookup(tally, f"stored/meta/{mode}/score", song, PlayInfo(int(score)), stats, json.loads(gear))
+            _lookup(tally, f"stored/meta/{mode}/score+power", song, PlayInfo(int(score), gear_power=gear_power(stats, chart)), stats, json.loads(gear))
             _past_the_catalog(tally, song, stats, rng)
         fg = con.execute(
             "select fg_score, fg_result, gear from loadouts where timing_mode=? and song_name=? and fg_board=1", (mode, name)
@@ -441,7 +440,7 @@ def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, tally: Tally, 
             stats = dict(zip(STATS, record["stats"]))
             surface = record["surface"]
             greats = surface[9] + sum(bin(word).count("1") for word in surface[4:8])
-            play_row = ShownPlay(score=int(score), perfect=chart.total_notes - greats, great=greats, okay=0, miss=0, gear_power=gear_power(stats, chart))
+            play_row = PlayInfo(int(score), float(f"{100.0 * (1.0 - 0.25 * greats / chart.total_notes):.2f}"), gear_power=gear_power(stats, chart))
             _lookup(tally, f"stored/fg/{mode}", song, play_row, stats, json.loads(gear), "honest")
 
 
@@ -475,7 +474,7 @@ def run_song(name: str, chart: Chart, con: sqlite3.Connection, catalog, curves, 
                 expected = "exploited" if situation.cheats else ("honest" if situation.casual or not clean else "sets")
                 case = f"{build_kind}/{situation_name}/{shown}"
                 match_mode = "Casual" if situation.casual else "Compete"
-                _lookup(tally, case, song, _shown_play(played, build.stats, chart, shown, match_mode), build.stats, build.gear, expected)
+                _lookup(tally, case, song, play_info(played, build.stats, chart, shown, match_mode), build.stats, build.gear, expected)
 
 
 def main() -> int:
