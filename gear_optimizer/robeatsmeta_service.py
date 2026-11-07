@@ -591,23 +591,38 @@ def solve(raw_request: dict[str, Any]) -> list[dict[str, Any]]:
 _SHOWN_NUMBERS = {"accuracy": (int, float), "gearMultiplier": (int, float), "casualScore": (int,), "gearPower": (int,)}
 
 
-def parse_lookup(raw: dict[str, Any]) -> dict[str, Any]:
-    """What a Top Scores row shows, as the lookup worker takes it."""
-    song_id, score = raw.get("targetSongId"), raw.get("score")
-    if not isinstance(song_id, str) or not song_id:
-        raise RequestError("targetSongId is required")
-    if not isinstance(score, int) or isinstance(score, bool) or score <= 0:
-        raise RequestError("score must be a positive integer")
-    shown = {"chartPath": str(find_official_chart(song_id)), "score": score, "matchMode": raw.get("matchMode", "Compete")}
-    if shown["matchMode"] not in ("Compete", "Casual"):
-        raise RequestError("matchMode must be Compete or Casual")
-    for name, types in _SHOWN_NUMBERS.items():
+def _shown_numbers(raw: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any]:
+    shown = {}
+    for name in names:
         value = raw.get(name)
         if value is not None:
-            if not isinstance(value, types) or isinstance(value, bool) or value < 0:
+            if not isinstance(value, _SHOWN_NUMBERS[name]) or isinstance(value, bool) or value < 0:
                 raise RequestError(f"{name} must be a non-negative number")
             shown[name] = value
     return shown
+
+
+def _song_chart(raw: dict[str, Any]) -> str:
+    song_id = raw.get("targetSongId")
+    if not isinstance(song_id, str) or not song_id:
+        raise RequestError("targetSongId is required")
+    return str(find_official_chart(song_id))
+
+
+def parse_lookup(raw: dict[str, Any]) -> dict[str, Any]:
+    """What a Top Scores row shows, as the lookup worker takes it."""
+    chart, score = _song_chart(raw), raw.get("score")
+    if not isinstance(score, int) or isinstance(score, bool) or score <= 0:
+        raise RequestError("score must be a positive integer")
+    shown = {"chartPath": chart, "score": score, "matchMode": raw.get("matchMode", "Compete")}
+    if shown["matchMode"] not in ("Compete", "Casual"):
+        raise RequestError("matchMode must be Compete or Casual")
+    return {**shown, **_shown_numbers(raw, tuple(_SHOWN_NUMBERS))}
+
+
+def parse_prepare(raw: dict[str, Any]) -> dict[str, Any]:
+    """A song a player is typing a row of, and its accuracy once typed: the lookup worker readies what that lookup walks."""
+    return {"chartPath": _song_chart(raw), "prepare": True, **_shown_numbers(raw, ("accuracy",))}
 
 
 # --- catalog builds ----------------------------------------------------------
@@ -695,7 +710,7 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.rstrip("/")
-        if path not in {"/optimize", "/reverse", "/frontiers/refresh"}:
+        if path not in {"/optimize", "/reverse", "/reverse/prepare", "/frontiers/refresh"}:
             self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
         elif not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
@@ -705,6 +720,8 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.ACCEPTED, {"queued": True})
         elif path == "/reverse":
             self._answer(lambda request: _lookups.lookup(parse_lookup(request)))
+        elif path == "/reverse/prepare":
+            self._answer(lambda request: _lookups.lookup(parse_prepare(request)))
         else:
             self._answer(lambda request: {"jobId": request.get("jobId"), "loadouts": solve(request)})
 

@@ -634,11 +634,11 @@ def test_a_data_refresh_builds_every_chart_in_both_modes_and_rereads_the_list(da
     assert built == ["pass"] and len(service.list_official_songs()) == 3
 
 
-def _lookup_handler(monkeypatch, body: dict) -> tuple[service.RoBeatsMetaServiceHandler, list]:
+def _lookup_handler(monkeypatch, body: dict, path: str = "/reverse") -> tuple[service.RoBeatsMetaServiceHandler, list]:
     answers: list = []
     handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
     handler.headers = {}
-    handler.path = "/reverse"
+    handler.path = path
     monkeypatch.setattr(handler, "_read_json", lambda: body)
     monkeypatch.setattr(handler, "_send", lambda status, payload: answers.append((status, payload)))
     return handler, answers
@@ -661,6 +661,23 @@ def test_a_lookup_takes_its_own_queue_and_no_solve_slot(data_root, monkeypatch):
     assert taken[0]["accuracy"] == 99.91
     assert taken[0]["gearPower"] == 40
     assert taken[0]["chartPath"].endswith("song.txt")
+
+
+def test_a_prepare_readies_the_song_in_the_lookup_queue(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    taken: list[dict] = []
+    monkeypatch.setattr(service._LookupWorker, "request", lambda _self, payload: taken.append(payload) or {"prepared": True})
+    monkeypatch.setattr(service, "_solve_slot", lambda: pytest.fail("a prepare waited for a solve slot"))
+    handler, answers = _lookup_handler(monkeypatch, {"targetSongId": "Feeding [Hard]", "accuracy": 99.5}, "/reverse/prepare")
+    handler.do_POST()
+    assert answers == [(service.HTTPStatus.OK, {"prepared": True})]
+    assert taken[0]["prepare"] is True
+    assert taken[0]["accuracy"] == 99.5
+    assert taken[0]["chartPath"].endswith("song.txt")
+    for body in ({"accuracy": 99.5}, {"targetSongId": "Feeding [Hard]", "accuracy": -1}, {"targetSongId": "Unknown [Hard]"}):
+        handler, answers = _lookup_handler(monkeypatch, body, "/reverse/prepare")
+        handler.do_POST()
+        assert answers[0][0] == service.HTTPStatus.BAD_REQUEST
 
 
 @pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}))

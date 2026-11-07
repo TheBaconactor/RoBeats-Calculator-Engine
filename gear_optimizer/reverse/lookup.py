@@ -803,6 +803,14 @@ def shared_lines(rows: list[tuple[PlayInfo, ReverseSong]]) -> np.ndarray:
     return np.column_stack(((shared // _AXIS**4), (shared // _AXIS**3) % _AXIS, (shared // _AXIS**2) % _AXIS, (shared // _AXIS) % _AXIS, shared % _AXIS))
 
 
+def warm_song(song: ReverseSong, accuracy: float | None) -> None:
+    """Ahead of a lookup, the walk it starts with at this accuracy: each Great count's first timelines, so the lookup itself
+    only searches. It changes no answer: lookups walk the same timelines, once per song."""
+    lost = lost_quarters(PlayInfo(1, accuracy), song.chart.total_notes)
+    for greats in range(lost[0], min(lost[1], _GREATS_SEARCHED) + 1):
+        _timelines_of(song, greats, greats > 0)
+
+
 def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Reverse:
     """The sets behind a play, ranked; or what it would take; or the verdict that no honest play gives it."""
     lost = lost_quarters(play, song.chart.total_notes)

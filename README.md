@@ -104,6 +104,7 @@ python -m tools list                           # List the developer tools
 | `GET /songs` | Official chart metadata |
 | `POST /optimize` | Optimize an official chart or supplied chart text |
 | `POST /reverse` | The sets behind a Top Scores row of an official chart, on a queue of its own |
+| `POST /reverse/prepare` | Readies a song, and the walk a lookup at a typed accuracy starts with, while the row is typed |
 | `POST /frontiers/refresh` | Re-read the chart list and look for a new revision |
 
 Bind the service to loopback unless it sits behind a trusted boundary, and set `ROBEATSMETA_OPTIMIZER_API_TOKEN` before

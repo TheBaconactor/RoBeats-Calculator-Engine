@@ -3,6 +3,9 @@
 A process of its own has its own GPU context and so its own command queue. A lookup waits for the command buffer the GPU is
 running, never for a turn on the solve worker's executor, and it runs at normal priority where the solve worker runs in the
 background. Its main thread is its GPU owner, as macOS asks. Prepared songs stay warm, the most recently used first.
+
+A request with "prepare" readies its song, and with an accuracy the walk a lookup at that accuracy starts with: the website
+sends it while the player types the row. The process compiles its GPU kernels on one lookup before it reads a request.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from gear_optimizer.data.game_export import Catalog, load_catalog
 from gear_optimizer.gamedata import StatCurves, stat_curves
 from gear_optimizer.settings import paths
 
-from .lookup import PlayInfo, ReverseSong, prepare_song, reverse_score
+from .lookup import PlayInfo, ReverseSong, prepare_song, reverse_score, warm_song
 
 _SONGS_KEPT = 8
 
@@ -34,10 +37,21 @@ def _song(path: str, songs: OrderedDict[str, ReverseSong], catalog: Catalog, cur
     return songs[path]
 
 
-def lookup(request: dict[str, Any], songs: OrderedDict[str, ReverseSong], catalog: Catalog, curves: StatCurves) -> dict[str, Any]:
+def answer(request: dict[str, Any], songs: OrderedDict[str, ReverseSong], catalog: Catalog, curves: StatCurves) -> dict[str, Any]:
+    song = _song(request["chartPath"], songs, catalog, curves)
+    if request.get("prepare"):
+        warm_song(song, request.get("accuracy"))
+        return {"prepared": True}
     play = PlayInfo(request["score"], request.get("accuracy"), request.get("casualScore"), request.get("gearMultiplier"), request.get("gearPower"), request.get("matchMode", "Compete"))
-    reply = reverse_score(play, _song(request["chartPath"], songs, catalog, curves), limit=request.get("limit", 8))
-    return asdict(reply)
+    return asdict(reverse_score(play, song, limit=request.get("limit", 8)))
+
+
+def _compile_kernels(catalog: Catalog, curves: StatCurves) -> None:
+    """One lookup at the top of the shortest Easy chart: the first lookup of a process compiles every GPU kernel, ~1 s."""
+    charts = sorted(paths().chart_dir("Easy").glob("*.txt"), key=lambda path: path.stat().st_size)
+    if charts:
+        song = prepare_song(load_chart(str(charts[0])), catalog, curves)
+        reverse_score(PlayInfo(int(song.top)), song)
 
 
 def main() -> int:
@@ -51,18 +65,19 @@ def main() -> int:
         from gear_optimizer.gpu.executor import is_fatal_gpu_error
 
         catalog, curves = load_catalog(paths().game_export), stat_curves()
+        _compile_kernels(catalog, curves)
         songs: OrderedDict[str, ReverseSong] = OrderedDict()
         for line in sys.stdin:
             try:
-                answer = {"ok": True, "reverse": lookup(json.loads(line), songs, catalog, curves)}
+                reply = {"ok": True, "reverse": answer(json.loads(line), songs, catalog, curves)}
             except Exception as exc:
                 # A failed request leaves nothing behind; the process keeps serving unless its GPU is gone.
-                answer = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": is_fatal_gpu_error(exc)}
+                reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": is_fatal_gpu_error(exc)}
             except BaseException as exc:
-                answer = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": True}
-            answers.write(json.dumps(answer, separators=(",", ":"), default=str) + "\n")
+                reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": True}
+            answers.write(json.dumps(reply, separators=(",", ":"), default=str) + "\n")
             answers.flush()
-            if answer.get("restart"):
+            if reply.get("restart"):
                 break
     return 0
 

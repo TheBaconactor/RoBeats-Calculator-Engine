@@ -7,6 +7,7 @@ import os
 import random
 import subprocess
 import sys
+from dataclasses import asdict
 from math import ceil
 
 import numpy as np
@@ -17,13 +18,13 @@ from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.gamedata import STATS, empty_stats, stat_curves
 from gear_optimizer.reverse.fever_reach import fever_surfaces
-from gear_optimizer.reverse.lookup import PlayInfo, lost_quarters, prepare_song, reverse_score, shared_lines
+from gear_optimizer.reverse.lookup import PlayInfo, lost_quarters, prepare_song, reverse_score, shared_lines, warm_song
 from gear_optimizer.score import best_timeline_score, factors, fg_surface_score
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid, fixed_timeline_cell
 from gear_optimizer.solver.timing_envelope import fever_axes
 from tools.verify.frame_play import Plan, frame_clock, play
-from tools.verify.fake_players import fake_player
+from tools.verify.fake_players import fake_player, gear_power, play_info
 
 CHART = "Aether (Easy) by Geoxor.txt"
 STORED = dict(zip(STATS, (85, 59, 71, 66, 63, 35, 135, 73, 34, 707)))
@@ -239,14 +240,32 @@ def test_the_lookup_worker_answers_each_line_and_outlives_a_bad_request(song):
         [sys.executable, "-m", "gear_optimizer.reverse.worker"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=environment,
     )
     try:
-        requests = ({"chartPath": "/nonexistent.txt", "score": 1}, {"chartPath": str(paths().chart_dir("Easy") / CHART), "score": 4_666_274})
+        chart = str(paths().chart_dir("Easy") / CHART)
+        requests = ({"chartPath": "/nonexistent.txt", "score": 1}, {"chartPath": chart, "prepare": True, "accuracy": 99.9}, {"chartPath": chart, "score": 4_666_274})
         answers = []
         for request in requests:
             worker.stdin.write(json.dumps(request) + "\n")
             worker.stdin.flush()
             answers.append(json.loads(worker.stdout.readline()))
         assert not answers[0]["ok"] and not answers[0]["restart"]
-        assert answers[1]["ok"] and answers[1]["reverse"]["verdict"] == "sets"
+        assert answers[1] == {"ok": True, "reverse": {"prepared": True}}
+        assert answers[2]["ok"] and answers[2]["reverse"]["verdict"] == "sets"
     finally:
         worker.stdin.close()
         worker.wait(timeout=30)
+
+
+def test_warming_a_song_changes_no_answer(song):
+    """warm_song walks ahead what a lookup at that accuracy walks first, and nothing it would not: the lookup after it answers
+    byte for byte the same."""
+    offsets = np.zeros(song.chart.total_notes)
+    offsets[150] = -70.0  # an early Great for a tap and a hold tail alike
+    played = _simulated(song, STORED, Plan(offsets))
+    shown = play_info(played, gear_power(STORED, song.chart), "Compete")
+    assert played.great >= 1
+    catalog = load_catalog(paths().game_export)
+    cold, warmed = prepare_song(song.chart, catalog, song.curves), prepare_song(song.chart, catalog, song.curves)
+    warm_song(warmed, shown.accuracy)
+    walked = set(warmed.timelines)
+    assert asdict(reverse_score(shown, warmed)) == asdict(reverse_score(shown, cold))
+    assert walked and walked <= set(cold.timelines)
