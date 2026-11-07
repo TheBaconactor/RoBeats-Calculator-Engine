@@ -51,6 +51,7 @@ def solve_best_fever_combination_batch(
         components,
         primary_color=chart.primary,
         secondary_color=chart.secondary,
+        selected_color=selected_color,
         frontier_idx_by_stat=frontier_idx_by_stat,
         total_notes=int(chart.total_notes),
     )

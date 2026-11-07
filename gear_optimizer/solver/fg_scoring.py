@@ -57,6 +57,7 @@ def score_fg_base_components(
         np.asarray(list(floor_of), dtype=np.int32),
         primary_color=inputs.primary_color,
         secondary_color=inputs.secondary_color,
+        selected_color=selected_color,
         frontier_idx_by_stat=scoring_bundle.frontier_idx_by_stat,
         total_notes=int(inputs.total_notes),
         memo=memo,

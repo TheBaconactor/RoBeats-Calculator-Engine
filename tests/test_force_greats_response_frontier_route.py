@@ -474,6 +474,7 @@ def test_response_frontier_group_builder_matches_prune_reference():
             np.ascontiguousarray(primary_delta, dtype=np.int32),
             np.ascontiguousarray(secondary_delta, dtype=np.int32),
             constant,
+            0,
             4,
             9,
         )
