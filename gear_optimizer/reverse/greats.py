@@ -16,8 +16,10 @@ from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.rules import MAX_STAT
 
 _AXIS = MAX_STAT + 1
-# Greats listed note by note in a class; a class with more holds their count and the span of their positions.
+# Greats listed note by note in a class, and the sets of notes a count may list; a class with more holds their count and the span
+# of their positions.
 HEAD_LISTED = 3
+_LISTED_SETS = 1 << 12
 # The most Greats a class puts in the head.
 _HEAD_SPANNED = 16
 _CLASS_COLUMNS = 9
@@ -87,7 +89,7 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
     head fever and only the sum of positions matters; then the lowest and highest Casual loss of the head). timelines: per Casual timeline, its score with no Greats and what a
     Great costs at each head note there. A body Great costs 100 outside the Casual fever, 300 inside."""
     rows: set[tuple[int, ...]] = set()
-    listed = np.empty((1 << 12, 3), dtype=np.int64)
+    listed = np.empty((_LISTED_SETS, 3), dtype=np.int64)
     spans: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
     wider: dict[tuple[int, int], list[int]] = {}
     for clean, losses in timelines:
@@ -100,12 +102,11 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
                     continue
                 if head <= listed_up_to:
                     found = _listed_head(losses, head, (low, high), listed)
-                    if found > listed.shape[0]:
-                        raise ValueError("Casual classes: more head sets than the table holds")
-                    for row in listed[:found].tolist():
-                        total = sum(note + 1 for note in row if note >= 0)
-                        rows.add((head, body, total, total, *row, low, high))
-                    continue
+                    if found <= listed.shape[0]:
+                        for row in listed[:found].tolist():
+                            total = sum(note + 1 for note in row if note >= 0)
+                            rows.add((head, body, total, total, *row, low, high))
+                        continue
                 key = losses.tobytes()
                 if key not in spans:
                     spans[key] = _position_spans(losses, _HEAD_SPANNED, int(_HEAD_SPANNED * losses.max()))

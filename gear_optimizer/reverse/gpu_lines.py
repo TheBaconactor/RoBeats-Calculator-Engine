@@ -655,26 +655,34 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
     )
     counters = np.zeros(_COUNTERS, dtype=np.int32)
     _clear_rows()
-    walked = kept = 0
+    walked = kept = first = 0
+    size = CHUNK_SURFACES
     complete = True
-    for first in range(0, surfaces.ids.shape[0], CHUNK_SURFACES):
-        last = min(first + CHUNK_SURFACES, surfaces.ids.shape[0])
+    per_base = 1 + query.classes.shape[0] // _CLASSES_PER_BASE
+    while first < surfaces.ids.shape[0]:
+        last = min(first + size, surfaces.ids.shape[0])
         _load_chunk(surfaces, first, last, vertices)
         _clear_chunk()
         _find_tiles(last - first, search)
         _find_pairs(search)
         _read_counters(counters)
-        walked += int(counters[_BASES]) * (1 + query.classes.shape[0] // _CLASSES_PER_BASE)
-        if counters[_PAIRS] > _MAX_PAIRS or walked > query.bases:
+        work = int(counters[_BASES]) * per_base
+        if counters[_PAIRS] > _MAX_PAIRS or walked + work > query.bases:
+            # Past the budget the search keeps what it has: a chunk that passes it alone gives way to a part of itself.
             complete = False
-            break
+            if kept or size == 1:
+                break
+            size = max(size >> 2, 1)
+            continue
         _find_rows(search)
         _read_counters(counters)
         # A list that overflowed holds what the threads' race left: the chunk goes, so a run repeats.
         if counters[_ROWS] > MAX_ROWS:
             complete = False
             break
+        walked += work
         kept = int(counters[_ROWS])
+        first = last
     rows = np.empty((kept, READ_COLUMNS), dtype=np.int32)
     if kept:
         _read_rows(kept, rows)

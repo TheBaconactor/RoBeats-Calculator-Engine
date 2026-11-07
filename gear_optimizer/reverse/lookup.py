@@ -757,27 +757,36 @@ def _unreleased_item(play: PlayInfo, song: ReverseSong, ceiling: float, base: fl
     return UnreleasedItem(slot, item, extra, share <= _PLAUSIBLE_SHARE)
 
 
-def _row_keys(play: PlayInfo, song: ReverseSong) -> np.ndarray:
-    """Every (CM, FM, FT, FF, Perfect Points) that gives a row at its Gear Power, under the ceiling, as one number each."""
+def _row_keys(play: PlayInfo, song: ReverseSong) -> tuple[np.ndarray, bool]:
+    """Every (CM, FM, FT, FF, Perfect Points) that gives a row at its Gear Power, under the ceiling, as one number each, and whether
+    they are all."""
     lost = lost_quarters(play, song.chart.total_notes)
     keys = []
+    every_line = lost[1] <= _GREATS_SEARCHED
     for greats in range(lost[0], min(lost[1], _GREATS_SEARCHED) + 1):
         timelines = _timelines_of(song, greats, False)
         classes = _classes_of(play, song, greats, timelines)
-        if classes is not None and (greats == 0 or classes.shape[0]):
-            found = _stat_lines(song, timelines, LineQuery(int(play.score), play.gear_power, greats, classes, _SHARED_BASES)).targets
+        if classes is None:
+            every_line = False
+        elif greats == 0 or classes.shape[0]:
+            lines = _stat_lines(song, timelines, LineQuery(int(play.score), play.gear_power, greats, classes, _SHARED_BASES))
+            every_line = every_line and lines.complete
+            found = lines.targets
             keys.append(found[:, 1] * _AXIS**4 + found[:, 2] * _AXIS**3 + found[:, 3] * _AXIS**2 + found[:, 4] * _AXIS + found[:, 7])
-    return np.unique(np.concatenate(keys)) if keys else np.empty(0, dtype=np.int64)
+    return (np.unique(np.concatenate(keys)) if keys else np.empty(0, dtype=np.int64)), every_line
 
 
 def shared_lines(rows: list[tuple[PlayInfo, ReverseSong]]) -> np.ndarray:
     """The stats one player's rows on several songs can share: (CM, FM, FT, FF, Perfect Points) rows. One row leaves thousands far
     below a song's top, and each more leaves a sliver of them, so this names arbitrary gear where a row cannot, if the player wore
-    one set for all of them. Every row needs its Gear Power."""
+    one set for all of them. Every row needs its Gear Power. A row whose lines are not all known cannot rule any out: it counts
+    for nothing."""
     shared = None
     for play, song in rows:
-        keys = _row_keys(play, song)
-        shared = keys if shared is None else np.intersect1d(shared, keys)
+        keys, every_line = _row_keys(play, song)
+        if every_line:
+            shared = keys if shared is None else np.intersect1d(shared, keys)
+    shared = np.empty(0, dtype=np.int64) if shared is None else shared
     return np.column_stack(((shared // _AXIS**4), (shared // _AXIS**3) % _AXIS, (shared // _AXIS**2) % _AXIS, (shared // _AXIS) % _AXIS, shared % _AXIS))
 
 
