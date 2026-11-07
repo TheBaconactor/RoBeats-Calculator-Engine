@@ -35,8 +35,8 @@ def _vertex_bound(values, prices, relief, u, cm, fm, floor):
 
 @jit(nopython=True, cache=True)
 def perfect_lines(score, surfaces, multipliers, notes, ceiling, out):
-    """Every (surface, CM, FM, base) with exactly this score under its ceiling, into out; returns how many there are
-    (more than out's rows: the rest is not listed)."""
+    """Every (surface, CM, FM, base) with exactly this score under its ceiling, into out; returns how many there are, or
+    out's rows + 1 where they stop fitting."""
     words, coeffs, pattern, body_fever = surfaces
     combo, ramp, fever = multipliers
     head_len, body_total = notes
@@ -73,9 +73,10 @@ def perfect_lines(score, surfaces, multipliers, notes, ceiling, out):
                                     words[p], (bf, 0, 0), notes, 0, base, 0.0, (combo[cm], ramp[cm], fever[fm]), 0
                                 )
                                 if exact == score:
-                                    if found < out.shape[0]:
-                                        row = out[found]
-                                        row[0], row[1], row[2], row[3] = u, cm, fm, base
+                                    if found == out.shape[0]:
+                                        return found + 1
+                                    row = out[found]
+                                    row[0], row[1], row[2], row[3] = u, cm, fm, base
                                     found += 1
                             base += 1
     return found
@@ -119,16 +120,16 @@ def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
 
 @jit(nopython=True, cache=True)
 def band_lines(score, surfaces, multipliers, notes, ceiling, slip, out):
-    """Every (surface, CM, FM, lowest base, highest base) that can land on this score once notes leave the surface:
-    slip: (body notes that may enter or leave fever, full fever notes' worth of points lost); into out, returning how
-    many there are. A line's score is under base x (shape + spare) and over base x (shape - spare - lost)."""
+    """Every (surface, CM, FM, lowest base, highest base) whose score can land on this one once a play leaves the surface:
+    slip: (body notes that may enter or leave fever, the lowest and highest share of its points a play keeps); into out,
+    returning how many there are, or out's rows + 1 where they stop fitting."""
     coeffs, pattern, body_fever = surfaces
     combo, fever = multipliers
     head_len, body_total = notes
     values, prices, relief = ceiling
-    spare, lost = slip
-    total_notes = head_len + body_total
-    wanted = float(score)
+    spare, keep_low, keep_high = slip
+    wanted = float(score) / keep_high
+    roof = float(score + head_len + body_total) / keep_low
     found = 0
     for u in range(body_fever.shape[0]):
         p = pattern[u]
@@ -156,11 +157,12 @@ def band_lines(score, surfaces, multipliers, notes, ceiling, slip, out):
                         limit = _vertex_bound(values, prices, relief, u, cm, fm, float(low))
                         if limit < low:
                             continue
-                        high = min(int(limit), int((wanted + total_notes) / max(middle - reach - lost * full * fever[fm], 1.0)))
+                        high = min(int(limit), int(roof / max(middle - reach, 1.0)))
                         if low <= high:
-                            if found < out.shape[0]:
-                                row = out[found]
-                                row[0], row[1], row[2], row[3], row[4] = u, cm, fm, low, high
+                            if found == out.shape[0]:
+                                return found + 1
+                            row = out[found]
+                            row[0], row[1], row[2], row[3], row[4] = u, cm, fm, low, high
                             found += 1
     return found
 

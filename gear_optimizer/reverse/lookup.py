@@ -6,6 +6,7 @@ can still reach, a walk over the items finds the loadouts themselves, and gear_o
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from math import ceil
 
@@ -16,11 +17,12 @@ from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_ORDER, team_buff_effect
 from gear_optimizer.data.game_export import Catalog
 from gear_optimizer.frontier.types import FgResponseSurface
-from gear_optimizer.gamedata import ELEMENTS, SongMini, StatCurves, empty_stats, song_minis
+from gear_optimizer.gamedata import ELEMENTS, STATS, SongMini, StatCurves, empty_stats, song_minis
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.score import HEAD_NOTES, Factors, factors, fg_surface_score
 from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.stats import GEM_KINDS, named_loadout_stats
+from gear_optimizer.store.records import Loadout
 
 from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, pattern_words, walk_cell
 from .invert import band_lines, line_targets, perfect_lines, score_ceiling
@@ -40,21 +42,27 @@ from .loadouts import (
 _AXIS = MAX_STAT + 1
 _STAT_PRICE_SHARES = (1.0, 0.7)
 _POINTS_PRICES = (0.6, 1.5)
-_LINE_ROWS = 1 << 18
+_LINE_ROWS = 1 << 16
 _TARGET_ROWS = 1 << 16
 _BOUND_STEPS = 200
-_WALK_NODES = 200_000
+# Items a lookup may try, and what its bounds count for: ~50 ms of search past the lines. A bound 64 points clear of a
+# target settles nothing a tighter one would, so it stands in for a new one.
+_SEARCH_ITEMS = 5_000_000
+_ITEMS_PER_WALK = 400_000
+_ITEMS_PER_BOUND = 30_000
+_LOOSE_SLACK = 64.0
 _FOUND_ROWS = 16
 _PREFERRED_TIER = "T5"
 # The most a build's gems and gear can widen the Perfect window: no honest play is judged wider than this stat.
 _WIDEST_PERFECT_TIME = MAX_STAT
-# Measured on the dev rows: a Force Great moves fever by at most 12 notes; the worst share of a fever note's points one
-# judgment can lose, a Miss with the combo ramp it restarts counted at a note's worth.
-_FEVER_NOTES_PER_GREAT = 12
-_LOST_PER_GREAT, _LOST_PER_OKAY, _LOST_PER_MISS = 0.42, 0.72, 2.0
+# Dev rows: 93% of Force Great plays move fever by at most 3 notes a Great; a played Great keeps ~60% of a note's points,
+# an Okay ~30%. A hand-played line stays within 20% of that loss; a planned Great loses less, down to none.
+_FEVER_NOTES_PER_GREAT = 3
+_MOST_FEVER_NOTES = 30.0
+_LOST_PER_GREAT, _LOST_PER_OKAY, _LOST_PER_MISS = 0.4, 0.7, 1.0
+_LOSS_SPREAD = 0.2
 # An unreleased item is plausible while it stands this share over the best the slot has.
 _PLAUSIBLE_SHARE = 0.25
-_TARGET_WALKS = 256
 # Past this many Greats a play's timelines are too many to walk and its score too loose to place: only its span counts.
 _WALKED_GREATS = 12
 _SHARPENING_ROUNDS = 6
@@ -256,23 +264,28 @@ def _on_cells(song: ReverseSong, lines: np.ndarray, play: ShownPlay) -> np.ndarr
     return rows[np.argsort(rows[:, 7], kind="stable"), :7]
 
 
-def _tight_bound(song: ReverseSong, target: np.ndarray, cuts: list[tuple[float, np.ndarray]]) -> tuple[float, np.ndarray] | None:
-    """The bound and prices of a target row of _on_cells, None when a bound already found rules it out; a new bound is
-    kept in `cuts`: its prices stay nearly as tight for the rows beside it."""
+def _tight_bound(song: ReverseSong, target: np.ndarray, cuts: list[tuple[float, np.ndarray]]) -> tuple[float, np.ndarray, bool] | None:
+    """The bound and prices of a target row of _on_cells and whether a new bound was solved, None when a bound already
+    found rules it out; a new bound is kept in `cuts`: its prices stay nearly as tight for the rows beside it."""
     stats = np.asarray([-song.top_pp, *target[1:5].tolist()], dtype=np.float64)
+    lowest, standing = 1.0e18, None
     for value, prices in cuts:
-        if value - prices[1:] @ stats[1:] < target[5]:
+        bound = value - float(prices[1:] @ stats[1:])
+        if bound < target[5]:
             return None
+        if bound < lowest:
+            lowest, standing = bound, prices
+    if standing is not None and lowest >= target[5] + _LOOSE_SLACK:
+        return lowest, standing, False
     value, prices = _lowest_at(song, stats)
     cuts.append((value, prices))
     bound = value - float(prices[1:] @ stats[1:])
-    return (bound, prices) if bound >= target[5] else None
+    return (bound, prices, True) if bound >= target[5] else None
 
 
-def _loadouts_of(song: ReverseSong, target: np.ndarray, tight: tuple[float, np.ndarray]) -> tuple[list[tuple], bool]:
-    """The released sets of a target row: (gear, minis, gems, element, stats, fixed row, slack), and whether the walk
-    could finish."""
-    bound, prices = tight
+def _loadouts_of(song: ReverseSong, target: np.ndarray, tight: tuple[float, np.ndarray, bool], items: int) -> tuple[list[tuple], int]:
+    """The released sets of a target row: (gear, minis, gems, element, stats, fixed row, slack), and the items tried."""
+    bound, prices, _new = tight
     gift = max(2.0 * fixed.row[5] + fixed.row[6] + prices[0] * (fixed.row[0] - song.top_pp) for fixed in song.fixed)
     cm, fm, ft, ff, lowest, highest = target[1:].tolist()
     rows = np.empty((_FOUND_ROWS, 16), dtype=np.int64)
@@ -280,16 +293,16 @@ def _loadouts_of(song: ReverseSong, target: np.ndarray, tight: tuple[float, np.n
     bases = np.asarray([lowest, highest], dtype=np.int64)
     space = song.space
     found: list[tuple] = []
-    finished = True
+    tried = 0
     for fixed in song.fixed:
         slack = bound - gift + prices[0] * (fixed.row[0] - song.top_pp) + 2.0 * fixed.row[5] + fixed.row[6] - lowest
         if slack < 0.0:
             continue
         query = (walk_target, bases, slack, prices, fixed.row)
-        count, complete = walk_loadouts(space.items, space.starts, space.gems, song.curves.f64["Perfect Points"], query, rows, _WALK_NODES)
-        finished = finished and complete
+        count, used = walk_loadouts(space.items, space.starts, space.gems, song.curves.f64["Perfect Points"], query, rows, items)
+        tried += used
         found += [(*_final_stats(song, row, fixed), fixed, float(slack)) for row in rows[:count]]
-    return found, finished
+    return found, tried
 
 
 def _power_of(stats: dict[str, int], song: ReverseSong) -> int:
@@ -303,10 +316,27 @@ def _surface_arrays(surfaces: FeverSurfaces) -> tuple:
     return surfaces.words, surfaces.coeffs, surfaces.pattern, surfaces.body_fever
 
 
-def _found_of(song: ReverseSong, rows: list[tuple], play: ShownPlay) -> list[tuple]:
-    if play.gear_power is None:
-        return rows
-    return [row for row in rows if _power_of(row[4], song) == play.gear_power]
+def _search(song: ReverseSong, targets: np.ndarray, play: ShownPlay, limit: int, accept) -> tuple[list[FoundSet], bool]:
+    """The sets of the target rows, nearest their bound first, until `limit` or the search budget; whether it ran out of
+    targets, not budget. accept(row of _loadouts_of, target): the set, or None."""
+    found: list[FoundSet] = []
+    cuts: list[tuple[float, np.ndarray]] = []
+    spent = 0
+    for target in targets:
+        if len(found) >= limit or spent > _SEARCH_ITEMS:
+            return found, False
+        tight = _tight_bound(song, target, cuts)
+        if tight is None:
+            continue
+        spent += _ITEMS_PER_BOUND * tight[2]
+        rows, tried = _loadouts_of(song, target, tight, _ITEMS_PER_WALK)
+        spent += tried
+        for row in rows:
+            if play.gear_power is None or _power_of(row[4], song) == play.gear_power:
+                placed = accept(row, target)
+                if placed is not None:
+                    found.append(placed)
+    return found, True
 
 
 def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[FoundSet], int, bool]:
@@ -315,26 +345,17 @@ def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[
     ceiling = (song.vertex_values, song.vertex_prices, song.relief)
     count = perfect_lines(int(play.score), _surface_arrays(song.surfaces), _multipliers(song), _note_split(chart), ceiling, out)
     lines = out[: min(count, _LINE_ROWS)]
-    targets = _on_cells(song, np.column_stack((lines, lines[:, 3])), play)
-    found: list[FoundSet] = []
-    finished = count <= _LINE_ROWS and len(targets) <= _TARGET_WALKS
-    cuts: list[tuple[float, np.ndarray]] = []
-    for target in targets[:_TARGET_WALKS]:
-        tight = _tight_bound(song, target, cuts)
-        if tight is None:
-            continue
-        rows, complete = _loadouts_of(song, target, tight)
-        finished = finished and complete
+
+    def accept(row: tuple, target: np.ndarray) -> FoundSet:
+        gear, minis, gems, element, stats, fixed, slack = row
         surface = _surface_row(song, int(target[0]))
-        for gear, minis, gems, element, stats, fixed, slack in _found_of(song, rows, play):
-            value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
-            if value != play.score:
-                raise ValueError(f"reverse lookup: a set of line {target.tolist()} scores {value}, not {play.score}")
-            found.append(FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, slack))
-        if len(found) >= limit:
-            finished = False
-            break
-    return found, count, finished
+        value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
+        if value != play.score:
+            raise ValueError(f"reverse lookup: a set of line {target.tolist()} scores {value}, not {play.score}")
+        return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, slack)
+
+    found, finished = _search(song, _on_cells(song, np.column_stack((lines, lines[:, 3])), play), play, limit, accept)
+    return found, count, finished and count <= _LINE_ROWS
 
 
 def _cell_axes(song: ReverseSong, cell: tuple[int, int], greats: int, perfect_time: int) -> tuple:
@@ -422,46 +443,51 @@ def _great_fit(song: ReverseSong, stats: dict[str, int], judged: Judged, score: 
 
 
 def _band_sets(play: ShownPlay, song: ReverseSong, judged: Judged, limit: int) -> tuple[list[FoundSet], int, bool]:
-    """The sets of a play that left the surfaces: lines in reach of the score, then each set's own test."""
+    """The sets of a play that left the surfaces: lines in reach of the score, then each set's own test: an exact Great
+    placement while the Greats are few enough to place, else its line only."""
     chart = song.chart
     out = np.empty((_LINE_ROWS, 5), dtype=np.int64)
-    spare = float(_FEVER_NOTES_PER_GREAT * judged.great_hi)
-    lost = _LOST_PER_GREAT * judged.great_hi + _LOST_PER_OKAY * judged.okay + _LOST_PER_MISS * judged.miss
+    notes = float(chart.total_notes)
+    placed = judged.okay == 0 and judged.miss == 0 and judged.great_hi <= _WALKED_GREATS
+    keep = 1.0 - (_LOST_PER_GREAT * judged.great_hi + _LOST_PER_OKAY * judged.okay + _LOST_PER_MISS * judged.miss) / notes
+    slip = (min(float(_FEVER_NOTES_PER_GREAT * judged.great_hi), _MOST_FEVER_NOTES), keep - _LOSS_SPREAD * (1.0 - keep), 1.0 if placed else keep + _LOSS_SPREAD * (1.0 - keep))
     ceiling = (song.vertex_values, song.vertex_prices, song.relief)
-    count = band_lines(int(play.score), _surface_arrays(song.surfaces)[1:], _multipliers(song)[::2], _note_split(chart), ceiling, (spare, lost), out)
+    count = band_lines(int(play.score), _surface_arrays(song.surfaces)[1:], _multipliers(song)[::2], _note_split(chart), ceiling, slip, out)
     lines = out[: min(count, _LINE_ROWS)]
+
+    def accept(row: tuple, target: np.ndarray) -> FoundSet | None:
+        gear, minis, gems, element, stats, fixed, slack = row
+        surface = _great_fit(song, stats, judged, int(play.score)) if placed else FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        if surface is None:
+            return None
+        if placed:
+            value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
+            if value != play.score:
+                raise ValueError(f"reverse lookup: a placed surface scores {value}, not {play.score}")
+        return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, slack, placed)
+
     targets = _on_cells(song, lines, play)
-    found: list[FoundSet] = []
-    finished = count <= _LINE_ROWS and len(targets) <= _TARGET_WALKS
-    cuts: list[tuple[float, np.ndarray]] = []
-    exact_only = judged.okay == 0 and judged.miss == 0 and judged.great_hi <= _WALKED_GREATS
-    walked: set[tuple[int, ...]] = set()
-    for target in targets:
-        key = tuple(target[1:].tolist())
-        if key in walked:
+    found, finished = _search(song, targets, play, limit, accept)
+    return found, count, finished and count <= _LINE_ROWS
+
+
+def board_sets(play: ShownPlay, song: ReverseSong, board: Iterable[Loadout]) -> list[FoundSet]:
+    """The Force Great plans stored with exactly this score: a play copied from a published plan. Search cannot tell a
+    Great's place from its loss, so a plan is found by its score."""
+    chart = song.chart
+    found = []
+    for row in board:
+        if row.fg is None or row.fg_score != play.score:
             continue
-        walked.add(key)
-        if len(walked) > _TARGET_WALKS:
-            finished = False
-            break
-        tight = _tight_bound(song, target, cuts)
-        if tight is None:
-            continue
-        rows, complete = _loadouts_of(song, target, tight)
-        finished = finished and complete
-        for gear, minis, gems, element, stats, fixed, slack in _found_of(song, rows, play):
-            surface = _great_fit(song, stats, judged, int(play.score)) if exact_only else FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-            if surface is None:
-                continue
-            if exact_only:
-                value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
-                if value != play.score:
-                    raise ValueError(f"reverse lookup: a placed surface scores {value}, not {play.score}")
-            found.append(FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, slack, exact_only))
-        if len(found) >= limit:
-            finished = False
-            break
-    return found, count, finished
+        stats = dict(zip(STATS, row.fg.stats))
+        surface = FgResponseSurface(*row.fg.surface)
+        value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
+        if value != play.score:
+            raise ValueError(f"reverse lookup: stored plan {row.loadout_hash} scores {value}, not {play.score}")
+        minis = tuple(group[0] for group in row.minis)
+        gems = dict(zip(GEM_KINDS, row.fg.gems))
+        found.append(FoundSet(row.gear, minis, gems, row.fg.element, row.tier, chart.primary, stats, surface, 0.0))
+    return found
 
 
 def judged_play(play: ShownPlay, notes: int) -> Judged:
@@ -550,18 +576,16 @@ def _unreleased_item(play: ShownPlay, song: ReverseSong, ceiling: float, base: f
     return UnreleasedItem(slot, item, extra, share <= _PLAUSIBLE_SHARE)
 
 
-def reverse_score(play: ShownPlay, song: ReverseSong, *, limit: int = 8) -> Reverse:
-    """The sets behind a shown play, ranked; or what it would take; or the verdict that no honest play gives it."""
+def reverse_score(play: ShownPlay, song: ReverseSong, *, limit: int = 8, board: Iterable[Loadout] = ()) -> Reverse:
+    """The sets behind a shown play, ranked; or what it would take; or the verdict that no honest play gives it.
+    board: stored loadouts of the song, whose Force Great plans a play may have copied."""
     judged = judged_play(play, song.chart.total_notes)
-    found: list[FoundSet] = []
+    found = board_sets(play, song, board)
     count, finished = 0, True
-    if judged.great_lo == 0 and judged.okay == 0 and judged.miss == 0:
+    if not found and judged.great_lo == 0 and judged.okay == 0 and judged.miss == 0:
         found, count, finished = _perfect_sets(play, song, limit)
     if not found and not judged.clean:
-        if judged.great_hi <= _WALKED_GREATS and judged.okay == 0 and judged.miss == 0:
-            found, count, finished = _band_sets(play, song, judged, limit)
-        else:
-            finished = False
+        found, count, finished = _band_sets(play, song, judged, limit)
     found.sort(key=lambda row: row.slack)
     evidence = _casual_evidence(play, song, judged)
     if evidence is not None:

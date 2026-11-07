@@ -265,8 +265,8 @@ def _leaf_gems(total, target, gems, points, bases, counts):
 @jit(nopython=True, cache=True)
 def walk_loadouts(items, starts, gems, points, query, found, budget):
     """The loadouts that reach a target, into found (rows: 9 item indices, 7 gem values from _leaf_gems), cheapest first;
-    returns (found rows, whether the walk finished). query: (target row, base values (lowest, highest), bound slack at
-    prices, prices, fixed row).
+    returns (found rows, items tried), budget + 1 tried when it stopped early. query: (target row, base values (lowest,
+    highest), bound slack at prices, prices, fixed row).
 
     A loadout gives up what each of its items falls short of its slot's best at the prices, and the bound's slack is all
     it may give up, so a slot walks only the items inside the slack, and a walk stops at the first that does not fit
@@ -299,7 +299,7 @@ def walk_loadouts(items, starts, gems, points, query, found, budget):
             _leaf_gems(partial[depth], target, gems, points, bases, counts)
             if counts[0] >= 0:
                 if written >= found.shape[0]:
-                    return written, False
+                    return written, budget + 1
                 for d in range(_ITEMS_EQUIPPED):
                     found[written, d] = order[positions[d] - 1]
                 found[written, _ITEMS_EQUIPPED:] = counts
@@ -310,13 +310,13 @@ def walk_loadouts(items, starts, gems, points, query, found, budget):
         i = positions[depth]
         if i >= stop:
             if depth == 0:
-                return written, True
+                return written, nodes
             depth -= 1
             continue
         positions[depth] = i + 1
         nodes += 1
         if nodes > budget:
-            return written, False
+            return written, nodes
         shortfall = lost[i]
         if depth >= 6:
             # The mini at this depth stands against the (depth - 6)-th best mini.
