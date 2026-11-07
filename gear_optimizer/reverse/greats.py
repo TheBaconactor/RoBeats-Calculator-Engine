@@ -282,7 +282,7 @@ def _residues(points):
 def great_rows(score, surfaces, multipliers, notes, ceiling, game, out):
     """Every (surface, CM, FM, base, class, Great points, Perfect Points stat) whose clean score less the class's loss is
     this score, under the ceiling, at a cell the surface reaches and the Gear Power leaves, into out; returns how many rows,
-    out's rows + 1 when more exist. surfaces: (words, coeffs, pattern, body fever, FT + FF bit sets, their lowest and
+    and whether they are all. surfaces: (words, coeffs, pattern, body fever, FT + FF bit sets, their lowest and
     highest); ceiling: (vertex values, prices, relief per surface); game: (classes, points per Perfect Points, one color,
     Gear Power, the (pair, base) rows it may walk). Gear Power holds 2 x base + 5 x PP - 2 x its points + 5 x the other stats, so at a pair it leaves a span of
     FT + FF, and a surface whose cells miss the span is skipped before any head is summed."""
@@ -343,11 +343,11 @@ def great_rows(score, surfaces, multipliers, notes, ceiling, game, out):
                                 continue
                             found = _base_rows(need, (u, cm, fm, base), tables, classes, (out, found))
                             if found > out.shape[0]:
-                                return found
+                                return out.shape[0], False
                             if walked > pairs:
-                                return out.shape[0] + 1
+                                return found, False
                             walked += 1
-    return found
+    return found, True
 
 
 @jit(nopython=True, cache=True)

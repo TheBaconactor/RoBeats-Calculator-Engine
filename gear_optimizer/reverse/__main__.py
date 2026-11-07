@@ -1,4 +1,4 @@
-"""python -m gear_optimizer.reverse --song "<Song Name>" --score N [what the game shows]: the sets behind a shown score."""
+"""python -m gear_optimizer.reverse --song "<Song Name>" --score N [what the Top Scores menu shows]: the sets behind a row."""
 
 from __future__ import annotations
 

@@ -1,16 +1,16 @@
-"""Score reverse-lookup: a shown score and what the game's UI shows beside it, to the sets that give it.
+"""Score reverse-lookup: what the Top Scores menu shows of a play, to the sets that give it.
 
-The input is what the user enters and nothing stored: the answer is worked out from the chart, the released catalog and
-the stat curves, the same score math run backwards. The all-Perfect score equation leaves a few stat lines near a song's
-top and thousands far below it. A ceiling over the released items keeps those a loadout can reach, value tables and a walk
-over the items find the loadouts, and gear_optimizer.score confirms every one. A play with other judgments has no such
-equation: where its Greats lie is unknown, so its score only bounds its line. It gets the Casual score proof and the ceiling.
+The input is a row and its View popup, what a user reads off the game, and nothing stored: the answer is worked out from the
+chart, the released catalog and the stat curves, the same score math run backwards. The all-Perfect score equation leaves a few
+stat lines near a song's top and thousands far below it. A ceiling over the released items keeps those a loadout can reach,
+value tables and a walk over the items find the loadouts, and gear_optimizer.score confirms every one. A play with Greats goes
+through greats.py: its Casual score says where they lie. Sets rank by how little one gem move would add, since players place
+their gems; nothing public tells two sets of one stat line apart, and far below the top nothing tells the lines apart.
 
 Cost in the song's real sizes: prepare O(C E log n) for the walk of C = 25,921 cells, O(P J) for the ceiling over P
-(surface, cell) pairs (~60,000) and J vertices, O(U B) for the surfaces' tops, ~0.2 s once per song. A lookup near a song's
-top: ~3 ms of invert.perfect_targets and ~1 ms of walks. Far below it, ~40 ms: the first _TARGET_ROWS lines of a sample of
-surfaces, and the sets the search budget reaches among them; every stat line is then reachable and nothing public tells
-them apart.
+(surface, cell) pairs (~60,000) and J vertices, O(U B) for the surfaces' tops, ~0.2 s once per song. A clean lookup near a song's
+top: ~3 ms of invert.perfect_targets and ~1 ms of walks. Far below it the lines are capped by _LINE_PAIRS. A lookup with Greats:
+the first at a Great count walks the cells, 0.1 to 4 s; after that see greats.py.
 """
 
 from __future__ import annotations
@@ -456,9 +456,8 @@ def _great_sets(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> t
     rows = np.empty((_GREAT_ROWS, ROW_COLUMNS), dtype=np.int64)
     game = classes, points, chart.primary == chart.secondary, play.gear_power, _GREAT_PAIRS
     arrays = walked.words, walked.coeffs, patterns, bodies, sums
-    count = great_rows(play.score, arrays, song.multipliers, song.notes, (song.vertex_values, song.vertex_prices, relief), game, rows)
-    every_row = count <= _GREAT_ROWS
-    rows = rows[:min(count, _GREAT_ROWS)]
+    count, every_row = great_rows(play.score, arrays, song.multipliers, song.notes, (song.vertex_values, song.vertex_prices, relief), game, rows)
+    rows = rows[:count]
     held = np.empty((_GREAT_ROWS, 8), dtype=np.int64)
     written = cell_lines(rows, play.gear_power, points, (bands, walked.cell_start, walked.cells), (song.vertex_values, song.vertex_prices), held)
     every_row = every_row and written <= _GREAT_ROWS

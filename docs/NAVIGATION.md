@@ -10,8 +10,9 @@ Use this page to find the current owner of a behavior. The
   - `python -m gear_optimizer.cli run`
 - HTTP service: `gear_optimizer/robeatsmeta_service.py`
 - Score reverse-lookup: `gear_optimizer/reverse/lookup.py`
-  - `python -m gear_optimizer.reverse --song "<Song Name>" --score N`
-  - Benchmark: `tools/verify/score_reverse_benchmark.py`, on simulated plays from `tools/verify/frame_play.py`
+  - `python -m gear_optimizer.reverse --song "<Song Name>" --score N [--accuracy A --multiplier M --casual C --gear-power GP]`
+  - Plays with Greats: `gear_optimizer/reverse/greats.py`
+  - Benchmark: `tools/verify/score_reverse_benchmark.py`, on `tools/verify/fake_players.py` through `tools/verify/frame_play.py`
 - GeneralMeta: `general_meta/app.py` (`run_general_meta`), which the website's data publish runs on its
   `evolution.db` snapshot
 
