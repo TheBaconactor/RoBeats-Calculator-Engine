@@ -465,8 +465,10 @@ def _played_surface(song: ReverseSong, scored: Factors, row: np.ndarray, classes
     return FgResponseSurface(*words[:4], *great_words, body_fever, body, fevered)
 
 
-def _named_set(song: ReverseSong, found: np.ndarray, rows: np.ndarray, classes: np.ndarray, timelines: Timelines, gem_gap: float, score: int) -> FoundSet | None:
-    """A search's loadout, if a row of its line gives the score at the loadout's own Great points."""
+def _named_set(song: ReverseSong, found: np.ndarray, rows: np.ndarray, plays: tuple[np.ndarray, Timelines, dict], gem_gap: float, score: int) -> FoundSet | None:
+    """A search's loadout, if a row of its line gives the score at the loadout's own Great points. plays: (classes, timelines,
+    the surfaces found so far by row and Great points: every loadout of a line with the same Great points has the same)."""
+    classes, timelines, known = plays
     chart = song.chart
     gear = tuple(song.space.names[i] for i in found[:6].tolist())
     minis = tuple(song.space.names[i] for i in found[6:9].tolist())
@@ -479,7 +481,10 @@ def _named_set(song: ReverseSong, found: np.ndarray, rows: np.ndarray, classes: 
     scored = factors(stats, song.curves, chart.primary, chart.secondary)
     fitting = rows if classes.shape[0] == 0 else rows[rows[:, 5] == scored.great_base]
     for row in fitting[:_ROWS_PER_SET]:
-        surface = _played_surface(song, scored, row, classes, timelines, score)
+        key = (*row.tolist(), scored.great_base)
+        if key not in known:
+            known[key] = _played_surface(song, scored, row, classes, timelines, score)
+        surface = known[key]
         if surface is not None and fg_surface_score(scored, surface, chart.total_notes) == score:
             return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, gem_gap)
     return None
@@ -602,9 +607,10 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
     first = np.searchsorted(found[tries, 16], np.arange(lines.targets.shape[0]))
     last = np.searchsorted(found[tries, 16], np.arange(lines.targets.shape[0]), side="right")
     listed: list[int] = []
+    plays = classes, timelines, {}
     for t in np.argsort(final, kind="stable")[:_SETS_TRIED].tolist():
         span = lines.held[lines.spans[t, 0] : lines.spans[t, 1], 0]
-        made = (_named_set(song, found[r], lines.rows[span], classes, timelines, float(gaps[r]), play.score) for r in tries[first[t] : last[t]].tolist())
+        made = (_named_set(song, found[r], lines.rows[span], plays, float(gaps[r]), play.score) for r in tries[first[t] : last[t]].tolist())
         sets = [replace(row, cost=float(final[t])) for row in made if row is not None]
         if sets:
             named[t] = sets
