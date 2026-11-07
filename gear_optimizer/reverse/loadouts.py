@@ -231,7 +231,8 @@ def lowest_bound(items, starts, gems, points, target, prices, steps):
 @jit(nopython=True, cache=True)
 def _leaf_gems(total, target, gems, points, bases, counts):
     """Into counts the gems (PP, CM, FM, FT, FF, element, element row) that take a pre-gem total to the target and a base
-    value in bases (lowest, highest); counts[0] = -1 when none do. target: CM, FM, FT, FF in places 1..4."""
+    value in bases (lowest, highest, Gear Power or negative); counts[0] = -1 when none do. target: CM, FM, FT, FF in places
+    1..4."""
     bought = 0
     primary, secondary = total[5], total[6]
     for d in range(1, 5):
@@ -248,17 +249,16 @@ def _leaf_gems(total, target, gems, points, bases, counts):
         counts[0] = -1
         return
     left = GEM_BUDGET - bought
+    fever_stats = target[1] + target[2] + target[3] + target[4]
     for pp_gems in range(left + 1):
         stat = min(total[0] + pp_gems * gems[0, 0], points.shape[0] - 1)
-        have = 2 * (primary + pp_gems * gems[0, 5]) + secondary + pp_gems * gems[0, 6] + int(points[stat])
+        colors = 2 * (primary + pp_gems * gems[0, 5]) + secondary + pp_gems * gems[0, 6]
         element = left - pp_gems
-        for row in range(5, 7):
-            if bases[0] <= have + element * (2 * gems[row, 5] + gems[row, 6]) <= bases[1]:
+        for row in range(5, 8):
+            value = colors + element * (2 * gems[row, 5] + gems[row, 6])
+            if bases[0] <= value + int(points[stat]) <= bases[1] and (bases[2] < 0 or 5 * (stat + fever_stats) + 2 * value == bases[2]):
                 counts[0], counts[5], counts[6] = pp_gems, element, row
                 return
-        if bases[0] <= have <= bases[1]:
-            counts[0], counts[5], counts[6] = pp_gems, element, 7
-            return
     counts[0] = -1
 
 
@@ -266,7 +266,7 @@ def _leaf_gems(total, target, gems, points, bases, counts):
 def walk_loadouts(items, starts, gems, points, query, found, budget):
     """The loadouts that reach a target, into found (rows: 9 item indices, 7 gem values from _leaf_gems), cheapest first;
     returns (found rows, items tried), budget + 1 tried when it stopped early. query: (target row, base values (lowest,
-    highest), bound slack at prices, prices, fixed row).
+    highest, Gear Power or negative), bound slack at prices, prices, fixed row).
 
     A loadout gives up what each of its items falls short of its slot's best at the prices, and the bound's slack is all
     it may give up, so a slot walks only the items inside the slack, and a walk stops at the first that does not fit

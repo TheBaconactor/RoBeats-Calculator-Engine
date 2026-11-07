@@ -67,23 +67,21 @@ def _merged(left, right):
 
 
 @jit(nopython=True, cache=True)
-def walk_cell(times, fills, duration, scratch, out):
-    """Into out the timelines of one cell as rows (mask low, mask high, lowest, highest, bits): one fever window per
-    round, states of a round merged by activation and mask. times: earliest and latest per position; fills: the fewest
-    and most notes that fill the bar; scratch: two state tables. Returns the rows written, -1 when a table is full."""
+def walk_cell(times, fill, duration, scratch, out):
+    """Into out the timelines of one cell of a play that judges every note Perfect, as rows (mask low, mask high, lowest,
+    highest, bits): one fever window per round, states of a round merged by activation and mask. times: earliest and
+    latest per position; fill: the notes that fill the bar; scratch: two state tables. Returns the rows written, -1 when
+    a table is full."""
     earliest, latest = times
-    fill_lo, fill_hi = fills
     current, following = scratch
     n = earliest.shape[0]
-    written = 0
-    if fill_hi > n:
+    if fill > n:
         out[0, 0], out[0, 1], out[0, 2], out[0, 3], out[0, 4] = 0, 0, 0, 0, 1
-        written = 1
-    states = 0
-    for a in range(fill_lo - 1, min(fill_hi, n)):
-        row = current[states]
-        row[0], row[1], row[2], row[3], row[4], row[5] = a, 0, 0, 0, 0, 1
-        states += 1
+        return 1
+    written = 0
+    row = current[0]
+    row[0], row[1], row[2], row[3], row[4], row[5] = fill - 1, 0, 0, 0, 0, 1
+    states = 1
     while states > 0:
         rows = np.argsort(current[:states, 0])
         pushed = 0
@@ -113,17 +111,17 @@ def walk_cell(times, fills, duration, scratch, out):
                         else:
                             next_high |= 1 << (position - _LOW_WORD_BITS)
                     gain = max(0, end - max(a, HEAD_NOTES))
-                    if end + fill_hi >= n:
+                    if end + fill >= n:
                         if written >= out.shape[0]:
                             return -1
                         row = out[written]
                         row[0], row[1], row[2], row[3], row[4] = next_low, next_high, counts[0] + gain, counts[1] + gain, counts[2]
                         written += 1
-                    for activation in range(end + fill_lo, min(end + fill_hi + 1, n)):
+                    else:
                         if pushed >= following.shape[0]:
                             return -1
                         row = following[pushed]
-                        row[0], row[1], row[2] = activation, next_low, next_high
+                        row[0], row[1], row[2] = end + fill, next_low, next_high
                         row[3], row[4], row[5] = counts[0] + gain, counts[1] + gain, counts[2]
                         pushed += 1
             at = group
@@ -134,7 +132,8 @@ def walk_cell(times, fills, duration, scratch, out):
 
 @jit(nopython=True, cache=True)
 def fever_span(times, fills, duration):
-    """The fewest and the most events one cell's play keeps in fever: walk_cell's windows without their head masks."""
+    """The fewest and the most events one cell's play keeps in fever when the notes that fill its bar lie between fills:
+    walk_cell's windows without their masks."""
     earliest, latest = times
     fill_lo, fill_hi = fills
     n = earliest.shape[0]
@@ -169,7 +168,7 @@ def _walk_grid(times, fills, durations):
     for ft in range(durations.shape[0]):
         for ff in range(fills.shape[0]):
             cell = ft * fills.shape[0] + ff
-            rows = walk_cell(times, (fills[ff], fills[ff]), durations[ft], scratch, out)
+            rows = walk_cell(times, fills[ff], durations[ft], scratch, out)
             if rows < 0:
                 raise ValueError("fever walk: a cell outgrew its tables")
             for row in range(rows):
