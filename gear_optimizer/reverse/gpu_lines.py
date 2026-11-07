@@ -35,7 +35,7 @@ _HEAD = 100
 _MASK_WORDS = 4
 _SUM_WORDS = 12
 _MAX_VERTICES = 64
-_MAX_CLASSES = 1 << 13
+MAX_CLASSES = 1 << 13
 CHUNK_SURFACES = 512
 _MAX_TILES = CHUNK_SURFACES * _TILES
 _MAX_PAIRS = 1 << 23
@@ -103,7 +103,7 @@ _FIELDS = {
     "sum_span": (ti.i32, CHUNK_SURFACES, 2),
     "relief": (ti.f32, (CHUNK_SURFACES, _MAX_VERTICES)),
     # A play.
-    "classes": (ti.i32, _MAX_CLASSES, _CLASS_COLUMNS),
+    "classes": (ti.i32, MAX_CLASSES, _CLASS_COLUMNS),
     # The lists.
     "counters": (ti.i32, _COUNTERS),
     "live": (ti.i32, _MAX_TILES),
@@ -645,8 +645,6 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
     score, in no order, and whether they are all: the search stops before a chunk that would pass `bases`, or at MAX_ROWS rows."""
     _start()
     _load_song(song)
-    if query.classes.shape[0] > _MAX_CLASSES:
-        raise ValueError(f"reverse lookup: {query.classes.shape[0]} classes, the GPU tables hold {_MAX_CLASSES}")
     if query.classes.shape[0]:
         _load_vectors(tables.classes, query.classes.shape[0], query.classes.astype(np.int32))
     terms = 5.0 * np.arange(song.points.shape[0]) - 2.0 * song.points

@@ -35,7 +35,7 @@ from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.stats import GEM_KINDS, named_loadout_stats
 
 from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, great_times, pattern_words, walk_cell
-from .gpu_lines import MAX_ROWS, LineQuery, SongTables, line_rows, surface_tables
+from .gpu_lines import MAX_CLASSES, MAX_ROWS, LineQuery, SongTables, line_rows, surface_tables
 from .greats import (
     HEAD_LISTED,
     ROW_COLUMNS,
@@ -549,12 +549,15 @@ def _named_costs(lines: FoundLines, found: np.ndarray, gaps: np.ndarray, reached
 
 def _classes_of(play: PlayInfo, song: ReverseSong, greats: int, timelines: Timelines) -> np.ndarray | None:
     """Where a play's Greats can lie, empty for a clean play; None when the row cannot tell: Greats need the Casual score and Gear
-    Power, what tells a line's Greats apart."""
+    Power, what tells a line's Greats apart, and past MAX_CLASSES places those tell nothing."""
     if greats == 0:
         return np.empty((0, 9), dtype=np.int64)
     window = _casual_window(play)
     casual = None if window is None or play.gear_power is None else _casual_timelines(song, greats)
-    return None if casual is None else casual_classes(window, casual, greats, HEAD_LISTED if timelines.head_fever else 0)
+    if casual is None:
+        return None
+    classes = casual_classes(window, casual, greats, HEAD_LISTED if timelines.head_fever else 0)
+    return None if classes.shape[0] > MAX_CLASSES else classes
 
 
 def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tuple[list[FoundSet], list[StatLine], int, bool]:

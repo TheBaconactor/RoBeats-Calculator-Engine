@@ -214,6 +214,24 @@ def test_rows_of_one_set_on_two_songs_share_its_stats(song):
     assert [59, 71, 63, 66, 85] in shared_lines(rows).tolist()
 
 
+def test_a_player_below_max_gets_their_stat_line_with_no_set_to_name(song):
+    """Minis below max: no released max-level set need reach the line, and the line still comes back."""
+    player = fake_player(random.Random(9), song, dict(load_catalog(paths().game_export).minis), "solid", "machine")
+    played = _simulated(song, player.stats, Plan(np.zeros(song.chart.total_notes)))
+    chart = song.chart
+    five = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
+    power = 5 * sum(player.stats[key] for key in five) + 4 * player.stats[chart.primary] + 2 * player.stats[chart.secondary]
+    reply = reverse_score(PlayInfo(played.score, 100.0, played.casual, gear_power=power), song, limit=4096)
+    wanted = tuple(player.stats[key] for key in ("Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate", "Perfect Points"))
+    assert wanted in [(line.combo_multiplier, line.fever_multiplier, line.fever_time, line.fever_fill_rate, line.perfect_points) for line in reply.stat_lines]
+
+
+def test_a_low_score_with_many_greats_ends_at_its_budget(song):
+    """Far below the top with Greats a pair holds many base values: the search stops before a chunk would pass its budget."""
+    reply = reverse_score(PlayInfo(int(0.3 * song.top), 99.0, 60_000, gear_power=2000), song)
+    assert not reply.finished or reply.lines == 0
+
+
 def test_the_lookup_worker_answers_each_line_and_outlives_a_bad_request(song):
     """The service's lookup process, its own process and GPU context: a request it cannot serve costs only that answer."""
     environment = {**os.environ, "EVOLUTION_DB_PATH": "/nonexistent"}
