@@ -8,14 +8,9 @@ from dataclasses import asdict
 from pathlib import Path
 
 from gear_optimizer.chart import load_chart, read_header
-from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
-from gear_optimizer.core.timing_modes import TIMING_MODES
 from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.settings import DIFFICULTIES, paths
-from gear_optimizer.store.db import load_boards
-from gear_optimizer.store.records import Loadout
-from gear_optimizer.store.schema import connect
 
 from .lookup import ShownPlay, prepare_song, reverse_score
 
@@ -26,16 +21,6 @@ def _chart_path(song: str) -> Path:
             if read_header(path)["Song Name"] == song:
                 return path
     raise SystemExit(f"no chart has the Song Name {song!r}")
-
-
-def _stored_plans(database: str | None, song: str) -> list[Loadout]:
-    if database is None:
-        return []
-    conn = connect(database)
-    try:
-        return [row for mode in TIMING_MODES for row in load_boards(conn, mode, song, OPTIMIZER_BASELINE_TEAM_BUFF).fg]
-    finally:
-        conn.close()
 
 
 def main() -> int:
@@ -50,14 +35,13 @@ def main() -> int:
     parser.add_argument("--gear-power", type=int, help="Play Info's Gear Power")
     parser.add_argument("--mode", default="Compete", choices=("Compete", "Casual"), help="Play Info's Mode")
     parser.add_argument("--limit", type=int, default=8, help="the most stat lines to list")
-    parser.add_argument("--db", help="a results database whose Force Great plans a play may have copied")
     args = parser.parse_args()
     play = ShownPlay(
         args.score, args.casual, args.accuracy, args.perfect, args.great, args.okay, args.miss, args.gear_power, args.mode,
         args.multiplier,
     )
     song = prepare_song(load_chart(_chart_path(args.song)), load_catalog(paths().game_export), stat_curves())
-    reply = reverse_score(play, song, limit=args.limit, board=_stored_plans(args.db, args.song))
+    reply = reverse_score(play, song, limit=args.limit)
     print(json.dumps(asdict(reply), indent=1, default=str))
     return 0
 

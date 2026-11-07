@@ -1,9 +1,10 @@
 """Score reverse-lookup: a shown score and what the game's UI shows beside it, to the sets that give it.
 
-The all-Perfect score equation leaves a few stat lines near a song's top and thousands far below it. A ceiling over the
-released items keeps those a loadout can reach, value tables and a walk over the items find the loadouts, and
-gear_optimizer.score confirms every one. A play with other judgments has no such equation: where its Greats lie is
-unknown, so its score only bounds its line. It gets the stored plans of its song, the Casual score proof and the ceiling.
+The input is what the user enters and nothing stored: the answer is worked out from the chart, the released catalog and
+the stat curves, the same score math run backwards. The all-Perfect score equation leaves a few stat lines near a song's
+top and thousands far below it. A ceiling over the released items keeps those a loadout can reach, value tables and a walk
+over the items find the loadouts, and gear_optimizer.score confirms every one. A play with other judgments has no such
+equation: where its Greats lie is unknown, so its score only bounds its line. It gets the Casual score proof and the ceiling.
 
 Cost in the song's real sizes: prepare O(C E log n) for the walk of C = 25,921 cells, O(P J) for the ceiling over P
 (surface, cell) pairs (~60,000) and J vertices, O(U B) for the surfaces' tops, ~0.2 s once per song. A lookup near a song's
@@ -14,7 +15,6 @@ them apart.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from math import ceil
 
@@ -25,12 +25,11 @@ from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_ORDER, team_buff_effect
 from gear_optimizer.data.game_export import Catalog
 from gear_optimizer.frontier.types import FgResponseSurface
-from gear_optimizer.gamedata import ELEMENTS, STATS, SongMini, StatCurves, empty_stats, song_minis
+from gear_optimizer.gamedata import ELEMENTS, SongMini, StatCurves, empty_stats, song_minis
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT
 from gear_optimizer.score import HEAD_NOTES, factors, fg_surface_score
 from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.stats import GEM_KINDS, named_loadout_stats
-from gear_optimizer.store.records import Loadout
 
 from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, pattern_words, walk_cell
 from .invert import perfect_targets, score_ceiling, surface_tops
@@ -325,23 +324,6 @@ def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[
     return sets, count, complete and every_line
 
 
-def board_sets(play: ShownPlay, song: ReverseSong, board: Iterable[Loadout]) -> list[FoundSet]:
-    """The Force Great plans stored with exactly this score: a play copied from a published plan."""
-    chart = song.chart
-    found = []
-    for row in board:
-        if row.fg is None or row.fg_score != play.score:
-            continue
-        stats = dict(zip(STATS, row.fg.stats))
-        surface = FgResponseSurface(*row.fg.surface)
-        value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
-        if value != play.score:
-            raise ValueError(f"reverse lookup: stored plan {row.loadout_hash} scores {value}, not {play.score}")
-        gems = dict(zip(GEM_KINDS, row.fg.gems))
-        found.append(FoundSet(row.gear, tuple(group[0] for group in row.minis), gems, row.fg.element, row.tier, chart.primary, stats, surface, 0.0))
-    return found
-
-
 def _widest(song: ReverseSong) -> dict:
     """What the widest Perfect window needs, built when a lookup first does: its surfaces, their relief, the ceiling of a
     build with each count of Perfect Time gems, and the Casual scores found per window."""
@@ -466,13 +448,11 @@ def _unreleased_item(play: ShownPlay, song: ReverseSong, ceiling: float, base: f
     return UnreleasedItem(slot, item, extra, share <= _PLAUSIBLE_SHARE)
 
 
-def reverse_score(play: ShownPlay, song: ReverseSong, *, limit: int = 8, board: Iterable[Loadout] = ()) -> Reverse:
-    """The sets behind a shown play, ranked; or what it would take; or the verdict that no honest play gives it.
-    board: stored loadouts of the song, whose Force Great plans a play may have copied."""
+def reverse_score(play: ShownPlay, song: ReverseSong, *, limit: int = 8) -> Reverse:
+    """The sets behind a shown play, ranked; or what it would take; or the verdict that no honest play gives it."""
     judged = judged_play(play, song.chart.total_notes)
-    found = board_sets(play, song, board)
-    count, finished = 0, judged.clean
-    if not found and judged.can_be_clean:
+    found, count, finished = [], 0, judged.clean
+    if judged.can_be_clean:
         found, count, finished = _perfect_sets(play, song, limit)
     found.sort(key=lambda row: row.slack)
     evidence = _casual_evidence(play, song, judged)

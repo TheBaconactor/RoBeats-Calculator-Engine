@@ -18,7 +18,6 @@ from gear_optimizer.score import best_timeline_score, factors, fg_surface_score
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid, fixed_timeline_cell
 from gear_optimizer.solver.timing_envelope import fever_axes
-from gear_optimizer.store.records import FgResult, Loadout
 from tools.verify.frame_play import Plan, frame_clock, play
 from tools.verify.score_reverse_benchmark import generated_build, hacked_presses
 
@@ -155,20 +154,6 @@ def test_a_gear_multiplier_stands_in_for_the_casual_score(song):
     assert reverse_score(ShownPlay(score=honest.score, gear_multiplier=multiplier, accuracy=100.0), song).evidence == ()
     reply = reverse_score(ShownPlay(score=honest.score, gear_multiplier=multiplier * 1.3, accuracy=100.0), song)
     assert reply.verdict == "exploited" and reply.evidence
-
-
-def test_a_copied_force_great_plan_is_found_on_the_board(song):
-    """Precise FG #1 of the chart: 2 Greats in the head, from a results database."""
-    surface = (4294443008, 4294967295, 4294967295, 15, 524289, 0, 0, 0, 112, 0, 0)
-    stats = (85, 59, 71, 69, 63, 35, 135, 73, 34, 704)
-    result = FgResult("Vibe", (0, 1, 11, 0, 23, 55), stats, surface, 0, 0)
-    gear = ("The Games: Hidden Shine", "Legendary Vibe Ringleader's Necktie")
-    row = Loadout(
-        "precise", song.chart.name, "T5", "hash", gear, (("Shaii",), ("Electroman",), ("Doppelganger Roxie",)), "Vibe", "Rush", None,
-        4_666_274, 4_666_978, None, result,
-    )
-    reply = reverse_score(ShownPlay(score=4_666_978, accuracy=99.87), song, board=[row])
-    assert reply.verdict == "sets" and reply.sets[0].gems["Fever Fill Rate"] == 23
 
 
 def test_accuracy_leaves_its_rounding_of_greats():

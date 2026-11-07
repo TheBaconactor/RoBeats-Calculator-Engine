@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Seeded dev/held-out benchmark of the score reverse-lookup (gear_optimizer.reverse).
 
-Truth comes from outside the lookup: stored rows of a results database (a known set and its score) and generated plays
-through tools/verify/frame_play.py, a frame-by-frame port of the decompiled game. Songs split by a seeded hash, so dev tuning
-never sees held-out songs. Cases: stored rows and plays of stored builds a few gems off, what the catalog does not hold, then
+Truth comes from outside the lookup, which never reads it: stored rows of a results database (a known set and its score,
+the answer key) and generated plays through tools/verify/frame_play.py, a frame-by-frame port of the decompiled game. Songs
+split by a seeded hash, so dev tuning never sees held-out songs. Cases: stored rows and plays of stored builds a few gems off, what the catalog does not hold, then
 generated plays: sets from uniform to climbed, simulated players at frame rates, timing noise, misses, fever shifts, Force
 Greats, Casual matches and hacks. Latencies are this process's CPU time, on one thread with NUMBA_NUM_THREADS=1. Run with
 EVOLUTION_DB_PATH set to anything but a live database; the database is only read.
@@ -42,8 +42,6 @@ from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import fixed_timeline_cell
 from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE, fever_axes, judgment_bounds
 from gear_optimizer.stats import GEM_KINDS, apply_gems, total
-from gear_optimizer.store.db import load_boards
-from gear_optimizer.store.schema import connect
 from tools.verify.frame_play import Played, Plan, frame_clock, play
 
 _LINE = ("Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
@@ -51,7 +49,6 @@ _FIVE = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time",
 _BUILDS = ("any", "colored", "climbed")
 _TIERS = tuple(TEAM_BUFF_TIER_ORDER)
 _SHOWN = ("score", "score+power", "full")
-_DATABASE: list[str] = []
 
 
 def gear_power(stats: dict[str, int], chart: Chart) -> int:
@@ -423,7 +420,7 @@ def _near_meta(tally: Tally, song: ReverseSong, row: tuple, rng: random.Random) 
             _lookup(tally, f"near-meta/{name}/full", song, _shown_play(hacked, stats, chart, "full"), stats, gear, "exploited")
 
 
-def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, store, tally: Tally, rng: random.Random, rows: int) -> None:
+def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, tally: Tally, rng: random.Random, rows: int) -> None:
     """Verified builds: stored rows of a results database, by score and at its Gear Power."""
     for mode in ("non-precise", "precise"):
         meta = con.execute(
@@ -445,20 +442,15 @@ def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, store, tally: 
             surface = record["surface"]
             greats = surface[9] + sum(bin(word).count("1") for word in surface[4:8])
             play_row = ShownPlay(score=int(score), perfect=chart.total_notes - greats, great=greats, okay=0, miss=0, gear_power=gear_power(stats, chart))
-            _lookup(tally, f"stored/fg/{mode}/no-board", song, play_row, stats, json.loads(gear), "honest")
-            board = load_boards(store, mode, name, "T5").fg
-            started = time.process_time()
-            reply = reverse_score(play_row, song, board=board)
-            tally.add(f"stored/fg/{mode}/board", song, stats, json.loads(gear), reply, time.process_time() - started)
+            _lookup(tally, f"stored/fg/{mode}", song, play_row, stats, json.loads(gear), "honest")
 
 
 def run_song(name: str, chart: Chart, con: sqlite3.Connection, catalog, curves, tally: Tally, seed: int, rows_per_song: int) -> None:
-    store = connect(_DATABASE[0])
     started = time.process_time()
     song = prepare_song(chart, catalog, curves)
     tally.note_prepare((time.process_time() - started) * 1000.0)
     rng = random.Random(f"{seed}:{name}")
-    _stored_rows(name, chart, song, con, store, tally, rng, rows_per_song)
+    _stored_rows(name, chart, song, con, tally, rng, rows_per_song)
     last_ms = float(chart.timestamps[-1]) * 1000.0
     for build_kind in _BUILDS:
         for situation_name, situation in SITUATIONS.items():
@@ -496,7 +488,6 @@ def main() -> int:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
-    _DATABASE.append(args.db)
     curves = stat_curves()
     catalog = load_catalog(paths().game_export)
     charts: dict[str, Path] = {}
