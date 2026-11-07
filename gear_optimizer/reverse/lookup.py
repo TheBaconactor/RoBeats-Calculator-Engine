@@ -6,7 +6,7 @@ can still reach, a walk over the items finds the loadouts themselves, and gear_o
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import ceil
 
 import numpy as np
@@ -23,10 +23,9 @@ from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.stats import GEM_KINDS, named_loadout_stats
 
 from .fever_reach import FeverSurfaces, event_times, fever_surfaces, pattern_words, walk_cell
-from .invert import band_lines, perfect_lines, score_ceiling
+from .invert import band_lines, line_targets, perfect_lines, score_ceiling
 from .loadouts import (
     GEAR_SLOTS,
-    MINI_SLOT,
     FixedStats,
     LoadoutSpace,
     fixed_stats,
@@ -41,7 +40,8 @@ from .loadouts import (
 _AXIS = MAX_STAT + 1
 _STAT_PRICE_SHARES = (1.0, 0.7)
 _POINTS_PRICES = (0.6, 1.5)
-_LINE_ROWS = 1 << 14
+_LINE_ROWS = 1 << 18
+_TARGET_ROWS = 1 << 16
 _BOUND_STEPS = 200
 _WALK_NODES = 1_000_000
 _FOUND_ROWS = 16
@@ -55,6 +55,7 @@ _LOST_PER_GREAT, _LOST_PER_OKAY, _LOST_PER_MISS = 0.42, 0.72, 2.0
 # An unreleased item is plausible while it stands this share over the best the slot has.
 _PLAUSIBLE_SHARE = 0.25
 _TARGET_WALKS = 256
+_SHARPENING_ROUNDS = 6
 _SCRATCH_ROWS = 1 << 15
 
 
@@ -105,10 +106,44 @@ def prepare_song(chart: Chart, catalog: Catalog, curves: StatCurves) -> ReverseS
         for vertex in prices
     ])
     minis = {mini.name: mini for mini in song_minis(catalog.minis.values(), chart.name, chart.primary, chart.secondary)}
-    return ReverseSong(
+    song = ReverseSong(
         chart, curves, dict(catalog.gears), minis, surfaces, space, tuple(fixed), values, prices,
         _cell_relief(surfaces.cell_start, surfaces.cells, prices), max(int(row.row[0]) for row in fixed),
     )
+    return _sharpened(song)
+
+
+def _sharpened(song: ReverseSong) -> ReverseSong:
+    """The song with vertices added at its best lines: the bound's lowest prices there stay tight for the lines around
+    them, where most lookups land (a cutting plane over the whole song)."""
+    surfaces = song.surfaces
+    for _ in range(_SHARPENING_ROUNDS):
+        ceiling = (song.vertex_values, song.vertex_prices, song.relief)
+        _best, (u, cm, fm) = score_ceiling(
+            (surfaces.coeffs, surfaces.pattern, surfaces.body_fever), _multipliers(song)[::2], _note_split(song.chart), ceiling, 0.0
+        )
+        cells = surfaces.cells[surfaces.cell_start[u] : surfaces.cell_start[u + 1]]
+        stats = np.column_stack((np.full(cells.shape, cm), np.full(cells.shape, fm), cells // _AXIS, cells % _AXIS))
+        cell = cells[int(np.argmax((song.vertex_values[None, :] - stats @ song.vertex_prices[:, 1:].T).min(axis=1)))]
+        value, prices = _lowest_at(song, np.asarray([-song.top_pp, cm, fm, cell // _AXIS, cell % _AXIS], dtype=np.float64))
+        relief = _cell_relief(surfaces.cell_start, surfaces.cells, prices[None, :])
+        song = replace(
+            song,
+            vertex_values=np.append(song.vertex_values, value),
+            vertex_prices=np.vstack((song.vertex_prices, prices)),
+            relief=np.hstack((song.relief, relief)),
+        )
+    return song
+
+
+def _lowest_at(song: ReverseSong, stats: np.ndarray) -> tuple[float, np.ndarray]:
+    """The lowest bound the steps find at these stats (place 0: minus the top fixed Perfect Points), over every TeamBuff:
+    as a vertex value (the bound before the stats' prices) and its prices."""
+    prices = song.vertex_prices[np.argmin(song.vertex_values - song.vertex_prices[:, 1:] @ stats[1:])].copy()
+    space = song.space
+    bound = lowest_bound(space.items, space.starts, space.gems, song.curves.f64["Perfect Points"], stats, prices, _BOUND_STEPS)
+    gift = max(2.0 * fixed.row[5] + fixed.row[6] + prices[0] * (fixed.row[0] - song.top_pp) for fixed in song.fixed)
+    return bound + gift + float(prices[1:] @ stats[1:]), prices
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +215,14 @@ class Reverse:
     evidence: tuple[str, ...] = ()
 
 
+def _multipliers(song: ReverseSong) -> tuple:
+    return song.curves.f64["Combo Multiplier"], song.curves.combo_ramp, song.curves.f64["Fever Multiplier"]
+
+
+def _note_split(chart: Chart) -> tuple[int, int]:
+    return min(chart.total_notes, HEAD_NOTES), max(0, chart.total_notes - HEAD_NOTES)
+
+
 def _final_stats(song: ReverseSong, row: np.ndarray, fixed: FixedStats) -> tuple[tuple[str, ...], tuple[str, ...], dict[str, int], str, dict[str, int]]:
     """A found row as (gear, minis, gems, selected element, final stats)."""
     gear = tuple(song.space.names[i] for i in row[:6].tolist())
@@ -197,19 +240,18 @@ def _surface_row(song: ReverseSong, u: int) -> FgResponseSurface:
     return FgResponseSurface(*words, int(song.surfaces.body_fever[u]), 0, 0)
 
 
-def _on_cells(song: ReverseSong, lines: np.ndarray) -> np.ndarray:
-    """Each line (surface, CM, FM, base, base) on each of its cells: rows (surface, CM, FM, FT, FF, lowest base, highest
-    base) that the vertices leave, nearest their bound first."""
+def _on_cells(song: ReverseSong, lines: np.ndarray, play: ShownPlay) -> np.ndarray:
+    """The lines (surface, CM, FM, base, base) on their cells: target rows (surface, CM, FM, FT, FF, lowest base, highest
+    base) under the vertices and in reach of the Gear Power, nearest their bound first."""
     surfaces = song.surfaces
-    sizes = surfaces.cell_start[lines[:, 0] + 1] - surfaces.cell_start[lines[:, 0]]
-    rows = np.repeat(lines, sizes, axis=0)
-    cells = np.concatenate([surfaces.cells[surfaces.cell_start[u] : surfaces.cell_start[u + 1]] for u in lines[:, 0].tolist()])
-    ft, ff = cells // _AXIS, cells % _AXIS
-    stats = np.column_stack((rows[:, 1], rows[:, 2], ft, ff)).astype(np.float64)
-    bound = (song.vertex_values[None, :] - stats @ song.vertex_prices[:, 1:].T).min(axis=1)
-    keep = np.flatnonzero(bound >= rows[:, 3])
-    keep = keep[np.argsort(bound[keep] - rows[keep, 3], kind="stable")]
-    return np.column_stack((rows[keep, 0], rows[keep, 1:3], ft[keep], ff[keep], rows[keep, 3:5]))
+    points = song.curves.f64["Perfect Points"]
+    terms = np.sort(5.0 * np.arange(points.shape[0]) - 2.0 * points)
+    power = -1 if play.gear_power is None else play.gear_power
+    out = np.empty((_TARGET_ROWS, 8), dtype=np.int64)
+    ceiling = (song.vertex_values, song.vertex_prices, song.relief)
+    count = line_targets(lines, surfaces.cell_start, surfaces.cells, ceiling, terms, power, out)
+    rows = out[: min(count, _TARGET_ROWS)]
+    return rows[np.argsort(rows[:, 7], kind="stable"), :7]
 
 
 def _tight_bound(song: ReverseSong, target: np.ndarray, cuts: list[tuple[float, np.ndarray]]) -> tuple[float, np.ndarray] | None:
@@ -217,20 +259,19 @@ def _tight_bound(song: ReverseSong, target: np.ndarray, cuts: list[tuple[float, 
     kept in `cuts`: its prices stay nearly as tight for the rows beside it."""
     stats = np.asarray([-song.top_pp, *target[1:5].tolist()], dtype=np.float64)
     for value, prices in cuts:
-        if value - prices @ stats < target[5]:
+        if value - prices[1:] @ stats[1:] < target[5]:
             return None
-    prices = song.vertex_prices[np.argmin(song.vertex_values - song.vertex_prices[:, 1:] @ stats[1:])].copy()
-    space = song.space
-    bound = lowest_bound(space.items, space.starts, space.gems, song.curves.f64["Perfect Points"], stats, prices, _BOUND_STEPS)
-    gift = max(2.0 * fixed.row[5] + fixed.row[6] + prices[0] * (fixed.row[0] - song.top_pp) for fixed in song.fixed)
-    cuts.append((bound + gift + float(prices @ stats), prices))
-    return (bound, prices) if bound + gift >= target[5] else None
+    value, prices = _lowest_at(song, stats)
+    cuts.append((value, prices))
+    bound = value - float(prices[1:] @ stats[1:])
+    return (bound, prices) if bound >= target[5] else None
 
 
 def _loadouts_of(song: ReverseSong, target: np.ndarray, tight: tuple[float, np.ndarray]) -> tuple[list[tuple], bool]:
     """The released sets of a target row: (gear, minis, gems, element, stats, fixed row, slack), and whether the walk
     could finish."""
     bound, prices = tight
+    gift = max(2.0 * fixed.row[5] + fixed.row[6] + prices[0] * (fixed.row[0] - song.top_pp) for fixed in song.fixed)
     cm, fm, ft, ff, lowest, highest = target[1:].tolist()
     rows = np.empty((_FOUND_ROWS, 16), dtype=np.int64)
     walk_target = np.asarray([0, cm, fm, ft, ff], dtype=np.int64)
@@ -239,7 +280,7 @@ def _loadouts_of(song: ReverseSong, target: np.ndarray, tight: tuple[float, np.n
     found: list[tuple] = []
     finished = True
     for fixed in song.fixed:
-        slack = bound + prices[0] * (fixed.row[0] - song.top_pp) + 2.0 * fixed.row[5] + fixed.row[6] - lowest
+        slack = bound - gift + prices[0] * (fixed.row[0] - song.top_pp) + 2.0 * fixed.row[5] + fixed.row[6] - lowest
         if slack < 0.0:
             continue
         query = (walk_target, bases, slack, prices, fixed.row)
@@ -247,15 +288,6 @@ def _loadouts_of(song: ReverseSong, target: np.ndarray, tight: tuple[float, np.n
         finished = finished and complete
         found += [(*_final_stats(song, row, fixed), fixed, float(slack)) for row in rows[:count]]
     return found, finished
-
-
-def _keep_gear_power(song: ReverseSong, rows: np.ndarray, power: int) -> np.ndarray:
-    """The target rows some Perfect Points stat can bring to this Gear Power: 5 x the five stats + 2 x the elements, the
-    elements being the base value less the stat's points."""
-    points = song.curves.f64["Perfect Points"]
-    terms = np.sort(5.0 * np.arange(points.shape[0]) - 2.0 * points)
-    left = power - 5.0 * rows[:, 1:5].sum(axis=1)
-    return rows[np.searchsorted(terms, left - 2.0 * rows[:, 5], side="right") > np.searchsorted(terms, left - 2.0 * rows[:, 6])]
 
 
 def _power_of(stats: dict[str, int], song: ReverseSong) -> int:
@@ -267,14 +299,6 @@ def _power_of(stats: dict[str, int], song: ReverseSong) -> int:
 
 def _surface_arrays(surfaces: FeverSurfaces) -> tuple:
     return surfaces.words, surfaces.coeffs, surfaces.pattern, surfaces.body_fever
-
-
-def _multipliers(song: ReverseSong) -> tuple:
-    return song.curves.f64["Combo Multiplier"], song.curves.combo_ramp, song.curves.f64["Fever Multiplier"]
-
-
-def _note_split(chart: Chart) -> tuple[int, int]:
-    return min(chart.total_notes, HEAD_NOTES), max(0, chart.total_notes - HEAD_NOTES)
 
 
 def _found_of(song: ReverseSong, rows: list[tuple], play: ShownPlay) -> list[tuple]:
@@ -289,9 +313,7 @@ def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[
     ceiling = (song.vertex_values, song.vertex_prices, song.relief)
     count = perfect_lines(int(play.score), _surface_arrays(song.surfaces), _multipliers(song), _note_split(chart), ceiling, out)
     lines = out[: min(count, _LINE_ROWS)]
-    targets = _on_cells(song, np.column_stack((lines, lines[:, 3]))) if len(lines) else np.empty((0, 7), dtype=np.int64)
-    if play.gear_power is not None:
-        targets = _keep_gear_power(song, targets, play.gear_power)
+    targets = _on_cells(song, np.column_stack((lines, lines[:, 3])), play)
     found: list[FoundSet] = []
     finished = count <= _LINE_ROWS
     cuts: list[tuple[float, np.ndarray]] = []
@@ -401,20 +423,24 @@ def _band_sets(play: ShownPlay, song: ReverseSong, judged: Judged, limit: int) -
     ceiling = (song.vertex_values, song.vertex_prices, song.relief)
     count = band_lines(int(play.score), _surface_arrays(song.surfaces)[1:], _multipliers(song)[::2], _note_split(chart), ceiling, (spare, lost), out)
     lines = out[: min(count, _LINE_ROWS)]
-    targets = _on_cells(song, lines) if len(lines) else np.empty((0, 7), dtype=np.int64)
-    if play.gear_power is not None:
-        targets = _keep_gear_power(song, targets, play.gear_power)
-    targets = np.unique(targets[:, 1:], axis=0)
+    targets = _on_cells(song, lines, play)
     found: list[FoundSet] = []
     finished = count <= _LINE_ROWS and len(targets) <= _TARGET_WALKS
     cuts: list[tuple[float, np.ndarray]] = []
     exact_only = judged.okay == 0 and judged.miss == 0
-    for target in targets[: _TARGET_WALKS]:
-        row_target = np.concatenate(([0], target))
-        tight = _tight_bound(song, row_target, cuts)
+    walked: set[tuple[int, ...]] = set()
+    for target in targets:
+        key = tuple(target[1:].tolist())
+        if key in walked:
+            continue
+        walked.add(key)
+        if len(walked) > _TARGET_WALKS:
+            finished = False
+            break
+        tight = _tight_bound(song, target, cuts)
         if tight is None:
             continue
-        rows, complete = _loadouts_of(song, row_target, tight)
+        rows, complete = _loadouts_of(song, target, tight)
         finished = finished and complete
         for gear, minis, gems, element, stats, fixed, slack in _found_of(song, rows, play):
             surface = _great_fit(song, stats, judged, int(play.score)) if exact_only else FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
@@ -489,7 +515,7 @@ def _honest_ceiling(song: ReverseSong, judged: Judged) -> float:
     return score_ceiling(
         (surfaces.coeffs, surfaces.pattern, surfaces.body_fever), _multipliers(song)[::2], _note_split(chart),
         (song.vertex_values, song.vertex_prices, song.honest["relief"]), float(_FEVER_NOTES_PER_GREAT * judged.great_hi),
-    )
+    )[0]
 
 
 def _unreleased_item(play: ShownPlay, song: ReverseSong, ceiling: float) -> UnreleasedItem:

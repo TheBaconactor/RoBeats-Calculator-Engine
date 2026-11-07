@@ -83,12 +83,14 @@ def perfect_lines(score, surfaces, multipliers, notes, ceiling, out):
 
 @jit(nopython=True, cache=True)
 def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
-    """The most any line under the ceiling can score: base x shape, with `spare` body notes moved into fever."""
+    """The most any line under the ceiling can score, base x shape with `spare` body notes moved into fever, and its
+    (surface, CM, FM)."""
     coeffs, pattern, body_fever = surfaces
     combo, fever = multipliers
     head_len, body_total = notes
     values, prices, relief = ceiling
     best = 0.0
+    line = (0, 0, 0)
     for u in range(body_fever.shape[0]):
         p = pattern[u]
         bf = int(body_fever[u])
@@ -108,8 +110,11 @@ def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
                     alpha, beta = a * combo[cm] + f, e * combo[cm] + g
                     for fm in range(fm_block, fm_top + 1):
                         shape = alpha * fever[fm] + beta
-                        best = max(best, _vertex_bound(values, prices, relief, u, cm, fm, best / shape) * shape)
-    return best
+                        reach = _vertex_bound(values, prices, relief, u, cm, fm, best / shape) * shape
+                        if reach > best:
+                            best = reach
+                            line = (u, cm, fm)
+    return best, line
 
 
 @jit(nopython=True, cache=True)
@@ -157,4 +162,34 @@ def band_lines(score, surfaces, multipliers, notes, ceiling, slip, out):
                                 row = out[found]
                                 row[0], row[1], row[2], row[3], row[4] = u, cm, fm, low, high
                             found += 1
+    return found
+
+
+@jit(nopython=True, cache=True)
+def line_targets(lines, cell_start, cells, ceiling, power_terms, power, out):
+    """Each line (surface, CM, FM, lowest base, highest base) on each of its cells under the vertex bound and, when power
+    is not negative, in reach of that Gear Power: into out as rows (surface, CM, FM, FT, FF, lowest, highest, slack in
+    points x 1024); returns how many there are. power_terms: 5 x PP - 2 x its points per PP, sorted."""
+    values, prices, _relief = ceiling
+    found = 0
+    for line in range(lines.shape[0]):
+        u, cm, fm, lowest, highest = lines[line]
+        for k in range(cell_start[u], cell_start[u + 1]):
+            ft, ff = cells[k] // (MAX_STAT + 1), cells[k] % (MAX_STAT + 1)
+            if power >= 0:
+                left = power - 5 * (cm + fm + ft + ff)
+                start = np.searchsorted(power_terms, left - 2.0 * highest, side="left")
+                if start >= power_terms.shape[0] or power_terms[start] > left - 2.0 * lowest:
+                    continue
+            bound = 1.0e18
+            for j in range(values.shape[0]):
+                bound = min(bound, values[j] - prices[j, 1] * cm - prices[j, 2] * fm - prices[j, 3] * ft - prices[j, 4] * ff)
+                if bound < lowest:
+                    break
+            if bound >= lowest:
+                if found < out.shape[0]:
+                    row = out[found]
+                    row[0], row[1], row[2], row[3], row[4], row[5], row[6] = u, cm, fm, ft, ff, lowest, highest
+                    row[7] = int((bound - lowest) * 1024.0)
+                found += 1
     return found
