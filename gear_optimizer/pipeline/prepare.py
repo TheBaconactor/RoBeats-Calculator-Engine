@@ -23,11 +23,11 @@ from gear_optimizer.solver.ga_selection import effective_tables
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 
-# Per pool key (_ga_registry): the item registry, its GPU arrays, the GA's initial-heuristic top-k and the FG
-# effective-loadout tables. Bounded: a long-lived worker adds one key per custom pool; the least recently used goes
-# first.
+# Per pool key (_ga_registry): the item registry, its GPU arrays, the GA's initial-heuristic top-k, the FG
+# effective-loadout tables and the reachable pre-gem (FT, FF) keys. Bounded: a long-lived worker adds one key per custom
+# pool; the least recently used goes first.
 _PREP_CACHE_MAX = 32
-_PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray, tuple[np.ndarray, np.ndarray]]]" = OrderedDict()
+_PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray, tuple[np.ndarray, np.ndarray], np.ndarray]]" = OrderedDict()
 
 
 def _catalog_digest(gears, song_minis) -> str:
@@ -46,9 +46,10 @@ _INIT_HEURISTIC_COPIES = 25
 _SLOTS = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
 
 
-def _ga_registry(gears, song_minis, primary: str, secondary: str):
-    """The song's item registry, its GPU arrays, the GA's initial-heuristic top-k items and the FG effective-loadout
-    tables (gear name rank, mini signature id; the GA selects the primary element), cached per pool key."""
+def _ga_registry(gears, song_minis, primary: str, secondary: str, base_fixed_stats: np.ndarray):
+    """The song's item registry, its GPU arrays, the GA's initial-heuristic top-k items, the FG effective-loadout tables
+    (gear name rank, mini signature id; the GA selects the primary element) and the reachable pre-gem (FT, FF) keys, cached
+    per pool key: the fixed stats follow from the primary color."""
     from gear_optimizer.pipeline.pools import initialize_pools
     from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, build_ga_init_heuristic_topk
 
@@ -69,7 +70,10 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str):
         secondary_color=secondary,
         heuristic_k=GA_INIT_HEURISTIC_K,
     )
-    prepared = _PREP_CACHE[pool_key] = (registry, gpu_data, topk, effective_tables(registry, primary, secondary))
+    prepared = _PREP_CACHE[pool_key] = (
+        registry, gpu_data, topk, effective_tables(registry, primary, secondary),
+        reachable_ftff_keys(gpu_data["item_stats"], gpu_data["slot_start"], gpu_data["slot_count"], base_fixed_stats),
+    )
     if len(_PREP_CACHE) > _PREP_CACHE_MAX:
         _PREP_CACHE.popitem(last=False)
     return prepared
@@ -87,16 +91,15 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     )
     timed_song = core.song
     primary, secondary = timed_song.chart.primary, timed_song.chart.secondary
-    registry, gpu_data, init_heuristic_topk, (fg_gear_name_rank, fg_mini_sig_id) = _ga_registry(
-        context.gears, core.minis, primary, secondary
+    base_fixed_stats = np.asarray(build_stats_array(core.fixed_stats), dtype=np.int32)
+    registry, gpu_data, init_heuristic_topk, (fg_gear_name_rank, fg_mini_sig_id), reach = _ga_registry(
+        context.gears, core.minis, primary, secondary, base_fixed_stats
     )
     num_runs = max(1, context.multi_start)
-    base_fixed_stats = np.asarray(build_stats_array(core.fixed_stats), dtype=np.int32)
     color_flags = build_color_flags(primary, secondary, primary)
     # The timeline frontier payload is hydrated here (host side, no Taichi), so the GPU owner's upload at the GA turn hits
     # memory; a payload the startup cache lacks is built and persisted here, off the owner.
     payload = build_or_load_timeline_frontier_payload(timed_song, context.curves).payload
-    reach = reachable_ftff_keys(gpu_data["item_stats"], gpu_data["slot_start"], gpu_data["slot_count"], base_fixed_stats)
     song = NativeSong(
         config=NativeSongConfig(
             song_name=task.song_name,
