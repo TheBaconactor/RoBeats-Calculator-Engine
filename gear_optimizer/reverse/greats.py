@@ -2,12 +2,12 @@
 
 A Great costs the Compete score a loss that depends on the line and the Casual score a loss that does not: 100 or 300
 points in the body, 51 to 300 at a head note. So a Casual score tells how many Greats lie in the head and, near enough,
-where: a class. The rest runs backwards from the score. A surface and a base leave a deficit; a class says what the deficit
-is per point of base - Great, so it gives the Great points; they give the Perfect Points stat; and Gear Power then gives
-FT + FF, a diagonal of cells instead of all of them.
+where: a class. The rest runs backwards from the score. A surface and a base leave a deficit. Gear Power leaves a few
+Perfect Points stats, each with its Great points, and a class then gives the body Greats in fever by a division. FT + FF
+follow from Gear Power, a diagonal of cells instead of all of them.
 
-Cost: O(u (B + J b + p c)) for the u extended surfaces, B = 400 blocks, b blocks that survive, p (pair, base) rows and c
-classes, each row one head sum, O(100); then O(r D) for r rows and D ~ 161 cells on a diagonal.
+Cost: O(u (B + J b + r (s + 2 c))) for u surfaces, B = 400 blocks, b blocks that survive, r (pair, base) rows, s ~ 32 Perfect
+Points stats of one residue and c classes, each row one head sum, O(100), most of them memoized; then O(rows x cells).
 """
 
 from __future__ import annotations
@@ -155,19 +155,6 @@ def _great_options(elements, single_color, out):
             out[found] = value
             found += 1
     return found
-
-
-@jit(nopython=True, cache=True)
-def _head_weight(row, mask, ramp, combo, fever):
-    """What a class's head Greats weigh at a line: the sum of their multipliers."""
-    head = row[0]
-    if row[4] < 0 and head > 0:
-        return head + (combo - 1.0) * 0.005 * (row[2] + row[3])
-    weight = 0.0
-    for place in range(4, 4 + head):
-        note = row[place]
-        weight += ramp[note] * (fever if (mask[note >> 5] >> (note & 31)) & 1 else 1.0)
-    return weight
 
 
 @jit(nopython=True, cache=True)

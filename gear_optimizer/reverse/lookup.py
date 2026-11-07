@@ -368,16 +368,19 @@ def _great_surfaces(song: ReverseSong, greats: int) -> tuple:
     return song.budgets[walked_for, band]
 
 
-def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> list[tuple[int, np.ndarray]]:
-    """Per Casual timeline of a play with this many Greats: its score with no Greats, what a Great costs at each head note."""
+def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> list[tuple[int, np.ndarray]] | None:
+    """Per Casual timeline of a play with this many Greats: its score with no Greats, what a Great costs at each head note.
+    Past _GREATS_WALKED the band around the timelines walked for those, as in _great_surfaces. None when the walk's tables
+    cannot hold them."""
     chart = song.chart
     naked = factors(empty_stats(), song.curves, chart.primary, chart.secondary)
     times, threshold, duration = _casual_axes(song, 0, perfect_time)
     scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64))
     out = np.empty((_SCRATCH_ROWS, 5), dtype=np.int64)
-    written = walk_cell(times, great_times(chart, perfect_time), (threshold, greats), duration, scratch, out)
+    written = walk_cell(times, great_times(chart, perfect_time), (threshold, min(greats, _GREATS_WALKED)), duration, scratch, out)
     if written < 0:
-        raise ValueError("fever walk: the casual cell outgrew its tables")
+        return None
+    band = _BAND_NOTES if greats > _GREATS_WALKED else 0
     head = min(chart.total_notes, HEAD_NOTES)
     great = float(naked.great_base)
     ramp = naked.ramp[:head]
@@ -386,8 +389,8 @@ def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> 
     timelines = []
     for words, (lowest, highest, bits) in zip(pattern_words(out[:written, 0], out[:written, 1]).tolist(), out[:written, 2:5].tolist()):
         in_fever = np.unpackbits(np.asarray(words[:4], dtype="<u4").view(np.uint8), bitorder="little")[:head].astype(bool)
-        for body_fever in range(lowest, highest + 1):
-            if bits < 0 or (bits >> (body_fever - lowest)) & 1:
+        for body_fever in range(max(lowest - band, 0), min(highest + band, song.notes[1]) + 1):
+            if band or bits < 0 or (bits >> (body_fever - lowest)) & 1:
                 timelines.append((fg_surface_score(naked, FgResponseSurface(*words, body_fever, 0, 0), chart.total_notes), np.where(in_fever, inside, normal)))
     return timelines
 
@@ -451,7 +454,10 @@ def _great_sets(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> t
     if window is None or play.gear_power is None or greats > _GREATS_SEARCHED or play.score < _GREATS_FROM * float(song.surface_tops.max()):
         return [], 0, False
     walked, head_fever, (patterns, bodies, relief, sums, bands) = _great_surfaces(song, greats)
-    classes = casual_classes(window, _casual_timelines(song, greats), greats, HEAD_LISTED if head_fever else 0)
+    timelines = _casual_timelines(song, greats)
+    if timelines is None:
+        return [], 0, False
+    classes = casual_classes(window, timelines, greats, HEAD_LISTED if head_fever else 0)
     if classes.shape[0] == 0:
         return [], 0, True
     points = song.curves.f64["Perfect Points"]
@@ -615,7 +621,7 @@ def _no_great_place(play: PlayInfo, song: ReverseSong, greats: int) -> str | Non
     if window is None or play.match_mode != "Compete":
         return None
     timelines = _casual_timelines(song, greats, _honest_time(play, song))
-    if casual_classes(window, timelines, greats, 0).shape[0]:
+    if timelines is None or casual_classes(window, timelines, greats, 0).shape[0]:
         return None
     return f"Casual score {window[0]:.0f}..{window[1]:.0f} is no placement of {greats} Greats on any honest timeline"
 
