@@ -52,7 +52,7 @@ def perfect_notes(total_notes, timestamps):
 def columns_of(notes):
     """A plan's note columns from notes as a graph writes them; a hand-written note names only what a test is about."""
     n = len(notes)
-    plan = production.NotePlan([0.0] * n, [0.0] * n, [False] * n, [False] * n, [False] * n, [0] * n, list(range(n)), {})
+    plan = production._empty_plan(np.zeros(n))
     for position, note in enumerate(notes):
         index = note.get("note_index", position)
         plan.hit_ms[index] = note.get("hit_time_ms", 0.0)

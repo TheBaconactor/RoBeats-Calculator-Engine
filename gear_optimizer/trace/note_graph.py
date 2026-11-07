@@ -98,37 +98,39 @@ class _Bands(NamedTuple):
 
 
 @lru_cache(maxsize=None)
-def _tap_and_tail_bands(perfect_time: int) -> tuple[_Bands, _Bands]:
-    return tuple(
+def _tap_and_tail_bands(perfect_time: int) -> np.ndarray:
+    """(tap or tail, Perfect, early Great or late Great, first or last) offsets."""
+    return np.array([
         _Bands(*((float(band.earliest), float(band.latest)) for band in judgment_bounds(scale, perfect_time)))
         for scale in (1, HELD_TAIL_WINDOW_SCALE)
-    )
+    ])
 
 
 @dataclass(slots=True)
 class NotePlan:
     """A plan's notes as columns: chart time, planned offset, Great, fever, activation witness, section and place in the
-    input stream; `fever_ends`, the fever-end witnesses and their cutoffs. A plan being built also reads the chart and the
-    build's Perfect Time."""
+    input stream; `fever_ends`, the fever-end witnesses and their cutoffs. A plan being built also reads the notes' lanes and
+    their bands (note, Perfect or early or late Great, first or last) at the build's Perfect Time."""
 
-    hit_ms: list[float]
-    delta: list[float]
-    great: list[bool]
-    fever: list[bool]
-    activation_witness: list[bool]
-    section: list[int]
-    input_order: list[int]
+    hit_ms: np.ndarray
+    delta: np.ndarray
+    great: np.ndarray
+    fever: np.ndarray
+    activation_witness: np.ndarray
+    section: np.ndarray
+    input_order: np.ndarray
     fever_ends: dict[int, float]
-    is_tail: list[bool] = field(default_factory=list)
-    lanes: list[int] = field(default_factory=list)
+    is_tail: np.ndarray | None = None
+    lanes: np.ndarray | None = None
+    band_ms: np.ndarray | None = None
     precise: bool = False
-    perfect_time: int = 0
 
     def __len__(self) -> int:
         return len(self.hit_ms)
 
     def graph(self) -> list[dict[str, Any]]:
         """The plan as the timing graph reads it, a dict per note."""
+        columns = (self.hit_ms, self.delta, self.great, self.fever, self.activation_witness, self.section, self.input_order)
         return [
             {
                 "note_index": index,
@@ -143,14 +145,23 @@ class NotePlan:
                 "section": section,
             }
             for index, (hit, delta, great, fever, witness, section, order) in enumerate(
-                zip(self.hit_ms, self.delta, self.great, self.fever, self.activation_witness, self.section, self.input_order)
+                zip(*(column.tolist() for column in columns))
             )
         ]
 
 
-def _chart_times_ms(total_notes: int, timestamps: Sequence[float] | np.ndarray) -> list[float]:
+def _chart_times_ms(total_notes: int, timestamps: Sequence[float] | np.ndarray) -> np.ndarray:
     """Chart times in the game's whole ms: float32 seconds carry noise that could invert a tie."""
-    return np.floor(np.asarray(timestamps, dtype=np.float64).reshape(-1)[:total_notes] * 1000.0 + 0.5).tolist()
+    return np.floor(np.asarray(timestamps, dtype=np.float64).reshape(-1)[:total_notes] * 1000.0 + 0.5)
+
+
+def _empty_plan(hit_ms: np.ndarray, **chart: Any) -> NotePlan:
+    """A plan of these chart times: every note a Perfect on time, outside fever, in chart order."""
+    n = len(hit_ms)
+    return NotePlan(
+        hit_ms, np.zeros(n), np.zeros(n, dtype=bool), np.zeros(n, dtype=bool), np.zeros(n, dtype=bool),
+        np.zeros(n, dtype=np.int64), np.arange(n), {}, **chart,
+    )
 
 
 def _new_plan(
@@ -164,30 +175,28 @@ def _new_plan(
     if timing_mode not in TIMING_MODES:
         raise ValueError(f"note_graph: unknown timing_mode {timing_mode!r}")
     hit_ms = _chart_times_ms(total_notes, timestamps)
-    is_tail = (np.asarray(note_types).reshape(-1) == HELD_TAIL_TYPE).tolist()
-    lane_ids = np.asarray(lanes).reshape(-1).tolist()
+    is_tail = np.asarray(note_types).reshape(-1) == HELD_TAIL_TYPE
+    lane_ids = np.asarray(lanes, dtype=np.int64).reshape(-1)
     if not len(hit_ms) == len(is_tail) == len(lane_ids) == total_notes:
         raise ValueError("note_graph: timestamps, note_types and lanes must match total_notes")
-    n = total_notes
-    return NotePlan(
-        hit_ms, [0.0] * n, [False] * n, [False] * n, [False] * n, [0] * n, list(range(n)), {},
+    return _empty_plan(
+        hit_ms,
         is_tail=is_tail,
         lanes=lane_ids,
+        band_ms=_tap_and_tail_bands(perfect_time)[is_tail.astype(np.int64)],
         precise=timing_mode != "non-precise",
-        perfect_time=perfect_time,
     )
 
 
-def _early_greats(plan: NotePlan, sections: Sequence[_Section]) -> set[int]:
+def _early_greats(plan: NotePlan, sections: Sequence[_Section]) -> np.ndarray:
     """Non-Precise, where Perfects stay on time: the Greats that go early before the input order is known, as they go ahead
     of notes before them in the chart. They are the Greats ahead of a chord's first Perfect, and a Great a late hit would
     take within a frame margin of its lane's next note, when its lane's last note leaves it more room early. No early hit
     crosses an activation or a wasted note (_anchor_links)."""
     n = len(plan)
     if plan.precise or not n:
-        return set()
-    hit_ms, great, lanes = np.array(plan.hit_ms), np.array(plan.great, dtype=bool), np.array(plan.lanes)
-    band_ms = np.array(_tap_and_tail_bands(plan.perfect_time))[np.array(plan.is_tail, dtype=np.int64)]
+        return np.zeros(n, dtype=bool)
+    hit_ms, great, lanes, band_ms = plan.hit_ms, plan.great, plan.lanes, plan.band_ms
     late_ms = hit_ms + np.where(great, band_ms[:, 2, 0], 0.0)
     next_late_ms, from_last = np.full(n, np.inf), np.full(n, np.inf)
     for lane in np.unique(lanes):
@@ -205,15 +214,14 @@ def _early_greats(plan: NotePlan, sections: Sequence[_Section]) -> set[int]:
     for sec in sections:
         for anchor in (sec.activation, min(sec.fever_end, n - 1)):
             early[anchor + 1 :] &= (hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS)[anchor + 1 :] >= hit_ms[anchor]
-    return set(np.flatnonzero(early).tolist())
+    return early
 
 
-def _ranked_times_ms(plan: NotePlan, early: set[int]) -> np.ndarray:
+def _ranked_times_ms(plan: NotePlan, early: np.ndarray) -> np.ndarray:
     """Each note's place among the inputs free to go in either order: its chart time, a Great past the ramp its first late
     hit and an early one its last early hit a frame margin clear."""
-    hit_ms, great = np.array(plan.hit_ms), np.array(plan.great, dtype=bool)
-    band_ms = np.array(_tap_and_tail_bands(plan.perfect_time))[np.array(plan.is_tail, dtype=np.int64)]
-    moved = great.copy()
+    hit_ms, band_ms = plan.hit_ms, plan.band_ms
+    moved = plan.great.copy()
     moved[: _HEAD_NOTES] = False
     # The chord crossing the ramp is one tie.
     ramp_end = min(_HEAD_NOTES, len(plan))
@@ -221,39 +229,35 @@ def _ranked_times_ms(plan: NotePlan, early: set[int]) -> np.ndarray:
         moved[ramp_end] = False
         ramp_end += 1
     times = hit_ms + np.where(moved, band_ms[:, 2, 0], 0.0)
-    for index in early:
-        times[index] = hit_ms[index] + band_ms[index, 1, 1] - FRAME_MARGIN_MS
+    times[early] = (hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS)[early]
     return times
 
 
-def _merged_order(plan: NotePlan, links: Sequence[tuple[int, int]], early: set[int]) -> list[int]:
+def _merged_order(plan: NotePlan, links: Sequence[tuple[int, int]], early: np.ndarray) -> np.ndarray:
     """The input order (hit_schedule.input_order), written into the plan; returns the note indices in input order."""
     pairs = np.array(links, dtype=np.int64).reshape(-1, 2)
     ranks = np.empty(len(plan), dtype=np.int64)
     ranks[np.argsort(_ranked_times_ms(plan, early), kind="stable")] = np.arange(len(plan))
-    ordered = input_order(np.array(plan.lanes, dtype=np.int64), ranks, pairs[:, 0], pairs[:, 1])
+    ordered = input_order(plan.lanes, ranks, pairs[:, 0], pairs[:, 1])
     if ordered.shape[0] != len(plan):
         raise UnplayableTrace("note_graph: exact input-order constraints contain a cycle")
-    ordered_notes = ordered.tolist()
-    for position, note in enumerate(ordered_notes):
-        plan.input_order[note] = position
-    return ordered_notes
+    plan.input_order[ordered] = np.arange(len(plan))
+    return ordered
 
 
-def _schedule_hits(plan: NotePlan, ordered: Sequence[int], sections: Sequence[_Section], early: set[int]) -> None:
+def _schedule_hits(plan: NotePlan, order: np.ndarray, sections: Sequence[_Section], early: np.ndarray) -> None:
     """Give every input its time (hit_schedule): the plan keeps its judgments, input order and fever, so its score, and each
     input gets the room its frame needs. Non-Precise Perfects stay on their chart times."""
-    order = np.array(ordered, dtype=np.int64)
-    hit_ms = np.array(plan.hit_ms)[order]
-    tail, great = np.array(plan.is_tail)[order], np.array(plan.great)[order]
-    band_ms = np.array(_tap_and_tail_bands(plan.perfect_time))[tail.astype(np.int64)]  # per input and band, first and last
+    hit_ms, great, band_ms = plan.hit_ms[order], plan.great[order], plan.band_ms[order]
     perfect_ms, early_ms, late_ms = band_ms[:, 0], band_ms[:, 1], band_ms[:, 2]
-    fixed_early = np.isin(order, np.fromiter(early, dtype=np.int64, count=len(early)))
-    activation = np.isin(order, np.fromiter((sec.activation for sec in sections), dtype=np.int64, count=len(sections)))
+    fixed_early = early[order]
+    activations = np.array([sec.activation for sec in sections], dtype=np.int64)
+    activation = np.zeros(len(plan), dtype=bool)
+    activation[plan.input_order[activations]] = True
     offsets_ms = np.where(great[:, None], late_ms, perfect_ms if plan.precise else 0.0)
     offsets_ms[fixed_early] = early_ms[fixed_early]
     may_go_early = great & ~fixed_early & ~activation
-    positions = [plan.input_order[sec.activation] for sec in sections]
+    positions = plan.input_order[activations].tolist()
     stopped, hits = schedule_hits(
         Inputs(
             hit_ms,
@@ -262,10 +266,10 @@ def _schedule_hits(plan: NotePlan, ordered: Sequence[int], sections: Sequence[_S
             (perfect_ms[:, 1] - offsets_ms[:, 1]) * ~great,
             np.where(may_go_early, hit_ms + early_ms[:, 0], np.inf),
             np.where(may_go_early, hit_ms + early_ms[:, 1], -np.inf),
-            np.array(plan.lanes, dtype=np.int64)[order],
-            tail,
+            plan.lanes[order],
+            plan.is_tail[order],
             great,
-            np.array(plan.fever)[order],
+            plan.fever[order],
         ),
         np.array(
             [(at, stop, sec.fever_duration_ms) for at, stop, sec in zip(positions, [*positions[1:], len(plan)], sections)],
@@ -274,30 +278,25 @@ def _schedule_hits(plan: NotePlan, ordered: Sequence[int], sections: Sequence[_S
         np.array([plan.precise and (sec.judgment == "late_great" or sec.hit_offset_ms != 0.0) for sec in sections], dtype=bool),
     )
     if stopped >= 0:
-        raise UnplayableTrace(f"note_graph: note {ordered[stopped]}'s input has no frame of its own at any rate")
-    for index, offset in zip(ordered, (hits - hit_ms).tolist()):
-        plan.delta[index] = offset
+        raise UnplayableTrace(f"note_graph: note {order[stopped]}'s input has no frame of its own at any rate")
+    plan.delta[order] = hits - hit_ms
     if plan.precise:
         for sec in sections:
             last_fever = min(sec.fever_end, len(plan)) - 1
             if last_fever in plan.fever_ends:
-                plan.fever_ends[last_fever] = plan.hit_ms[sec.activation] + plan.delta[sec.activation] + sec.fever_duration_ms
+                plan.fever_ends[last_fever] = float(plan.hit_ms[sec.activation] + plan.delta[sec.activation]) + sec.fever_duration_ms
 
 
-def _apply_schedule_fever(plan: NotePlan, ordered: Sequence[int], sections: Sequence[_Section]) -> None:
+def _apply_schedule_fever(plan: NotePlan, ordered: np.ndarray, sections: Sequence[_Section]) -> None:
     """Fever membership from the input order: a window opens on its activation and closes on the first input of a note
     past it."""
-    cursor = 0
-    window_end = -1
-    for index in ordered:
-        if cursor < len(sections) and sections[cursor].activation == index:
-            window_end = sections[cursor].fever_end
-            cursor += 1
-        elif index >= window_end:
-            window_end = -1
-        plan.fever[index] = window_end >= 0
-    if cursor != len(sections):
+    positions = plan.input_order[[sec.activation for sec in sections]].tolist()
+    if positions != sorted(positions):
         raise UnplayableTrace("note_graph: the input order does not reach every planned activation")
+    plan.fever[:] = False
+    for sec, at, stop in zip(sections, positions, [*positions[1:], len(plan)]):
+        past = np.flatnonzero(ordered[at + 1 : stop] >= sec.fever_end)
+        plan.fever[ordered[at : at + 1 + past[0] if past.size else stop]] = True
 
 
 def _mark_fever_end(plan: NotePlan, sec: _Section) -> None:
@@ -308,11 +307,15 @@ def _mark_fever_end(plan: NotePlan, sec: _Section) -> None:
         plan.section[last_fever] = sec.number
 
 
+def _claim_notes(plan: NotePlan, notes: slice, sec: _Section) -> None:
+    """The section takes these notes, those no section holds yet."""
+    plan.section[notes] = np.where(plan.section[notes] == 0, sec.number, plan.section[notes])
+
+
 def _mark_section_fever(plan: NotePlan, sec: _Section) -> None:
-    for j in range(max(0, sec.activation), min(sec.fever_end, len(plan))):
-        plan.fever[j] = True
-        if plan.section[j] == 0:
-            plan.section[j] = sec.number
+    window = slice(sec.activation, sec.fever_end)
+    plan.fever[window] = True
+    _claim_notes(plan, window, sec)
 
 
 def timeline_frontier_plan(
@@ -335,7 +338,7 @@ def timeline_frontier_plan(
             plan.section[sec.activation] = sec.number
         _mark_fever_end(plan, sec)
     if plan.precise:
-        _schedule_hits(plan, range(len(plan)), sections, set())
+        _schedule_hits(plan, np.arange(len(plan)), sections, np.zeros(len(plan), dtype=bool))
     return plan
 
 
@@ -354,9 +357,9 @@ def base_note_graph(
     hit_ms = _chart_times_ms(total_notes, timestamps)
     if len(hit_ms) < total_notes or len(is_fever_mask) < total_notes:
         raise ValueError("base_note_graph: timestamps/is_fever_mask shorter than total_notes")
-    n = total_notes
-    fever = np.asarray(is_fever_mask).astype(bool)[:n].tolist()
-    return NotePlan(hit_ms, [0.0] * n, [False] * n, fever, [False] * n, [0] * n, list(range(n)), {}).graph()
+    plan = _empty_plan(hit_ms)
+    plan.fever[:] = np.asarray(is_fever_mask).astype(bool)[:total_notes]
+    return plan.graph()
 
 
 def force_greats_plan(
@@ -375,12 +378,10 @@ def force_greats_plan(
     and Great."""
     plan = _new_plan(total_notes, timestamps, note_types, lanes, timing_mode, perfect_time)
     sections = _sections(frontier_trace)
-    n = len(plan)
     for sec in sections:
-        for j in range(max(0, sec.forced_run_start), min(sec.forced_run_start + sec.forced_run_count, n)):
-            plan.great[j] = True
-            if plan.section[j] == 0:
-                plan.section[j] = sec.number
+        run = slice(sec.forced_run_start, sec.forced_run_start + sec.forced_run_count)
+        plan.great[run] = True
+        _claim_notes(plan, run, sec)
         _mark_section_fever(plan, sec)
         if sec.judgment == "late_great":
             plan.great[sec.activation] = True
@@ -398,10 +399,10 @@ def force_greats_plan(
             plan.section[a] = sec.number
         # The section's early-Great tail notes: the Greats that extend its fever window.
         if sec.early_great_start >= 0 and sec.early_great_end >= 0:
-            for j in range(max(a, sec.early_great_start, 0), min(sec.early_great_end, sec.fever_end, n)):
-                if plan.fever[j] and not plan.activation_witness[j]:
-                    plan.great[j] = True
-                    early.add(j)
+            tail = slice(max(a, sec.early_great_start), min(sec.early_great_end, sec.fever_end))
+            extending = plan.fever[tail] & ~plan.activation_witness[tail]
+            plan.great[tail] |= extending
+            early[tail] |= extending
         links.extend(_section_links(plan, sec))
 
     ordered = _merged_order(plan, links, early)
@@ -414,13 +415,13 @@ def force_greats_plan(
 def _anchor_links(plan: NotePlan, sec: _Section) -> list[tuple[int, int]]:
     """Non-Precise: the Greats near a section's activation and its wasted note stay on their side of them, as the bar fills
     in chart order."""
-    hit_ms = np.array(plan.hit_ms)
+    hit_ms = plan.hit_ms
     links: list[tuple[int, int]] = []
     for anchor in (sec.activation, sec.fever_end):
         if anchor < len(plan):
             first, last = np.searchsorted(hit_ms, [hit_ms[anchor] - 2.0 * _LATEST_PRESS_MS, hit_ms[anchor] + 2.0 * _LATEST_PRESS_MS])
-            for j in range(first, last):
-                if plan.great[j] and j != anchor:
+            for j in (first + np.flatnonzero(plan.great[first:last])).tolist():
+                if j != anchor:
                     links.append((j, anchor) if j < anchor else (anchor, j))
     return links
 
@@ -434,11 +435,10 @@ def _section_links(plan: NotePlan, sec: _Section) -> list[tuple[int, int]]:
     links.extend(zip(sequence, sequence[1:]))
     planned_first = frozenset(sequence)
     held_lanes: set[int] = set()
-    for j in range(sec.forced_start, len(plan)):
-        if j > a and plan.hit_ms[j] - plan.hit_ms[a] > 2.0 * _LATEST_PRESS_MS:
-            break
-        if j not in planned_first and plan.lanes[j] not in held_lanes:
-            held_lanes.add(plan.lanes[j])
+    stop = np.searchsorted(plan.hit_ms, plan.hit_ms[a] + 2.0 * _LATEST_PRESS_MS, side="right")
+    for j, lane in enumerate(plan.lanes[sec.forced_start : stop].tolist(), sec.forced_start):
+        if j not in planned_first and lane not in held_lanes:
+            held_lanes.add(lane)
             links.append((a, j))
     return links
 
@@ -458,14 +458,13 @@ def reconcile_base_plan(plan: NotePlan, response_surface: Sequence[int]) -> None
     if len(surface) != 6:
         raise ValueError("Base response surface must contain four head words and two body counts")
     head_limit = min(len(plan), _HEAD_NOTES)
-    fever = np.array(plan.fever, dtype=bool)
     surface_head = _head_bits(surface[:4], head_limit)
-    if not np.array_equal(fever[:head_limit], surface_head):
+    if not np.array_equal(plan.fever[:head_limit], surface_head):
         raise ValueError(
             "Base note-graph head fever positions differ from the selected response surface: "
-            f"{set(np.flatnonzero(fever[:head_limit] != surface_head).tolist())}"
+            f"{set(np.flatnonzero(plan.fever[:head_limit] != surface_head).tolist())}"
         )
-    graph_body_fever = int(np.count_nonzero(fever[_HEAD_NOTES:]))
+    graph_body_fever = int(np.count_nonzero(plan.fever[_HEAD_NOTES:]))
     body_total = max(0, len(plan) - _HEAD_NOTES)
     if graph_body_fever != surface[4] or body_total - graph_body_fever != surface[5]:
         raise ValueError(
@@ -486,7 +485,7 @@ def reconcile_force_greats_plan(
     """Fail loudly unless an FG plan exactly matches its surface: the head notes' fever and Great bitmasks, the body
     notes' fever, Great and fever-Great counts."""
     head_limit = min(len(plan), _HEAD_NOTES)
-    fever, great = np.array(plan.fever, dtype=bool), np.array(plan.great, dtype=bool)
+    fever, great = plan.fever, plan.great
     for name, notes, words in (("fever", fever, fever_words), ("great", great, great_words)):
         surface_head = _head_bits(words, head_limit)
         if not np.array_equal(notes[:head_limit], surface_head):
