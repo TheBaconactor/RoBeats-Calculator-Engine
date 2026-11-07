@@ -31,6 +31,7 @@ import math
 from bisect import insort
 from dataclasses import dataclass, field
 from functools import lru_cache
+from itertools import chain
 from typing import Any, Mapping, NamedTuple, Sequence
 
 import numpy as np
@@ -252,6 +253,8 @@ def _bounded_delta_ms(
     if not candidates:
         judgment = "Great" if plan.great[j] else "Perfect"
         raise UnplayableTrace(f"note_graph: exact input order has no legal bounded hit for note {j}'s {judgment} judgment")
+    if len(candidates) == 1:
+        return candidates[0]
     if preferred_ms == math.inf:
         return max(candidates)
     if preferred_ms == -math.inf:
@@ -576,32 +579,33 @@ def _assign_input_order(plan: NotePlan, constraints: Sequence[tuple[int, int]]) 
     """Topologically order equal-time inputs while keeping physical time authoritative; returns the note indices in
     input order."""
     event_times = np.array(plan.hit_ms) + np.array(plan.delta)
-    times = event_times.tolist()
+    pairs = np.fromiter(chain.from_iterable(constraints), dtype=np.int64, count=2 * len(constraints)).reshape(-1, 2)
+    gaps = event_times[pairs[:, 1]] - event_times[pairs[:, 0]]
+    if (gaps < 0.0).any():
+        before, after = pairs[np.argmax(gaps < 0.0)].tolist()
+        raise UnplayableTrace(f"note_graph: exact input-order constraint moves backward in time ({before} -> {after})")
     successors: dict[int, set[int]] = {}
     waiting: dict[int, int] = {}
-    for before, after in constraints:
-        if times[before] > times[after]:
-            raise UnplayableTrace(f"note_graph: exact input-order constraint moves backward in time ({before} -> {after})")
+    # No constraint runs backward in time, so time orders all but the inputs of one time: only those need a constraint.
+    for before, after in pairs[gaps == 0.0].tolist():
         targets = successors.setdefault(before, set())
         if after not in targets:
             targets.add(after)
             waiting[after] = waiting.get(after, 0) + 1
 
-    # No constraint runs backward in time, so walking the ready inputs by time yields a time-monotone order: an input
-    # released by the walk joins the part still ahead of it. Constraints are few, so nearly every note starts ready.
-    ready = [(times[index], index) for index in np.argsort(event_times, kind="stable").tolist() if index not in waiting]
-    for position, (_event_time, index) in enumerate(ready, 1):
+    # Walking the ready inputs by time, an input released by the walk joins the part still ahead of it.
+    ready = [index for index in np.argsort(event_times, kind="stable").tolist() if index not in waiting]
+    for position, index in enumerate(ready, 1):
         if index in successors:
             for after in successors[index]:
                 waiting[after] -= 1
                 if waiting[after] == 0:
-                    insort(ready, (times[after], after), lo=position)
-    if len(ready) != len(times):
+                    insort(ready, after, lo=position, key=lambda note: (event_times[note], note))
+    if len(ready) != len(event_times):
         raise UnplayableTrace("note_graph: exact input-order constraints contain a cycle")
-    ordered = [index for _event_time, index in ready]
-    for input_order, note_index in enumerate(ordered):
+    for input_order, note_index in enumerate(ready):
         plan.input_order[note_index] = input_order
-    return ordered
+    return ready
 
 
 def _plan_frame_safe_hits(plan: NotePlan, ordered: Sequence[int], sections: Sequence[_Section]) -> None:

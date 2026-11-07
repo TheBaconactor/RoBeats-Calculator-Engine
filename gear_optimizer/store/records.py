@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import zlib
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from ..core.team_buff import CANONICAL_TEAM_BUFF_TIERS
@@ -124,8 +125,14 @@ def decode_fg(text: str, updated: int, seq: int) -> FgResult:
     )
 
 
+@lru_cache(maxsize=128)
+def _compressed(text: str) -> bytes:
+    """The loadouts of a song repeat each other's traces."""
+    return zlib.compress(text.encode(), 6)
+
+
 def encode_trace(trace: dict[str, Any] | None) -> bytes | None:
-    return None if trace is None else zlib.compress(_dumps(trace).encode(), 6)
+    return None if trace is None else _compressed(_dumps(trace))
 
 
 def decode_trace(blob: bytes | None) -> dict[str, Any] | None:

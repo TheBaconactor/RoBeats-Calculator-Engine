@@ -7,7 +7,7 @@ from gear_optimizer.gamedata import Gear, Mini
 from gear_optimizer.pipeline.canonical import canonical_rows
 from gear_optimizer.pipeline.results import SongSolve
 from gear_optimizer.stats import GEM_KINDS
-from gear_optimizer.store.db import Boards, load_boards, store_results
+from gear_optimizer.store.db import Boards, board_leaders, store_results
 from gear_optimizer.store.records import Loadout
 
 
@@ -16,9 +16,9 @@ def store_solve(conn, solve: SongSolve, gears: dict[str, Gear], minis: dict[str,
     FG) before and after."""
     rows = canonical_rows(solve, gears, minis)
     mode = solve.timed.mode
-    before = _best_overall(load_boards(conn, mode, solve.song, solve.tier))
+    before = _best_overall(board_leaders(conn, mode, solve.song, solve.tier))
     store_results(conn, mode, solve.song, solve.tier, rows)
-    boards = load_boards(conn, mode, solve.song, solve.tier)
+    boards = board_leaders(conn, mode, solve.song, solve.tier)
     after = _best_overall(boards)
     # One write per song: the workers of a run print side by side.
     print(_stored_text(solve, boards, before, after, gears), end="", flush=True)

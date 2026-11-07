@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from math import ceil
 from typing import Any, NamedTuple
 
@@ -15,6 +16,7 @@ from .section_kernels import SectionContext, fever_end, section_rows
 
 
 _EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+_action_table = lru_cache(maxsize=64)(action_table)
 _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS = 262_144
 
 
@@ -272,9 +274,6 @@ def reconstruct_force_greats_response_trace(
         ts, floor_ts, perfect_ts, great_floor_ts, great_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr,
         raw_fever_fill, real_fever_time, use_forced_great_timing,
     )
-    actions, later_fill, first_fill, later_forced, first_forced = action_table(
-        raw_fever_fill=raw_fever_fill, non_fever_base=non_fever_base, use_forced_great_timing=use_forced_great_timing
-    )
 
     # The ordered edge list is independent of the target surface, so the up-to-51 surfaces of one song reuse it.
     shared_tables = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
@@ -286,6 +285,9 @@ def reconstruct_force_greats_response_trace(
         key = (*table_prefix, state, first)
         table = shared_tables.tables.get(key)
         if table is None:
+            actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+                raw_fever_fill=raw_fever_fill, non_fever_base=non_fever_base, use_forced_great_timing=use_forced_great_timing
+            )
             fills, forced = (first_fill, first_forced) if first else (later_fill, later_forced)
             table = section_table(context, actions, fills, forced, state, first)
             shared_tables.add(key, table)

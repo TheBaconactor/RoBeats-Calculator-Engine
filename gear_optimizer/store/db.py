@@ -39,6 +39,21 @@ def load_boards(conn: sqlite3.Connection, mode: str, song: str, tier: str) -> Bo
     )
 
 
+def board_leaders(conn: sqlite3.Connection, mode: str, song: str, tier: str) -> Boards:
+    """The first loadout of each of a song's two boards."""
+    return Boards(*(
+        [
+            _loadout(row, mode)
+            for row in conn.execute(
+                f"SELECT {MODELESS_COLUMNS} FROM loadouts WHERE timing_mode = ? AND team_buff = ? AND song_name = ?"
+                f" AND {column} = 1 ORDER BY {order} LIMIT 1",
+                (mode, tier, song),
+            )
+        ]
+        for column, order in _BOARDS.values()
+    ))
+
+
 def iter_board(
     conn: sqlite3.Connection, board: str, *, mode: str, tier: str, songs: Collection[str] | None = None
 ) -> Iterator[Loadout]:
