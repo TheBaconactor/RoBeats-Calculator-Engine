@@ -86,9 +86,9 @@ def perfect_lines(score, surfaces, multipliers, notes, ceiling, out):
 
 
 @jit(nopython=True, cache=True)
-def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
+def score_ceiling(surfaces, multipliers, notes, ceiling, spare, enough):
     """The most any line under the ceiling can score, base x shape with `spare` body notes moved into fever, and its
-    (surface, CM, FM, base)."""
+    (surface, CM, FM, base); the first line past `enough` ends the search."""
     coeffs, pattern, body_fever = surfaces
     combo, fever = multipliers
     _head_len, body_total = notes
@@ -113,6 +113,8 @@ def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
                         if bound * shape > best:
                             best = bound * shape
                             line = (u, cm, fm, bound)
+                            if best >= enough:
+                                return best, line
     return best, line
 
 

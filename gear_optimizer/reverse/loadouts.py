@@ -1,13 +1,13 @@
 """The released loadouts of one song as a search space: the upper bound of what they reach, and the loadouts themselves.
 
-A loadout's target is its final (CM, FM, FT, FF) and base value. Pricing those four stats and Perfect Points relaxes
-the loadout's choices apart: each slot takes its item worth most at the prices and every gem the gem worth most, so the
-sum, less the target at the same prices, bounds the base value of every loadout that reaches the target (a Lagrangian
-dual). At its minimum the bound sits within a few points of the true best (measured on stored rows: 2,148 vs 2,144 and
-1,935.6 vs 1,935), which leaves an item only if what it gives up against its slot's best fits the bound's slack.
+A target is a final (CM, FM, FT, FF) and base value. Pricing those four stats and Perfect Points relaxes the loadout's
+choices apart: each slot takes its item worth most at the prices and every gem the gem worth most, so the sum, less the
+target at the same prices, bounds the base value of every loadout that reaches the target (a Lagrangian dual). At its
+lowest the bound sits a few points over the true best (stored rows: 2,148 vs 2,144 and 1,935.6 vs 1,935), so an item
+stays only if what it gives up against its slot's best fits the bound's slack.
 
-Cost: O(I) per bound for I = 368 items (~1.6 us), ~300 bounds per target; the search then walks the items the slack
-leaves, near the top of a song a few per slot.
+Cost: O(I) per bound for I = 368 items (~1.6 us), 200 bounds per target; the walk then takes the items the slack leaves,
+near the top of a song a few per slot.
 """
 
 from __future__ import annotations
@@ -20,11 +20,10 @@ import numpy as np
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_EFFECTS
 from gear_optimizer.data.game_export import Catalog
-from gear_optimizer.gamedata import ELEMENTS, Gear, StatCurves, song_minis
+from gear_optimizer.gamedata import ELEMENTS, Gear, song_minis
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
     GEM_BUDGET,
-    MAX_STAT,
     STAT_GEM_ELEMENT_GAIN,
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
@@ -34,9 +33,8 @@ from gear_optimizer.stats import STAT_GEMS
 # An item row: stats in PRICED order, then the song's primary and secondary element (a one-color song's in both).
 PRICED = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
 PRIMARY, SECONDARY = len(PRICED), len(PRICED) + 1
-ROW = len(PRICED) + 2
+_ROW = len(PRICED) + 2
 GEAR_SLOTS = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
-MINI_SLOT = len(GEAR_SLOTS)
 _ITEMS_EQUIPPED = len(GEAR_SLOTS) + 3
 # What a selected element gem adds: to the primary, to the secondary, to neither.
 _ELEMENT_ROWS = 3
@@ -65,23 +63,12 @@ class FixedStats:
     row: np.ndarray
 
 
-@dataclass(frozen=True, slots=True)
-class Witness:
-    """A released loadout that reaches a target: its items, its gems by stats.GEM_KINDS and selected element."""
-
-    gear: tuple[str, ...]
-    minis: tuple[str, ...]
-    gems: tuple[int, ...]
-    element: str
-    team_buff: FixedStats
-
-
 def _item_row(stats: Mapping[str, int], primary: str, secondary: str) -> list[int]:
     return [stats[stat] for stat in PRICED] + [stats[primary], stats[secondary]]
 
 
 def _gem_table(primary: str, secondary: str) -> np.ndarray:
-    gems = np.zeros((_GEM_ROWS, ROW), dtype=np.int64)
+    gems = np.zeros((_GEM_ROWS, _ROW), dtype=np.int64)
     gains = {"Perfect Points": STAT_GEM_GAIN_NORMAL, "Combo Multiplier": STAT_GEM_GAIN_NORMAL}
     for row, stat in enumerate(PRICED):
         element = STAT_GEMS[stat][1]
@@ -125,17 +112,12 @@ def fixed_stats(space: LoadoutSpace, tiers: Sequence[str]) -> list[FixedStats]:
     for tier in tiers:
         effect = TEAM_BUFF_TIER_EFFECTS[tier]
         for color in dict.fromkeys((space.primary, space.secondary, other)):
-            row = np.zeros(ROW, dtype=np.int64)
+            row = np.zeros(_ROW, dtype=np.int64)
             row[0] = effect["PP"]
             row[PRIMARY] = effect["Elem"] * (color == space.primary)
             row[SECONDARY] = effect["Elem"] * (color == space.secondary)
             out.append(FixedStats(tier, color, row))
     return out
-
-
-def base_of(row: np.ndarray, curves: StatCurves) -> int:
-    """The base value of a stat row: 2 x primary + secondary + Perfect Points' points."""
-    return int(2 * row[PRIMARY] + row[SECONDARY]) + int(curves.f64["Perfect Points"][min(max(int(row[0]), 0), MAX_STAT)])
 
 
 @jit(nopython=True, cache=True)

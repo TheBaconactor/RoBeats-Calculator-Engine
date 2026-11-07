@@ -5,7 +5,8 @@ Truth comes from outside the lookup: stored rows of a results database (a known 
 through tools/verify/game_sim.GameScoreEngine, driven the way the game's server replays events: frames, floored event
 times, the fill of the event's offset and the points of its stated result. Songs split by a seeded hash, so dev tuning
 never sees held-out songs. Cases: meta rows, FG rows, plays with timing noise, random builds, exploited plays, and
-unreleased stats. Run with EVOLUTION_DB_PATH set to anything but a live database; the database is only read.
+unreleased stats. Latencies are this process's CPU time, on one thread with NUMBA_NUM_THREADS=1. Run with
+EVOLUTION_DB_PATH set to anything but a live database; the database is only read.
 
     python tools/verify/score_reverse_benchmark.py --db scratch.db --split dev --songs 40 --out dev.json
 """
@@ -35,6 +36,8 @@ from gear_optimizer.gamedata import STATS, stat_curves
 from gear_optimizer.reverse.lookup import ReverseSong, ShownPlay, prepare_song, reverse_score
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, judgment_edges
+from gear_optimizer.store.db import load_boards
+from gear_optimizer.store.schema import connect
 from gear_optimizer.stats import GEM_KINDS, apply_gems, total
 from gear_optimizer.core.team_buff import team_buff_effect
 from gear_optimizer.gamedata import song_minis
@@ -48,6 +51,7 @@ _ORACLE_STATS = {
     "Rush": "ColorRed", "Beat": "ColorOrange", "Vibe": "ColorGreen",
 }
 _FIVE = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
+_DATABASE: list[str] = []
 
 
 def gear_power(stats: dict[str, int], chart: Chart) -> int:
@@ -149,9 +153,9 @@ class Tally:
 
 
 def _lookup(tally: Tally, case: str, song: ReverseSong, play: ShownPlay, stats, gear, expected: str = "sets") -> None:
-    started = time.perf_counter()
+    started = time.process_time()
     reply = reverse_score(play, song)
-    tally.add(case, stats, gear, reply, time.perf_counter() - started, expected)
+    tally.add(case, stats, gear, reply, time.process_time() - started, expected)
 
 
 def _random_loadout(rng: random.Random, catalog, chart: Chart) -> dict[str, int]:
@@ -178,7 +182,10 @@ def _noise(rng: np.random.Generator, chart: Chart, sigma: float, center: float, 
 
 
 def run_song(name: str, chart: Chart, con: sqlite3.Connection, catalog, curves, tally: Tally, seed: int, rows_per_song: int) -> None:
+    store = connect(_DATABASE[0])
+    started = time.process_time()
     song = prepare_song(chart, catalog, curves)
+    tally.rows["prepare"].append({"rank": -1, "gear": False, "lines": 0, "verdict": "-", "expected": "-", "ms": (time.process_time() - started) * 1000.0, "finished": True})
     rng = random.Random(f"{seed}:{name}")
     noise = np.random.default_rng(int(hashlib.blake2b(f"{seed}:{name}".encode(), digest_size=8).hexdigest(), 16) % (1 << 63))
     for mode in ("non-precise", "precise"):
@@ -200,7 +207,11 @@ def run_song(name: str, chart: Chart, con: sqlite3.Connection, catalog, curves, 
             surface = record["surface"]
             greats = surface[9] + sum(bin(word).count("1") for word in surface[4:8])
             play = ShownPlay(score=int(score), perfect=chart.total_notes - greats, great=greats, okay=0, miss=0, gear_power=gear_power(stats, chart))
-            _lookup(tally, f"fg/{mode}/counts+power", song, play, stats, json.loads(gear))
+            _lookup(tally, f"fg/{mode}/no-board", song, play, stats, json.loads(gear), "unresolved")
+            board = load_boards(store, mode, name, "T5").fg
+            started = time.process_time()
+            reply = reverse_score(play, song, board=board)
+            tally.add(f"fg/{mode}/board", stats, json.loads(gear), reply, time.process_time() - started)
     rows = con.execute(
         "select meta_result, gear from loadouts where song_name=? and meta_board=1 order by score desc limit 40", (name,)
     ).fetchall()
@@ -215,18 +226,22 @@ def run_song(name: str, chart: Chart, con: sqlite3.Connection, catalog, curves, 
             _lookup(tally, "noise/perfect/score+casual", song, shown, stats, items)
         human = simulate(chart, stats, _noise(noise, chart, 16.0, 6.0, False), phase)
         shown = ShownPlay(score=human["score"], casual_score=human["casual"], accuracy=human["accuracy"], perfect=human["perfect"], great=human["great"], okay=human["okay"], miss=human["miss"], gear_power=gear_power(stats, chart))
-        _lookup(tally, "noise/human/counts+power", song, shown, stats, items)
+        _lookup(tally, "noise/human/counts+casual+power", song, shown, stats, items, "unresolved")
         # Accuracy hacking: every note claims Perfect; the share that really was a Great fills as one.
         share = rng.choice((0.02, 0.1, 0.3))
         faked = {note: "great" for note in range(chart.total_notes) if rng.random() < share}
         cheat = simulate(chart, stats, np.zeros(chart.total_notes), phase, faked)
         shown = ShownPlay(score=cheat["score"], casual_score=cheat["casual"], accuracy=100.0, perfect=chart.total_notes, great=0, okay=0, miss=0)
         _lookup(tally, f"exploited/fill{int(share * 100)}", song, shown, None, None, "exploited")
+        shown = ShownPlay(score=cheat["score"], casual_score=cheat["casual"], accuracy=100.0, perfect=chart.total_notes, great=0, okay=0, miss=0, gear_power=gear_power(stats, chart))
+        _lookup(tally, f"exploited/fill{int(share * 100)}+power", song, shown, None, None, "exploited")
         random_stats = _random_loadout(rng, catalog, chart)
         clean = simulate(chart, random_stats, np.zeros(chart.total_notes), phase)
         if clean["great"] + clean["okay"] + clean["miss"] == 0:
             _lookup(tally, "random/score", song, ShownPlay(score=clean["score"]), random_stats, None)
             _lookup(tally, "random/score+power", song, ShownPlay(score=clean["score"], gear_power=gear_power(random_stats, chart)), random_stats, None)
+            shown = ShownPlay(score=clean["score"], casual_score=clean["casual"], accuracy=100.0, perfect=chart.total_notes, great=0, okay=0, miss=0)
+            _lookup(tally, "random/score+casual", song, shown, random_stats, None)
         boosted = dict(stats)
         boosted[chart.primary] += 25
         over = simulate(chart, boosted, np.zeros(chart.total_notes), phase)
@@ -245,6 +260,7 @@ def main() -> int:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+    _DATABASE.append(args.db)
     curves = stat_curves()
     catalog = load_catalog(paths().game_export)
     charts: dict[str, Path] = {}

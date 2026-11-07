@@ -95,6 +95,7 @@ twice to force an exit, or create `bin/STOP`.
 ```bash
 python main.py                                 # Run the optimizer over the config.ini queue
 python -m gear_optimizer.robeatsmeta_service --host 127.0.0.1 --port 8765   # HTTP service
+python -m gear_optimizer.reverse --song "Surf (Hard) by Hyper Potions" --score 30590191   # The set behind a shown score
 python -m tools list                           # List the developer tools
 ```
 
@@ -146,6 +147,7 @@ RoBeats-Calculator-Engine/
 │   ├── solver/               # Search and exact scoring: GA pipeline, gem search, timing envelope, score tables
 │   ├── frontier/             # Exact timing and Force Great frontiers and their caches (CPU, Numba)
 │   ├── gpu/                  # Everything Taichi: fields, kernels, the genetic search and the GPU's owner thread
+│   ├── reverse/              # Score reverse-lookup: from a shown score to the set behind it, or why there is none
 │   ├── trace/                # Stored builds to playable note plans, and their physical replay checks
 │   ├── store/                # The results database: schema, boards, reads and writes
 │   ├── core/, data/, domain/, ui/   # Shared utilities, the game export, job and board rules, progress output

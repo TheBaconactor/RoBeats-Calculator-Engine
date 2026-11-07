@@ -89,8 +89,12 @@ def test_a_casual_score_no_clean_play_reaches_is_exploited(song):
     assert reply.verdict == "exploited" and reply.evidence
 
 
+def test_a_casual_score_without_shown_judgments_proves_nothing(song):
+    assert reverse_score(ShownPlay(score=4_666_274, casual_score=1), song).verdict == "sets"
+
+
 def test_a_casual_match_is_never_called_exploited_on_its_casual_score(song):
-    reply = reverse_score(ShownPlay(score=4_666_274, casual_score=1, match_mode="Casual"), song)
+    reply = reverse_score(ShownPlay(score=4_666_274, casual_score=1, accuracy=100.0, match_mode="Casual"), song)
     assert reply.verdict == "sets"
 
 

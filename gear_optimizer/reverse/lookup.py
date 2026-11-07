@@ -148,7 +148,7 @@ def _sharpened(song: ReverseSong) -> ReverseSong:
     surfaces = song.surfaces
     arrays = surfaces.coeffs, surfaces.pattern, surfaces.body_fever
     for _ in range(_SHARPENING_ROUNDS):
-        _best, (u, cm, fm, _base) = score_ceiling(arrays, song.multipliers[::2], song.notes, song.ceiling, 0.0)
+        _best, (u, cm, fm, _base) = score_ceiling(arrays, song.multipliers[::2], song.notes, song.ceiling, 0.0, np.inf)
         cells = surfaces.cells[surfaces.cell_start[u] : surfaces.cell_start[u + 1]]
         stats = np.column_stack((np.full(cells.shape, cm), np.full(cells.shape, fm), cells // _AXIS, cells % _AXIS))
         cell = cells[int(np.argmax((song.vertex_values[None, :] - stats @ song.vertex_prices[:, 1:].T).min(axis=1)))]
@@ -243,7 +243,7 @@ class Reverse:
     sets: tuple[FoundSet, ...]
     lines: int  # the exact stat lines under the ceiling
     finished: bool  # every line was searched to its end
-    ceiling: float | None = None
+    ceiling: float | None = None  # past the score: the first line found that reaches it
     unreleased: UnreleasedItem | None = None
     evidence: tuple[str, ...] = ()
 
@@ -307,8 +307,8 @@ def _loadouts_of(song: ReverseSong, target: np.ndarray, tight: tuple, power: int
 
 
 def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[FoundSet], int, bool]:
-    """The sets of an all-Perfect play, nearest the loadout bound first, until `limit` or the search budget: the sets,
-    the lines, and whether every line was searched to its end."""
+    """The sets of an all-Perfect play, nearest the loadout bound first, until `limit` lines hold sets or the search
+    budget ends: the sets, the lines, and whether every line was searched to its end."""
     chart = song.chart
     surfaces = song.surfaces
     out = np.empty((_LINE_ROWS, 4), dtype=np.int64)
@@ -317,16 +317,17 @@ def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[
     power = -1 if play.gear_power is None else play.gear_power
     found: list[FoundSet] = []
     cuts: list = []
-    spent = 0
+    spent = held = 0
     finished = count <= _LINE_ROWS
     for target in _targets_of(song, out[: min(count, _LINE_ROWS)], power):
-        if len(found) >= limit or spent > _SEARCH_ITEMS:
+        if held >= limit or spent > _SEARCH_ITEMS:
             return found, count, False
         tight = _tight_bound(song, target, cuts)
         if tight is None:
             continue
         rows, tried = _loadouts_of(song, target, tight, power)
         spent += tried + _ITEMS_PER_BOUND
+        held += bool(rows)
         surface = FgResponseSurface(*surfaces.words[surfaces.pattern[target[0]]].tolist(), int(surfaces.body_fever[target[0]]), 0, 0)
         for gear, minis, gems, element, stats, fixed, slack in rows:
             value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
@@ -396,8 +397,9 @@ def _casual_evidence(play: ShownPlay, song: ReverseSong, judged: Judged) -> str 
     event's time offset and scores the result the event states (push_note_sequence), so a Perfect stated on a Great's
     offset keeps a Perfect's points and a Great's fill; that moves the casual fever too, and base stats hide nothing.
     Casual matches are out: their client zeroes Perfect Time and their server does not. Okays and Misses drain fever
-    and break combos in ways this span does not hold."""
-    if play.casual_score is None or play.match_mode != "Compete" or judged.okay or judged.miss:
+    and break combos in ways this span does not hold, and a play whose judgments are not shown proves nothing."""
+    shown = play.accuracy is not None or play.perfect is not None
+    if play.casual_score is None or not shown or play.match_mode != "Compete" or judged.okay or judged.miss:
         return None
     if judged.clean:
         values = _clean_casual_values(song)
@@ -410,16 +412,16 @@ def _casual_evidence(play: ShownPlay, song: ReverseSong, judged: Judged) -> str 
     return f"Casual score {play.casual_score} is outside {lowest:.0f}..{highest:.0f}, all a play with these Greats reaches"
 
 
-def _honest_ceiling(song: ReverseSong, judged: Judged) -> tuple[float, float]:
-    """The most an honest play scores with any released loadout at any Perfect window, never under a real score, and the
-    base value there."""
+def _honest_ceiling(play: ShownPlay, song: ReverseSong, judged: Judged) -> tuple[float, float]:
+    """The most an honest play scores with any released loadout at any Perfect window, never under a real score, or the
+    first line past the play's score; and the base value there."""
     if not song.widest:
         surfaces = fever_surfaces(song.chart, song.curves, event_times(song.chart, _WIDEST_PERFECT_TIME))
         song.widest.update(arrays=(surfaces.coeffs, surfaces.pattern, surfaces.body_fever))
         song.widest.update(relief=_cell_relief(surfaces.cell_start, surfaces.cells, song.vertex_prices))
     spare = float(_FEVER_NOTES_PER_NOTE * (judged.great_hi + judged.okay + judged.miss))
     ceiling = (song.vertex_values, song.vertex_prices, song.widest["relief"])
-    best, line = score_ceiling(song.widest["arrays"], song.multipliers[::2], song.notes, ceiling, spare)
+    best, line = score_ceiling(song.widest["arrays"], song.multipliers[::2], song.notes, ceiling, spare, float(play.score))
     return best, line[3]
 
 
@@ -451,7 +453,7 @@ def reverse_score(play: ShownPlay, song: ReverseSong, *, limit: int = 8, board: 
         return Reverse("exploited", tuple(found), count, finished, evidence=(evidence,))
     if found:
         return Reverse("sets", tuple(found), count, finished)
-    ceiling, base = _honest_ceiling(song, judged)
+    ceiling, base = _honest_ceiling(play, song, judged)
     if play.score <= ceiling:
         return Reverse("unresolved", (), count, finished, ceiling)
     item = _unreleased_item(play, song, ceiling, base)
