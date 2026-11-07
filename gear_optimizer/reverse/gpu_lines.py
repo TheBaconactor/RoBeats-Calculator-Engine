@@ -54,6 +54,7 @@ _HEAD_FLOAT_POINTS = 4
 _SPANNED_EDGE = 0.02  # Over float32's order of a class's head span; `lookup._named_set` confirms each point of it.
 _COUNTERS = 4
 _LIVE, _PAIRS, _BASES, _ROWS = range(_COUNTERS)
+_ONE_BITS = (0, 0x3FF00000)  # 1.0 as float64 words
 READ_COLUMNS = 6
 
 _Search = ti.types.struct(
@@ -126,19 +127,8 @@ def _allocate() -> None:
 
 
 @ti.func
-def _floored(base: ti.i32, value: ti.f32, bits: _Vec2u) -> ti.i32:
-    """floor(base x value) in the game's float64."""
-    rough: ti.f32 = ti.cast(base, ti.f32) * value
-    whole: ti.f32 = ti.floor(rough)
-    out = ti.cast(whole, ti.i32)
-    if ti.abs(rough - whole - 0.5) >= 0.5 - (rough * _FLOAT32_ERROR):
-        out = _float64_floor(_float64_product(_float64_of(base), _float64_bits(bits)))
-    return out
-
-
-@ti.func
-def _floored_twice(base: ti.i32, value: ti.f32, bits: _Vec2u, more: ti.f32, more_bits: _Vec2u) -> ti.i32:
-    """floor(base x value x more) in the game's float64 and order."""
+def _floored(base: ti.i32, value: ti.f32, bits: _Vec2u, more: ti.f32, more_bits: _Vec2u) -> ti.i32:
+    """floor(base x value x more) in the game's float64 and order; more is 1 for floor(base x value)."""
     rough: ti.f32 = ti.cast(base, ti.f32) * value * more
     whole: ti.f32 = ti.floor(rough)
     out = ti.cast(whole, ti.i32)
@@ -256,12 +246,12 @@ def _find_pairs(q: _Search):
 
 @ti.func
 def _note_value(base: ti.i32, cm: ti.i32, note: ti.i32, fm: ti.i32, in_fever: ti.i32) -> ti.i32:
-    value: ti.i32 = 0
+    more: ti.f32 = 1.0
+    more_bits = ti.Vector(_ONE_BITS, dt=ti.u32)
     if in_fever != 0:
-        value = _floored_twice(base, tables.ramp[cm, note], tables.ramp_bits[cm, note], tables.fever[fm], tables.fever_bits[fm])
-    else:
-        value = _floored(base, tables.ramp[cm, note], tables.ramp_bits[cm, note])
-    return value
+        more = tables.fever[fm]
+        more_bits = tables.fever_bits[fm]
+    return _floored(base, tables.ramp[cm, note], tables.ramp_bits[cm, note], more, more_bits)
 
 
 @ti.func
@@ -278,9 +268,10 @@ def _keeps(pair: _Vec3i, base: ti.i32, klass: ti.i32, great: ti.i32, need: ti.i3
     fevered: ti.i32 = klass & 65535
     held: ti.i32 = spec[0]
     combo: ti.f32 = tables.combo[cm]
-    lost_normal: ti.i32 = _floored(base, combo, tables.combo_bits[cm]) - _floored(great, combo, tables.combo_bits[cm])
-    full: ti.i32 = _floored_twice(base, combo, tables.combo_bits[cm], tables.fever[fm], tables.fever_bits[fm])
-    gap: ti.i32 = full - _floored_twice(great, combo, tables.combo_bits[cm], tables.fever[fm], tables.fever_bits[fm]) - lost_normal
+    one = ti.Vector(_ONE_BITS, dt=ti.u32)
+    lost_normal: ti.i32 = _floored(base, combo, tables.combo_bits[cm], 1.0, one) - _floored(great, combo, tables.combo_bits[cm], 1.0, one)
+    full: ti.i32 = _floored(base, combo, tables.combo_bits[cm], tables.fever[fm], tables.fever_bits[fm])
+    gap: ti.i32 = full - _floored(great, combo, tables.combo_bits[cm], tables.fever[fm], tables.fever_bits[fm]) - lost_normal
     rest: ti.i32 = need - spec[1] * lost_normal - fevered * gap
     keep = 0
     if gap > 0 or fevered == 0:
@@ -306,8 +297,8 @@ def _clean_score(q: _Search, pair: _Vec3i, base: ti.i32) -> ti.i32:
     u, cm, fm = pair[0], pair[1], pair[2]
     combo: ti.f32 = tables.combo[cm]
     bf: ti.i32 = tables.body_fever[u]
-    normal: ti.i32 = _floored(base, combo, tables.combo_bits[cm])
-    full: ti.i32 = _floored_twice(base, combo, tables.combo_bits[cm], tables.fever[fm], tables.fever_bits[fm])
+    normal: ti.i32 = _floored(base, combo, tables.combo_bits[cm], 1.0, ti.Vector(_ONE_BITS, dt=ti.u32))
+    full: ti.i32 = _floored(base, combo, tables.combo_bits[cm], tables.fever[fm], tables.fever_bits[fm])
     clean: ti.i32 = bf * full + (q.body_total - bf) * normal
     for note in range(q.head_len):
         clean += _note_value(base, cm, note, fm, _in_fever(u, note))
@@ -469,14 +460,8 @@ def _find_rows(q: _Search):
 
 
 @ti.kernel
-def _clear_chunk():
-    for slot in range(_ROWS):
-        tables.counters[slot] = 0
-
-
-@ti.kernel
-def _clear_rows():
-    for slot in range(_COUNTERS):
+def _clear(counters: ti.i32):
+    for slot in range(counters):
         tables.counters[slot] = 0
 
 
@@ -654,7 +639,7 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
         body_total=song.body_total, single_color=int(song.single_color), class_count=query.classes.shape[0], term_low=float(terms.min()), term_high=float(terms.max()),
     )
     counters = np.zeros(_COUNTERS, dtype=np.int32)
-    _clear_rows()
+    _clear(_COUNTERS)
     walked = kept = first = 0
     size = CHUNK_SURFACES
     complete = True
@@ -662,7 +647,7 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
     while first < surfaces.ids.shape[0]:
         last = min(first + size, surfaces.ids.shape[0])
         _load_chunk(surfaces, first, last, vertices)
-        _clear_chunk()
+        _clear(_ROWS)  # the rows stay
         _find_tiles(last - first, search)
         _find_pairs(search)
         _read_counters(counters)
