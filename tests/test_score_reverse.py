@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import random
+import subprocess
+import sys
 from math import ceil
 
 import numpy as np
@@ -13,7 +17,6 @@ from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.gamedata import STATS, empty_stats, stat_curves
 from gear_optimizer.reverse.fever_reach import fever_surfaces
-from gear_optimizer.reverse.greats import _great_options
 from gear_optimizer.reverse.lookup import PlayInfo, lost_quarters, prepare_song, reverse_score, shared_lines
 from gear_optimizer.score import best_timeline_score, factors, fg_surface_score
 from gear_optimizer.settings import paths
@@ -198,14 +201,6 @@ def test_a_play_with_greats_is_found_from_its_play_info(song):
         assert fg_surface_score(scored, row.surface, chart.total_notes) == played.score
 
 
-def test_great_points_are_among_the_options_of_their_elements():
-    options = np.empty(3, dtype=np.int64)
-    for primary in range(40):
-        for secondary in range(40):
-            count = _great_options(2 * primary + secondary, False, options)
-            assert (4 * primary) // 3 + (2 * secondary) // 3 + 150 in options[:count].tolist()
-
-
 def test_rows_of_one_set_on_two_songs_share_its_stats(song):
     """A set a player wore on two charts of other colors: each row leaves many lines, both leave few, the truth among them."""
     other = prepare_song(load_chart(paths().chart_dir("Hard") / "Bermuda Triangle (Hard) by Camellia feat The8BitDrummer.txt"), load_catalog(paths().game_export), stat_curves())
@@ -217,3 +212,23 @@ def test_rows_of_one_set_on_two_songs_share_its_stats(song):
         power = 5 * sum(STORED[key] for key in five) + 4 * STORED[chart.primary] + 2 * STORED[chart.secondary]
         rows.append((PlayInfo(played.score, 100.0, played.casual, gear_power=power), each))
     assert [59, 71, 63, 66, 85] in shared_lines(rows).tolist()
+
+
+def test_the_lookup_worker_answers_each_line_and_outlives_a_bad_request(song):
+    """The service's lookup process, its own process and GPU context: a request it cannot serve costs only that answer."""
+    environment = {**os.environ, "EVOLUTION_DB_PATH": "/nonexistent"}
+    worker = subprocess.Popen(
+        [sys.executable, "-m", "gear_optimizer.reverse.worker"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=environment,
+    )
+    try:
+        requests = ({"chartPath": "/nonexistent.txt", "score": 1}, {"chartPath": str(paths().chart_dir("Easy") / CHART), "score": 4_666_274})
+        answers = []
+        for request in requests:
+            worker.stdin.write(json.dumps(request) + "\n")
+            worker.stdin.flush()
+            answers.append(json.loads(worker.stdout.readline()))
+        assert not answers[0]["ok"] and not answers[0]["restart"]
+        assert answers[1]["ok"] and answers[1]["reverse"]["verdict"] == "sets"
+    finally:
+        worker.stdin.close()
+        worker.wait(timeout=30)

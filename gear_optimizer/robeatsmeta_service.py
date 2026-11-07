@@ -6,10 +6,15 @@ the process that can prove a solve used an official chart and the untouched cata
   POST /frontiers/refresh  the song publisher wrote charts: re-read the list and look for the new revision now
   POST /optimize           solve one chart (official `targetSongId` or uploaded `chartText`) and return its T5 leaderboard
                            in the shape store.legacy.best_loadouts yields for the catalog
+  POST /reverse            the sets behind a Top Scores row of an official chart: `targetSongId`, `score` and what else the
+                           row shows (`accuracy`, `gearMultiplier`, `casualScore`, `gearPower`, `matchMode`)
 
 Official charts solve on one warm worker process (service_worker), a custom item pool included. An uploaded chart gets a
 worker of its own with throwaway frontier caches. A clean official solve merges into evolution.db, and each Data revision
 solves the official charts evolution.db has no build for, so a published song reaches the catalog on its own.
+
+Score lookups queue for a worker of their own (gear_optimizer.reverse.worker), with its own GPU context: they never wait for a
+solve slot.
 
 ThreadingHTTPServer handles requests in parallel; a semaphore and a free-memory gate admit the solves.
 """
@@ -36,8 +41,8 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Iterable
-from concurrent.futures import ProcessPoolExecutor
+from collections.abc import Callable, Iterable
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +63,9 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _SOLVE_TIMEOUT_S = 30 * 60
+_LOOKUP_TIMEOUT_S = 120
+# Lookups in the queue and running; past that a host hears the service is busy instead of waiting.
+_LOOKUPS_QUEUED = 64
 _MAX_CUSTOM_CHART_EVENTS = 4_000
 _MAX_CUSTOM_POOL_ITEMS = 15
 _MAX_CUSTOM_STAT = 999
@@ -391,11 +399,17 @@ class _SolveWorker:
     """A service_worker process answering one JSON line per request. It starts on its first request and a failure that
     needs a new process stops it. `frontier_root`: its own frontier caches (default: the shared ones)."""
 
+    _module = "gear_optimizer.service_worker"
+    _answer = "loadouts"
+
     def __init__(self, root: Path, frontier_root: Path | None = None) -> None:
         self._root, self._frontier_root = root, frontier_root
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[str] | None = None
         self._responses: queue.Queue[dict[str, Any]] = queue.Queue()
+
+    def _timeout_s(self) -> float:
+        return _SOLVE_TIMEOUT_S
 
     def _frontier_env(self) -> dict[str, str]:
         root = self._frontier_root
@@ -418,7 +432,7 @@ class _SolveWorker:
             "PYTHONUNBUFFERED": "1",
         }
         proc = subprocess.Popen(
-            [sys.executable, "-m", "gear_optimizer.service_worker"], cwd=str(REPO_ROOT), env=env, stdin=subprocess.PIPE,
+            [sys.executable, "-m", self._module], cwd=str(REPO_ROOT), env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True,
         )
         self._responses = responses = queue.Queue()
@@ -466,10 +480,10 @@ class _SolveWorker:
             try:
                 proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
                 proc.stdin.flush()
-                response = self._responses.get(timeout=_SOLVE_TIMEOUT_S)
+                response = self._responses.get(timeout=self._timeout_s())
             except queue.Empty as exc:
                 self._stop()
-                raise RuntimeError(f"the solve timed out after {_SOLVE_TIMEOUT_S} s") from exc
+                raise RuntimeError(f"the request timed out after {self._timeout_s()} s") from exc
             except OSError as exc:
                 self._stop()
                 raise RuntimeError("the solve worker disconnected") from exc
@@ -477,14 +491,43 @@ class _SolveWorker:
                 if response.get("restart"):
                     self._stop()
                 raise RuntimeError(response["error"])
-            return response["loadouts"]
+            return response[self._answer]
 
     def stop(self) -> None:
         with self._lock:
             self._stop()
 
 
+class _LookupWorker(_SolveWorker):
+    """The process that answers score lookups."""
+
+    _module = "gear_optimizer.reverse.worker"
+    _answer = "reverse"
+
+    def _timeout_s(self) -> float:
+        return _LOOKUP_TIMEOUT_S
+
+
+class _LookupQueue:
+    """Score lookups, in arrival order, on one worker with its own GPU context. Up to _LOOKUPS_QUEUED wait; a host past that
+    hears the service is busy."""
+
+    def __init__(self, worker: _SolveWorker) -> None:
+        self.worker = worker
+        self._turns = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lookup")
+        self._places = threading.BoundedSemaphore(_LOOKUPS_QUEUED)
+
+    def lookup(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self._places.acquire(blocking=False):
+            raise ServiceNotReady("too many score lookups are waiting")
+        try:
+            return self._turns.submit(self.worker.request, payload).result()
+        finally:
+            self._places.release()
+
+
 _warm_worker = _SolveWorker(_run_root() / "persistent_solver")
+_lookups = _LookupQueue(_LookupWorker(_run_root() / "lookups"))
 
 
 def _solve_official(request: SolveRequest) -> list[dict[str, Any]]:
@@ -541,6 +584,30 @@ def solve(raw_request: dict[str, Any]) -> list[dict[str, Any]]:
         state.done.set()
         with _in_flight_lock:
             del _in_flight[key]
+
+
+# --- score lookups -----------------------------------------------------------
+
+_SHOWN_NUMBERS = {"accuracy": (int, float), "gearMultiplier": (int, float), "casualScore": (int,), "gearPower": (int,)}
+
+
+def parse_lookup(raw: dict[str, Any]) -> dict[str, Any]:
+    """What a Top Scores row shows, as the lookup worker takes it."""
+    song_id, score = raw.get("targetSongId"), raw.get("score")
+    if not isinstance(song_id, str) or not song_id:
+        raise RequestError("targetSongId is required")
+    if not isinstance(score, int) or isinstance(score, bool) or score <= 0:
+        raise RequestError("score must be a positive integer")
+    shown = {"chartPath": str(find_official_chart(song_id)), "score": score, "matchMode": raw.get("matchMode", "Compete")}
+    if shown["matchMode"] not in ("Compete", "Casual"):
+        raise RequestError("matchMode must be Compete or Casual")
+    for name, types in _SHOWN_NUMBERS.items():
+        value = raw.get(name)
+        if value is not None:
+            if not isinstance(value, types) or isinstance(value, bool) or value < 0:
+                raise RequestError(f"{name} must be a non-negative number")
+            shown[name] = value
+    return shown
 
 
 # --- catalog builds ----------------------------------------------------------
@@ -628,7 +695,7 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.rstrip("/")
-        if path not in {"/optimize", "/frontiers/refresh"}:
+        if path not in {"/optimize", "/reverse", "/frontiers/refresh"}:
             self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
         elif not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
@@ -636,13 +703,14 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             clear_official_charts()
             self.server.updater.request_check()  # type: ignore[attr-defined]  # main() sets it before serving
             self._send(HTTPStatus.ACCEPTED, {"queued": True})
+        elif path == "/reverse":
+            self._answer(lambda request: _lookups.lookup(parse_lookup(request)))
         else:
-            self._optimize()
+            self._answer(lambda request: {"jobId": request.get("jobId"), "loadouts": solve(request)})
 
-    def _optimize(self) -> None:
+    def _answer(self, work: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         try:
-            request = self._read_json()
-            self._send(HTTPStatus.OK, {"jobId": request.get("jobId"), "loadouts": solve(request)})
+            self._send(HTTPStatus.OK, work(self._read_json()))
         except RequestTooLarge as exc:
             self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": str(exc)})
         except RequestError as exc:
@@ -736,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
         server.serve_forever()  # SIGINT/SIGTERM shut it down through handle_shutdown_signal
     finally:
         _warm_worker.stop()
+        _lookups.worker.stop()
         updater.stop()
         if not restart_revision:
             server.server_close()

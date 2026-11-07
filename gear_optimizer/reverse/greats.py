@@ -1,13 +1,11 @@
-"""Plays with Greats: what the Casual score tells of them, and the stat lines that give their score.
+"""Plays with Greats: what the Casual score tells of them, and from a search's rows to stat lines.
 
 A Great costs the Compete score a loss that depends on the line and the Casual score a loss that does not: 100 or 300
 points in the body, 51 to 300 at a head note. So a Casual score tells how many Greats lie in the head and, near enough,
-where: a class. The rest runs backwards from the score. A surface and a base leave a deficit. Gear Power leaves a few
-Perfect Points stats, each with its Great points, and a class then gives the body Greats in fever by a division. FT + FF
-follow from Gear Power, a diagonal of cells instead of all of them.
+where: a class. The rest runs backwards from the score on the GPU (gpu_lines). FT + FF follow from Gear Power, a diagonal of
+cells instead of all of them.
 
-Cost: O(u (B + J b + r (s + 2 c))) for u surfaces, B = 400 blocks, b blocks that survive, r (pair, base) rows, s ~ 32 Perfect
-Points stats of one residue and c classes, each row one head sum, O(100), most of them memoized; then O(rows x cells).
+Cost: O(r w log c) from r rows to lines, for w walked surfaces in a row's band and c cells of a surface.
 """
 
 from __future__ import annotations
@@ -17,22 +15,16 @@ import numpy as np
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.rules import MAX_STAT
 
-from .invert import _ceiling_at, _shape_terms
-
 _AXIS = MAX_STAT + 1
-_TILE = 8
 # Greats listed note by note in a class; a class with more holds their count and the span of their positions.
 HEAD_LISTED = 3
 # The most Greats a class puts in the head.
 _HEAD_SPANNED = 16
 _CLASS_COLUMNS = 9
 _SUM_WORDS = (2 * MAX_STAT + 1 + 63) // 64
-# Over any line, base - Great is under base / 3 + this: Great points are 2/3 of the elements + 150, and Perfect Points at
-# most 485.
-_GREAT_GAP = 185.0
 ROW_COLUMNS = 8
-# Head sums a search keeps: most (pair, base) rows of a song share a head, its notes outside fever.
-_HEAD_MEMO = 1 << 16
+NOTE_COST = 1.0
+FAR_COST = 6.0
 
 
 @jit(nopython=True, cache=True)
@@ -140,237 +132,101 @@ def cell_sums(cell_start, cells):
 
 
 @jit(nopython=True, cache=True)
-def _great_options(elements, single_color, out):
-    """The Great points of a line whose elements give `elements` (2 x primary + secondary), into out; returns how many:
-    4/3 of the primary and 2/3 of the secondary, each floored, leave two values at most."""
-    if single_color:
-        if elements % 3:
-            return 0
-        out[0] = 2 * elements // 3 + 150
-        return 1
-    found = 0
-    for rest in range(3):
-        value = (2 * elements - rest - (2 * ((elements - 2 * rest) % 3)) % 3) // 3 + 150
-        if found == 0 or value != out[0]:
-            out[found] = value
-            found += 1
-    return found
+def _cell_sum(cell):
+    return cell // _AXIS + cell % _AXIS
 
 
 @jit(nopython=True, cache=True)
-def _head_loss(row, mask, line, lengths):
-    """Exactly what a class's listed head Greats lose at a line, or (for more) the fewest and the most, each point of
-    their floors allowed."""
-    base, great = line
-    ramp, combo, fever = lengths
-    head = row[0]
-    if row[4] < 0 and head > 0:
-        step = (combo - 1.0) * 0.01 * (base - great)
-        return (base - great) * head + row[2] * step - head, (base - great) * head + row[3] * step + head
-    loss = 0
-    for place in range(4, 4 + head):
-        note = row[place]
-        if (mask[note >> 5] >> (note & 31)) & 1:
-            loss += int(np.floor(base * ramp[note] * fever)) - int(np.floor(great * ramp[note] * fever))
+def _first_of_sum(cells, first, last, total):
+    """Where cells[first : last], sorted by FT + FF, reaches this sum."""
+    while first < last:
+        middle = (first + last) >> 1
+        if _cell_sum(cells[middle]) < total:
+            first = middle + 1
         else:
-            loss += int(np.floor(base * ramp[note])) - int(np.floor(great * ramp[note]))
-    return float(loss), float(loss)
-
-
-@jit(nopython=True, cache=True)
-def _base_rows(need, pair, tables, classes, keep):
-    """Writes every line a surface gives at one base and deficit. Gear Power leaves a few Perfect Points stats, each its Great
-    points; a class then leaves how many body Greats lie in fever, by a division. pair: (surface, CM, FM, base); tables: (mask,
-    ramp at CM, combo, fever, points per stat, stats per residue of 2 x their points mod 5 and where each residue starts, one
-    color, the Gear Power less 5 x (CM + FM), the surface's FT + FF); keep: (out, found). Returns the rows held."""
-    u, cm, fm, base = pair
-    mask, ramp, combo, fever, points, by_residue, residue_start, single_color, power, sums = tables
-    out, found = keep
-    options = np.empty(3, dtype=np.int64)
-    wanted = (2 * base - power) % 5
-    for at in range(residue_start[wanted], residue_start[wanted + 1]):
-        stat = by_residue[at]
-        elements = base - int(points[stat])
-        left = power - 5 * stat - 2 * elements
-        if left < 0 or left >= 5 * (2 * MAX_STAT + 1):
-            continue
-        total = left // 5
-        if not (sums[total >> 6] >> (total & 63)) & 1:
-            continue
-        for option in range(_great_options(elements, single_color, options)):
-            great = options[option]
-            if great >= base:
-                continue
-            body_normal = int(np.floor(float(base) * combo)) - int(np.floor(float(great) * combo))
-            body_fever = int(np.floor(float(base) * combo * fever)) - int(np.floor(float(great) * combo * fever))
-            gap = body_fever - body_normal
-            for c in range(classes.shape[0]):
-                row = classes[c]
-                low, high = _head_loss(row, mask, (float(base), float(great)), (ramp, combo, fever))
-                body = row[1]
-                rest_low, rest_high = need - high - body * body_normal, need - low - body * body_normal
-                fevered = max(0, int(np.ceil(rest_low / gap))) if gap > 0 else 0
-                while fevered <= body and fevered * gap <= rest_high:
-                    if fevered * gap >= rest_low:
-                        if found == out.shape[0]:
-                            return found + 1
-                        written = out[found]
-                        written[0], written[1], written[2], written[3] = u, cm, fm, base
-                        written[4], written[5], written[6], written[7] = c, great, stat, fevered
-                        found += 1
-                    fevered += 1
-                    if gap <= 0:
-                        break
-    return found
-
-
-@jit(nopython=True, cache=True)
-def _sum_in_span(bits, low, high):
-    """Whether a surface reaches an FT + FF within low..high."""
-    first, last = max(int(np.ceil(low)), 0), min(int(high), 2 * MAX_STAT)
-    for word in range(first >> 6, (last >> 6) + 1 if last >= 0 else 0):
-        value = bits[word]
-        if word == first >> 6:
-            value &= -1 << (first & 63)
-        if word == last >> 6 and (last & 63) < 63:
-            value &= (1 << ((last & 63) + 1)) - 1
-        if value != 0:
-            return True
-    return False
-
-
-@jit(nopython=True, cache=True)
-def _head_sum(mask, ramp, fever, base):
-    """The score of the head notes, all Perfect, as gem_search._surface_score sums them."""
-    total = 0
-    for note in range(ramp.shape[0]):
-        if (int(mask[note >> 5]) >> (note & 31)) & 1:
-            total += int(np.floor(base * ramp[note] * fever))
-        else:
-            total += int(np.floor(base * ramp[note]))
-    return total
-
-
-@jit(nopython=True, cache=True)
-def _residues(points):
-    """Perfect Points stats by 2 x their points mod 5, and where each residue starts."""
-    order = np.empty(points.shape[0], dtype=np.int64)
-    start = np.zeros(6, dtype=np.int64)
-    at = 0
-    for residue in range(5):
-        start[residue] = at
-        for stat in range(points.shape[0]):
-            if (2 * int(points[stat])) % 5 == residue:
-                order[at] = stat
-                at += 1
-    start[5] = at
-    return order, start
-
-
-@jit(nopython=True, cache=True)
-def great_rows(score, surfaces, multipliers, notes, ceiling, game, out):
-    """Every (surface, CM, FM, base, class, Great points, Perfect Points stat) whose clean score less the class's loss is
-    this score, under the ceiling, at a cell the surface reaches and the Gear Power leaves, into out; returns how many rows,
-    and whether they are all. surfaces: (words, coeffs, pattern, body fever, FT + FF bit sets, their lowest and
-    highest); ceiling: (vertex values, prices, relief per surface); game: (classes, points per Perfect Points, one color,
-    Gear Power, the class tests it may spend). Gear Power holds 2 x base + 5 x PP - 2 x its points + 5 x the other stats, so at a pair it leaves a span of
-    FT + FF, and a surface whose cells miss the span is skipped before any head is summed."""
-    words, coeffs, pattern, body_fevers, sums = surfaces
-    combo, ramp, fever = multipliers
-    head_len, body_total = notes
-    values, prices, relief = ceiling
-    classes, points, single_color, power, pairs = game
-    wanted = float(score)
-    greats = classes[0, 0] + classes[0, 1]
-    by_residue, residue_start = _residues(points)
-    memo_keys = np.full(_HEAD_MEMO, -1, dtype=np.int64)
-    memo_values = np.empty(_HEAD_MEMO, dtype=np.int64)
-    walked = 0
-    term_low, term_high = 1.0e18, -1.0e18
-    for stat in range(points.shape[0]):
-        term_low, term_high = min(term_low, 5.0 * stat - 2.0 * points[stat]), max(term_high, 5.0 * stat - 2.0 * points[stat])
-    found = 0
-    for u in range(pattern.shape[0]):
-        p = pattern[u]
-        bf = int(body_fevers[u])
-        a, e, f, g = _shape_terms(coeffs[p], bf, body_total, 0.0)
-        mask = words[p]
-        for cm_block in range(0, _AXIS, _TILE):
-            cm_top = min(cm_block + _TILE - 1, MAX_STAT)
-            alpha_top, beta_top = a * combo[cm_top] + f, e * combo[cm_top] + g
-            for fm_block in range(0, _AXIS, _TILE):
-                fm_top = min(fm_block + _TILE - 1, MAX_STAT)
-                shape = alpha_top * fever[fm_top] + beta_top
-                if _ceiling_at(values, prices, relief, u, cm_block, fm_block, wanted / shape) * shape < wanted:
-                    continue
-                for cm in range(cm_block, cm_top + 1):
-                    alpha, beta = a * combo[cm] + f, e * combo[cm] + g
-                    for fm in range(fm_block, fm_top + 1):
-                        shape = alpha * fever[fm] + beta
-                        lowest = wanted / shape
-                        bound = _ceiling_at(values, prices, relief, u, cm, fm, lowest)
-                        if bound < lowest:
-                            continue
-                        loses = greats * combo[cm] * fever[fm] * (bound / 3.0 + _GREAT_GAP)
-                        highest = min(bound, (wanted + loses) / shape + 1.0)
-                        rest = float(power - 5 * (cm + fm))
-                        if not _sum_in_span(sums[u], (rest - 2.0 * highest - term_high) / 5.0, (rest - 2.0 * lowest - term_low) / 5.0):
-                            continue
-                        rest_power = power - 5 * (cm + fm)
-                        tables = (mask, ramp[cm][:head_len], combo[cm], fever[fm], points, by_residue, residue_start, single_color, rest_power, sums[u])
-                        head_fever = int(mask[0]) | int(mask[1]) | int(mask[2]) | int(mask[3])
-                        for base in range(int(np.ceil(lowest)), int(highest) + 1):
-                            key = (int(p) << 40) | (cm << 32) | ((fm if head_fever else 0) << 24) | base
-                            slot = ((key * 0x1E3779B97F4A7C15) >> 40) & (_HEAD_MEMO - 1)
-                            if memo_keys[slot] != key:
-                                memo_keys[slot] = key
-                                memo_values[slot] = _head_sum(mask, ramp[cm][:head_len], fever[fm], float(base))
-                            normal = float(base) * combo[cm]
-                            clean = memo_values[slot] + bf * int(np.floor(normal * fever[fm])) + (body_total - bf) * int(np.floor(normal))
-                            need = clean - score
-                            if need <= 0:
-                                continue
-                            found = _base_rows(need, (u, cm, fm, base), tables, classes, (out, found))
-                            if found > out.shape[0]:
-                                return out.shape[0], False
-                            if walked > pairs:
-                                return found, False
-                            walked += classes.shape[0]
-    return found, True
+            last = middle
+    return first
 
 
 @jit(nopython=True, cache=True)
 def cell_lines(rows, power, points, cells_of, ceiling, out):
-    """The cells of rows (great_rows) whose surface reaches them and Gear Power leaves: FT + FF follows from it. Into out as
-    lines (row, CM, FM, FT, FF, base, vertex, Perfect Points stat); returns how many, out's rows + 1 when more exist.
-    cells_of: (per surface the first and last walked surface of its band, cell_start, cells); ceiling: (vertex values, prices)."""
+    """The cells of rows (surface, CM, FM, base, class, Great points, Perfect Points stat, body Greats in fever) whose surface
+    reaches them under the vertices; Gear Power leaves their FT + FF, and a row with no stat takes all of them. Into out as lines
+    (row, CM, FM, FT, FF, base, vertex, stat); returns how many, out's rows + 1 when more exist. cells_of: (per surface the first
+    and last walked surface of its band, cell_start, cells sorted by FT + FF within a surface); ceiling: (vertex values, prices)."""
     bands, cell_start, cells = cells_of
     values, prices = ceiling
     found = 0
     for r in range(rows.shape[0]):
         u, cm, fm, base, stat = rows[r, 0], rows[r, 1], rows[r, 2], rows[r, 3], rows[r, 6]
-        left = power - 5 * (cm + fm + stat) - 2 * (base - int(points[stat]))
-        if left < 0 or left % 5:
-            continue
-        total = left // 5
-        for k in range(cell_start[bands[u, 0]], cell_start[bands[u, 1]]):
-            ft, ff = cells[k] // _AXIS, cells[k] % _AXIS
-            if ft + ff != total:
+        total = -1
+        if stat >= 0:
+            left = power - 5 * (cm + fm + stat) - 2 * (base - int(points[stat]))
+            if left < 0 or left % 5:
                 continue
-            lowest, vertex = 1.0e18, 0
-            for j in range(values.shape[0]):
-                bound = values[j] - prices[j, 1] * cm - prices[j, 2] * fm - prices[j, 3] * ft - prices[j, 4] * ff
-                if bound < lowest:
-                    lowest, vertex = bound, j
-                    if lowest < base:
-                        break
-            if lowest >= base:
-                if found == out.shape[0]:
-                    return found + 1
-                line = out[found]
-                line[0], line[1], line[2], line[3], line[4], line[5], line[6], line[7] = r, cm, fm, ft, ff, base, vertex, stat
-                found += 1
+            total = left // 5
+        for walked in range(bands[u, 0], bands[u, 1]):
+            k = cell_start[walked] if total < 0 else _first_of_sum(cells, cell_start[walked], cell_start[walked + 1], total)
+            while k < cell_start[walked + 1] and (total < 0 or _cell_sum(cells[k]) == total):
+                ft, ff = cells[k] // _AXIS, cells[k] % _AXIS
+                k += 1
+                lowest, vertex = 1.0e18, 0
+                for j in range(values.shape[0]):
+                    bound = values[j] - prices[j, 1] * cm - prices[j, 2] * fm - prices[j, 3] * ft - prices[j, 4] * ff
+                    if bound < lowest:
+                        lowest, vertex = bound, j
+                        if lowest < base:
+                            break
+                if lowest >= base:
+                    if found == out.shape[0]:
+                        return found + 1
+                    line = out[found]
+                    line[0], line[1], line[2], line[3], line[4], line[5], line[6], line[7] = r, cm, fm, ft, ff, base, vertex, stat
+                    found += 1
     return found
+
+
+@jit(nopython=True, cache=True)
+def _log_binomial(picked, total, chance, log_factorial):
+    return (
+        log_factorial[total] - log_factorial[picked] - log_factorial[total - picked]
+        + picked * np.log(chance) + (total - picked) * np.log(1.0 - chance)
+    )
+
+
+@jit(nopython=True, cache=True)
+def explanation_costs(held, rows, classes, tables, spans, out):
+    """Into out, per line of `spans` (first and last + 1 of its held rows), how far-fetched the likeliest play behind it is, in
+    nats. A timeline sits on the chart-time timeline of its cell, or a note off: hits land near their notes and a fever window ends
+    on one of few notes. Each note off costs NOTE_COST up to FAR_COST, what a play that moves its fever on purpose costs (a Force
+    Great plan). Each Great falls in a song's head or fever by the share of notes there. held: cell_lines rows; rows: their rows;
+    tables: (per cell its chart-time body fever, per surface its body fever, body notes, head notes, log factorials)."""
+    chart_fever, body_fever, body_total, head_len, log_factorial = tables
+    notes = max(body_total + head_len, 1)
+    for t in range(spans.shape[0]):
+        best = 1.0e18
+        for k in range(spans[t, 0], spans[t, 1]):
+            row = rows[held[k, 0]]
+            bf = body_fever[row[0]]
+            cost = min(NOTE_COST * abs(bf - chart_fever[held[k, 3] * _AXIS + held[k, 4]]), FAR_COST)
+            if classes.shape[0]:
+                head, body = classes[row[4], 0], classes[row[4], 1]
+                cost -= _log_binomial(row[7], body, min(max(bf / max(body_total, 1), 1.0e-3), 0.999), log_factorial)
+                cost -= _log_binomial(head, head + body, min(max(head_len / notes, 1.0e-3), 0.999), log_factorial)
+            best = min(best, cost)
+        out[t] = best
+
+
+@jit(nopython=True, cache=True)
+def great_points_fit(found, greats, held, rows, spans, out):
+    """Into out, per found loadout (its target at column 16), whether a row of its line has its Great points."""
+    for r in range(found.shape[0]):
+        first, last = spans[found[r, 16], 0], spans[found[r, 16], 1]
+        out[r] = False
+        for k in range(first, last):
+            if rows[held[k, 0], 5] == greats[r]:
+                out[r] = True
+                break
 
 
 @jit(nopython=True, cache=True)
@@ -412,7 +268,8 @@ def band_surfaces(surfaces, relief, sums, band, body_total):
                 out_sums[at] |= sums[u]
             at += 1
         first = last + 1
-    return out_pattern, out_body, out_relief, out_sums, bands
+    kept = bands[:, 1] > bands[:, 0]
+    return out_pattern[kept], out_body[kept], out_relief[kept], out_sums[kept], bands[kept]
 
 
 @jit(nopython=True, cache=True)

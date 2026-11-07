@@ -4,8 +4,8 @@
 Each fake player (tools/verify/fake_players.py) wears a real set and plays through tools/verify/frame_play.py, a frame-by-frame
 port of the decompiled game. The lookup gets what the Top Scores menu shows of their best play, nothing else; the set is the
 answer key. Songs split by a seeded hash, so dev tuning never sees held-out songs. A results database, when given, adds
-stored top builds and Force Great plans as more answer keys; the lookup never reads it. Latencies are this process's CPU time,
-on one thread with NUMBA_NUM_THREADS=1.
+stored top builds and Force Great plans as more answer keys; the lookup never reads it. Latencies are wall time, GPU included, on
+one thread with NUMBA_NUM_THREADS=1.
 
     python tools/verify/score_reverse_benchmark.py --split dev --songs 40 --out dev.json [--db scratch.db] [--part 0/2]
 """
@@ -63,7 +63,7 @@ class Tally:
         self.prepare_ms: list[float] = []
 
     def add(self, case: dict, reply: Reverse, truth: tuple[int, ...], gear: tuple[str, ...], ms: float, chart: Chart, curves) -> None:
-        lines = list(dict.fromkeys(stat_line(row.stats, chart, curves) for row in reply.sets))
+        lines = [(line.combo_multiplier, line.fever_multiplier, line.fever_time, line.fever_fill_rate, line.base) for line in reply.stat_lines]
         self.rows.append({
             **case,
             "verdict": reply.verdict,
@@ -129,11 +129,11 @@ def _lookup(tally: Tally, song: ReverseSong, row: Row, shown: str, case: dict) -
         info = PlayInfo(info.score, match_mode=info.match_mode)
     elif shown == "row":
         info = PlayInfo(info.score, info.accuracy, gear_multiplier=info.gear_multiplier, match_mode=info.match_mode)
-    started = time.process_time()
+    started = time.perf_counter()
     reply = reverse_score(info, song)
-    ms = (time.process_time() - started) * 1000.0
+    ms = (time.perf_counter() - started) * 1000.0
     player = row.player
-    top = float(song.surface_tops.max())
+    top = song.top
     tally.add(
         {**case, "shown": shown, "band": band_of(row.info.accuracy), "tier": player.tier, "kind": player.kind, "skill": player.skill, "height": min(row.info.score / top, 1.0), "exploit": player.exploit, "forged": _forged_band(row.played.forged / chart.total_notes)},
         reply, stat_line(player.stats, chart, song.curves), player.gear, ms, chart, song.curves,
@@ -144,7 +144,7 @@ def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, catalog, tally
     """Verified builds: stored top builds and Force Great plans of a results database, played through the simulator."""
     curves = song.curves
     clock = np.arange(-1000.0, float(chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)
-    top = float(song.surface_tops.max())
+    top = song.top
     for board, column, result in (("fg_board", "fg_trace", "fg_result"), ("meta_board", "meta_trace", "meta_result")):
         found = con.execute(
             f"select {result}, {column}, timing_mode, gear from loadouts where song_name=? and {board}=1", (name,)
@@ -161,16 +161,16 @@ def _stored_rows(name: str, chart: Chart, song: ReverseSong, con, catalog, tally
                 time_stat, offsets = 0, np.zeros(chart.total_notes)
             played = play(chart, stats, time_stat, Plan(offsets), clock)
             info = play_info(played, gear_power(stats, chart), "Compete")
-            started = time.process_time()
+            started = time.perf_counter()
             reply = reverse_score(info, song)
             case = {"shown": "play-info", "band": band_of(info.accuracy), "tier": "T5", "kind": "stored", "skill": "plan", "height": min(info.score / top, 1.0), "stored": f"{board}/{mode}", "greats": played.great}
-            tally.add(case, reply, stat_line(stats, chart, curves), worn, (time.process_time() - started) * 1000.0, chart, curves)
+            tally.add(case, reply, stat_line(stats, chart, curves), worn, (time.perf_counter() - started) * 1000.0, chart, curves)
 
 
 def run_song(name: str, chart: Chart, con, catalog, curves, tally: Tally, seed: int, repeats: int, rows: int) -> None:
-    started = time.process_time()
+    started = time.perf_counter()
     song = prepare_song(chart, catalog, curves)
-    tally.prepare_ms.append((time.process_time() - started) * 1000.0)
+    tally.prepare_ms.append((time.perf_counter() - started) * 1000.0)
     rng = random.Random(f"{seed}:{name}")
     minis = dict(catalog.minis)
     if con is not None:
@@ -198,6 +198,7 @@ def main() -> int:
     parser.add_argument("--split", choices=("dev", "heldout"), required=True)
     parser.add_argument("--seed", type=int, default=20261106)
     parser.add_argument("--songs", type=int, default=40)
+    parser.add_argument("--first", type=int, default=0, help="songs of the split to skip, as run so far")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--rows", type=int, default=2)
     parser.add_argument("--part", default="0/1", help="this process's share of the songs, i/n")
@@ -220,7 +221,7 @@ def main() -> int:
     index, parts = (int(value) for value in args.part.split("/"))
     tally = Tally()
     started = time.perf_counter()
-    for at, name in enumerate(names[: args.songs]):
+    for at, name in enumerate(names[args.first : args.first + args.songs]):
         if at % parts == index:
             run_song(name, load_chart(charts[name]), con, catalog, curves, tally, args.seed, args.repeats, args.rows)
             Path(args.out).write_text(json.dumps(tally.report(at + 1), indent=1))

@@ -11,7 +11,9 @@ Use this page to find the current owner of a behavior. The
 - HTTP service: `gear_optimizer/robeatsmeta_service.py`
 - Score reverse-lookup: `gear_optimizer/reverse/lookup.py`
   - `python -m gear_optimizer.reverse --song "<Song Name>" --score N [--accuracy A --multiplier M --casual C --gear-power GP]`
-  - Plays with Greats: `gear_optimizer/reverse/greats.py`
+  - The stat lines of a score, on the GPU: `gear_optimizer/reverse/gpu_lines.py`
+  - Plays with Greats, and how plausible a line's play is: `gear_optimizer/reverse/greats.py`
+  - The service's lookup process (`POST /reverse`, its own GPU context): `gear_optimizer/reverse/worker.py`
   - Benchmark: `tools/verify/score_reverse_benchmark.py`, on `tools/verify/fake_players.py` through `tools/verify/frame_play.py`
 - GeneralMeta: `general_meta/app.py` (`run_general_meta`), which the website's data publish runs on its
   `evolution.db` snapshot

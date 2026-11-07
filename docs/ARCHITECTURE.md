@@ -154,7 +154,9 @@ results into its boards in one transaction.
 `gear_optimizer/robeatsmeta_service.py` exposes the supported service boundary:
 
 - `GET /songs` returns the available chart catalog;
-- `POST /optimize` runs an official or supplied chart; and
+- `POST /optimize` runs an official or supplied chart;
+- `POST /reverse` answers a score lookup, on a worker of its own with its own GPU context, so a lookup never waits for a solve
+  slot; and
 - `POST /frontiers/refresh` re-reads the chart list and looks for a new revision.
 
 Official charts solve on one warm process (`service_worker.py`), a custom item pool included; an uploaded chart gets a

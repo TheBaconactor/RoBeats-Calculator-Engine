@@ -632,3 +632,66 @@ def test_a_data_refresh_builds_every_chart_in_both_modes_and_rereads_the_list(da
     assert call["authorize_destructive_rotation"] is True
     assert {mode: len(charts) for mode, charts in call["charts_by_mode"].items()} == {"precise": 3, "non-precise": 3}
     assert built == ["pass"] and len(service.list_official_songs()) == 3
+
+
+def _lookup_handler(monkeypatch, body: dict) -> tuple[service.RoBeatsMetaServiceHandler, list]:
+    answers: list = []
+    handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
+    handler.headers = {}
+    handler.path = "/reverse"
+    monkeypatch.setattr(handler, "_read_json", lambda: body)
+    monkeypatch.setattr(handler, "_send", lambda status, payload: answers.append((status, payload)))
+    return handler, answers
+
+
+def test_a_lookup_takes_its_own_queue_and_no_solve_slot(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    taken: list[dict] = []
+
+    def request(_self, payload):
+        taken.append(payload)
+        return {"verdict": "sets"}
+
+    monkeypatch.setattr(service._LookupWorker, "request", request)
+    monkeypatch.setattr(service, "_solve_slot", lambda: pytest.fail("a lookup waited for a solve slot"))
+    handler, answers = _lookup_handler(monkeypatch, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": 99.91, "gearPower": 40})
+    handler.do_POST()
+    assert answers == [(service.HTTPStatus.OK, {"verdict": "sets"})]
+    assert taken[0]["score"] == 5
+    assert taken[0]["accuracy"] == 99.91
+    assert taken[0]["gearPower"] == 40
+    assert taken[0]["chartPath"].endswith("song.txt")
+
+
+@pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}))
+def test_a_lookup_with_a_row_no_menu_shows_is_refused(data_root, monkeypatch, body):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    handler, answers = _lookup_handler(monkeypatch, body)
+    handler.do_POST()
+    assert answers[0][0] == service.HTTPStatus.BAD_REQUEST
+
+
+def test_lookups_run_in_arrival_order_and_refuse_past_the_queue(monkeypatch):
+    release = threading.Event()
+    order: list[int] = []
+
+    class Held:
+        def request(self, payload):
+            assert release.wait(timeout=5.0)
+            order.append(payload["n"])
+            return {"n": payload["n"]}
+
+    monkeypatch.setattr(service, "_LOOKUPS_QUEUED", 3)
+    lookups = service._LookupQueue(Held())
+    threads = []
+    for n in range(3):
+        threads.append(threading.Thread(target=lookups.lookup, args=({"n": n},)))
+        threads[-1].start()
+        while lookups._places._value > 2 - n:
+            pass
+    with pytest.raises(service.ServiceNotReady):
+        lookups.lookup({"n": 3})
+    release.set()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    assert order == [0, 1, 2]

@@ -44,6 +44,7 @@ _ITEMS_EQUIPPED = len(GEAR_SLOTS) + 3
 _ELEMENT_ROWS = 3
 _GEM_ROWS = len(STAT_GEMS) + _ELEMENT_ROWS
 _LAST_STEP = 0.02
+_UNKNOWN_GAP = 0.008
 # Over a bound's float sum: a loadout can sit exactly on the bound, and every test against it keeps that loadout.
 BOUND_ROUNDING = 1.0e-6
 
@@ -472,8 +473,8 @@ def lowest_at(space, fixed, points, stats, prices, steps):
 def search_targets(space, tables, fixed, points, vertices, query, found):
     """The loadouts of target rows (surface, CM, FM, FT, FF, base, vertex, Perfect Points stat or negative) in order, into
     found (rows: 9 item indices, 7 gem values, target, fixed row), until `limit` targets hold loadouts or the work budget
-    ends; returns (rows, whether every target was searched to its end). The vertex prices the target's walks. A target no
-    subset sum holds costs its openings alone. query: (targets, Gear Power or negative, limit, budget, items a target may
+    ends; returns (rows, targets reached, whether every target was searched to its end). The vertex prices the target's walks.
+    A target no subset sum holds costs its openings alone. query: (targets, Gear Power or negative, limit, budget, items a target may
     try, work per target with openings, rows per target)."""
     items, starts, gems = space
     element_rows, values, floors, layers, table_prices, removed, add, lows, highs = tables
@@ -492,7 +493,7 @@ def search_targets(space, tables, fixed, points, vertices, query, found):
     complete = True
     for t in range(targets.shape[0]):
         if held >= limit or work > budget:
-            return written, False
+            return written, t, False
         base = targets[t, 5]
         prices = vertex_prices[targets[t, 6]]
         bound = vertex_values[targets[t, 6]]
@@ -534,22 +535,7 @@ def search_targets(space, tables, fixed, points, vertices, query, found):
                     walked += used
         work += walked
         held += written > before
-    return written, complete
-
-
-@jit(nopython=True, cache=True)
-def with_points_stat(targets, power, points, out):
-    """Target rows with the Perfect Points stat Gear Power leaves them, one row per stat, into out; returns the rows."""
-    found = 0
-    for t in range(targets.shape[0]):
-        row = targets[t]
-        left = power - 5 * (row[1] + row[2] + row[3] + row[4]) - 2 * row[5]
-        for stat in range(points.shape[0]):
-            if 5 * stat - 2 * int(points[stat]) == left and found < out.shape[0]:
-                out[found, :7] = row[:7]
-                out[found, 7] = stat
-                found += 1
-    return found
+    return written, targets.shape[0], complete
 
 
 @jit(nopython=True, cache=True)
@@ -564,12 +550,12 @@ def _plain_score(stats, line_shape, multipliers, points):
 
 
 @jit(nopython=True, cache=True)
-def gem_gaps(found, space, fixed, tables, gaps):
+def gem_gaps(found, space, fixed, tables, gaps, greats):
     """Into gaps, per found loadout, the share of its score the best move of one gem would add: players place their gems, so
-    the set behind a play is one that move barely helps. tables: (per cell the (A, E, F, G) of its chart-time timeline, combo,
-    fever, points per Perfect Points stat)."""
+    the set behind a play is one that move barely helps; and into greats its Great points. tables: (per cell the (A, E, F, G)
+    of its chart-time timeline, combo, fever, points per Perfect Points stat, one color)."""
     items, gems = space
-    line_shape, combo, fever, points = tables
+    line_shape, combo, fever, points, single_color = tables
     stats = np.empty(7, dtype=np.int64)
     trial = np.empty(7, dtype=np.int64)
     kinds = gems.shape[0]
@@ -584,6 +570,7 @@ def gem_gaps(found, space, fixed, tables, gaps):
         counts[row[15]] = row[14]
         for kind in range(kinds):
             stats += counts[kind] * gems[kind][:7]
+        greats[r] = 2 * stats[5] + 150 if single_color else (4 * stats[5]) // 3 + (2 * stats[6]) // 3 + 150
         plain = _plain_score(stats, line_shape, (combo, fever), points)
         best = plain
         for kind in range(kinds):
@@ -591,6 +578,33 @@ def gem_gaps(found, space, fixed, tables, gaps):
                 continue
             for other in range(kinds):
                 if other != kind and (other < 5 or other == row[15]):
+                    trial[:] = stats - gems[kind][:7] + gems[other][:7]
+                    best = max(best, _plain_score(trial, line_shape, (combo, fever), points))
+        gaps[r] = (best - plain) / plain
+
+
+@jit(nopython=True, cache=True)
+def line_gaps(lines, gems, tables, gaps):
+    """Into gaps, per line (surface, CM, FM, FT, FF, base, vertex, Perfect Points stat), the share of its score the best move of
+    one gem from a fever stat or the element to any stat would add at the line: what gem_gaps comes to when a set holds those
+    gems, with no loadout to find first. Most sets hold no Perfect Points or Combo gems. tables: as gem_gaps. A line with no
+    stat has no such move: _UNKNOWN_GAP, about what a dev line's gap comes to."""
+    line_shape, combo, fever, points = tables
+    stats = np.empty(7, dtype=np.int64)
+    trial = np.empty(7, dtype=np.int64)
+    kinds = 6
+    for r in range(lines.shape[0]):
+        row = lines[r]
+        gaps[r] = _UNKNOWN_GAP
+        if row[7] < 0:
+            continue
+        stats[0], stats[1], stats[2], stats[3], stats[4] = row[7], row[1], row[2], row[3], row[4]
+        stats[5], stats[6] = 0, row[5] - int(points[row[7]])
+        plain = _plain_score(stats, line_shape, (combo, fever), points)
+        best = plain
+        for kind in range(2, kinds):
+            for other in range(kinds):
+                if other != kind:
                     trial[:] = stats - gems[kind][:7] + gems[other][:7]
                     best = max(best, _plain_score(trial, line_shape, (combo, fever), points))
         gaps[r] = (best - plain) / plain
