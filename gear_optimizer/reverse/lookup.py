@@ -17,7 +17,7 @@ the lines, O(L) over L lines to rank them, then the walks, a fixed budget. The f
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from math import ceil, floor
+from math import ceil, comb, floor
 
 import numpy as np
 
@@ -96,6 +96,7 @@ _ROWS_PER_SET = 32
 # one. With fewer lines than this it looks at every timeline: a Force Great plan moves its fever on purpose.
 _NEAR_NOTES = 2
 _WIDE_UNDER = 4096
+_HEAD_CHANCE = 0.01  # and leaves out head Greats beyond what chance gives this share of plays
 # What a gem gap costs a line, in nats per share of the score. A plan that moves its fever on purpose (a Force Great plan) fits any
 # timeline and needs no chance in its Greats: it costs this, on a build whose gem gap costs more; at this share of a song's top a
 # search always looks at every timeline, since such plans live there.
@@ -547,9 +548,10 @@ def _named_costs(lines: FoundLines, found: np.ndarray, gaps: np.ndarray, reached
     return costs
 
 
-def _classes_of(play: PlayInfo, song: ReverseSong, greats: int, timelines: Timelines) -> np.ndarray | None:
+def _classes_of(play: PlayInfo, song: ReverseSong, greats: int, timelines: Timelines, near: bool = False) -> np.ndarray | None:
     """Where a play's Greats can lie, empty for a clean play; None when the row cannot tell: Greats need the Casual score and Gear
-    Power, what tells a line's Greats apart, and past MAX_CLASSES places those tell nothing."""
+    Power, what tells a line's Greats apart, and past MAX_CLASSES places those tell nothing. near: only as many Greats in the head
+    as chance leaves _HEAD_CHANCE of more."""
     if greats == 0:
         return np.empty((0, 9), dtype=np.int64)
     window = _casual_window(play)
@@ -557,6 +559,10 @@ def _classes_of(play: PlayInfo, song: ReverseSong, greats: int, timelines: Timel
     if casual is None:
         return None
     classes = casual_classes(window, casual, greats, HEAD_LISTED if timelines.head_fever else 0)
+    if near:
+        share = song.notes[0] / max(song.chart.total_notes, 1)
+        chance = np.cumsum([comb(greats, held) * share**held * (1.0 - share) ** (greats - held) for held in range(greats + 1)])
+        classes = classes[classes[:, 0] <= int(np.searchsorted(chance, 1.0 - _HEAD_CHANCE))]
     return None if classes.shape[0] > MAX_CLASSES else classes
 
 
@@ -564,19 +570,20 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
     """The likeliest lines of a full combo with this many Greats and the sets that reach them: sets, lines, how many lines there
     are, and whether every line was searched."""
     timelines = _timelines_of(song, greats, greats > 0)
-    classes = _classes_of(play, song, greats, timelines)
+    classes = _classes_of(play, song, greats, timelines, greats > 0)
     if classes is None:
         return [], [], 0, False
-    if greats and classes.shape[0] == 0:
-        return [], [], 0, True
     power = -1 if play.gear_power is None else play.gear_power
     at_top = play.score >= _PLAN_HEIGHT * song.top
-    query = LineQuery(play.score, power, greats, classes, _TOP_LINE_BASES if at_top else _LINE_BASES)
-    lines = _stat_lines(song, timelines, query)
+    bases = _TOP_LINE_BASES if at_top else _LINE_BASES
+    lines = _stat_lines(song, timelines, LineQuery(play.score, power, greats, classes, bases))
     every_timeline = greats == 0 or lines.targets.shape[0] < _WIDE_UNDER or at_top
     if greats and every_timeline:
         timelines = _timelines_of(song, greats, False)
-        lines = _stat_lines(song, timelines, query)
+        classes = _classes_of(play, song, greats, timelines)
+        if classes is None:
+            return [], [], 0, False
+        lines = _stat_lines(song, timelines, LineQuery(play.score, power, greats, classes, bases))
     if lines.targets.shape[0] == 0:
         return [], [], 0, lines.complete
     found = np.empty((_LINES_HELD * _SETS_PER_LINE, 18), dtype=np.int64)
