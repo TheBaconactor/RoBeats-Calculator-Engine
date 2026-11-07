@@ -26,13 +26,13 @@ from gear_optimizer.trace.physical_replay import (
     _REPLAY_ERR_JUDGMENT,
     _REPLAY_ERR_LANE,
     _REPLAY_OK,
-    _RESULT_CODE,
     _replay_kernel,
     _judgment_code,
     validate_force_greats_physical_replay,
 )
 from gear_optimizer.score import HEAD_NOTES
 from gear_optimizer.frontier.types import FgResponseSurface
+from tests.trace_support import columns_of
 from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE as _HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE, judgment_edges
 
 _TAP_EDGES = (430.0, 190.0, 40.0, -20.0, -95.0, -235.0)
@@ -155,6 +155,9 @@ def _assert_agrees(case):
         assert tuple(bool(x) for x in k_fever) == tuple(r_fever)
 
 
+_RESULT_CODE = {name: code for code, name in enumerate(_JUDGMENT_NAME)}
+
+
 def _edges(held_tail):
     return np.asarray(judgment_edges(0), dtype=np.float64) * (HELD_TAIL_WINDOW_SCALE if held_tail else 1)
 
@@ -264,8 +267,8 @@ def test_kernel_non_permutation_and_degenerate_inputs():
 
 
 def _install_graph(monkeypatch, graph):
-    monkeypatch.setattr(pr, "force_greats_note_graph", lambda **_kwargs: graph)
-    monkeypatch.setattr(pr, "reconcile_force_greats_note_graph", lambda *_a, **_k: None)
+    monkeypatch.setattr(pr, "force_greats_plan", lambda **_kwargs: columns_of(graph))
+    monkeypatch.setattr(pr, "reconcile_force_greats_plan", lambda *_a, **_k: None)
 
 
 _DUMMY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0)
@@ -295,7 +298,6 @@ def test_wrapper_happy_path_returns_exact_event_order_and_fever(monkeypatch):
     _install_graph(monkeypatch, graph)
     replay = _call(graph, note_types=[1, 1, 1], lanes=[0, 1, 2], denom=1.0, duration=10.0)
     assert replay.event_order == (0, 1, 2)
-    assert replay.judgments == ("Perfect", "Perfect", "Perfect")
     assert replay.fever_mask == (True, True, True)
 
 
@@ -392,8 +394,3 @@ def test_wrapper_fever_membership_mismatch_is_an_unplayable_plan(monkeypatch):
         match=r"FG physical replay fever membership disagrees with the response surface at note 0: replay=True, surface=False",
     ):
         _call(graph, note_types=[1, 1], lanes=[0, 1], denom=1.0, duration=10.0)
-
-
-def test_judgment_name_table_matches_result_code():
-    for name, code in _RESULT_CODE.items():
-        assert _JUDGMENT_NAME[code] == name

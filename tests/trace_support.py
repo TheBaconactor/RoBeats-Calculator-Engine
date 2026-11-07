@@ -6,11 +6,7 @@ import numpy as np
 
 from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE
 from gear_optimizer.trace import note_graph as production
-from gear_optimizer.trace.note_graph import (  # noqa: F401  (the tests import the graph API from here)
-    base_note_graph,
-    reconcile_base_note_graph,
-    reconcile_force_greats_note_graph,
-)
+from gear_optimizer.trace.note_graph import base_note_graph  # noqa: F401  (the tests import the graph API from here)
 
 
 def stored_sections(frontier_trace, timestamps):
@@ -49,18 +45,47 @@ def stored_sections(frontier_trace, timestamps):
     return sections
 
 
+def perfect_notes(total_notes, timestamps):
+    """A chart's notes, each a Perfect on its chart time."""
+    return base_note_graph(total_notes=total_notes, timestamps=timestamps, is_fever_mask=[False] * total_notes)
+
+
+def columns_of(notes):
+    """A plan's note columns from notes as a graph writes them; a hand-written note names only what a test is about."""
+    n = len(notes)
+    plan = production.NotePlan([0.0] * n, [0.0] * n, [False] * n, [False] * n, [False] * n, [0] * n, list(range(n)), {})
+    for position, note in enumerate(notes):
+        index = note.get("note_index", position)
+        plan.hit_ms[index] = note.get("hit_time_ms", 0.0)
+        plan.delta[index] = note.get("delta_ms", 0.0)
+        plan.great[index] = note.get("note_result") == "Great"
+        plan.fever[index] = bool(note.get("fever", False))
+        plan.activation_witness[index] = note.get("is_activation_witness", False)
+        plan.section[index] = note.get("section", 0)
+        plan.input_order[index] = note.get("input_order", index)
+        if note.get("is_fever_end_witness"):
+            plan.fever_ends[index] = note["fever_end_ms"]
+    return plan
+
+
 def plan_of(notes, note_types, lanes=None, *, precise=True, perfect_time=0):
     """A plan around hand-written notes, to drive one of its passes."""
-    is_tail = (np.asarray(note_types) == HELD_TAIL_TYPE).tolist()
+    plan = columns_of(notes)
+    plan.is_tail = (np.asarray(note_types) == HELD_TAIL_TYPE).tolist()
     tap, tail = production._tap_and_tail_bands(perfect_time)
-    return production._Plan(
-        notes=notes,
-        bands=[tail if held else tap for held in is_tail],
-        is_tail=is_tail,
-        lanes=list(range(len(notes)) if lanes is None else lanes),
-        precise=precise,
-        tap_latest_perfect=tap.perfect[1],
-    )
+    plan.bands = [tail if held else tap for held in plan.is_tail]
+    plan.lanes = list(range(len(notes)) if lanes is None else lanes)
+    plan.precise = precise
+    plan.tap_latest_perfect = tap.perfect[1]
+    return plan
+
+
+def reconcile_base_note_graph(graph, *, response_surface):
+    production.reconcile_base_plan(columns_of(graph), response_surface)
+
+
+def reconcile_force_greats_note_graph(graph, **surface):
+    production.reconcile_force_greats_plan(columns_of(graph), **surface)
 
 
 def force_greats_note_graph(

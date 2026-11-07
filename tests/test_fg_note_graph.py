@@ -19,13 +19,14 @@ from tests.fg_song_inputs import fg_song_inputs
 from gear_optimizer.solver.timing_envelope import judgment_bounds
 from gear_optimizer.trace import note_graph as production
 from tests.trace_support import force_greats_note_graph as _exact_force_greats_note_graph
-from tests.trace_support import plan_of, stored_sections, timeline_frontier_note_graph
+from tests.trace_support import perfect_notes, plan_of, stored_sections, timeline_frontier_note_graph
 
 
 def _hold_followers(notes, trace, note_types, lanes=None, *, fg_schedule):
     ms = np.asarray([note["hit_time_ms"] for note in notes], dtype=np.float64)
     sections = production._sections(stored_sections([dict(row, fever_end_index=len(notes)) for row in trace], ms / 1000.0))
-    return production._hold_followers_after_activation(plan_of(notes, note_types, lanes), sections, fg_schedule=fg_schedule)
+    plan = plan_of(notes, note_types, lanes)
+    return plan, production._hold_followers_after_activation(plan, sections, fg_schedule=fg_schedule)
 
 
 def _build_options(n, non_fever_base, real_fever_time):
@@ -136,7 +137,6 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
         # the sufficiency guarantee: per-note labels reconcile EXACTLY with the surface
         reconcile_force_greats_note_graph(
             graph,
-            total_notes=n,
             fever_words=(surface.fever0, surface.fever1, surface.fever2, surface.fever3),
             great_words=(surface.great0, surface.great1, surface.great2, surface.great3),
             body_fever=surface.body_fever,
@@ -229,7 +229,7 @@ def test_fg_note_graph_body_counts_synthetic():
     }]
     g1 = _exact_force_greats_note_graph(frontier_trace=trace1, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
-        g1, total_notes=n,
+        g1,
         fever_words=(0, 0, 0, 0), great_words=_words_from_indices({0, 1, 2}),
         body_fever=5, body_great=0, body_fever_great=0,
     )
@@ -244,7 +244,7 @@ def test_fg_note_graph_body_counts_synthetic():
     }]
     g2 = _exact_force_greats_note_graph(frontier_trace=trace2, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
-        g2, total_notes=n,
+        g2,
         fever_words=(0, 0, 0, 0), great_words=(0, 0, 0, 0),
         body_fever=6, body_great=1, body_fever_great=1,
     )
@@ -261,7 +261,7 @@ def test_fg_note_graph_body_counts_synthetic():
     }]
     gp = _exact_force_greats_note_graph(frontier_trace=trace_perfect, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
-        gp, total_notes=n,
+        gp,
         fever_words=_words_from_indices(set(range(12, 16))), great_words=(0, 0, 0, 0),
         body_fever=0, body_great=0, body_fever_great=0,
     )
@@ -285,7 +285,7 @@ def test_fg_note_graph_body_counts_synthetic():
         note_types=np.ones(n, dtype=np.int16),
     )
     reconcile_force_greats_note_graph(
-        gr, total_notes=n,
+        gr,
         fever_words=_words_from_indices(set(range(3, 6))), great_words=_words_from_indices({2, 3}),
         body_fever=0, body_great=0, body_fever_great=0,
     )
@@ -304,7 +304,7 @@ def test_fg_note_graph_body_counts_synthetic():
     g3 = _exact_force_greats_note_graph(frontier_trace=trace3, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     # head fever {50..55}, head greats {0,1}, body fever {110..115}=6, body greats {100..103}=4, no overlap
     reconcile_force_greats_note_graph(
-        g3, total_notes=n,
+        g3,
         fever_words=_words_from_indices(set(range(50, 56))),
         great_words=_words_from_indices({0, 1}),
         body_fever=6, body_great=4, body_fever_great=0,
@@ -400,18 +400,19 @@ def test_same_time_body_selector_uses_physical_order_not_head_chart_order():
     timestamps[141:] = timestamps[141]
     note_types = np.ones(n, dtype=np.int16)
     note_types[142] = 3  # held tail: canonical late-Great selector is +81 ms
-    notes = production._perfect_notes(n, timestamps)
+    notes = perfect_notes(n, timestamps)
     notes[142]["note_result"] = "Great"
     notes[142]["delta_ms"] = None
+    plan = plan_of(notes, note_types)
 
-    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
-    assert notes[142]["delta_ms"] is None
+    production._mark_same_time_selector_deltas(plan)
+    assert plan.delta[142] is None
 
-    production._plan_remaining_selectors(plan_of(notes, note_types))
-    production._assign_input_order(notes, ())
+    production._plan_remaining_selectors(plan)
+    production._assign_input_order(plan, ())
 
-    assert notes[142]["delta_ms"] == 81.0
-    assert notes[141]["input_order"] < notes[143]["input_order"] < notes[142]["input_order"]
+    assert plan.delta[142] == 81.0
+    assert plan.input_order[141] < plan.input_order[143] < plan.input_order[142]
 
 
 def test_same_time_selector_cluster_crossing_head_boundary_keeps_chart_order():
@@ -419,14 +420,15 @@ def test_same_time_selector_cluster_crossing_head_boundary_keeps_chart_order():
     timestamps = np.arange(n, dtype=np.float64)
     timestamps[100] = timestamps[99]
     note_types = np.ones(n, dtype=np.int16)
-    notes = production._perfect_notes(n, timestamps)
+    notes = perfect_notes(n, timestamps)
     notes[99]["note_result"] = "Great"
     notes[99]["delta_ms"] = None
+    plan = plan_of(notes, note_types)
 
-    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
+    production._mark_same_time_selector_deltas(plan)
 
-    assert notes[99]["delta_ms"] < -20.0
-    assert notes[99]["delta_ms"] < notes[100]["delta_ms"]
+    assert plan.delta[99] < -20.0
+    assert plan.delta[99] < plan.delta[100]
 
 
 def test_same_time_selector_cluster_shares_late_great_boundary_in_chart_order():
@@ -435,38 +437,34 @@ def test_same_time_selector_cluster_shares_late_great_boundary_in_chart_order():
     timestamps[82:] = timestamps[82]
     note_types = np.ones(n, dtype=np.int16)
     note_types[82:84] = 3
-    notes = production._perfect_notes(n, timestamps)
+    notes = perfect_notes(n, timestamps)
     activation_delta_ms = 189.99862670898438
     for index in range(82, 86):
         notes[index]["note_result"] = "Great"
         notes[index]["delta_ms"] = None
     notes[82]["delta_ms"] = activation_delta_ms
+    plan = plan_of(notes, note_types)
 
-    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
-    production._assign_input_order(notes, ())
+    production._mark_same_time_selector_deltas(plan)
+    production._assign_input_order(plan, ())
 
-    assert [notes[index]["delta_ms"] for index in range(82, 86)] == [
-        activation_delta_ms,
-        activation_delta_ms,
-        activation_delta_ms,
-        activation_delta_ms,
-    ]
-    assert [notes[index]["input_order"] for index in range(82, 86)] == [82, 83, 84, 85]
+    assert plan.delta[82:86] == [activation_delta_ms] * 4
+    assert plan.input_order[82:86] == [82, 83, 84, 85]
 
 
 def test_same_time_selector_cluster_projects_before_fixed_early_great():
     timestamps = np.zeros(2, dtype=np.float64)
     note_types = np.ones(2, dtype=np.int16)
-    notes = production._perfect_notes(2, timestamps)
+    notes = perfect_notes(2, timestamps)
     notes[0]["note_result"] = "Great"
     notes[0]["delta_ms"] = None
     notes[1]["note_result"] = "Great"
     notes[1]["delta_ms"] = -80.0
+    plan = plan_of(notes, note_types)
 
-    production._mark_same_time_selector_deltas(plan_of(notes, note_types))
+    production._mark_same_time_selector_deltas(plan)
 
-    assert notes[0]["delta_ms"] == -80.0
-    assert notes[1]["delta_ms"] == -80.0
+    assert plan.delta == [-80.0, -80.0]
 
 
 def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
@@ -561,13 +559,6 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
 
     cluster = (951, 952, 953, 954, 955)
     assert [replay.event_order.index(index) for index in cluster] == list(cluster)
-    assert [replay.judgments[index] for index in cluster] == [
-        "Perfect",
-        "Perfect",
-        "Great",
-        "Perfect",
-        "Perfect",
-    ]
     assert [replay.fever_mask[index] for index in cluster] == [True, False, False, False, False]
 
 
@@ -610,7 +601,6 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
 
     cluster = (82, 83, 84, 85)
     assert [replay.event_order.index(index) for index in cluster] == list(cluster)
-    assert [replay.judgments[index] for index in cluster] == ["Great"] * len(cluster)
     assert [replay.fever_mask[index] for index in cluster] == [True] * len(cluster)
 
 
@@ -1750,10 +1740,11 @@ def test_fever_end_cluster_fail_loud_on_tight_non_perfect_same_time():
     """Tight cutoff + mixed Perfect/Great same-chart-time cluster must not silently keep 0 ms."""
     n = 4
     ts = np.asarray([0.0, 0.5, 1.0, 1.0], dtype=np.float32)
-    notes = production._perfect_notes(n, ts)
+    notes = perfect_notes(n, ts)
     for i in range(n):
         notes[i]["fever"] = i >= 1
     notes[3]["is_fever_end_witness"] = True
+    notes[3]["fever_end_ms"] = 1010.0
     notes[2]["note_result"] = "Great"
     notes[2]["delta_ms"] = None
     sec = production._sections(stored_sections([{"activation_index": 1, "fever_end_index": 4}], ts))[0]
@@ -1902,14 +1893,14 @@ def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
         {"note_index": 3, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
         {"note_index": 4, "hit_time_ms": 97000.0, "note_result": "Perfect", "delta_ms": 0.0},
     ]
-    _hold_followers(notes, [{"activation_index": 0}], nt, fg_schedule=False)
+    plan, _constraints = _hold_followers(notes, [{"activation_index": 0}], nt, fg_schedule=False)
 
     required_delta = (96017.0 + 189.999) - 96180.0  # press at/after the activation hit
-    assert float(notes[2]["delta_ms"]) >= required_delta, notes[2]  # was 0.0 pre-fix (break at sibling)
-    assert float(notes[3]["delta_ms"]) >= required_delta, notes[3]
-    assert float(notes[2]["delta_ms"]) <= 40.0  # stays a legal Perfect
-    assert float(notes[3]["delta_ms"]) <= 40.0
-    assert float(notes[4]["delta_ms"]) == 0.0  # beyond the 200ms chart window: untouched
+    assert plan.delta[2] >= required_delta  # was 0.0 pre-fix (break at sibling)
+    assert plan.delta[3] >= required_delta
+    assert plan.delta[2] <= 40.0  # stays a legal Perfect
+    assert plan.delta[3] <= 40.0
+    assert plan.delta[4] == 0.0  # beyond the 200ms chart window: untouched
 
 
 def test_persisted_activation_schedule_orders_cross_lane_followers_after_activation():
@@ -1932,8 +1923,8 @@ def test_persisted_activation_schedule_orders_cross_lane_followers_after_activat
         "preactivation_great_count": 0,
     }]
 
-    _hold_followers(notes, trace, nt, [1, 2], fg_schedule=True)
-    assert float(notes[1]["delta_ms"]) == pytest.approx(30.0)
+    plan, _constraints = _hold_followers(notes, trace, nt, [1, 2], fg_schedule=True)
+    assert plan.delta[1] == pytest.approx(30.0)
 
 
 def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefix():
@@ -1959,16 +1950,16 @@ def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefi
         "preactivation_great_count": 1,
     }]
 
-    constraints = _hold_followers(notes, trace, nt, [0, 1, 2, 3], fg_schedule=True)
+    plan, constraints = _hold_followers(notes, trace, nt, [0, 1, 2, 3], fg_schedule=True)
 
     assert constraints == [(0, 1), (1, 2), (2, 3)]
-    event_times = [float(note["hit_time_ms"]) + float(note["delta_ms"]) for note in notes]
+    event_times = [hit + delta for hit, delta in zip(plan.hit_ms, plan.delta)]
     assert event_times == sorted(event_times)
-    assert float(notes[0]["delta_ms"]) == pytest.approx(-20.0)
+    assert plan.delta[0] == pytest.approx(-20.0)
     assert event_times[0] < event_times[1]
-    assert float(notes[1]["delta_ms"]) == -20.0
-    assert float(notes[2]["delta_ms"]) == 0.0
-    production._assign_input_order(notes, constraints)
+    assert plan.delta[1] == -20.0
+    assert plan.delta[2] == 0.0
+    production._assign_input_order(plan, constraints)
 
 
 def test_persisted_activation_schedule_chains_postactivation_notes_per_lane():
@@ -1993,12 +1984,12 @@ def test_persisted_activation_schedule_chains_postactivation_notes_per_lane():
         "preactivation_great_count": 0,
     }]
 
-    constraints = _hold_followers(notes, trace, nt, [1, 2, 3], fg_schedule=True)
+    plan, constraints = _hold_followers(notes, trace, nt, [1, 2, 3], fg_schedule=True)
 
     assert constraints == [(0, 1), (0, 2)]
-    assert float(notes[2]["delta_ms"]) == 0.0
-    production._assign_input_order(notes, constraints)
-    assert [int(note["input_order"]) for note in notes] == [0, 2, 1]
+    assert plan.delta[2] == 0.0
+    production._assign_input_order(plan, constraints)
+    assert plan.input_order == [0, 2, 1]
 
 
 def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:
@@ -2041,7 +2032,6 @@ def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:
     )
     assert replay.event_order == (0, 1)
     assert replay.fever_mask == (True, True)
-    assert replay.judgments == ("Perfect", "Perfect")
 
 
 def test_physical_replay_preserves_exact_body_cross_lane_prefix_swap() -> None:

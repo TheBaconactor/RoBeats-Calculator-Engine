@@ -13,22 +13,16 @@ from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, HELD_TAIL_WIND
 from .reconstruct import UnplayableTrace
 from gear_optimizer.frontier.types import FgResponseSurface
 from .note_graph import (
-    force_greats_note_graph,
-    reconcile_base_note_graph,
-    reconcile_force_greats_note_graph,
-    timeline_frontier_note_graph,
+    NotePlan,
+    force_greats_plan,
+    reconcile_base_plan,
+    reconcile_force_greats_plan,
+    timeline_frontier_plan,
 )
 
 
 @dataclass(frozen=True, slots=True)
-class FgPhysicalReplay:
-    event_order: tuple[int, ...]
-    fever_mask: tuple[bool, ...]
-    judgments: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class BasePhysicalReplay:
+class PhysicalReplay:
     event_order: tuple[int, ...]
     fever_mask: tuple[bool, ...]
 
@@ -44,7 +38,6 @@ _MISS_CODE = 0
 _OKAY_CODE = 1
 _GREAT_CODE = 2
 _PERFECT_CODE = 3
-_RESULT_CODE = {"Miss": _MISS_CODE, "Okay": _OKAY_CODE, "Great": _GREAT_CODE, "Perfect": _PERFECT_CODE}
 _JUDGMENT_NAME = ("Miss", "Okay", "Great", "Perfect")
 
 # Kernel status codes returned to the Python wrapper so it can raise the exact dynamic ValueError.
@@ -198,9 +191,9 @@ def _replay_kernel(plan, edges, lanes, fever_fill_denominator, real_fever_time, 
     return _REPLAY_OK, -1, -1
 
 
-def _replay_graph(
+def _replay_plan(
     replay: str,
-    graph: list[dict[str, object]],
+    plan: NotePlan,
     note_types: np.ndarray,
     lanes: np.ndarray,
     fever_fill_denominator: float,
@@ -208,19 +201,19 @@ def _replay_graph(
     perfect_time: int,
     *,
     check_combo_order: bool,
-) -> tuple[tuple[int, ...], tuple[bool, ...], tuple[str, ...]]:
-    """Replay a plan through the kernel; returns its event order, fever and judgments, or raises what it found."""
-    n = len(graph)
-    judgments = [note["note_result"] for note in graph]
-    delta_ms = np.array([note["delta_ms"] for note in graph], dtype=np.float64)
-    expected_fever = np.array([note["fever"] for note in graph], dtype=np.int8)
+) -> PhysicalReplay:
+    """Replay a plan through the kernel; returns its event order and fever, or raises what it found."""
+    n = len(plan)
+    delta_ms = np.array(plan.delta, dtype=np.float64)
+    expected_fever = np.array(plan.fever, dtype=np.int8)
+    expected_code = np.where(np.array(plan.great, dtype=bool), _GREAT_CODE, _PERFECT_CODE).astype(np.int8)
     event_order, replay_fever = np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int8)
     status, arg_a, arg_b = _replay_kernel(
         (
             delta_ms,
-            np.array([note["hit_time_ms"] for note in graph], dtype=np.float64),
-            np.array([note["input_order"] for note in graph], dtype=np.int64),
-            np.array([_RESULT_CODE.get(judgment, -1) for judgment in judgments], dtype=np.int8),
+            np.array(plan.hit_ms, dtype=np.float64),
+            np.array(plan.input_order, dtype=np.int64),
+            expected_code,
             expected_fever,
         ),
         _note_edges(note_types, perfect_time),
@@ -233,8 +226,8 @@ def _replay_graph(
     if status == _REPLAY_ERR_JUDGMENT:
         # The frontier plans on the base windows: a build's Perfect Time can leave a hit in another band.
         raise UnplayableTrace(
-            f"{replay} physical replay note {arg_a} judges {_JUDGMENT_NAME[arg_b]}, expected {judgments[arg_a]} "
-            f"at {delta_ms[arg_a]:.6f}ms"
+            f"{replay} physical replay note {arg_a} judges {_JUDGMENT_NAME[arg_b]}, expected "
+            f"{_JUDGMENT_NAME[expected_code[arg_a]]} at {delta_ms[arg_a]:.6f}ms"
         )
     if status == _REPLAY_ERR_INPUT_ORDER:
         raise ValueError(f"{replay} physical replay graph does not contain one exact input order")
@@ -259,12 +252,12 @@ def _replay_graph(
         # The plan scores a note at a combo where the surface scores another judgment or fever: not playable as scored.
         raise UnplayableTrace(
             f"{replay} physical replay judges note {arg_a} at combo {arg_b + 1}, where the surface scores note "
-            f"{arg_b}: {judgments[arg_a]}/{'fever' if expected_fever[arg_a] else 'no fever'} instead of "
-            f"{judgments[arg_b]}/{'fever' if expected_fever[arg_b] else 'no fever'}"
+            f"{arg_b}: {_JUDGMENT_NAME[expected_code[arg_a]]}/{'fever' if expected_fever[arg_a] else 'no fever'} instead of "
+            f"{_JUDGMENT_NAME[expected_code[arg_b]]}/{'fever' if expected_fever[arg_b] else 'no fever'}"
         )
     if status != _REPLAY_OK:
         raise AssertionError(f"{replay} physical replay kernel returned unknown status {status}")
-    return tuple(event_order.tolist()), tuple(replay_fever.astype(bool).tolist()), tuple(judgments)
+    return PhysicalReplay(tuple(event_order.tolist()), tuple(replay_fever.astype(bool).tolist()))
 
 
 def validate_base_physical_replay(
@@ -278,11 +271,11 @@ def validate_base_physical_replay(
     fever_duration_ms: float,
     timing_mode: str,
     perfect_time: int,
-) -> BasePhysicalReplay:
+) -> PhysicalReplay:
     """Fail loudly unless a persisted Base witness replays to its exact surface in `timing_mode`, at the build's windows."""
     nt, lane_arr = np.asarray(note_types, dtype=np.int32).reshape(-1), np.asarray(lanes, dtype=np.int32).reshape(-1)
     n = int(nt.shape[0])
-    graph = timeline_frontier_note_graph(
+    plan = timeline_frontier_plan(
         frontier_trace=frontier_trace,
         total_notes=n,
         timestamps=timestamps,
@@ -291,18 +284,10 @@ def validate_base_physical_replay(
         timing_mode=timing_mode,
         perfect_time=perfect_time,
     )
-    reconcile_base_note_graph(graph, total_notes=n, response_surface=response_surface)
-    event_order, fever_mask, _judgments = _replay_graph(
-        "Base",
-        graph,
-        nt,
-        lane_arr,
-        fever_fill_denominator,
-        fever_duration_ms / 1000.0,
-        perfect_time,
-        check_combo_order=False,
+    reconcile_base_plan(plan, response_surface)
+    return _replay_plan(
+        "Base", plan, nt, lane_arr, fever_fill_denominator, fever_duration_ms / 1000.0, perfect_time, check_combo_order=False
     )
-    return BasePhysicalReplay(event_order=event_order, fever_mask=fever_mask)
 
 
 def validate_force_greats_physical_replay(
@@ -316,11 +301,11 @@ def validate_force_greats_physical_replay(
     real_fever_time: float,
     timing_mode: str,
     perfect_time: int,
-) -> FgPhysicalReplay:
+) -> PhysicalReplay:
     """Fail loudly unless the mode's persisted witness replays to its exact score-bearing surface, at the build's windows."""
     nt, lane_arr = np.asarray(note_types, dtype=np.int32).reshape(-1), np.asarray(lanes, dtype=np.int32).reshape(-1)
     n = int(nt.shape[0])
-    graph = force_greats_note_graph(
+    plan = force_greats_plan(
         frontier_trace=frontier_trace,
         total_notes=n,
         timestamps=timestamps,
@@ -329,16 +314,14 @@ def validate_force_greats_physical_replay(
         timing_mode=timing_mode,
         perfect_time=perfect_time,
     )
-    reconcile_force_greats_note_graph(
-        graph,
-        total_notes=n,
+    reconcile_force_greats_plan(
+        plan,
         fever_words=(surface.fever0, surface.fever1, surface.fever2, surface.fever3),
         great_words=(surface.great0, surface.great1, surface.great2, surface.great3),
         body_fever=surface.body_fever,
         body_great=surface.body_great,
         body_fever_great=surface.body_fever_great,
     )
-    event_order, fever_mask, judgments = _replay_graph(
-        "FG", graph, nt, lane_arr, fever_fill_denominator, real_fever_time, perfect_time, check_combo_order=True
+    return _replay_plan(
+        "FG", plan, nt, lane_arr, fever_fill_denominator, real_fever_time, perfect_time, check_combo_order=True
     )
-    return FgPhysicalReplay(event_order=event_order, fever_mask=fever_mask, judgments=judgments)

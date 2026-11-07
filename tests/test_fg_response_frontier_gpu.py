@@ -63,10 +63,7 @@ def _prebuild_response_bundle(song, curves) -> None:
 
 
 def _replay_response_result_through_input_engine(*, song, final_stats, selected_color, result):
-    from gear_optimizer.trace.note_graph import (
-        force_greats_note_graph,
-        reconcile_force_greats_note_graph,
-    )
+    from gear_optimizer.trace.note_graph import force_greats_plan, reconcile_force_greats_plan
     from gear_optimizer.trace.reconstruct import reconstruct_force_greats_response_trace
     from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
 
@@ -83,7 +80,7 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
     note_types = song.chart.note_types
     lanes = song.chart.lanes
     total_notes = int(len(ts))
-    graph = force_greats_note_graph(
+    plan = force_greats_plan(
         frontier_trace=trace,
         total_notes=total_notes,
         timestamps=ts,
@@ -93,9 +90,8 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
         perfect_time=0,
     )
     surface = tuple(map(int, result.surface))
-    reconcile_force_greats_note_graph(
-        graph,
-        total_notes=total_notes,
+    reconcile_force_greats_plan(
+        plan,
         fever_words=list(surface[0:4]),
         great_words=list(surface[4:8]),
         body_fever=surface[8],
@@ -117,7 +113,7 @@ def _replay_response_result_through_input_engine(*, song, final_stats, selected_
             lane=int(lanes[int(node["note_index"])]),
             delta_ms=(float(node["delta_ms"]) if node.get("delta_ms") is not None else None),
         )
-        for node in graph
+        for node in plan.graph()
     ]
     statsdict = {
         "PerfectPoints": final_stats["Perfect Points"],
