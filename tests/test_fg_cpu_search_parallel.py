@@ -65,7 +65,7 @@ def _random_batch(key_count: int, seed: int, colors=("Chill", "Flow", "Chill"), 
             for table in (curves.f64["Perfect Points"], curves.f64["Combo Multiplier"], curves.combo_ramp,
                           curves.f64["Fever Multiplier"])
         ),
-        (head_len, 120),
+        (head_len, 120, int((2 * groups[:, 1] + groups[:, 2]).max())),
     )
     return loadouts, shared
 
@@ -81,7 +81,7 @@ def _costs(loadouts, shared):
 
 def _brute_force_row(loadout, shared):
     """The winner of a loadout by trying every group, surface and gem allocation."""
-    key_starts, groups, surfaces, flags, (ref_pp, ref_cm, ref_ramp, ref_fm), notes = shared
+    key_starts, groups, surfaces, flags, (ref_pp, ref_cm, ref_ramp, ref_fm), (*notes, _most_gain) = shared
     offsets, lengths, _stats, pattern_ids, words, counts, _coeffs, _greats = surfaces
     cur_pp, cur_cm, cur_fm, base_primary, base_secondary, key = (int(v) for v in loadout)
     gains = [STAT_GEM_ELEMENT_GAIN * int(flag) for flag in flags[:6]]

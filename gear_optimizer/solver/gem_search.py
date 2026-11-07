@@ -304,13 +304,13 @@ def gem_winners(
                       curves.f64["Fever Multiplier"])
     )
     loadouts = np.ascontiguousarray(groups.loadouts[order])
-    group_surfaces = np.add.reduceat(lengths[groups.groups[:, 3]], groups.key_starts[:-1])
+    most_gain = int((2 * groups.groups[:, 1] + groups.groups[:, 2]).max())
     rows, winner_groups = _score_on_cpu_cores(
         loadouts,
         floors[order],
-        group_surfaces[loadouts[:, 5]],
+        np.diff(groups.key_starts)[loadouts[:, 5]],
         (groups.key_starts, groups.groups, surfaces, np.asarray(color_flags(*colors), dtype=np.int32), tables,
-         (groups.head_len, groups.body_total)),
+         (groups.head_len, groups.body_total, most_gain)),
     )
     ft_values, ff_values, _residual = ftff_combo_arrays(GEM_BUDGET)
     winners: list[GemWinner | None] = [None] * loadout_count
@@ -537,7 +537,7 @@ def _frontier_shapes(group_frontiers, frontier_offsets, frontier_lengths, patter
 
 
 @jit(nopython=True, cache=True)
-def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags, curves, notes):
+def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags, curves, song):
     """Each loadout's best gem allocation over its groups (GemGroups): (rows, winning groups).
 
     A loadout's winner is its first group with the highest score; within it the first surface reaching that score, with
@@ -558,13 +558,13 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
 
     surfaces: frontier offsets and lengths, their bound shapes (_frontier_shapes), then SurfacePool's pattern ids, pattern
     words, body counts, head coefficients and head Greats; curves: the Perfect Points, Combo Multiplier, combo ramp and
-    Fever Multiplier f64 tables; notes: head and body notes. Row columns: [best_score, best_surface, g_pp, g_cm, g_fm,
-    g_ov, final_pp, final_cm, final_fm, final_primary, final_secondary].
+    Fever Multiplier f64 tables; song: head and body notes and the most a group's FT and FF gems add to delta. Row columns:
+    [best_score, best_surface, g_pp, g_cm, g_fm, g_ov, final_pp, final_cm, final_fm, final_primary, final_secondary].
     """
     frontier_offsets, frontier_lengths, frontier_shapes, pattern_ids, pattern_words, surface_counts, head_coeffs, \
         head_greats = surfaces
     ref_pp, ref_cm, ref_ramp, ref_fm = curves
-    head_len, body_total = notes
+    head_len, body_total, most_gain = song
     out = np.zeros((loadouts.shape[0], 11), dtype=np.int64)
     winners = np.zeros(loadouts.shape[0], dtype=np.int64)
 
@@ -595,9 +595,6 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
     term_max, column_combo, column_first, column_terms, blocks, block_corners = tables
     live_blocks = np.empty(blocks.shape[0], dtype=np.int64)
     live_deltas = np.empty(blocks.shape[0], dtype=np.float64)
-    most_gain = 0  # what a group's FT and FF gems add to delta at the most
-    for g in range(groups.shape[0]):
-        most_gain = max(most_gain, 2 * int(groups[g, 1]) + int(groups[g, 2]))
     for c in range(loadouts.shape[0]):
         cur_pp, cur_cm, cur_fm = int(loadouts[c, 0]), int(loadouts[c, 1]), int(loadouts[c, 2])
         if c == 0 or cur_pp != loadouts[c - 1, 0] or cur_cm != loadouts[c - 1, 1] or cur_fm != loadouts[c - 1, 2]:
@@ -802,8 +799,8 @@ def _fg_cpu_search_executor() -> ThreadPoolExecutor:
 def _score_on_cpu_cores(
     loadouts: np.ndarray, floors: np.ndarray, costs: np.ndarray, shared_args: tuple[Any, ...]
 ) -> tuple[np.ndarray, np.ndarray]:
-    """``_score_loadouts`` over contiguous chunks of loadouts on several cores: chunks hold roughly equal surface rows
-    (`costs`, the search's work) and outnumber the workers, so uneven loadouts still balance."""
+    """``_score_loadouts`` over contiguous chunks of loadouts on several cores: chunks hold roughly equal groups (`costs`,
+    the search's work) and outnumber the workers, so uneven loadouts still balance."""
     count = int(loadouts.shape[0])
     chunk_count = min(_FG_CPU_SEARCH_WORKERS * _FG_CPU_SEARCH_CHUNKS_PER_WORKER, count)
     if _FG_CPU_SEARCH_WORKERS <= 1 or chunk_count <= 1:

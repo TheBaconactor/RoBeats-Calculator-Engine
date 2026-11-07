@@ -13,7 +13,7 @@ Cost: passes x beam_width x N1 neighbours (N1 = the 1-swap neighbourhood, about 
 or pruned; a neighbour below its floor costs only the gem search's bound checks (COMPLEXITY.md section 4).
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import numpy as np
@@ -21,6 +21,15 @@ import numpy as np
 from .genetic_pipeline import one_swap_neighborhood
 
 _CHUNK = 256  # neighbours per scoring call: the floor rises between calls
+
+
+def _dominated(key: tuple[int, ...], losers: Iterable[tuple[int, ...]]) -> bool:
+    """Whether one of the losers has at least the key's PP, CM, FM and colors."""
+    pp, cm, fm, primary, secondary = key[:5]
+    for lost_pp, lost_cm, lost_fm, lost_primary, lost_secondary in losers:
+        if lost_pp >= pp and lost_cm >= cm and lost_fm >= fm and lost_primary >= primary and lost_secondary >= secondary:
+            return True
+    return False
 
 
 def search_fg_loadouts(
@@ -65,7 +74,7 @@ def search_fg_loadouts(
             floor = found[top[-1]][1].inner_row[0] if len(top) == beam_width else -1
             scored = []
             for key in chunk:
-                if any(all(a >= b for a, b in zip(loser, key[:5])) for loser in below.get(key[5:], ())):
+                if _dominated(key, below.get(key[5:], ())):
                     pruned.add(key)
                 else:
                     scored.append(key)
