@@ -33,6 +33,7 @@ _LOW_WORD_BITS = 62
 _SET_BITS = 62
 _ALL_COUNTS = -1
 _STATE_ROWS = 1 << 15
+_GREAT_STATE_ROWS = 1 << 11
 
 
 def event_times(chart: Chart, perfect_time: int, greats: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -233,7 +234,8 @@ def _walk_grid(times, greats, fills, durations, budget):
     """walk_cell over every (Fever Time, Fever Fill) cell: rows (mask low, mask high, body fever, cell). With Greats a cell
     whose head holds so many short windows that its tables overflow is left out: such a cell is far from any song's top."""
     out = np.empty((1 << 12, 5), dtype=np.int64)
-    scratch = (np.empty((_STATE_ROWS, 7), dtype=np.int64), np.empty((_STATE_ROWS, 7), dtype=np.int64))
+    states = _STATE_ROWS if budget == 0 else _GREAT_STATE_ROWS
+    scratch = (np.empty((states, 7), dtype=np.int64), np.empty((states, 7), dtype=np.int64))
     expanded = np.empty((1 << 18, 4), dtype=np.int64)
     used = 0
     for ft in range(durations.shape[0]):

@@ -46,6 +46,10 @@ def band_of(accuracy: float) -> str:
     return next(name for floor, name in BANDS if accuracy >= floor)
 
 
+def _forged_band(share: float) -> str:
+    return next(name for floor, name in ((0.1, "10%+"), (0.03, "3%+"), (0.01, "1%+"), (0.001, "under 1%"), (0.0, "none")) if share >= floor)
+
+
 def stat_line(stats: dict[str, int], chart: Chart, curves) -> tuple[int, ...]:
     """What the score can see of a final stat block."""
     cleaned = {stat: max(value, 0) for stat, value in stats.items()}
@@ -106,6 +110,7 @@ class Tally:
             if row.get("exploit"):
                 groups[f"exploit/{row['exploit']}/{row['kind']}"].append(row)
                 groups[f"exploit/{row['exploit']}/all"].append(row)
+                groups[f"exploit/{row['exploit']}/forged-{row['forged']}/{row['band']}"].append(row)
             if row.get("stored"):
                 groups[f"stored/{row['stored']}/{row['shown']}"].append(row)
         prepare = np.asarray(self.prepare_ms)
@@ -130,7 +135,7 @@ def _lookup(tally: Tally, song: ReverseSong, row: Row, shown: str, case: dict) -
     player = row.player
     top = float(song.surface_tops.max())
     tally.add(
-        {**case, "shown": shown, "band": band_of(row.info.accuracy), "tier": player.tier, "kind": player.kind, "skill": player.skill, "height": min(row.info.score / top, 1.0), "exploit": player.exploit},
+        {**case, "shown": shown, "band": band_of(row.info.accuracy), "tier": player.tier, "kind": player.kind, "skill": player.skill, "height": min(row.info.score / top, 1.0), "exploit": player.exploit, "forged": _forged_band(row.played.forged / chart.total_notes)},
         reply, stat_line(player.stats, chart, song.curves), player.gear, ms, chart, song.curves,
     )
 

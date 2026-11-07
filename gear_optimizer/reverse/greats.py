@@ -23,6 +23,8 @@ _AXIS = MAX_STAT + 1
 _TILE = 8
 # Greats listed note by note in a class; a class with more holds their count and the span of their positions.
 HEAD_LISTED = 3
+# The most Greats a class puts in the head.
+_HEAD_SPANNED = 16
 _CLASS_COLUMNS = 9
 _SUM_WORDS = (2 * MAX_STAT + 1 + 63) // 64
 # Over any line, base - Great is under base / 3 + this: Great points are 2/3 of the elements + 150, and Perfect Points at
@@ -72,8 +74,8 @@ def _listed_head(losses, count, target, out):
 
 @jit(nopython=True, cache=True)
 def _position_spans(losses, count, top):
-    """For every sum of `count` head losses up to top, the fewest and the most summed 1-based positions, a walk over the
-    notes; the most is negative where no set sums to it."""
+    """For every set size up to `count` and every sum of head losses up to top, the fewest and the most summed 1-based
+    positions, a walk over the notes; the most is negative where no set sums to it."""
     fewest = np.full((count + 1, top + 1), 1 << 30, dtype=np.int64)
     most = np.full((count + 1, top + 1), -1, dtype=np.int64)
     fewest[0, 0], most[0, 0] = 0, 0
@@ -84,7 +86,7 @@ def _position_spans(losses, count, top):
                 if most[used, total] >= 0:
                     fewest[used + 1, total + loss] = min(fewest[used + 1, total + loss], fewest[used, total] + k + 1)
                     most[used + 1, total + loss] = max(most[used + 1, total + loss], most[used, total] + k + 1)
-    return fewest[count], most[count]
+    return fewest, most
 
 
 def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.ndarray]], greats: int, listed_up_to: int) -> np.ndarray:
@@ -94,10 +96,10 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
     Great costs at each head note there. A body Great costs 100 outside the Casual fever, 300 inside."""
     rows: set[tuple[int, ...]] = set()
     listed = np.empty((1 << 12, 3), dtype=np.int64)
-    spans: dict[tuple[bytes, int], tuple[np.ndarray, np.ndarray]] = {}
+    spans: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
     wider: dict[tuple[int, int], list[int]] = {}
     for clean, losses in timelines:
-        for head in range(min(greats, losses.shape[0]) + 1):
+        for head in range(min(greats, _HEAD_SPANNED) + 1):
             body = greats - head
             for inside in range(body + 1):
                 low = int(np.ceil(clean - casual[1])) - 100 * (body - inside) - 300 * inside
@@ -112,10 +114,10 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
                         total = sum(note + 1 for note in row if note >= 0)
                         rows.add((head, body, total, total, *row, low, high))
                     continue
-                key = losses.tobytes(), head
+                key = losses.tobytes()
                 if key not in spans:
-                    spans[key] = _position_spans(losses, head, int(head * losses.max()))
-                fewest, most = spans[key]
+                    spans[key] = _position_spans(losses, _HEAD_SPANNED, int(_HEAD_SPANNED * losses.max()))
+                fewest, most = spans[key][0][head], spans[key][1][head]
                 hits = [total for total in range(max(low, 0), min(high, most.shape[0] - 1) + 1) if most[total] >= 0]
                 if hits:
                     wide = wider.setdefault((head, body), [1 << 30, -1, 1 << 30, -1])
@@ -284,7 +286,7 @@ def great_rows(score, surfaces, multipliers, notes, ceiling, game, out):
     this score, under the ceiling, at a cell the surface reaches and the Gear Power leaves, into out; returns how many rows,
     and whether they are all. surfaces: (words, coeffs, pattern, body fever, FT + FF bit sets, their lowest and
     highest); ceiling: (vertex values, prices, relief per surface); game: (classes, points per Perfect Points, one color,
-    Gear Power, the (pair, base) rows it may walk). Gear Power holds 2 x base + 5 x PP - 2 x its points + 5 x the other stats, so at a pair it leaves a span of
+    Gear Power, the class tests it may spend). Gear Power holds 2 x base + 5 x PP - 2 x its points + 5 x the other stats, so at a pair it leaves a span of
     FT + FF, and a surface whose cells miss the span is skipped before any head is summed."""
     words, coeffs, pattern, body_fevers, sums = surfaces
     combo, ramp, fever = multipliers
@@ -346,7 +348,7 @@ def great_rows(score, surfaces, multipliers, notes, ceiling, game, out):
                                 return out.shape[0], False
                             if walked > pairs:
                                 return found, False
-                            walked += 1
+                            walked += classes.shape[0]
     return found, True
 
 

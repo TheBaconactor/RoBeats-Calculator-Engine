@@ -70,16 +70,16 @@ _TOPS_FROM = 0.9
 _SCRATCH_ROWS = 1 << 15
 _PREFERRED_TIER = "T5"
 # A play with Greats is searched from this share of the song's top: below it far more sets fit than the numbers tell apart.
-_GREATS_FROM = 0.9
+_GREATS_FROM = 0.85
 # The most Greats a lookup searches, the most whose timelines it walks, and past those how far from a walked timeline it looks:
-# a dev run's most, 4 notes up to 64 Greats, doubled. The rows it keeps, and the (pair, base) rows it may walk.
+# a dev run's most, 4 notes up to 64 Greats, doubled. The rows it keeps, and the class tests it may spend: ~1 s.
 _GREATS_SEARCHED = 64
 # The most quarters only Greats can cost: an Okay costs three.
 _ONLY_GREATS = 2
 _GREATS_WALKED = 8
 _BAND_NOTES = 8
 _GREAT_ROWS = 1 << 18
-_GREAT_PAIRS = 3_000_000
+_GREAT_PAIRS = 100_000_000
 _GREAT_SEARCH_ITEMS = 300_000_000
 # The loadouts a search rescores exactly, lowest gem gap first, and the rows it tries on each.
 _GREAT_SETS_TRIED = 512
@@ -100,6 +100,8 @@ _TIME_GEM_COUNTS = (1, 2, 4, 8, 16, 32)
 _FEVER_NOTES_PER_NOTE = 64
 _PLAUSIBLE_SHARE = 0.25
 _MULTIPLIER_ROUNDING = 0.005
+# The game saves accuracy to 5 decimals and prints that to 2 (PlayerSongPlay.lua:251, SongDisplayElement.lua:656).
+_ACCURACY_ROUNDING = 0.0055
 
 
 @jit(nopython=True, cache=True)
@@ -246,7 +248,7 @@ def lost_quarters(play: PlayInfo, notes: int) -> tuple[int, int]:
     if play.accuracy is None:
         return 0, 0
     middle = (100.0 - play.accuracy) / 100.0 * notes * 4.0
-    spread = 0.005 / 100.0 * notes * 4.0
+    spread = _ACCURACY_ROUNDING / 100.0 * notes * 4.0
     return max(0, ceil(middle - spread)), max(0, floor(middle + spread))
 
 
