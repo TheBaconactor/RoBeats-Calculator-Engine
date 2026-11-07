@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gear_optimizer.trace.activation_witness import (
+from tests.activation_witness_oracle import (
     LabelHitIntervals,
     activation_schedule_witnesses,
 )

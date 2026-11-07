@@ -11,7 +11,7 @@ import numpy as np
 from gear_optimizer.solver.scoring.fg_policy import FGSongInputs
 from gear_optimizer.frontier.producer_batch import action_table, early_exit_min_fill, song_arrays
 from gear_optimizer.frontier.types import FgResponseSurface
-from .activation_witness import activation_schedule_witnesses, exact_label_hit_intervals
+from .activation_witness import chart_prefix_witness, exact_label_hit_intervals
 from .section_kernels import SectionContext, fever_end, section_rows
 
 
@@ -176,19 +176,19 @@ def _stored_section(table: _SectionTable, index: int, context: SectionContext) -
     )
     preactivation_event_count = activation_idx - section_start
     preactivation_great_count = max(0, min(activation_idx, run_end) - max(section_start, run_start))
-    schedule_rows = activation_schedule_witnesses(
+    preactivation_fill = 2 * preactivation_event_count - preactivation_great_count
+    witness = chart_prefix_witness(
         labels=labels,
         lanes=context.lanes,
         activation_index=activation_idx,
         activation_hit_timestamp=hit,
         fever_fill_denom=context.fever_fill_denom,
+        preactivation_fill=preactivation_fill,
         section_start=section_start,
         predecessor_hit_timestamp=None if section_start == 0 else float(context.perfect_floor_timestamps[section_start - 1]),
-        required_signature=(2 * preactivation_event_count - preactivation_great_count, preactivation_event_count),
     )
-    if len(schedule_rows) != 1:
-        raise ValueError("FG accepted edge has no unique exact lane-prefix witness for its scored surface")
-    schedule = schedule_rows[0]
+    if witness is None:
+        raise UnplayableTrace(f"no play reaches note {activation_idx} in chart order before its fever")
     chart_time = float(timestamps[activation_idx])
     body_fever, body_great, body_fever_great = table.edges[index, 4:].tolist()
     return {
@@ -222,13 +222,11 @@ def _stored_section(table: _SectionTable, index: int, context: SectionContext) -
         "early_great_start": early_great_start,
         "early_great_end": early_great_end,
         "activation_schedule_schema_version": 1,
-        "preactivation_order": [int(index) for index in schedule.preactivation_order],
-        "preactivation_lane_prefixes": [
-            {"lane": int(row.lane), "count": len(row.note_indices)} for row in schedule.lane_prefixes
-        ],
-        "preactivation_fill_half_units": schedule.preactivation_fill_half_units,
-        "preactivation_event_count": schedule.preactivation_event_count,
-        "preactivation_great_count": schedule.preactivation_great_count,
+        "preactivation_order": list(witness.order),
+        "preactivation_lane_prefixes": [{"lane": lane, "count": count} for lane, count in witness.lane_counts],
+        "preactivation_fill_half_units": preactivation_fill,
+        "preactivation_event_count": preactivation_event_count,
+        "preactivation_great_count": preactivation_great_count,
         "forced_count": k,
         "body_fever": body_fever,
         "body_great": body_great,

@@ -42,7 +42,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     non_fever_base: int,
     real_fever_time: float,
 ):
-    from gear_optimizer.trace.activation_witness import (
+    from tests.activation_witness_oracle import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
@@ -1701,7 +1701,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
 
 
 def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
-    from gear_optimizer.trace.activation_witness import (
+    from tests.activation_witness_oracle import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
