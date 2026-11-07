@@ -13,7 +13,7 @@ from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.base_stats import loadout_totals
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-from gear_optimizer.solver.gem_search import GemWinner, gem_groups, gem_winners
+from gear_optimizer.solver.gem_search import GemMemo, GemWinner, gem_groups, gem_winners
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.stats import apply_gems, gems
 
@@ -39,11 +39,12 @@ def score_fg_base_components(
     selected_color: str,
     scoring_bundle: FgResponseFrontierScoringBundle,
     floors: np.ndarray | None = None,
+    memo: GemMemo | None = None,
 ) -> dict[tuple[int, ...], GemWinner]:
     """The FG score row of each distinct 7-vector of pre-gem totals (PP, CM, FM, primary, secondary, FT, FF), keyed by
     it (CPU only); equal 7-vectors have equal FG results, so each is scored once. ``selected_color`` is the song's
     selected element; every other input is song-level (the scoring bundle). With `floors` (a score per row) a 7-vector
-    below its floor (the lowest of its floors) has no row."""
+    below its floor (the lowest of its floors) has no row; `memo` carries what a song's calls share."""
     floor_of: dict[tuple[int, ...], int] = {}
     for idx, row in enumerate(np.asarray(base_components, dtype=np.int32).tolist()):
         key = tuple(row)
@@ -58,6 +59,7 @@ def score_fg_base_components(
         secondary_color=inputs.secondary_color,
         frontier_idx_by_stat=scoring_bundle.frontier_idx_by_stat,
         total_notes=int(inputs.total_notes),
+        memo=memo,
     )
     winners = gem_winners(
         groups,

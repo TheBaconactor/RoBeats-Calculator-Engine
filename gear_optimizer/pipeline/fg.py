@@ -21,6 +21,7 @@ from gear_optimizer.pipeline.song import NativeSong
 from gear_optimizer.solver.base_stats import COLOR_TO_STAT_INDEX, build_stats_dict, loadout_totals
 from gear_optimizer.solver.fg_search import search_fg_loadouts
 from gear_optimizer.solver.ga_selection import GaSelection
+from gear_optimizer.solver.gem_search import GemMemo
 from gear_optimizer.trace.materialize import (
     FgTraceMaterializationCache,
     materialize_force_payload_from_response_frontier,
@@ -52,10 +53,11 @@ def fg_turn(song: NativeSong, selection: GaSelection) -> tuple[GaSelection, dict
     inputs = song.gpu_inputs
     timed, curves, selected_color = inputs.timed_song, inputs.curves, inputs.meta_primary_color
     fg_scoring_bundle = song.runtime.fg.fg_response_scoring_bundle
+    memo = GemMemo()
 
     def score(rows: np.ndarray, floors: np.ndarray | None = None) -> dict:
         return score_fg_base_components(base_components=rows, song=timed, curves=curves, selected_color=selected_color,
-                                        scoring_bundle=fg_scoring_bundle, floors=floors)
+                                        scoring_bundle=fg_scoring_bundle, floors=floors, memo=memo)
 
     fg_rows = score(selection.base_stats) if selection.scores.shape[0] else {}
     if not fg_rows:

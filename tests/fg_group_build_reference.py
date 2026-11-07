@@ -110,10 +110,11 @@ def kept_group_rows(
     """The groups the search keeps per pre-gem (FT, FF), written out per loadout as the reference writes them."""
     base_components = np.ascontiguousarray(base_components, dtype=np.int32)
     keys, key_of = np.unique(base_components[:, 5:7], axis=0, return_inverse=True)
-    positions, _frontiers, counts = _kept_splits(
-        keys, ft_values, ff_values, residual_values, frontier_idx_by_stat, primary_ftff_delta_values,
-        secondary_ftff_delta_values, score_elements_constant,
+    rows, counts = _kept_splits(
+        keys, residual_values, frontier_idx_by_stat, primary_ftff_delta_values, secondary_ftff_delta_values,
+        score_elements_constant,
     )
+    positions = rows[:, 4]
     starts = np.cumsum(counts) - counts
     meta, group_ft, group_ff, ft_stat, ff_stat, slices = [], [], [], [], [], []
     written = 0

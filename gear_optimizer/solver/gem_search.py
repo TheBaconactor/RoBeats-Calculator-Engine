@@ -2,7 +2,8 @@
 CPU f64 numba (FG response surfaces; the Base timing surfaces are the same without Greats).
 
 A loadout's candidate groups are its FT/FF gem splits that reach distinct frontiers. They depend on its pre-gem (FT, FF)
-only, so a batch holds them once per distinct (FT, FF), and loadouts with equal PP, CM and FM share their bound tables.
+only, so a batch holds them once per distinct (FT, FF), a song's batches can share them (GemMemo), and loadouts with equal
+PP, CM and FM share their bound tables.
 Consumers read each loadout's first group with the highest score, so anything that cannot reach the loadout's best so
 far, or a floor the caller gives it, is pruned. Per surface, (CM, FM) gem pairs are visited in TILE x TILE blocks: the
 score bound is monotone in CM and FM gems and base is linear in them, so a block's corner bounds every pair in it. The
@@ -17,7 +18,7 @@ pairs of surviving rows.
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 import threading
 from typing import Any
@@ -48,6 +49,15 @@ _fg_cpu_search_pool: ThreadPoolExecutor | None = None
 _fg_cpu_search_pool_lock = threading.Lock()
 
 
+@dataclass(slots=True)
+class GemMemo:
+    """What the batches of one song and pool share: each pre-gem (FT, FF)'s groups, and each frontier's bound stats."""
+
+    key_groups: dict[int, np.ndarray] = field(default_factory=dict)
+    frontier_stats: np.ndarray = field(default_factory=lambda: np.empty((0, 6), dtype=np.int64))
+    stats_done: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.bool_))
+
+
 @dataclass(frozen=True, slots=True)
 class GemGroups:
     """A batch's gem-search groups. loadouts: (C, 6) PP, CM, FM, primary, secondary, its key. keys: (K, 2) the distinct
@@ -61,6 +71,7 @@ class GemGroups:
     groups: np.ndarray
     head_len: int
     body_total: int
+    memo: GemMemo = field(default_factory=GemMemo)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,58 +104,70 @@ def color_flags(primary_color: str, secondary_color: str, selected_color: str) -
 
 @jit(nopython=True, cache=True)
 def _kept_splits(
-    base_ftff,
-    ft_values,
-    ff_values,
+    keys,
     residual_values,
     frontier_idx_by_stat,
-    primary_ftff_delta_values,
-    secondary_ftff_delta_values,
+    primary_gains,
+    secondary_gains,
     score_elements_constant,
 ):
-    """The groups of each pre-gem (FT, FF) row of base_ftff as positions into the FT/FF split arrays and the frontiers
-    they reach, flat in row order, and per-row counts (a loadout's base colors add to every split alike: its groups
-    depend on FT and FF only).
+    """The groups of each pre-gem (FT, FF) row of keys (GemGroups.groups), flat in row order, and per-row counts (a
+    loadout's base colors add to every split alike: its groups depend on FT and FF only). Arrays per split in the order of
+    ftff_combo_arrays.
 
     A row's splits reach frontiers (frontier_idx_by_stat at the split's clipped FT/FF stats); per frontier, in
     first-reached order, it keeps the split with the most residual gems (the first one on a tie), or, when the splits
     reaching it give the song's colors different gains, every split no other split there matches or beats in
     (residual, primary gain, secondary gain) (the earlier split wins an exact tie), in split order. O(splits) per row,
     plus the pairwise check inside a frontier reached by splits of different color gains."""
-    key_count = base_ftff.shape[0]
-    pair_count = ft_values.shape[0]
+    key_count = keys.shape[0]
+    pair_count = residual_values.shape[0]
+    budget = residual_values[0]
     frontier_count = int(frontier_idx_by_stat.max()) + 1
     stamp = np.full(frontier_count, -1, dtype=np.int64)
     head = np.empty(frontier_count, dtype=np.int64)
     tail = np.empty(frontier_count, dtype=np.int64)
     best = np.empty(frontier_count, dtype=np.int64)
-    next_pos = np.empty(pair_count, dtype=np.int64)
+    next_pos = np.full(pair_count, -1, dtype=np.int64)
     reached = np.empty(pair_count, dtype=np.int64)
-    positions = np.empty(key_count * pair_count, dtype=np.int32)
-    frontiers = np.empty(key_count * pair_count, dtype=np.int32)
+    ft_stats = np.empty(budget + 1, dtype=np.int64)
+    ff_stats = np.empty(budget + 1, dtype=np.int64)
+    rows = np.empty((key_count * pair_count, 5), dtype=np.int32)
     counts = np.zeros(key_count, dtype=np.int64)
     write = 0
     for c in range(key_count):
+        for gems in range(budget + 1):
+            ft_stats[gems] = min(max(keys[c, 0] + gems * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
+            ff_stats[gems] = min(max(keys[c, 1] + gems * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
         reached_count = 0
-        for pos in range(pair_count):
-            ft_stat = min(max(base_ftff[c, 0] + ft_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
-            ff_stat = min(max(base_ftff[c, 1] + ff_values[pos] * STAT_GEM_GAIN_FEVER, 0), MAX_STAT)
-            fid = frontier_idx_by_stat[ft_stat, ff_stat]
-            if fid < 0:
-                raise ValueError("FG response frontier scoring bundle does not cover a requested stat key")
-            next_pos[pos] = -1
-            if stamp[fid] != c:
-                stamp[fid] = c
-                head[fid] = pos
-                tail[fid] = pos
-                best[fid] = pos
-                reached[reached_count] = fid
-                reached_count += 1
-            else:
-                next_pos[tail[fid]] = pos
-                tail[fid] = pos
-                if residual_values[pos] > residual_values[best[fid]]:
-                    best[fid] = pos
+        first_of_row = 0
+        for ft_gems in range(budget + 1):
+            row_frontiers = frontier_idx_by_stat[ft_stats[ft_gems]]
+            ff_gems = 0
+            ff_top = budget - ft_gems
+            while ff_gems <= ff_top:
+                fid = row_frontiers[ff_stats[ff_gems]]
+                pos = first_of_row + ff_gems
+                if fid < 0:
+                    raise ValueError("FG response frontier scoring bundle does not cover a requested stat key")
+                if stamp[fid] != c:
+                    stamp[fid] = c
+                    head[fid] = tail[fid] = best[fid] = pos
+                    reached[reached_count] = fid
+                    reached_count += 1
+                else:
+                    if not score_elements_constant:
+                        next_pos[tail[fid]] = pos
+                        tail[fid] = pos
+                    if residual_values[pos] > residual_values[best[fid]]:
+                        best[fid] = pos
+                ff_gems += 1
+                # Past a stat's cap a gem reaches the same frontier with fewer residual gems.
+                if score_elements_constant and ff_gems <= ff_top and ff_stats[ff_gems] == ff_stats[ff_gems - 1]:
+                    break
+            first_of_row += budget + 1 - ft_gems
+            if score_elements_constant and ft_gems < budget and ft_stats[ft_gems + 1] == ft_stats[ft_gems]:
+                break
         start = write
         for r in range(reached_count):
             fid = reached[r]
@@ -153,43 +176,44 @@ def _kept_splits(
             if not score_elements_constant:
                 pos = next_pos[first]
                 while pos >= 0:
-                    if (
-                        primary_ftff_delta_values[pos] != primary_ftff_delta_values[first]
-                        or secondary_ftff_delta_values[pos] != secondary_ftff_delta_values[first]
-                    ):
+                    if primary_gains[pos] != primary_gains[first] or secondary_gains[pos] != secondary_gains[first]:
                         same_colors = False
                         break
                     pos = next_pos[pos]
-            if same_colors:
-                positions[write], frontiers[write] = best[fid], fid
-                write += 1
-                continue
-            row = first
+            row = best[fid] if same_colors else first
             while row >= 0:
                 dominated = False
-                other = first
+                other = -1 if same_colors else first
                 while other >= 0:
-                    if other != row:
-                        if (
-                            residual_values[other] >= residual_values[row]
-                            and primary_ftff_delta_values[other] >= primary_ftff_delta_values[row]
-                            and secondary_ftff_delta_values[other] >= secondary_ftff_delta_values[row]
-                            and (
-                                residual_values[other] > residual_values[row]
-                                or primary_ftff_delta_values[other] > primary_ftff_delta_values[row]
-                                or secondary_ftff_delta_values[other] > secondary_ftff_delta_values[row]
-                                or other < row
-                            )
-                        ):
-                            dominated = True
-                            break
+                    if other != row and (
+                        residual_values[other] >= residual_values[row]
+                        and primary_gains[other] >= primary_gains[row]
+                        and secondary_gains[other] >= secondary_gains[row]
+                        and (
+                            residual_values[other] > residual_values[row]
+                            or primary_gains[other] > primary_gains[row]
+                            or secondary_gains[other] > secondary_gains[row]
+                            or other < row
+                        )
+                    ):
+                        dominated = True
+                        break
                     other = next_pos[other]
                 if not dominated:
-                    positions[write], frontiers[write] = row, fid
+                    written = rows[write]
+                    written[0], written[1], written[2] = residual_values[row], primary_gains[row], secondary_gains[row]
+                    written[3], written[4] = fid, row
                     write += 1
-                row = next_pos[row]
+                row = -1 if same_colors else next_pos[row]
+        if not score_elements_constant:
+            for r in range(reached_count):
+                row = head[reached[r]]
+                while row >= 0:
+                    following = next_pos[row]
+                    next_pos[row] = -1
+                    row = following
         counts[c] = write - start
-    return positions[:write], frontiers[:write], counts
+    return rows[:write], counts
 
 
 def gem_groups(
@@ -199,33 +223,43 @@ def gem_groups(
     secondary_color: str,
     frontier_idx_by_stat: np.ndarray,
     total_notes: int,
+    memo: GemMemo | None = None,
 ) -> GemGroups:
     """The gem-search groups of a batch of loadouts (base_components rows: PP, CM, FM, primary, secondary, FT, FF) over
-    every FT/FF split of the gem budget (FT gems raise Beat, FF gems Vibe)."""
-    ft_values, ff_values, residual_values = ftff_combo_arrays(GEM_BUDGET)
-    ft_element, ff_element = STAT_GEMS["Fever Time"][1], STAT_GEMS["Fever Fill Rate"][1]
-    primary_gain, secondary_gain = (
-        np.asarray(
-            (ft_values * int(color == ft_element) + ff_values * int(color == ff_element)) * STAT_GEM_ELEMENT_GAIN,
-            dtype=np.int32,
-        )
-        for color in (primary_color, secondary_color)
-    )
+    every FT/FF split of the gem budget (FT gems raise Beat, FF gems Vibe); `memo`: what earlier batches of the song and
+    its colors left."""
+    memo = GemMemo() if memo is None else memo
     base_components = np.ascontiguousarray(base_components, dtype=np.int32)
-    keys, key_of = np.unique(base_components[:, 5:7], axis=0, return_inverse=True)
-    positions, frontiers, counts = _kept_splits(
-        keys, ft_values, ff_values, residual_values, frontier_idx_by_stat, primary_gain, secondary_gain,
-        not {primary_color, secondary_color} & {ft_element, ff_element},
-    )
+    packed = base_components[:, 5].astype(np.int64) * (1 << 32) + base_components[:, 6]
+    packed_keys, first_rows, key_of = np.unique(packed, return_index=True, return_inverse=True)
+    keys = base_components[first_rows, 5:7]
+    new_keys = [index for index, key in enumerate(packed_keys.tolist()) if key not in memo.key_groups]
+    if new_keys:
+        ft_values, ff_values, residual_values = ftff_combo_arrays(GEM_BUDGET)
+        ft_element, ff_element = STAT_GEMS["Fever Time"][1], STAT_GEMS["Fever Fill Rate"][1]
+        primary_gains, secondary_gains = (
+            np.asarray(
+                (ft_values * int(color == ft_element) + ff_values * int(color == ff_element)) * STAT_GEM_ELEMENT_GAIN,
+                dtype=np.int32,
+            )
+            for color in (primary_color, secondary_color)
+        )
+        constant = not {primary_color, secondary_color} & {ft_element, ff_element}
+        rows, counts = zip(*_fg_cpu_search_executor().map(
+            lambda chunk: _kept_splits(chunk, residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, constant),
+            np.array_split(keys[new_keys], min(_FG_CPU_SEARCH_WORKERS, len(new_keys))),
+        ))
+        kept = np.split(np.concatenate(rows), np.cumsum(np.concatenate(counts))[:-1])
+        memo.key_groups.update(zip(packed_keys[new_keys].tolist(), kept, strict=True))
+    key_rows = [memo.key_groups[key] for key in packed_keys.tolist()]
     return GemGroups(
         np.column_stack((base_components[:, :5], key_of.reshape(-1))).astype(np.int32),
         keys,
-        np.concatenate(([0], np.cumsum(counts))),
-        np.column_stack(
-            (residual_values[positions], primary_gain[positions], secondary_gain[positions], frontiers, positions)
-        ).astype(np.int32),
+        np.cumsum([0, *map(len, key_rows)], dtype=np.int64),
+        np.concatenate(key_rows),
         min(int(total_notes), 100),
         max(0, int(total_notes) - 100),
+        memo,
     )
 
 
@@ -249,8 +283,13 @@ def gem_winners(
     pattern_ids = np.ascontiguousarray(pool.pattern_ids, dtype=np.int32)
     counts = np.ascontiguousarray(pool.counts, dtype=np.int32)
     head_coeffs = np.ascontiguousarray(pool.head_coeffs, dtype=np.int32)
+    memo = groups.memo
+    if memo.stats_done.shape[0] != offsets.shape[0]:
+        memo.frontier_stats = np.zeros((offsets.shape[0], 6), dtype=np.int64)
+        memo.stats_done = np.zeros(offsets.shape[0], dtype=np.bool_)
+    _frontier_stats(groups.groups[:, 3], offsets, lengths, pattern_ids, counts, head_coeffs, memo.frontier_stats, memo.stats_done)
     surfaces = (
-        offsets, lengths, _frontier_stats(groups.groups[:, 3], offsets, lengths, pattern_ids, counts, head_coeffs),
+        offsets, lengths, memo.frontier_stats,
         pattern_ids, np.ascontiguousarray(pool.pattern_words, dtype=np.uint32), counts, head_coeffs,
         np.ascontiguousarray(pool.head_greats, dtype=np.int32),
     )
@@ -480,11 +519,10 @@ def _fill_block_bounds(tables, gem_bases, pp_bound_prefix_max, cm_ref_cache, fm_
 
 
 @jit(nopython=True, cache=True)
-def _frontier_stats(group_frontiers, frontier_offsets, frontier_lengths, pattern_ids, counts, head_coeffs):
-    """Per frontier a group reaches, over its surfaces: the most body fever notes, the fewest, and the most of each head
-    coefficient (normal and fever notes, their combo ramp sums). O(groups + the surfaces of distinct frontiers)."""
-    stats = np.zeros((frontier_offsets.shape[0], 6), dtype=np.int64)
-    done = np.zeros(frontier_offsets.shape[0], dtype=np.bool_)
+def _frontier_stats(group_frontiers, frontier_offsets, frontier_lengths, pattern_ids, counts, head_coeffs, stats, done):
+    """Into stats, per frontier a group reaches that is not done yet, over its surfaces: the most body fever notes, the
+    fewest, and the most of each head coefficient (normal and fever notes, their combo ramp sums). O(groups + the surfaces
+    of those frontiers)."""
     for f in group_frontiers:
         if not done[f]:
             done[f] = True
@@ -495,7 +533,6 @@ def _frontier_stats(group_frontiers, frontier_offsets, frontier_lengths, pattern
                 row_stats[1] = min(row_stats[1], counts[row, 0])
                 for t in range(4):
                     row_stats[2 + t] = max(row_stats[2 + t], head_coeffs[pattern_ids[row], t])
-    return stats
 
 
 @jit(nopython=True, cache=True)

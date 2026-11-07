@@ -52,10 +52,9 @@ def _random_batch(key_count: int, seed: int, colors=("Chill", "Flow", "Chill"), 
     pattern_ids = rng.integers(0, patterns, surface_rows).astype(np.int32)
     head_coeffs = surface_head_coeffs(words, head_len=head_len)
     curves = stat_curves()
-    surfaces = (
-        offsets, lengths, search._frontier_stats(groups[:, 3], offsets, lengths, pattern_ids, counts, head_coeffs),
-        pattern_ids, words, counts, head_coeffs, surface_head_greats(words),
-    )
+    stats = np.zeros((offsets.shape[0], 6), dtype=np.int64)
+    search._frontier_stats(groups[:, 3], offsets, lengths, pattern_ids, counts, head_coeffs, stats, np.zeros(offsets.shape[0], dtype=np.bool_))
+    surfaces = (offsets, lengths, stats, pattern_ids, words, counts, head_coeffs, surface_head_greats(words))
     shared = (
         key_starts, groups, surfaces, np.array(search.color_flags(*colors), dtype=np.int32),
         tuple(
