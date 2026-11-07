@@ -1,3 +1,5 @@
+import numpy as np
+
 from gear_optimizer.pipeline import prepare
 from tests.items_support import make_gear, make_song_mini
 
@@ -10,7 +12,7 @@ def _catalog(version: int) -> dict:
 
 
 def _registry(version: int):
-    return prepare._ga_registry(_catalog(version), MINIS, "Vibe", "Flow")[0]
+    return prepare._ga_registry(_catalog(version), MINIS, "Vibe", "Flow", np.zeros(10, dtype=np.int32))[0]
 
 
 def test_ga_registry_reuses_a_pool_key_and_evicts_the_least_recently_used():

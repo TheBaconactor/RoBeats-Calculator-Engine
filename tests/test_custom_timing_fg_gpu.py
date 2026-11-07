@@ -36,7 +36,7 @@ def _inside_float32(values, box_max: float):
 
 def _curves(rows: int = 161) -> dict:
     return synthetic_curves({
-        "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
+        "Perfect Points": np.linspace(200.0, 210.0, rows, dtype=np.float64),
         "Combo Multiplier": _inside_float32(np.linspace(1.95, 2.72, rows, dtype=np.float64), 2.72),
         "Fever Multiplier": _inside_float32(np.linspace(2.95, 5.48, rows, dtype=np.float64), 5.48),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64) * 0.333,

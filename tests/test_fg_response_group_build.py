@@ -75,20 +75,22 @@ def _run_case(*, budget, base_components, score_elements_constant, geometry, hea
         primary_delta = np.ascontiguousarray(ft_values * STAT_GEM_GAIN_FEVER, dtype=np.int32)
         secondary_delta = np.ascontiguousarray(ff_values * STAT_GEM_GAIN_FEVER, dtype=np.int32)
 
-    args = (
-        base_components,
-        ft_values,
-        ff_values,
-        residual_values,
-        grid,
-        primary_delta,
-        secondary_delta,
-        bool(score_elements_constant),
-        int(head_len),
-        int(body_total),
-    )
-    ref_out = build_response_group_rows_reference(*args)
-    _assert_six_equal(kept_group_rows(*args), ref_out)
+    for element_value in (0, 12):  # no selected color among the song's, the primary selected
+        args = (
+            base_components,
+            ft_values,
+            ff_values,
+            residual_values,
+            grid,
+            primary_delta,
+            secondary_delta,
+            bool(score_elements_constant),
+            element_value,
+            int(head_len),
+            int(body_total),
+        )
+        ref_out = build_response_group_rows_reference(*args)
+        _assert_six_equal(kept_group_rows(*args), ref_out)
 
 
 def test_group_build_past_the_stat_caps():
@@ -98,6 +100,19 @@ def test_group_build_past_the_stat_caps():
             budget=12, base_components=base, score_elements_constant=constant,
             geometry=lambda ft, ff: _covering_grid(_FRONTIER_ID_BY_POS["per_pos"](ft, ff), base, ft, ff),
         )
+
+
+def test_group_build_a_gem_past_its_cap_loses_to_the_element():
+    ft_values, ff_values, remaining = ftff_combo_arrays(8)
+    ft_values, ff_values = np.ascontiguousarray(ft_values, dtype=np.int32), np.ascontiguousarray(ff_values, dtype=np.int32)
+    grid = np.zeros((MAX_STAT + 1, MAX_STAT + 1), dtype=np.int32)  # one frontier: FT and FF change nothing else
+    base = np.asarray([[1, 2, 3, 4, 5, MAX_STAT, MAX_STAT]], dtype=np.int32)
+    args = (
+        base, ft_values, ff_values, np.ascontiguousarray(remaining, dtype=np.int32), grid,
+        np.ascontiguousarray(ft_values * 3, dtype=np.int32), np.ascontiguousarray(ff_values * 3, dtype=np.int32), False, 12, 100, 8,
+    )
+    assert kept_group_rows(*args)[1].tolist() == [0]  # every gem is worth more on the element
+    assert kept_group_rows(*(*args[:8], 0, 100, 8))[1].shape[0] > 1  # with no element to take them, the gains stay
 
 
 def test_group_build_keeps_the_best_of_equal_gains():
@@ -110,7 +125,7 @@ def test_group_build_keeps_the_best_of_equal_gains():
     base = np.zeros((1, 7), dtype=np.int32)
     args = (
         base, ft_values, ff_values, residual_values, grid, np.ascontiguousarray(ft_values * 3, dtype=np.int32),
-        np.zeros_like(ft_values), False, 100, 8,
+        np.zeros_like(ft_values), False, 0, 100, 8,
     )
     _assert_six_equal(kept_group_rows(*args), build_response_group_rows_reference(*args))
     assert kept_group_rows(*args)[5].tolist() == [[0, 9]]  # one split per frontier

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from tests.fg_response_frontier_oracles import build_activation_reachability_context
+from gear_optimizer.frontier.types import FgResponseSurface
+from tests.fg_response_frontier_oracles import build_activation_reachability_context, uncovered_surfaces
 
 from tests.fg_cache_support import surface_frontier
 
@@ -41,7 +42,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     non_fever_base: int,
     real_fever_time: float,
 ):
-    from gear_optimizer.trace.activation_witness import (
+    from tests.activation_witness_oracle import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
@@ -288,31 +289,6 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         return reduced
 
     return _frontier(0, True)
-
-
-def _missing_pg_oracle_surfaces(production_surfaces, oracle_surfaces) -> list[tuple[int, ...]]:
-    def _score_dominates(left, right) -> bool:
-        left_normal_great = int(left.body_great) - int(left.body_fever_great)
-        right_normal_great = int(right.body_great) - int(right.body_fever_great)
-        return (
-            int(left.body_fever) >= int(right.body_fever)
-            and int(left_normal_great) <= int(right_normal_great)
-            and int(left.body_fever_great) <= int(right.body_fever_great)
-            and (int(right.fever0) & ~int(left.fever0)) == 0
-            and (int(right.fever1) & ~int(left.fever1)) == 0
-            and (int(right.fever2) & ~int(left.fever2)) == 0
-            and (int(right.fever3) & ~int(left.fever3)) == 0
-            and (int(left.great0) & ~int(right.great0)) == 0
-            and (int(left.great1) & ~int(right.great1)) == 0
-            and (int(left.great2) & ~int(right.great2)) == 0
-            and (int(left.great3) & ~int(right.great3)) == 0
-        )
-
-    missing = []
-    for oracle_surface in oracle_surfaces:
-        if not any(_score_dominates(production_surface, oracle_surface) for production_surface in production_surfaces):
-            missing.append(tuple(map(int, oracle_surface)))
-    return missing
 
 
 def test_fg_response_first_frontier_region_groups_partition_in_canonical_order() -> None:
@@ -1077,12 +1053,9 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
         use_forced_great_timing=True,
     )[0]
 
-    target = next(
-        surface
-        for surface in frontier.first_frontier
-        if int(surface.fever0) == 0b11100 and (int(surface.great0) & 0b00100)
-    )
-    assert int(target.fever0) & int(target.great0) & 0b00100
+    # The late-Great surface: no stat line needs it here, but it replays.
+    target = FgResponseSurface(0b11100, 0, 0, 0, 0b00100, 0, 0, 0, 0, 0, 0)
+    assert not uncovered_surfaces(frontier.first_frontier, [target], 6)
 
     trace = reconstruct_force_greats_response_trace(
         inputs=fg_song_inputs(
@@ -1314,31 +1287,29 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
         use_forced_great_timing=True,
     )[0]
 
-    found = False
-    for surface in frontier.first_frontier:
-        trace = reconstruct_force_greats_response_trace(
-            inputs=fg_song_inputs(
-                timestamps=timestamps,
-                perfect_candidates=perfect_candidates,
-                great_candidates=great_candidates,
-                perfect_floor=perfect_floor,
-                great_floor=great_floor,
-                lanes=lanes,
-                use_forced_great_timing=True,
-            ),
-            non_fever_base=int(frontier.non_fever_base),
-            target_surface=surface,
-            raw_fever_fill=raw_fever_fill,
-            real_fever_time=real_fever_time,
-        )
-        if any(
-            int(row.get("forced_run_count", 0)) > 0
-            and int(row.get("forced_run_start_index", row["forced_start_index"])) != int(row["forced_start_index"])
-            for row in trace
-        ):
-            found = True
-            break
-    assert found
+    # A surface with a forced run that does not start the section: no stat line needs it here, but it replays.
+    target = FgResponseSurface(811804, 0, 0, 0, 274, 0, 0, 0, 0, 0, 0)
+    assert not uncovered_surfaces(frontier.first_frontier, [target], 20)
+    trace = reconstruct_force_greats_response_trace(
+        inputs=fg_song_inputs(
+            timestamps=timestamps,
+            perfect_candidates=perfect_candidates,
+            great_candidates=great_candidates,
+            perfect_floor=perfect_floor,
+            great_floor=great_floor,
+            lanes=lanes,
+            use_forced_great_timing=True,
+        ),
+        non_fever_base=int(frontier.non_fever_base),
+        target_surface=target,
+        raw_fever_fill=raw_fever_fill,
+        real_fever_time=real_fever_time,
+    )
+    assert any(
+        int(row.get("forced_run_count", 0)) > 0
+        and int(row.get("forced_run_start_index", row["forced_start_index"])) != int(row["forced_start_index"])
+        for row in trace
+    )
 
 
 def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None:
@@ -1469,9 +1440,8 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
         geometries=[(2.25, 6, 1.0)],
         use_forced_great_timing=True,
     )[0]
-    surfaces = {tuple(map(int, row)) for row in numba_frontier.first_frontier}
-    assert (28, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0) in surfaces
-    assert (60, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0) in surfaces
+    breakpoints = [FgResponseSurface(28, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0), FgResponseSurface(60, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0)]
+    assert not uncovered_surfaces(numba_frontier.first_frontier, breakpoints, 8)
 
 
 def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> None:
@@ -1515,7 +1485,8 @@ def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> Non
 
     assert (24, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0) in oracle_surfaces
     assert (56, 0, 0, 0, 38, 0, 0, 0, 0, 0, 0) in oracle_surfaces
-    assert numba_surfaces == oracle_surfaces
+    assert not uncovered_surfaces(numba_frontier.first_frontier, oracle.first_frontier, 8)
+    assert numba_surfaces <= oracle_surfaces
 
 
 @pytest.mark.parametrize(
@@ -1730,7 +1701,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
 
 
 def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
-    from gear_optimizer.trace.activation_witness import (
+    from tests.activation_witness_oracle import (
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
@@ -1915,7 +1886,7 @@ def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
         use_forced_great_timing=True,
     )[0]
 
-    missing = _missing_pg_oracle_surfaces(production.first_frontier, oracle_surfaces)
+    missing = uncovered_surfaces(production.first_frontier, oracle_surfaces, int(timestamps.shape[0]))
     assert not missing, (
         f"production frontier missed {len(missing)} legal P/G oracle surfaces "
         f"(production={len(production.first_frontier)}, oracle={len(oracle_surfaces)}): {missing[:8]}"
@@ -1991,7 +1962,7 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
         and int(surface.body_fever_great) == 0
         for surface in production
     )
-    missing = _missing_pg_oracle_surfaces(production, all_perfect_oracle)
+    missing = uncovered_surfaces(production, all_perfect_oracle, int(timestamps.shape[0]))
     assert not missing, (
         f"Base producer discarded {len(missing)} legal all-Perfect oracle surfaces "
         f"(production={len(production)}, oracle={len(all_perfect_oracle)}): {missing[:8]}"

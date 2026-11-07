@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -57,6 +58,7 @@ def score_fg_base_components(
         np.asarray(list(floor_of), dtype=np.int32),
         primary_color=inputs.primary_color,
         secondary_color=inputs.secondary_color,
+        selected_color=selected_color,
         frontier_idx_by_stat=scoring_bundle.frontier_idx_by_stat,
         total_notes=int(inputs.total_notes),
         memo=memo,
@@ -69,6 +71,24 @@ def score_fg_base_components(
         floors=None if floors is None else np.asarray(list(floor_of.values())),
     )
     return {key: winner for key, winner in zip(floor_of, winners, strict=True) if winner is not None}
+
+
+def bundle_without_surface(
+    bundle: FgResponseFrontierScoringBundle, surface: FgResponseSurface
+) -> FgResponseFrontierScoringBundle:
+    """The bundle with `surface` gone from every frontier: what a loadout scores when its plan on `surface` is unplayable."""
+    pool = bundle.pool
+    words = np.asarray(surface[:8], dtype=pool.pattern_words.dtype)
+    keep = ~((pool.pattern_words == words).all(axis=1)[pool.pattern_ids] & (pool.counts == surface[8:]).all(axis=1))
+    kept_before = np.concatenate(([0], np.cumsum(keep, dtype=np.int32)), dtype=np.int32)
+    offsets = kept_before[pool.frontier_offsets]
+    return replace(bundle, pool=replace(
+        pool,
+        frontier_offsets=offsets,
+        frontier_lengths=kept_before[pool.frontier_offsets + pool.frontier_lengths] - offsets,
+        pattern_ids=pool.pattern_ids[keep],
+        counts=pool.counts[keep],
+    ))
 
 
 def fg_solve_result(

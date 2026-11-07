@@ -6,7 +6,7 @@ rejecting the same-lane preemption cases that make an activation unreachable (no
 """
 import numpy as np
 
-from gear_optimizer.trace.activation_witness import (
+from tests.activation_witness_oracle import (
     LabelHitIntervals,
     activation_schedule_witnesses,
     exact_label_hit_intervals,

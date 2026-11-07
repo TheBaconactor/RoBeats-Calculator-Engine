@@ -15,7 +15,7 @@ def _curves():
     # The first 161 entries (stat values 0..160) of 1001-point ramps.
     size = 1001
     return synthetic_curves({
-        "Perfect Points": np.linspace(0.0, 2.0, size, dtype=np.float32)[:161],
+        "Perfect Points": np.linspace(200.0, 202.0, size, dtype=np.float32)[:161],
         "Combo Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32)[:161],
         "Fever Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32)[:161],
     })
@@ -149,7 +149,7 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
 
     rows = 161
     curves = synthetic_curves({
-        "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
+        "Perfect Points": np.linspace(200.0, 210.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64) * 0.333,
@@ -243,7 +243,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
 def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):
     rows = 161
     curves = synthetic_curves({
-        "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
+        "Perfect Points": np.linspace(200.0, 205.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.6, dtype=np.float64) * 0.333,

@@ -121,8 +121,8 @@ Force Great behavior is split by responsibility:
 - `gear_optimizer/frontier/` owns the exact numba producer (Base and Force Great) and the disk caches of its output,
   including the startup prebuild; nothing there loads Taichi;
 - `gear_optimizer/solver/fg_scoring.py` owns the exact gem search over a song's scoring bundle;
-- `gear_optimizer/trace/` owns a surface's play: trace reconstruction, activation witnesses, the note graph, physical
-  replay and the persisted FG payload; and
+- `gear_optimizer/trace/` owns a surface's play: trace reconstruction, activation witnesses, the note graph and its hit
+  schedule, physical replay and the persisted FG payload; and
 - `gear_optimizer/solver/scoring/` owns canonical exact rescore of retained
   Force Great results.
 

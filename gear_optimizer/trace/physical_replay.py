@@ -204,18 +204,12 @@ def _replay_plan(
 ) -> PhysicalReplay:
     """Replay a plan through the kernel; returns its event order and fever, or raises what it found."""
     n = len(plan)
-    delta_ms = np.array(plan.delta, dtype=np.float64)
-    expected_fever = np.array(plan.fever, dtype=np.int8)
-    expected_code = np.where(np.array(plan.great, dtype=bool), _GREAT_CODE, _PERFECT_CODE).astype(np.int8)
+    delta_ms = plan.delta
+    expected_fever = plan.fever.astype(np.int8)
+    expected_code = np.where(plan.great, _GREAT_CODE, _PERFECT_CODE).astype(np.int8)
     event_order, replay_fever = np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int8)
     status, arg_a, arg_b = _replay_kernel(
-        (
-            delta_ms,
-            np.array(plan.hit_ms, dtype=np.float64),
-            np.array(plan.input_order, dtype=np.int64),
-            expected_code,
-            expected_fever,
-        ),
+        (delta_ms, plan.hit_ms, plan.input_order, expected_code, expected_fever),
         _note_edges(note_types, perfect_time),
         lanes,
         float(fever_fill_denominator),

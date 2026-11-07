@@ -384,23 +384,23 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
     assert len(family) > 60  # a genuinely rich set
 
     rows = np.array([_mk_head_surface(fever, great) for fever, great in family], dtype=np.uint64)
-    kept = _numba_head_envelope_filter(rows, 0, head_len, 0)  # min_surfaces=0 -> always prune
+    kept = _numba_head_envelope_filter(rows, 0, head_len)
 
     kept_keys = {(int(s[0]), int(s[2])) for s in kept}
     family_keys = {(sum(1 << p for p in fv), sum(1 << p for p in gr)) for fv, gr in family}
     assert kept_keys.issubset(family_keys)              # (a) subset
     assert len(kept) < len(family) // 2                 # (b) prunes hard
 
-    # Cells spanning the REALIZABLE stat box (combo/fever-mul within _HEAD_DOM_C/_HEAD_DOM_F, great
-    # base g <= v): the cone-dominance is lossless for EVERY such cell by the 16-corner argument, so
-    # the max is preserved EXACTLY. (Cells outside the box carry no guarantee and are not reachable.)
+    # Cells spanning the REALIZABLE stat box (element sum E, Perfect Points bonus b, combo/fever-mul within
+    # _HEAD_DOM_C/_HEAD_DOM_F; v = E + b, g = 2E/3 + 150): the cone-dominance is lossless for EVERY such cell by the
+    # 16-corner argument, so the max is preserved EXACTLY. (Cells outside the box carry no guarantee and are not reachable.)
     cs = (_HEAD_DOM_C[0], 0.5 * (_HEAD_DOM_C[0] + _HEAD_DOM_C[1]), _HEAD_DOM_C[1])
     fs = (_HEAD_DOM_F[0], 0.5 * (_HEAD_DOM_F[0] + _HEAD_DOM_F[1]), _HEAD_DOM_F[1])
-    grid = [(v, c, f, u * v)
-            for v in (700.0, 1400.0, 2600.0)
+    grid = [(e + b, c, f, e * 2.0 / 3.0 + 150.0)
+            for e in (0.0, 700.0, 1400.0, 2600.0, 7000.0)
             for c in cs
             for f in fs
-            for u in (0.35, 0.62, 0.78, 0.95)]
+            for b in (200.0, 340.0, 485.0)]
     kept_family = [(fv, gr) for fv, gr in family
                    if (sum(1 << p for p in fv), sum(1 << p for p in gr)) in kept_keys]
     for v, c, f, g in grid:

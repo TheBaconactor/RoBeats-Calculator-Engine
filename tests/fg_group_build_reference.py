@@ -20,6 +20,7 @@ def build_response_group_rows_reference(
     primary_ftff_delta_values: np.ndarray,
     secondary_ftff_delta_values: np.ndarray,
     score_elements_constant: bool,
+    element_value: int,
     head_len: int,
     body_total: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -33,6 +34,7 @@ def build_response_group_rows_reference(
 
     pair_count = int(ft_values.shape[0])
     positions = np.arange(pair_count, dtype=np.int32)
+    values = 2 * primary_ftff_delta_values + secondary_ftff_delta_values + element_value * residual_values
     meta_blocks: list[np.ndarray] = []
     ft_blocks: list[np.ndarray] = []
     ff_blocks: list[np.ndarray] = []
@@ -63,6 +65,14 @@ def build_response_group_rows_reference(
                 residuals=residual_values,
                 primary_values=primary_seq,
                 secondary_values=secondary_seq,
+            )
+            # A split with as many residual gems and more value on the same frontier beats it.
+            best_positions = np.asarray(
+                [position for position in best_positions.tolist() if not any(
+                    frontier_ids[other] == frontier_ids[position] and residual_values[other] >= residual_values[position]
+                    and values[other] > values[position] for other in best_positions.tolist()
+                )],
+                dtype=np.int32,
             )
             primary_values = np.ascontiguousarray(primary_seq[best_positions], dtype=np.int32)
             secondary_values = np.ascontiguousarray(secondary_seq[best_positions], dtype=np.int32)
@@ -104,6 +114,7 @@ def kept_group_rows(
     primary_ftff_delta_values: np.ndarray,
     secondary_ftff_delta_values: np.ndarray,
     score_elements_constant: bool,
+    element_value: int,
     head_len: int,
     body_total: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -111,8 +122,7 @@ def kept_group_rows(
     base_components = np.ascontiguousarray(base_components, dtype=np.int32)
     keys, key_of = np.unique(base_components[:, 5:7], axis=0, return_inverse=True)
     rows, counts = _kept_splits(
-        keys, residual_values, frontier_idx_by_stat, primary_ftff_delta_values, secondary_ftff_delta_values,
-        score_elements_constant,
+        keys, residual_values, frontier_idx_by_stat, primary_ftff_delta_values, secondary_ftff_delta_values, element_value,
     )
     positions = rows[:, 4]
     starts = np.cumsum(counts) - counts

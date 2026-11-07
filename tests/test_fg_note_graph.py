@@ -16,17 +16,17 @@ from tests.fg_response_frontier_oracles import response_surface
 from tests.fg_song_inputs import fg_song_inputs
 
 
-from gear_optimizer.solver.timing_envelope import judgment_bounds
+from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS, judgment_bounds
 from gear_optimizer.trace import note_graph as production
+from gear_optimizer.trace.reconstruct import UnplayableTrace
 from tests.trace_support import force_greats_note_graph as _exact_force_greats_note_graph
-from tests.trace_support import perfect_notes, plan_of, stored_sections, timeline_frontier_note_graph
+from tests.trace_support import perfect_notes, stored_sections, timeline_frontier_note_graph
 
 
-def _hold_followers(notes, trace, note_types, lanes=None, *, fg_schedule):
-    ms = np.asarray([note["hit_time_ms"] for note in notes], dtype=np.float64)
-    sections = production._sections(stored_sections([dict(row, fever_end_index=len(notes)) for row in trace], ms / 1000.0))
-    plan = plan_of(notes, note_types, lanes)
-    return plan, production._hold_followers_after_activation(plan, sections, fg_schedule=fg_schedule)
+
+
+def _press(note):
+    return note["hit_time_ms"] + note["delta_ms"]
 
 
 def _build_options(n, non_fever_base, real_fever_time):
@@ -249,7 +249,7 @@ def test_fg_note_graph_body_counts_synthetic():
         body_fever=6, body_great=1, body_fever_great=1,
     )
     wit = next(x for x in g2 if x["is_activation_witness"])
-    assert wit["note_index"] == 102 and wit["note_result"] == "Great" and wit["delta_ms"] == 41.0
+    assert wit["note_index"] == 102 and wit["note_result"] == "Great" and 41.0 <= wit["delta_ms"] <= 190.0 - FRAME_MARGIN_MS
     assert wit["fever"] is True  # the witness is both fever and great
 
     # Case 3: optimized Perfect-window activation WITNESS -> delayed, but not Great.
@@ -268,7 +268,7 @@ def test_fg_note_graph_body_counts_synthetic():
     witp = next(x for x in gp if x["is_activation_witness"])
     assert witp["note_index"] == 12
     assert witp["note_result"] == "Perfect"
-    assert witp["delta_ms"] == 40.0
+    assert -19.0 <= witp["delta_ms"] <= 40.0 - FRAME_MARGIN_MS
 
     # Case 3b: non-prefix forced-Great run. The run fields place Greats at {2, 3},
     # with idx3 also carrying the late-Great witness.
@@ -343,8 +343,8 @@ def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
 
 
 def test_fg_note_graph_plans_a_capped_early_great_frame_safe():
-    """A forced Great the plan presses before its same-time Perfect partner is capped below the partner's hit; it is
-    planned at -38 ms (an early Great at every frame timing), not at the band's last ms -20, and keeps its order."""
+    """A forced Great the plan presses before its same-time Perfect partner goes early, a frame margin below the band's
+    last ms -20 (an early Great at every frame timing), and keeps its order."""
     from tests.trace_support import force_greats_note_graph
 
     n = 110
@@ -371,14 +371,13 @@ def test_fg_note_graph_plans_a_capped_early_great_frame_safe():
         perfect_time=0,
     )
 
-    assert graph[104]["note_result"] == "Great" and graph[104]["delta_ms"] == -38.0
+    assert graph[104]["note_result"] == "Great" and graph[104]["delta_ms"] == pytest.approx(-20.0 - FRAME_MARGIN_MS)
     assert graph[103]["note_result"] == "Perfect" and graph[103]["delta_ms"] == 0.0
     assert graph[104]["input_order"] < graph[103]["input_order"]
-    assert graph[105]["is_activation_witness"] and graph[105]["delta_ms"] == 95.0
+    assert graph[105]["is_activation_witness"] and 41.0 <= graph[105]["delta_ms"] <= 190.0 - FRAME_MARGIN_MS
 
 
-def test_fg_note_graph_never_moves_an_activation_to_a_frame_safe_hit():
-    """A late-Great activation planned past the frame-safe +172 ms keeps its hit: it sets where fever starts."""
+def test_an_offset_activation_sits_in_the_middle_of_its_free_range():
     n = 8
     ts = np.arange(n, dtype=np.float64) * 0.5
     trace = [{
@@ -390,7 +389,8 @@ def test_fg_note_graph_never_moves_an_activation_to_a_frame_safe_hit():
         frontier_trace=trace, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16),
     )
 
-    assert graph[3]["is_activation_witness"] and graph[3]["delta_ms"] == pytest.approx(180.0)
+    assert graph[3]["is_activation_witness"]
+    assert graph[3]["delta_ms"] == pytest.approx(0.5 * (41.0 + 190.0 - FRAME_MARGIN_MS))
     assert [note["fever"] for note in graph] == [False] * 3 + [True] * 5
 
 
@@ -399,36 +399,30 @@ def test_same_time_body_selector_uses_physical_order_not_head_chart_order():
     timestamps = np.arange(n, dtype=np.float64)
     timestamps[141:] = timestamps[141]
     note_types = np.ones(n, dtype=np.int16)
-    note_types[142] = 3  # held tail: canonical late-Great selector is +81 ms
-    notes = perfect_notes(n, timestamps)
-    notes[142]["note_result"] = "Great"
-    notes[142]["delta_ms"] = None
-    plan = plan_of(notes, note_types)
+    note_types[142] = 3  # held tail: its first late Great is +81 ms
+    trace = [{"section": 1, "activation_index": 0, "fever_end_index": 1, "forced_start_index": 0,
+              "forced_run_start_index": 142, "forced_run_count": 1, "activation_judgment": "perfect",
+              "activation_hit_offset_ms": 0.0, "preactivation_order": []}]
+    graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=timestamps, note_types=note_types)
 
-    production._mark_same_time_selector_deltas(plan)
-    assert plan.delta[142] is None
-
-    production._plan_remaining_selectors(plan)
-    production._assign_input_order(plan, ())
-
-    assert plan.delta[142] == 81.0
-    assert plan.input_order[141] < plan.input_order[143] < plan.input_order[142]
+    assert graph[142]["delta_ms"] == 81.0
+    assert graph[141]["input_order"] < graph[143]["input_order"] < graph[142]["input_order"]
 
 
 def test_same_time_selector_cluster_crossing_head_boundary_keeps_chart_order():
-    n = 101
+    n = 102
     timestamps = np.arange(n, dtype=np.float64)
     timestamps[100] = timestamps[99]
-    note_types = np.ones(n, dtype=np.int16)
-    notes = perfect_notes(n, timestamps)
-    notes[99]["note_result"] = "Great"
-    notes[99]["delta_ms"] = None
-    plan = plan_of(notes, note_types)
+    trace = [{"section": 1, "activation_index": 0, "fever_end_index": 1, "forced_start_index": 0,
+              "forced_run_start_index": 99, "forced_run_count": 1, "activation_judgment": "perfect",
+              "activation_hit_offset_ms": 0.0, "preactivation_order": []}]
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace, total_notes=n, timestamps=timestamps, note_types=np.ones(n, dtype=np.int16),
+    )
 
-    production._mark_same_time_selector_deltas(plan)
-
-    assert plan.delta[99] < -20.0
-    assert plan.delta[99] < plan.delta[100]
+    assert graph[99]["delta_ms"] < -20.0
+    assert graph[99]["delta_ms"] < graph[100]["delta_ms"]
+    assert graph[99]["input_order"] < graph[100]["input_order"]
 
 
 def test_same_time_selector_cluster_shares_late_great_boundary_in_chart_order():
@@ -437,34 +431,17 @@ def test_same_time_selector_cluster_shares_late_great_boundary_in_chart_order():
     timestamps[82:] = timestamps[82]
     note_types = np.ones(n, dtype=np.int16)
     note_types[82:84] = 3
-    notes = perfect_notes(n, timestamps)
-    activation_delta_ms = 189.99862670898438
-    for index in range(82, 86):
-        notes[index]["note_result"] = "Great"
-        notes[index]["delta_ms"] = None
-    notes[82]["delta_ms"] = activation_delta_ms
-    plan = plan_of(notes, note_types)
+    trace = [{"section": 1, "activation_index": 82, "fever_end_index": n, "forced_start_index": 0,
+              "forced_run_start_index": 82, "forced_run_count": 4, "activation_judgment": "late_great",
+              "activation_hit_offset_ms": 189.99862670898438}]
+    graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=timestamps, note_types=note_types)
 
-    production._mark_same_time_selector_deltas(plan)
-    production._assign_input_order(plan, ())
-
-    assert plan.delta[82:86] == [activation_delta_ms] * 4
-    assert plan.input_order[82:86] == [82, 83, 84, 85]
+    assert [note["input_order"] for note in graph[82:86]] == [82, 83, 84, 85]
+    presses = [_press(note) for note in graph[82:86]]
+    assert presses == sorted(presses)
+    assert all(note["note_result"] == "Great" and note["delta_ms"] > 40.0 for note in graph[82:86])
 
 
-def test_same_time_selector_cluster_projects_before_fixed_early_great():
-    timestamps = np.zeros(2, dtype=np.float64)
-    note_types = np.ones(2, dtype=np.int16)
-    notes = perfect_notes(2, timestamps)
-    notes[0]["note_result"] = "Great"
-    notes[0]["delta_ms"] = None
-    notes[1]["note_result"] = "Great"
-    notes[1]["delta_ms"] = -80.0
-    plan = plan_of(notes, note_types)
-
-    production._mark_same_time_selector_deltas(plan)
-
-    assert plan.delta == [-80.0, -80.0]
 
 
 def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
@@ -604,9 +581,7 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
     assert [replay.fever_mask[index] for index in cluster] == [True] * len(cluster)
 
 
-def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_order():
-    from tests.trace_support import force_greats_note_graph
-
+def test_a_late_activation_keeps_a_frame_margin_from_the_perfect_after_it():
     n = 6
     ts = np.asarray([0.0, 0.1, 10.0, 10.160, 10.300, 10.500], dtype=np.float32)
     trace = [
@@ -628,19 +603,14 @@ def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_orde
         note_types=np.ones(n, dtype=np.int16),
     )
 
-    activation_press = graph[2]["hit_time_ms"] + graph[2]["delta_ms"]
-    next_press = graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
-
     assert graph[2]["note_result"] == "Great"
     assert graph[3]["note_result"] == "Perfect"
-    assert graph[3]["delta_ms"] == pytest.approx(21.0, abs=1e-3)
-    assert next_press >= activation_press
+    assert _press(graph[3]) >= _press(graph[2]) + FRAME_MARGIN_MS
+    assert graph[3]["delta_ms"] == 0.0
     assert graph[4]["delta_ms"] == 0.0
 
 
-def test_fg_note_graph_centers_score_parity_activation_window():
-    from tests.trace_support import force_greats_note_graph
-
+def test_a_late_activation_sits_in_the_middle_of_what_its_follower_leaves():
     n = 4
     ts = np.asarray([10.000, 10.160, 10.300, 10.500], dtype=np.float32)
     trace = [
@@ -653,8 +623,6 @@ def test_fg_note_graph_centers_score_parity_activation_window():
             "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 135.0,
-            "activation_hit_offset_lower_ms": 80.0,
-            "activation_hit_offset_upper_ms": 190.0,
             "fever_window_end_ms": 12000.0,
         }
     ]
@@ -665,55 +633,16 @@ def test_fg_note_graph_centers_score_parity_activation_window():
         note_types=np.ones(n, dtype=np.int16),
     )
 
-    activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
-    next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
-
-    assert graph[0]["delta_ms"] == pytest.approx(135.0)
-    assert graph[0]["delta_ms"] - 80.0 == pytest.approx(190.0 - graph[0]["delta_ms"])
+    # Its first late Great, and the follower's last safe Perfect a frame margin before.
+    latest = 160.0 + 40.0 - 2.0 * FRAME_MARGIN_MS
+    assert graph[0]["delta_ms"] == pytest.approx(0.5 * (41.0 + latest))
     assert graph[1]["note_result"] == "Perfect"
-    assert graph[1]["delta_ms"] == pytest.approx(0.0, abs=1e-3)
-    assert next_press >= activation_press
+    assert graph[1]["delta_ms"] == 0.0
 
 
-def test_fg_note_graph_decodes_float32_window_on_engine_ms_lattice():
-    timestamp = np.float32(104.36299896240234)
-    absolute_hit_ms = float(np.float32(104.403)) * 1000.0
-    raw_offset_ms = (float(np.float32(104.403)) - float(timestamp)) * 1000.0
-    trace = [
-        {
-            "section": 1,
-            "activation_index": 0,
-            "fever_end_index": 1,
-            "forced_start_index": 0,
-            "forced_run_start_index": 0,
-            "forced_run_count": 0,
-            "activation_judgment": "perfect",
-            "activation_ms": float(timestamp) * 1000.0,
-            "activation_hit_ms": absolute_hit_ms,
-            "activation_hit_offset_ms": raw_offset_ms,
-            "activation_hit_window_lower_ms": absolute_hit_ms,
-            "activation_hit_window_upper_ms": absolute_hit_ms,
-            "activation_hit_offset_lower_ms": raw_offset_ms,
-            "activation_hit_offset_upper_ms": raw_offset_ms,
-        }
-    ]
-
-    graph = _exact_force_greats_note_graph(
-        frontier_trace=trace,
-        total_notes=1,
-        timestamps=np.asarray([timestamp], dtype=np.float32),
-        note_types=np.ones(1, dtype=np.int16),
-    )
-
-    assert raw_offset_ms > 40.0
-    assert graph[0]["hit_time_ms"] == pytest.approx(float(timestamp) * 1000.0)
-    assert graph[0]["delta_ms"] == 40.0
-    assert graph[0]["note_result"] == "Perfect"
 
 
-def test_fg_note_graph_centers_hold_head_activation_with_early_great_tail():
-    from tests.trace_support import force_greats_note_graph
-
+def test_an_activation_with_an_early_great_tail_keeps_the_tail_in_fever():
     timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
     trace = [{
         "section": 1,
@@ -724,8 +653,6 @@ def test_fg_note_graph_centers_hold_head_activation_with_early_great_tail():
         "forced_run_count": 0,
         "activation_judgment": "perfect",
         "activation_hit_offset_ms": 20.0,
-        "activation_hit_offset_lower_ms": 0.0,
-        "activation_hit_offset_upper_ms": 40.0,
         "fever_window_end_ms": 940.0,
         "early_great_start": 1,
         "early_great_end": 2,
@@ -738,15 +665,13 @@ def test_fg_note_graph_centers_hold_head_activation_with_early_great_tail():
         note_types=np.asarray([2, 1], dtype=np.int16),
     )
 
-    assert graph[0]["delta_ms"] == pytest.approx(20.0)
     assert graph[1]["note_result"] == "Great"
-    assert -94.0 <= float(graph[1]["delta_ms"]) < -20.0
-    assert float(graph[1]["hit_time_ms"]) + float(graph[1]["delta_ms"]) < 940.0
+    assert -94.0 <= graph[1]["delta_ms"] < -20.0
+    assert -19.0 <= graph[0]["delta_ms"] <= 40.0 - FRAME_MARGIN_MS
+    assert _press(graph[1]) < _press(graph[0]) + 920.0
 
 
-def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
-    from tests.trace_support import force_greats_note_graph
-
+def test_the_fever_end_follows_the_activation_the_schedule_picks():
     n = 3
     ts = np.asarray([10.000, 10.130, 10.500], dtype=np.float32)
     trace = [
@@ -759,8 +684,6 @@ def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
             "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 120.0,
-            "activation_hit_offset_lower_ms": 80.0,
-            "activation_hit_offset_upper_ms": 190.0,
             "fever_window_end_ms": 11190.0,
         }
     ]
@@ -771,20 +694,13 @@ def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
         note_types=np.ones(n, dtype=np.int16),
     )
 
-    activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
-    next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
-
-    assert graph[0]["delta_ms"] == pytest.approx(125.0, abs=1e-3)
     assert graph[1]["note_result"] == "Perfect"
-    assert graph[1]["delta_ms"] == pytest.approx(0.0, abs=1e-3)
-    assert next_press > activation_press
+    assert _press(graph[1]) >= _press(graph[0]) + FRAME_MARGIN_MS
     assert graph[0]["input_order"] < graph[1]["input_order"]
-    assert graph[2]["fever_end_ms"] == pytest.approx(11195.0, abs=1e-3)
+    assert graph[2]["fever_end_ms"] == pytest.approx(_press(graph[0]) + 1070.0)
 
 
-def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
-    from tests.trace_support import force_greats_note_graph
-
+def test_a_late_activation_before_a_perfect_of_its_chord_has_no_plan():
     n = 2
     ts = np.asarray([10.000, 10.000], dtype=np.float32)
     trace = [
@@ -797,13 +713,11 @@ def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
             "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 120.0,
-            "activation_hit_offset_lower_ms": 80.0,
-            "activation_hit_offset_upper_ms": 190.0,
             "fever_window_end_ms": 11190.0,
         }
     ]
 
-    with pytest.raises(ValueError, match="activation witness cannot preserve following note order"):
+    with pytest.raises(UnplayableTrace, match="no frame of its own"):
         _exact_force_greats_note_graph(
             frontier_trace=trace,
             total_notes=n,
@@ -853,62 +767,12 @@ def test_fg_note_graph_exact_order_uses_inclusive_float32_label_boundary():
         perfect_time=0,
     )
 
-    event_times = [float(note["hit_time_ms"]) + float(note["delta_ms"]) for note in graph]
     assert graph[0]["note_result"] == "Great"
     assert graph[1]["note_result"] == "Perfect"
-    assert event_times[0] == pytest.approx(event_times[1], abs=1e-9)
+    assert _press(graph[1]) >= _press(graph[0]) + FRAME_MARGIN_MS
     assert graph[0]["input_order"] < graph[1]["input_order"]
 
 
-def test_fg_note_graph_preserves_fractional_window_near_integer_boundary():
-    from tests.trace_support import force_greats_note_graph
-
-    trace = [
-        {
-            "section": 1,
-            "activation_index": 0,
-            "fever_end_index": 2,
-            "forced_start_index": 0,
-            "forced_run_start_index": 0,
-            "forced_run_count": 0,
-            "activation_judgment": "late_great",
-            "activation_hit_offset_ms": 166.96929931640625,
-            "activation_hit_offset_lower_ms": 166.93878173828125,
-            "activation_hit_offset_upper_ms": 166.9921875,
-            "activation_hit_window_lower_ms": 76980.94177246094,
-            "activation_hit_window_upper_ms": 76980.99517822266,
-            "fever_window_end_ms": 87980.99517822266,
-            "fever_duration_ms": 11000.0,
-            "activation_schedule_schema_version": 1,
-            "preactivation_order": [],
-            "preactivation_lane_prefixes": [
-                {"lane": 3, "count": 0},
-                {"lane": 2, "count": 0},
-            ],
-            "preactivation_fill_half_units": 0,
-            "preactivation_event_count": 0,
-            "preactivation_great_count": 0,
-        }
-    ]
-
-    graph = force_greats_note_graph(
-        frontier_trace=trace,
-        total_notes=2,
-        timestamps=np.asarray([76.814003, 76.941002], dtype=np.float32),
-        note_types=np.ones(2, dtype=np.int16),
-        lanes=np.asarray([3, 2], dtype=np.int32),
-        timing_mode="precise",
-        perfect_time=0,
-    )
-
-    activation_event = float(graph[0]["hit_time_ms"]) + float(graph[0]["delta_ms"])
-    follower_event = float(graph[1]["hit_time_ms"]) + float(graph[1]["delta_ms"])
-    assert graph[0]["delta_ms"] == pytest.approx(
-        0.5 * (166.93878173828125 + 166.9921875), abs=1e-9
-    )
-    assert graph[0]["delta_ms"] != 167.0
-    assert follower_event >= activation_event
-    assert graph[0]["input_order"] < graph[1]["input_order"]
 
 
 def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation():
@@ -1052,14 +916,8 @@ def test_fg_note_graph_marks_fever_end_witness():
 
 
 def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
-    """Issue #42: a fever note at/after the cutoff carries its LARGEST-CUSHION legal early delta --
-    the center of its legal in-fever range (most error margin) -- so it is in-fever and legal, and
-    the scored fever set is unchanged (display-only)."""
-    from tests.trace_support import (
-        base_note_graph,
-        force_greats_note_graph,
-    )
-
+    """Issue #42: a fever note past the cutoff of an on-time activation is in fever by hitting it early: the plan keeps it
+    inside the window, at a legal Perfect, and leaves the notes well inside on their chart times."""
     n = 10
     ts = np.asarray([0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.245, 1.5, 1.7], dtype=np.float32)
     fg_trace = [{
@@ -1078,36 +936,21 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
         timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
     ):
-        # note 7 @ chart 1245ms is past the 1240ms cutoff -> in fever ONLY via an early hit.
         assert g[7]["fever"] is True
         assert g[7]["is_fever_end_witness"] is True
-        # Largest cushion = center of [legal_low_hit, strict cutoff predecessor].
-        # (BUG-1: legal Perfect low is -19, not -20.)
-        strict_cutoff = float(np.nextafter(np.float64(1240.0), np.float64(-np.inf)))
-        expected = 0.5 * (-19.0 + strict_cutoff - float(g[7]["hit_time_ms"]))
-        assert g[7]["delta_ms"] == pytest.approx(expected, abs=1e-3)
-        assert g[7]["delta_ms"] >= -19.0                               # still legal (>= lower bound, BUG-1)
-        # its event lands inside the window -> displayed per-note timing is self-consistent.
-        assert g[7]["hit_time_ms"] + g[7]["delta_ms"] < 1240.0
-        # comfortably-inside fever notes untouched (delta 0); activation keeps its +40.
+        assert g[7]["delta_ms"] >= -19.0
+        assert _press(g[7]) < _press(g[2]) + 1000.0
+        assert g[7]["fever_end_ms"] == pytest.approx(_press(g[2]) + 1000.0)
         assert g[6]["fever"] is True and g[6]["delta_ms"] == 0.0
-        assert g[2]["is_activation_witness"] is True and g[2]["delta_ms"] == pytest.approx(40.0)
+        assert g[2]["is_activation_witness"] is True and -19.0 <= g[2]["delta_ms"] <= 40.0
 
 
 def test_endpoint_early_delta_never_below_legal_lower_bound():
-    """Issue #42 reconstruction legality: the displayed endpoint-early `delta_ms` (now the
-    largest-cushion center of the legal in-fever range) is never below the note's own Perfect lower
-    bound (-20, or -40 for a held tail). In the tight-margin edge where the legal-early hit already
-    sits at/after the strict cutoff predecessor (no in-fever room), the degenerate branch preserves the old
-    clamp-to-bound. Needs `note_types` for the held-tail bound."""
-    from tests.trace_support import (
-        base_note_graph,
-        force_greats_note_graph,
-    )
-
-    # note 3 @ chart 1019.5ms is 19.5ms past a 1000ms cutoff.
+    """Issue #42: a held tail's early Perfect reaches further than a tap's. A tap past every legal cutoff of its window has
+    no plan, where the plan before drew it outside; a tail with room lands inside."""
+    # Note 3 at 1020 ms: the window lasts 960 ms and its activation is at most 40 ms late.
     n = 5
-    ts = np.asarray([0.0, 0.1, 0.2, 1.0195, 1.5], dtype=np.float32)
+    ts = np.asarray([0.0, 0.1, 0.2, 1.020, 1.5], dtype=np.float32)
     fg_trace = [{
         "section": 1, "activation_index": 0, "fever_end_index": 4,
         "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
@@ -1118,49 +961,24 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
         "section": 1, "activation_index": 0, "fever_start_note_index": 0, "fever_end_index": 4,
         "activation_hit_offset_ms": 40.0, "fever_window_end_ms": 1000.0,
     }]
-    mask = np.zeros(n, bool)
 
-    # Normal note (BUG-1 legal low -19): legal_low_hit = 1019.5-19 = 1000.5 >= upper_hit (<1000)
-    # -> NO in-fever room -> degenerate branch clamps shown_hit to legal_low_hit, delta = exactly -19
-    # (the legal bound; the note is now genuinely unreachable in-fever, shown at its earliest legal hit).
-    nt_normal = [1, 1, 1, 1, 1]
-    for g in (
-        _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt_normal),
-        timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt_normal, timing_mode="precise"),
-    ):
-        assert g[3]["delta_ms"] >= -19.0                  # never below the Perfect lower bound (BUG-1)
-        assert g[3]["delta_ms"] == pytest.approx(-19.0)   # tight edge -> clamped to the bound
+    with pytest.raises(UnplayableTrace, match="no frame of its own"):
+        _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=[1, 1, 1, 1, 1])
 
-    # Held tail (note_type 3, window [-39,+80] BUG-1): legal_low_hit = 1019.5-39 = 980.5 < cutoff.
-    # There is room, so the largest-cushion center uses the strict cutoff predecessor.
     nt = [1, 1, 1, 3, 1]
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
         timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
     ):
-        assert g[3]["delta_ms"] >= -39.0                   # never below the held-tail lower bound (BUG-1)
-        strict_cutoff = float(np.nextafter(np.float64(1000.0), np.float64(-np.inf)))
-        expected = 0.5 * (-39.0 + strict_cutoff - float(g[3]["hit_time_ms"]))
-        assert g[3]["delta_ms"] == pytest.approx(expected)
+        assert g[3]["delta_ms"] >= -39.0
+        assert _press(g[3]) < _press(g[0]) + 960.0
 
 
-def test_endpoint_early_delta_is_largest_cushion_center():
-    """Issue #42 display convention: a clawed-in held-tail note's shown `delta_ms` is the
-    LARGEST-CUSHION timing -- the center of its legal in-fever range bounded by the strict cutoff
-    predecessor -- not an arbitrary fixed-gap cliff. The shown hit is LEGAL (delta >= legal_low),
-    IN-FEVER (hit <= cutoff), and MONOTONIC (>= the previous note's shown hit). Both frontiers."""
-    from tests.trace_support import (
-        base_note_graph,
-        force_greats_note_graph,
-    )
-
-    # idx5 held tail @ chart 1410ms is clawed in past the 1400ms cutoff; legal_low = -40.
-    # legal_low_hit < cutoff -> real in-fever room -> center fires (not the clamp).
-    # Preceding fever notes sit well before 1370 so monotonicity does NOT bind here.
+def test_notes_past_the_cutoff_land_inside_it_in_order():
+    """Issue #42: notes clawed in past the cutoff stay legal, in fever and in order, and the activation stays a witness."""
     n = 7
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 1.0, 1.410, 1.6], dtype=np.float32)
     cutoff = 1400.0
-    legal_low = -39.0  # held tail (BUG-1: -40 edge is exclusive; earliest legal is -39)
     fg_trace = [{
         "section": 1, "activation_index": 2, "fever_end_index": 6,
         "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
@@ -1176,23 +994,12 @@ def test_endpoint_early_delta_is_largest_cushion_center():
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
         timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=base_trace, note_types=nt, timing_mode="precise"),
     ):
-        hit = g[5]["hit_time_ms"]
-        shown = hit + g[5]["delta_ms"]
-        # shown delta == center of [legal_low, nextafter(cutoff, -inf) - hit].
-        strict_cutoff = float(np.nextafter(np.float64(cutoff), np.float64(-np.inf)))
-        expected = 0.5 * (legal_low + strict_cutoff - hit)
-        assert g[5]["delta_ms"] == pytest.approx(expected, abs=1e-4)
-        assert g[5]["delta_ms"] >= legal_low                     # LEGAL: never below the lower bound
-        assert hit >= cutoff                                     # genuinely clawed in (chart >= cutoff)
-        assert shown <= cutoff                                   # IN-FEVER: shown hit at/before the cutoff
-        # MONOTONIC: shown hit >= the previous note's shown hit (idx4, comfortably inside, delta 0).
-        prev_shown = g[4]["hit_time_ms"] + g[4]["delta_ms"]
-        assert shown >= prev_shown
-        # the score-determining activation witness is left untouched.
-        assert g[2]["is_activation_witness"] is True and g[2]["delta_ms"] == pytest.approx(40.0)
+        assert g[5]["delta_ms"] >= -39.0
+        assert _press(g[5]) < _press(g[2]) + cutoff - 240.0
+        assert _press(g[5]) >= _press(g[4])
+        assert g[2]["is_activation_witness"] is True
 
-    # Monotonicity actually BINDS: two adjacent clawed notes near a tight cutoff -- the first note's
-    # shown hit raises the floor for the second, whose own legal_low_hit would have been lower.
+    # Two notes clawed in on two lanes, a few ms apart: both legal, both inside, in order.
     n2 = 7
     ts2 = np.asarray([0.0, 0.1, 0.2, 0.3, 1.0, 1.405, 1.408], dtype=np.float32)
     fg_trace2 = [{
@@ -1201,19 +1008,11 @@ def test_endpoint_early_delta_is_largest_cushion_center():
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
         "fever_window_end_ms": 1400.0,
     }]
-    nt2 = np.ones(n2, dtype=np.int16)  # both clawed notes are normal (legal_low = -19, BUG-1)
-    g = _exact_force_greats_note_graph(frontier_trace=fg_trace2, total_notes=n2, timestamps=ts2, note_types=nt2)
-    shown5 = g[5]["hit_time_ms"] + g[5]["delta_ms"]
-    shown6 = g[6]["hit_time_ms"] + g[6]["delta_ms"]
+    g = _exact_force_greats_note_graph(frontier_trace=fg_trace2, total_notes=n2, timestamps=ts2, note_types=np.ones(n2, dtype=np.int16))
     for i in (5, 6):
-        assert g[i]["delta_ms"] >= -19.0                         # both stay legal (BUG-1)
-        assert g[i]["hit_time_ms"] + g[i]["delta_ms"] < 1400.0   # both stay strictly in-fever
-    assert shown6 >= shown5                                      # monotonic shown order preserved
-    strict_cutoff = float(np.nextafter(np.float64(1400.0), np.float64(-np.inf)))
-    expected5 = 0.5 * (float(g[5]["hit_time_ms"]) - 19.0 + strict_cutoff)
-    expected6 = 0.5 * (expected5 + strict_cutoff)
-    assert shown5 == pytest.approx(expected5, abs=1e-3)
-    assert shown6 == pytest.approx(expected6, abs=1e-3)
+        assert g[i]["delta_ms"] >= -19.0
+        assert _press(g[i]) < _press(g[2]) + 1160.0
+    assert _press(g[6]) >= _press(g[5])
 
 
 def test_endpoint_early_degenerate_clamp_is_monotonic():
@@ -1260,11 +1059,8 @@ def test_base_note_graph_maps_fever_timeline():
 
 
 def test_base_note_graph_uses_timeline_frontier_trace_witness():
-    from tests.trace_support import base_note_graph
-
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
-    mask = np.zeros(n, dtype=np.bool_)
     trace = [
         {
             "section": 1,
@@ -1279,16 +1075,13 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
 
     assert all(g["note_result"] == "Perfect" for g in graph)
     assert [g["fever"] for g in graph] == [False, False, True, True, True, False]
-    assert graph[2]["delta_ms"] == pytest.approx(40.0)
+    assert -19.0 <= graph[2]["delta_ms"] <= 40.0 - FRAME_MARGIN_MS
     assert graph[2]["is_activation_witness"] is True
 
 
 def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
-    from tests.trace_support import base_note_graph
-
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
-    mask = np.zeros(n, dtype=np.bool_)
     trace = [
         {
             "section": 1,
@@ -1302,10 +1095,9 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
 
     graph = timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=trace, note_types=np.ones(n, dtype=np.int16), timing_mode="precise")
 
-    # Fever run is notes [2, 5); the last fevered note (4) is the fever-end witness,
-    # carrying the largest-cushion cutoff time. No score-contributing flag exists.
+    # Fever run is notes [2, 5); the last fevered note (4) is the fever-end witness, carrying the planned cutoff.
     assert [g["is_fever_end_witness"] for g in graph] == [False, False, False, False, True, False]
-    assert graph[4]["fever_end_ms"] == pytest.approx(440.0)
+    assert graph[4]["fever_end_ms"] == pytest.approx(_press(graph[2]) + 200.0)
     assert graph[4]["fever"] is True
     assert graph[2]["is_activation_witness"] is True
     assert graph[2]["is_fever_end_witness"] is False
@@ -1314,14 +1106,8 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
 
 
 def test_base_delayed_activation_materializes_physical_chord_order():
-    """A delayed base activation cannot leave its following chord sibling at chart time.
-
-    The server consumes inputs by physical timestamp.  Leaving note 2 at 0ms would make it land
-    before note 1's +40ms activation and move fever to the wrong note.  The graph must materialize
-    the frontier's priced order without changing fever membership or judgments.
-    """
-    from tests.trace_support import base_note_graph
-
+    """A delayed base activation cannot leave its following chord sibling before it: the server consumes inputs by
+    physical timestamp, and fever would move to the wrong note."""
     trace = [{
         "section": 1,
         "activation_index": 1,
@@ -1332,11 +1118,8 @@ def test_base_delayed_activation_materializes_physical_chord_order():
     }]
     graph = timeline_frontier_note_graph(total_notes=4, timestamps=np.asarray([0.0, 0.1, 0.1, 0.3], dtype=np.float32), frontier_trace=trace, note_types=np.ones(4, dtype=np.int16), timing_mode="precise")
 
-    assert graph[1]["delta_ms"] == pytest.approx(40.0)
-    assert graph[2]["delta_ms"] == pytest.approx(40.0)
-    assert graph[1]["hit_time_ms"] + graph[1]["delta_ms"] == pytest.approx(
-        graph[2]["hit_time_ms"] + graph[2]["delta_ms"]
-    )
+    assert _press(graph[2]) >= _press(graph[1])
+    assert graph[1]["input_order"] < graph[2]["input_order"]
     assert [note["fever"] for note in graph] == [False, True, True, True]
     assert all(note["note_result"] == "Perfect" for note in graph)
 
@@ -1401,9 +1184,7 @@ def test_fever_end_cluster_rejects_impossible_plus_560_ms():
 
 
 def test_fever_end_cluster_barely_inside_decoy_delta():
-    """Tight cutoff: safe upper is the strict fever boundary."""
-    from tests.trace_support import force_greats_note_graph
-
+    """A tight cutoff: a chord just before it keeps a frame margin inside, the activation on time."""
     cutoff = 61340.14382457733
     n = 4
     ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
@@ -1416,13 +1197,9 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
     nt = np.ones(n, dtype=np.int16)
     g = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
 
-    strict_cutoff = float(np.nextafter(np.float64(cutoff), np.float64(-np.inf)))
-    expected = 0.5 * (-19.0 + strict_cutoff - float(g[2]["hit_time_ms"]))
-    assert g[2]["delta_ms"] == pytest.approx(expected)
-    assert g[3]["delta_ms"] == pytest.approx(g[2]["delta_ms"])
     for i in (2, 3):
-        assert g[i]["delta_ms"] >= -19.0  # BUG-1: earliest legal Perfect is -19, not -20
-        assert g[i]["hit_time_ms"] + g[i]["delta_ms"] < cutoff
+        assert g[i]["delta_ms"] >= -19.0
+        assert _press(g[i]) <= _press(g[0]) + cutoff - FRAME_MARGIN_MS + 1e-6
 
 
 def test_note_graph_displays_early_great_fever_end_tail():
@@ -1522,12 +1299,8 @@ def test_note_graph_displays_early_great_fever_end_tail_held_tail():
 
 
 def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
-    from tests.trace_support import force_greats_note_graph
-
     n = 2
-    # Make the fever upper bound earlier than the Great floor (-95ms) so the safe interval is empty.
-    # chart_ms = 133201.996 -> choose cutoff_ms so (cutoff_ms - hit_ms - 1) < -95.
-    # e.g. cutoff_ms = hit_ms - 96 => upper ~= -97ms.
+    # The fever cutoff comes before the note's earliest Great.
     cutoff = 133201.996 - 96.0
     ts = np.asarray([0.0, 133.201996], dtype=np.float32)
     nt = np.ones(n, dtype=np.int16)
@@ -1547,7 +1320,7 @@ def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
         }
     ]
 
-    with pytest.raises(ValueError, match="early-Great fever-end note"):
+    with pytest.raises(UnplayableTrace, match="no frame of its own"):
         _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
 
 
@@ -1595,7 +1368,7 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
 
 
 @pytest.mark.parametrize("start,great,kind,tied,count,delta", [
-    (0, 0, 1, True, 1, -38.0), (101, 101, 3, True, 1, -58.0),
+    (0, 0, 1, True, 1, -20.0 - FRAME_MARGIN_MS), (101, 101, 3, True, 1, -40.0 - FRAME_MARGIN_MS),
     (0, 1, 1, True, 1, 41.0), (0, 0, 1, False, 1, 41.0), (0, 0, 1, True, 2, 41.0),
 ])
 def test_non_precise_early_great_only_precedes_first_perfect_in_tie(start, great, kind, tied, count, delta):
@@ -1610,7 +1383,7 @@ def test_non_precise_early_great_only_precedes_first_perfect_in_tie(start, great
               "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0}]
     graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts,
                                          note_types=nt, timing_mode="non-precise")
-    assert graph[great]["delta_ms"] == delta
+    assert graph[great]["delta_ms"] == pytest.approx(delta)
     assert all(note["delta_ms"] == 0.0 for note in graph if note["note_result"] == "Perfect")
 
 
@@ -1627,26 +1400,26 @@ def _non_precise_forced_graph(ts_ms, lanes, note_types, forced):
 
 
 @pytest.mark.parametrize("ts_ms,lanes,note_types,forced,early", [
-    # A held tail's late release (+81) would follow its lane's next press, a tie's leading Great at -38 (Back Out (Hard)).
-    ([0, 300, 395, 395, 1000, 1500], [1, 1, 1, 2, 3, 4], [2, 3, 1, 1, 1, 1], range(3), {1: -58.0, 2: -38.0}),
+    # A held tail's late release (+81) would follow its lane's next press, a tie's leading Great early (Back Out (Hard)).
+    ([0, 300, 395, 395, 1000, 1500], [1, 1, 1, 2, 3, 4], [2, 3, 1, 1, 1, 1], range(3), {1: -40.0 - FRAME_MARGIN_MS, 2: -20.0 - FRAME_MARGIN_MS}),
     # A held tail's late release (+81) would follow the next note's Perfect in the combo ramp (Devotion (Hard)).
-    ([0, 198, 273, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(2), {1: -58.0}),
+    ([0, 198, 273, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(2), {1: -40.0 - FRAME_MARGIN_MS}),
     # The same with the hold's head too close to move the tail alone: the head moves with it.
-    ([150, 198, 273, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(2), {0: -38.0, 1: -58.0}),
+    ([150, 198, 273, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(2), {0: -20.0 - FRAME_MARGIN_MS, 1: -40.0 - FRAME_MARGIN_MS}),
 ])
 def test_non_precise_late_great_that_must_precede_an_input_is_planned_early(ts_ms, lanes, note_types, forced, early):
     graph = _non_precise_forced_graph(ts_ms, lanes, note_types, forced)
     for index in forced:
-        assert graph[index]["delta_ms"] == early.get(index, 81.0 if note_types[index] == 3 else 41.0)
+        assert graph[index]["delta_ms"] == pytest.approx(early.get(index, 81.0 if note_types[index] == 3 else 41.0))
     inputs = [note["hit_time_ms"] + note["delta_ms"] for note in graph]
     assert sorted(range(len(graph)), key=lambda i: (inputs[i], i)) == list(range(len(graph)))
 
 
-def test_non_precise_late_great_stays_when_an_earlier_input_cannot_move():
-    # The held tail's Great must precede the Perfect at 130 ms, but its head is a Perfect 60 ms before it: an early
-    # release would come within a frame margin of that press. The plan stays (its score order is not playable).
+def test_non_precise_tail_great_goes_early_past_its_head():
+    # The held tail's Great must precede the Perfect at 130 ms and its head is a Perfect 60 ms before it: its early release
+    # keeps after that press, and a hold's release may share its press's frame.
     graph = _non_precise_forced_graph([0, 60, 130, 1000, 1500], [1, 1, 4, 3, 2], [2, 3, 1, 1, 1], range(1, 2))
-    assert [note["delta_ms"] for note in graph] == [0.0, 81.0, 0.0, 0.0, 0.0]
+    assert [note["delta_ms"] for note in graph] == [0.0, pytest.approx(-40.0 - FRAME_MARGIN_MS), 0.0, 0.0, 0.0]
 
 
 def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
@@ -1684,18 +1457,14 @@ def test_non_precise_note_graph_does_not_apply_fever_end_guidance():
         note_types=nt,
         timing_mode="precise",
     )
-    strict_cutoff = float(np.nextafter(np.float64(cutoff), np.float64(-np.inf)))
-    expected = 0.5 * (-19.0 + strict_cutoff - float(pw_graph[2]["hit_time_ms"]))
-    assert pw_graph[2]["delta_ms"] == pytest.approx(expected)
+    assert pw_graph[2]["delta_ms"] != 0.0 or pw_graph[0]["delta_ms"] != 0.0
 
     base_graph = timeline_frontier_note_graph(total_notes=n, timestamps=ts, frontier_trace=trace_with_tight_fever_end, note_types=nt, timing_mode="non-precise")
     assert all(note["delta_ms"] in (0.0, None) for note in base_graph)
     assert base_graph[0]["is_activation_witness"] is False
 
 
-def test_fever_end_cluster_same_chart_time_shared_delta():
-    from tests.trace_support import force_greats_note_graph
-
+def test_fever_end_cluster_same_chart_time_keeps_its_chart_time_when_it_can():
     n = 8
     cutoff = 1240.0
     ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.220, 1.220, 1.4, 1.6], dtype=np.float32)
@@ -1709,8 +1478,8 @@ def test_fever_end_cluster_same_chart_time_shared_delta():
     g = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
 
     assert g[5]["is_fever_end_witness"] is True
-    assert g[4]["delta_ms"] == pytest.approx(g[5]["delta_ms"])
-    assert g[4]["delta_ms"] != 0.0
+    assert g[4]["delta_ms"] == g[5]["delta_ms"] == 0.0
+    assert _press(g[5]) <= g[5]["fever_end_ms"] - FRAME_MARGIN_MS
 
 
 def test_fever_end_cluster_held_tail_intersection():
@@ -1736,21 +1505,6 @@ def test_fever_end_cluster_held_tail_intersection():
     assert g[5]["delta_ms"] <= 80.0
 
 
-def test_fever_end_cluster_fail_loud_on_tight_non_perfect_same_time():
-    """Tight cutoff + mixed Perfect/Great same-chart-time cluster must not silently keep 0 ms."""
-    n = 4
-    ts = np.asarray([0.0, 0.5, 1.0, 1.0], dtype=np.float32)
-    notes = perfect_notes(n, ts)
-    for i in range(n):
-        notes[i]["fever"] = i >= 1
-    notes[3]["is_fever_end_witness"] = True
-    notes[3]["fever_end_ms"] = 1010.0
-    notes[2]["note_result"] = "Great"
-    notes[2]["delta_ms"] = None
-    sec = production._sections(stored_sections([{"activation_index": 1, "fever_end_index": 4}], ts))[0]
-
-    with pytest.raises(ValueError, match="a Great at a tight cutoff"):
-        production._plan_tight_cutoff_cluster(plan_of(notes, np.ones(n, dtype=np.int16)), sec, 1010.0)
 
 
 def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
@@ -1875,121 +1629,62 @@ def test_note_graph_lower_edges_are_reachable_not_the_exclusive_edge():
 
 
 def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
-    """Regression (Aurora 47,502,676 witness): the forward preemptor-delay scan must not stop at
-    a delayed same-time forced-Great sibling.
+    """Regression (Aurora 47,502,676 witness): press times are not monotone over chart order once a witness is delayed.
+    The chord partners behind a delayed same-time forced Great must still wait for the activation, or they steal the fill
+    crossing, and a note past every reach stays on time."""
+    ts = np.asarray([96.017, 96.017, 96.180, 96.180, 97.0], dtype=np.float64)
+    trace = [{"section": 1, "activation_index": 0, "fever_end_index": 5, "forced_start_index": 0,
+              "forced_run_start_index": 0, "forced_run_count": 2, "activation_judgment": "late_great",
+              "activation_hit_offset_ms": 189.999, "preactivation_order": []}]
+    graph = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=5, timestamps=ts, note_types=np.ones(5, dtype=np.int16))
 
-    Press times are not monotone over chart order once a witness is delayed: the bundle sibling
-    at the activation's own late edge already satisfies the ordering requirement, but the
-    still-on-time chord partners BEHIND it would press before the activation and steal the fill
-    crossing (the engine activates fever on their Perfect fill, ending the window early). The
-    scan must delay every window note whose press precedes the chained requirement, and stop
-    only on the chart-time bound.
-    """
-    nt = np.asarray([1, 1, 1, 1, 1], dtype=np.int16)
-    notes = [
-        {"note_index": 0, "hit_time_ms": 96017.0, "note_result": "Great", "delta_ms": 189.999},
-        {"note_index": 1, "hit_time_ms": 96017.0, "note_result": "Great", "delta_ms": 189.999},
-        {"note_index": 2, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
-        {"note_index": 3, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
-        {"note_index": 4, "hit_time_ms": 97000.0, "note_result": "Perfect", "delta_ms": 0.0},
-    ]
-    plan, _constraints = _hold_followers(notes, [{"activation_index": 0}], nt, fg_schedule=False)
-
-    required_delta = (96017.0 + 189.999) - 96180.0  # press at/after the activation hit
-    assert plan.delta[2] >= required_delta  # was 0.0 pre-fix (break at sibling)
-    assert plan.delta[3] >= required_delta
-    assert plan.delta[2] <= 40.0  # stays a legal Perfect
-    assert plan.delta[3] <= 40.0
-    assert plan.delta[4] == 0.0  # beyond the 200ms chart window: untouched
+    for index in (1, 2, 3):
+        assert _press(graph[index]) >= _press(graph[0])
+    assert graph[2]["delta_ms"] <= 40.0 and graph[3]["delta_ms"] <= 40.0  # stays a legal Perfect
+    assert graph[4]["delta_ms"] == 0.0
 
 
 def test_persisted_activation_schedule_orders_cross_lane_followers_after_activation():
-    nt = np.asarray([1, 1], dtype=np.int16)
-    notes = [
-        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 190.0},
-        {"note_index": 1, "hit_time_ms": 1160.0, "note_result": "Perfect", "delta_ms": 0.0},
-    ]
-    trace = [{
-        "activation_index": 0,
-        "forced_start_index": 0,
-        "activation_schedule_schema_version": 1,
-        "preactivation_order": [],
-        "preactivation_lane_prefixes": [
-            {"lane": 1, "count": 0},
-            {"lane": 2, "count": 0},
-        ],
-        "preactivation_fill_half_units": 0,
-        "preactivation_event_count": 0,
-        "preactivation_great_count": 0,
-    }]
+    trace = [{"section": 1, "activation_index": 0, "fever_end_index": 2, "forced_start_index": 0, "preactivation_order": [],
+              "activation_judgment": "late_great", "activation_hit_offset_ms": 190.0}]
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace, total_notes=2, timestamps=np.asarray([1.0, 1.16]), note_types=np.ones(2, dtype=np.int16),
+        lanes=np.asarray([1, 2], dtype=np.int32),
+    )
 
-    plan, _constraints = _hold_followers(notes, trace, nt, [1, 2], fg_schedule=True)
-    assert plan.delta[1] == pytest.approx(30.0)
+    assert graph[0]["input_order"] < graph[1]["input_order"]
+    assert _press(graph[1]) >= _press(graph[0]) + FRAME_MARGIN_MS
 
 
 def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefix():
-    nt = np.asarray([3, 1, 2, 1], dtype=np.int16)
-    notes = [
-        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Perfect", "delta_ms": 0.0},
-        {"note_index": 1, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": None},
-        {"note_index": 2, "hit_time_ms": 1000.0, "note_result": "Perfect", "delta_ms": 0.0},
-        {"note_index": 3, "hit_time_ms": 1100.0, "note_result": "Perfect", "delta_ms": 0.0},
-    ]
-    trace = [{
-        "activation_index": 3,
-        "forced_start_index": 1,
-        "activation_schedule_schema_version": 1,
-        "preactivation_order": [1, 2],
-        "preactivation_lane_prefixes": [
-            {"lane": 1, "count": 1},
-            {"lane": 2, "count": 1},
-            {"lane": 3, "count": 0},
-        ],
-        "preactivation_fill_half_units": 3,
-        "preactivation_event_count": 2,
-        "preactivation_great_count": 1,
-    }]
+    trace = [{"section": 1, "activation_index": 3, "fever_end_index": 4, "forced_start_index": 1,
+              "forced_run_start_index": 1, "forced_run_count": 1, "preactivation_order": [1, 2],
+              "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0}]
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace, total_notes=4, timestamps=np.asarray([1.0, 1.0, 1.0, 1.1]),
+        note_types=np.asarray([3, 1, 2, 1], dtype=np.int16), lanes=np.asarray([0, 1, 2, 3], dtype=np.int32),
+    )
 
-    plan, constraints = _hold_followers(notes, trace, nt, [0, 1, 2, 3], fg_schedule=True)
-
-    assert constraints == [(0, 1), (1, 2), (2, 3)]
-    event_times = [hit + delta for hit, delta in zip(plan.hit_ms, plan.delta)]
-    assert event_times == sorted(event_times)
-    assert plan.delta[0] == pytest.approx(-20.0)
-    assert event_times[0] < event_times[1]
-    assert plan.delta[1] == -20.0
-    assert plan.delta[2] == 0.0
-    production._assign_input_order(plan, constraints)
+    assert [note["input_order"] for note in graph] == [0, 1, 2, 3]
+    presses = [_press(note) for note in graph]
+    assert presses == sorted(presses)
+    assert graph[1]["note_result"] == "Great" and -94.0 <= graph[1]["delta_ms"] < -20.0
+    assert graph[0]["delta_ms"] >= -39.0
+    assert graph[2]["delta_ms"] == 0.0
 
 
 def test_persisted_activation_schedule_chains_postactivation_notes_per_lane():
-    nt = np.asarray([1, 1, 1], dtype=np.int16)
-    notes = [
-        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 100.0},
-        {"note_index": 1, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 190.0},
-        {"note_index": 2, "hit_time_ms": 1137.0, "note_result": "Perfect", "delta_ms": 0.0},
-    ]
-    trace = [{
-        "activation_index": 0,
-        "forced_start_index": 0,
-        "activation_schedule_schema_version": 1,
-        "preactivation_order": [],
-        "preactivation_lane_prefixes": [
-            {"lane": 1, "count": 0},
-            {"lane": 2, "count": 0},
-            {"lane": 3, "count": 0},
-        ],
-        "preactivation_fill_half_units": 0,
-        "preactivation_event_count": 0,
-        "preactivation_great_count": 0,
-    }]
+    trace = [{"section": 1, "activation_index": 0, "fever_end_index": 3, "forced_start_index": 0, "preactivation_order": [],
+              "forced_run_start_index": 0, "forced_run_count": 2, "activation_judgment": "late_great",
+              "activation_hit_offset_ms": 100.0}]
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace, total_notes=3, timestamps=np.asarray([1.0, 1.0, 1.137]), note_types=np.ones(3, dtype=np.int16),
+        lanes=np.asarray([1, 2, 3], dtype=np.int32),
+    )
 
-    plan, constraints = _hold_followers(notes, trace, nt, [1, 2, 3], fg_schedule=True)
-
-    assert constraints == [(0, 1), (0, 2)]
-    assert plan.delta[2] == 0.0
-    production._assign_input_order(plan, constraints)
-    assert plan.input_order == [0, 2, 1]
+    assert graph[0]["input_order"] < graph[1]["input_order"]
+    assert graph[0]["input_order"] < graph[2]["input_order"]
+    assert _press(graph[2]) >= _press(graph[0]) + FRAME_MARGIN_MS
 
 
 def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE
 from gear_optimizer.trace import note_graph as production
 from gear_optimizer.trace.note_graph import base_note_graph  # noqa: F401  (the tests import the graph API from here)
 
@@ -53,7 +52,7 @@ def perfect_notes(total_notes, timestamps):
 def columns_of(notes):
     """A plan's note columns from notes as a graph writes them; a hand-written note names only what a test is about."""
     n = len(notes)
-    plan = production.NotePlan([0.0] * n, [0.0] * n, [False] * n, [False] * n, [False] * n, [0] * n, list(range(n)), {})
+    plan = production._empty_plan(np.zeros(n))
     for position, note in enumerate(notes):
         index = note.get("note_index", position)
         plan.hit_ms[index] = note.get("hit_time_ms", 0.0)
@@ -65,18 +64,6 @@ def columns_of(notes):
         plan.input_order[index] = note.get("input_order", index)
         if note.get("is_fever_end_witness"):
             plan.fever_ends[index] = note["fever_end_ms"]
-    return plan
-
-
-def plan_of(notes, note_types, lanes=None, *, precise=True, perfect_time=0):
-    """A plan around hand-written notes, to drive one of its passes."""
-    plan = columns_of(notes)
-    plan.is_tail = (np.asarray(note_types) == HELD_TAIL_TYPE).tolist()
-    tap, tail = production._tap_and_tail_bands(perfect_time)
-    plan.bands = [tail if held else tap for held in plan.is_tail]
-    plan.lanes = list(range(len(notes)) if lanes is None else lanes)
-    plan.precise = precise
-    plan.tap_latest_perfect = tap.perfect[1]
     return plan
 
 

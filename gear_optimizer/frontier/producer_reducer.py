@@ -325,10 +325,8 @@ def _first_frontier_results_for_precomputed_range(
          canonical.capped_eg_perfect_e, canonical.capped_eg_late_e,
          canonical.capped_perfect_exit_e if early_exits else context.no_early_exit_e,
          canonical.capped_late_exit_e if early_exits else context.no_early_exit_e),
-        # The head cone-dominance size gate is read at call time, so tools/verify/validate_cone_lossless.py can
-        # disable the prune (no njit recompile) and compare against the full reduce-only frontier.
         (float(item[2]), np.asarray([float(row[3]) for row in items], dtype=np.float64), real_time_index[start:stop],
-         1 if context.use_forced_great_timing else 0, _rb_numba._HEAD_FILTER_MIN_SURFACES),
+         1 if context.use_forced_great_timing else 0),
         (*region_table[:8], canonical.hit_ends[0], canonical.hit_ends[1]),
         (workspace.pair_values, workspace.pair_stamps, workspace.pair_touched, workspace.bit_values,
          workspace.bit_stamps, workspace.perfect_successor, workspace.perfect_successor_stamps,

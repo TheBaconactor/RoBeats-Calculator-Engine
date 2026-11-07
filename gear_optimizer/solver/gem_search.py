@@ -111,20 +111,28 @@ def _kept_splits(
     frontier_idx_by_stat,
     primary_gains,
     secondary_gains,
-    score_elements_constant,
+    element_value,
 ):
     """The groups of each pre-gem (FT, FF) row of keys (GemGroups.groups), flat in row order, and per-row counts (a
     loadout's base colors add to every split alike: its groups depend on FT and FF only). Arrays per split in the order of
     ftff_combo_arrays.
 
     A row's splits reach frontiers (frontier_idx_by_stat at the split's clipped FT/FF stats); per frontier, in
-    first-reached order, it keeps every split no other split there matches or beats in (residual, primary gain, secondary
-    gain) (the earlier split wins an exact tie), in split order: with constant colors, the split with the most residual
-    gems, the first one on a tie. O(splits) per row, plus the pairwise check inside a frontier when FT or FF gems raise the
-    song's colors."""
+    first-reached order, it keeps, in split order, every split no other split there beats. A split with as many residual
+    gems beats another with more value, 2 x primary + secondary gain with every residual gem on the element at
+    element_value (the Perfect base): it copies the other's PP, CM and FM gems and has more base on every surface. Color
+    gains are multiples of 3, so a Great's base, 4/3 primary + 2/3 secondary floored, rises with it and every note scores
+    more: a beaten split is never a winner. It also beats one it matches in (residual, primary gain, secondary gain),
+    the earlier split on an exact tie. O(the splits up to the stat caps) per row: past a cap a gem takes value away from
+    the split at the cap on the same frontier."""
     key_count = keys.shape[0]
     pair_count = residual_values.shape[0]
     budget = residual_values[0]
+    values = (primary_gains << 1) + secondary_gains + element_value * residual_values
+    constant = primary_gains.max() == 0 and secondary_gains.max() == 0
+    # The FF and FT gem of the first splits: past its cap a gem that adds neither colors nor value is beaten.
+    ff_caps = values[1] < values[0] or primary_gains[1] + secondary_gains[1] == 0
+    ft_caps = values[budget + 1] < values[0] or primary_gains[budget + 1] + secondary_gains[budget + 1] == 0
     frontier_count = int(frontier_idx_by_stat.max()) + 1
     stamp = np.full(frontier_count, -1, dtype=np.int64)
     head = np.empty(frontier_count, dtype=np.int64)
@@ -159,37 +167,38 @@ def _kept_splits(
                     reached[reached_count] = fid
                     reached_count += 1
                 else:
-                    if not score_elements_constant:
+                    if not constant:
                         next_pos[tail[fid]] = pos
                         next_pos[pos] = -1
                         tail[fid] = pos
                     if residual_values[pos] > residual_values[best[fid]]:
                         best[fid] = pos
                 ff_gems += 1
-                # Past a stat's cap a gem reaches the same frontier with fewer residual gems.
-                if score_elements_constant and ff_gems <= ff_top and ff_stats[ff_gems] == ff_stats[ff_gems - 1]:
+                if ff_caps and ff_gems <= ff_top and ff_stats[ff_gems] == ff_stats[ff_gems - 1]:
                     break
             first_of_row += budget + 1 - ft_gems
-            if score_elements_constant and ft_gems < budget and ft_stats[ft_gems + 1] == ft_stats[ft_gems]:
+            if ft_caps and ft_gems < budget and ft_stats[ft_gems + 1] == ft_stats[ft_gems]:
                 break
         start = write
         for r in range(reached_count):
             fid = reached[r]
-            row = best[fid] if score_elements_constant else head[fid]
+            row = best[fid] if constant else head[fid]
             while row >= 0:
                 dominated = False
                 other = best[fid]  # settles nearly every other split at once
-                rest = -1 if score_elements_constant else head[fid]
+                rest = -1 if constant else head[fid]
                 while other >= 0 and not dominated:
-                    dominated = other != row and (
-                        residual_values[other] >= residual_values[row]
-                        and primary_gains[other] >= primary_gains[row]
-                        and secondary_gains[other] >= secondary_gains[row]
-                        and (
-                            residual_values[other] > residual_values[row]
-                            or primary_gains[other] > primary_gains[row]
-                            or secondary_gains[other] > secondary_gains[row]
-                            or other < row
+                    dominated = other != row and residual_values[other] >= residual_values[row] and (
+                        values[other] > values[row]
+                        or (
+                            primary_gains[other] >= primary_gains[row]
+                            and secondary_gains[other] >= secondary_gains[row]
+                            and (
+                                residual_values[other] > residual_values[row]
+                                or primary_gains[other] > primary_gains[row]
+                                or secondary_gains[other] > secondary_gains[row]
+                                or other < row
+                            )
                         )
                     )
                     other, rest = rest, (next_pos[rest] if rest >= 0 else -1)
@@ -198,7 +207,7 @@ def _kept_splits(
                     written[0], written[1], written[2] = residual_values[row], primary_gains[row], secondary_gains[row]
                     written[3], written[4] = fid, row
                     write += 1
-                row = -1 if score_elements_constant else next_pos[row]
+                row = -1 if constant else next_pos[row]
         counts[c] = write - start
     return rows[:write], counts
 
@@ -208,6 +217,7 @@ def gem_groups(
     *,
     primary_color: str,
     secondary_color: str,
+    selected_color: str,
     frontier_idx_by_stat: np.ndarray,
     total_notes: int,
     memo: GemMemo | None = None,
@@ -231,9 +241,11 @@ def gem_groups(
             )
             for color in (primary_color, secondary_color)
         )
-        constant = not {primary_color, secondary_color} & {ft_element, ff_element}
+        element_value = ELEMENT_GEM_GAIN * (2 * int(primary_color == selected_color) + int(secondary_color == selected_color))
         rows, counts = zip(*_fg_cpu_search_executor().map(
-            lambda chunk: _kept_splits(chunk, residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, constant),
+            lambda chunk: _kept_splits(
+                chunk, residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, element_value
+            ),
             np.array_split(keys[new_keys], min(_FG_CPU_SEARCH_WORKERS, len(new_keys))),
         ))
         kept = np.split(np.concatenate(rows), np.cumsum(np.concatenate(counts))[:-1])
@@ -539,8 +551,11 @@ def _live_summary(blocks, live_blocks, live_deltas, live, frontier_shape):
 
 @jit(nopython=True, cache=True)
 def _frontier_shapes(group_frontiers, frontier_offsets, frontier_lengths, pattern_ids, counts, head_coeffs, body_total, shapes, done):
-    """Into shapes, per frontier a group reaches that is not done yet, the most of each coordinate of its surfaces' shapes
-    (_surface_shape). O(groups + the surfaces of those frontiers)."""
+    """Into shapes, per frontier a group reaches that is not done yet, a shape bounding its surfaces' (_surface_shape).
+    A surface's body and head totals (a + e, f + g) are the song's, so its value is the same with a note moved from e to a
+    worth (fever - 1) x its combo more: the shape with the frontier's most a and f and those totals bounds every surface
+    with fever >= 1, and the shape less a surface's is (x, -x, y, -y), never below zero at any combo and fever.
+    O(groups + the surfaces of those frontiers)."""
     for f in group_frontiers:
         if not done[f]:
             done[f] = True
@@ -548,8 +563,10 @@ def _frontier_shapes(group_frontiers, frontier_offsets, frontier_lengths, patter
             for row in range(frontier_offsets[f], frontier_offsets[f] + frontier_lengths[f]):
                 coeffs = head_coeffs[pattern_ids[row]]
                 shape = _surface_shape(counts[row, 0], body_total - counts[row, 0], coeffs[0], coeffs[1], coeffs[2], coeffs[3])
-                for t in range(4):
-                    most[t] = max(most[t], shape[t])
+                most[0], most[2] = max(most[0], shape[0]), max(most[2], shape[2])
+                most[1], most[3] = shape[0] + shape[1], shape[2] + shape[3]
+            most[1] -= most[0]
+            most[3] -= most[2]
 
 
 @jit(nopython=True, cache=True)
@@ -638,27 +655,28 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
             frontier = groups[g, 3]
             base_init = (cur_primary << 1) + cur_secondary
             delta = float(base_init)
-            budget_delta = delta + float(residual_budget * w_ov)
             most = frontier_shapes[frontier]
             frontier_shape = (most[0], most[1], most[2], most[3])
+            if _budget_bound(term_max[residual_budget], delta, frontier_shape) < float(candidate_best):
+                continue
 
+            budget_delta = delta + float(residual_budget * w_ov)
             group_best_score = -1
             group_best_surface = group_best_pp = group_best_cm = group_best_fm = 0
             live = 0
-            if _budget_bound(term_max[residual_budget], delta, frontier_shape) >= float(candidate_best):
-                for j in range(min(len(cm_ref_cache) - 1, residual_budget) // _TILE + 1):
-                    cm0 = j * _TILE
-                    last_block = min(len(fm_ref_cache) - 1, residual_budget - cm0) // _TILE
-                    column_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0)]
-                    if _column_bound(column_combo[j], column_terms[j, last_block], column_delta, frontier_shape) >= float(candidate_best):
-                        for bi in range(column_first[j], column_first[j] + last_block + 1):
-                            block_delta = column_delta
-                            if allow_pp:
-                                block_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0 - block_corners[bi, 2])]
-                            if _block_bound(blocks[bi], block_delta, frontier_shape) >= float(candidate_best):
-                                live_blocks[live] = bi
-                                live_deltas[live] = block_delta
-                                live += 1
+            for j in range(min(len(cm_ref_cache) - 1, residual_budget) // _TILE + 1):
+                cm0 = j * _TILE
+                last_block = min(len(fm_ref_cache) - 1, residual_budget - cm0) // _TILE
+                column_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0)]
+                if _column_bound(column_combo[j], column_terms[j, last_block], column_delta, frontier_shape) >= float(candidate_best):
+                    for bi in range(column_first[j], column_first[j] + last_block + 1):
+                        block_delta = column_delta
+                        if allow_pp:
+                            block_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0 - block_corners[bi, 2])]
+                        if _block_bound(blocks[bi], block_delta, frontier_shape) >= float(candidate_best):
+                            live_blocks[live] = bi
+                            live_deltas[live] = block_delta
+                            live += 1
             # A note's Great base is at most 2/3 of its base without PP + 150, and gems only raise what is left.
             gap = delta / 3.0 + pp_ref_base - 150.0
             start = frontier_offsets[frontier]

@@ -28,7 +28,7 @@ from .fg_cache_types import (
     all_response_stat_keys,
 )
 from .producer_batch import build_first_frontiers
-from .producer_kernels import _HEAD_DOM_C, _HEAD_DOM_F
+from .producer_kernels import _HEAD_DOM_B, _HEAD_DOM_C, _HEAD_DOM_F
 from .types import SurfacePool
 
 
@@ -51,20 +51,18 @@ def _merge_payloads(
 
 
 def _assert_head_dominance_box_covers(curves: StatCurves) -> None:
-    """Fail loud if a gear rebalance pushes the combo/fever multipliers outside the lossless
-    head-dominance box (_HEAD_DOM_C/_HEAD_DOM_F). The 16-corner prune is exact ONLY while the box is
-    a superset of the realizable (c, f) cone, so a stale box must never silently under-cover. Reads
+    """Fail loud if a gear rebalance pushes a curve outside the lossless cone filters' box (_HEAD_DOM_B/C/F): their proof
+    holds ONLY while the box is a superset of the realizable values, so a stale box must never silently under-cover. Reads
     the float32 curves the solve uses."""
-    cm = np.asarray(curves.f32["Combo Multiplier"], dtype=np.float64)
-    fm = np.asarray(curves.f32["Fever Multiplier"], dtype=np.float64)
-    if not (_HEAD_DOM_C[0] <= float(cm.min()) and float(cm.max()) <= _HEAD_DOM_C[1]
-            and _HEAD_DOM_F[0] <= float(fm.min()) and float(fm.max()) <= _HEAD_DOM_F[1]):
-        raise ValueError(
-            f"FG head-dominance box combo{_HEAD_DOM_C} fever{_HEAD_DOM_F} no longer covers the gear's "
-            f"combo-mul [{float(cm.min()):.4f},{float(cm.max()):.4f}] / fever-mul "
-            f"[{float(fm.min()):.4f},{float(fm.max()):.4f}] -- update _HEAD_DOM_C/_HEAD_DOM_F in "
-            f"producer_kernels.py (the lossless head prune requires the box to be a superset)."
-        )
+    for name, (low, high) in (
+        ("Perfect Points", _HEAD_DOM_B), ("Combo Multiplier", _HEAD_DOM_C), ("Fever Multiplier", _HEAD_DOM_F),
+    ):
+        curve = np.asarray(curves.f32[name], dtype=np.float64)
+        if not (low <= float(curve.min()) and float(curve.max()) <= high):
+            raise ValueError(
+                f"FG cone-filter box {name} ({low}, {high}) no longer covers the gear's [{float(curve.min()):.4f}, "
+                f"{float(curve.max()):.4f}]: update _HEAD_DOM_* in producer_kernels.py"
+            )
 
 
 def _build_response_frontier_cache_payload(
