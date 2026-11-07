@@ -405,9 +405,10 @@ def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> 
     chart = song.chart
     naked = factors(empty_stats(), song.curves, chart.primary, chart.secondary)
     times, threshold, duration = _casual_axes(song, 0, perfect_time)
-    scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64))
+    scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty(_SCRATCH_ROWS, dtype=np.int64))
     out = np.empty((_SCRATCH_ROWS, 5), dtype=np.int64)
-    written = walk_cell(times, great_times(chart, perfect_time), (threshold, min(greats, _GREATS_WALKED)), duration, scratch, out)
+    ends = np.full((chart.total_notes, 6), -1, dtype=np.int64)
+    written = walk_cell(times, great_times(chart, perfect_time), (threshold, min(greats, _GREATS_WALKED)), duration, scratch, out, ends)
     if written < 0:
         return None
     band = _BAND_NOTES if greats > _GREATS_WALKED else 0
@@ -516,6 +517,13 @@ def _stat_lines(song: ReverseSong, timelines: Timelines, query: LineQuery) -> Fo
     order = np.random.default_rng(0).permutation(timelines.pattern.shape[0])
     tables = surface_tables(order, (walked.words, walked.coeffs), (timelines.pattern, timelines.body_fever), timelines.sums, timelines.relief, song.notes[1])
     packed, complete = line_rows(song.gpu, tables, query)
+    # The GPU appends rows in the order its threads race; each thread owns one (surface, CM, FM, base) and appends in program
+    # order, so a stable sort by that, surfaces in their shuffled order, makes every later step repeat run for run, and a cut
+    # below keep the surfaces the search walked first.
+    rank = np.empty(order.shape[0], dtype=np.int64)
+    rank[order] = np.arange(order.shape[0])
+    thread = (rank[packed[:, 0]] << 36) | (packed[:, 1].astype(np.int64) << 20) | packed[:, 2]
+    packed = packed[np.argsort(thread, kind="stable")]
     rows = np.empty((packed.shape[0], ROW_COLUMNS), dtype=np.int64)
     rows[:, 0], rows[:, 1], rows[:, 2], rows[:, 3] = packed[:, 0], packed[:, 1] >> 8, packed[:, 1] & 255, packed[:, 2]
     rows[:, 4], rows[:, 5], rows[:, 6], rows[:, 7] = packed[:, 3] >> 16, packed[:, 4], packed[:, 5], packed[:, 3] & 65535
@@ -666,9 +674,10 @@ def _clean_casual_values(song: ReverseSong, perfect_time: int) -> set[int]:
     chart = song.chart
     naked = factors(empty_stats(), song.curves, chart.primary, chart.secondary)
     times, threshold, duration = _casual_axes(song, 0, perfect_time)
-    scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64))
+    scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty(_SCRATCH_ROWS, dtype=np.int64))
     out = np.empty((_SCRATCH_ROWS, 5), dtype=np.int64)
-    written = walk_cell(times, great_times(chart, perfect_time), (threshold, 0), duration, scratch, out)
+    ends = np.full((chart.total_notes, 6), -1, dtype=np.int64)
+    written = walk_cell(times, great_times(chart, perfect_time), (threshold, 0), duration, scratch, out, ends)
     if written < 0:
         raise ValueError("fever walk: the casual cell outgrew its tables")
     words = pattern_words(out[:written, 0], out[:written, 1])

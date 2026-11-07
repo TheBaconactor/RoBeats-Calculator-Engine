@@ -105,6 +105,18 @@ def _great_ends_after(times, greats, a, duration, n):
 
 
 @jit(nopython=True, cache=True)
+def _window_ends(ends, times, greats, a, duration, wide):
+    """The ends of a fever window from position a into ends[a]: every note Perfect (first, last), and with `wide` where Greats
+    move it (great first, great last, lowest, highest). Worked out once per position: the cells of a Fever Time share them,
+    so a walk of the 161 cells pays each search once (~30% of a walk with Greats). -1 marks one not worked out yet."""
+    n = times[0].shape[0]
+    if ends[a, 0] < 0:
+        ends[a, 0], ends[a, 1] = _ends_after(times, a, duration, n)
+    if wide and ends[a, 2] < 0:
+        ends[a, 2], ends[a, 3], ends[a, 4], ends[a, 5] = _great_ends_after(times, greats, a, duration, n)
+
+
+@jit(nopython=True, cache=True)
 def _keep_timeline(out, written, low, high, counts):
     """A finished timeline into out's rows, merged with a row of its head mask while their counts fit one set; returns the
     rows, -1 when they stop fitting."""
@@ -120,15 +132,17 @@ def _keep_timeline(out, written, low, high, counts):
 
 
 @jit(nopython=True, cache=True)
-def walk_cell(times, greats, fill, duration, scratch, out):
+def walk_cell(times, greats, fill, duration, scratch, out, ends):
     """Into out the timelines of one cell of a play with at most fill[1] Greats, as rows (mask low, mask high, lowest,
     highest, bits): one fever window per round, states of a round merged by activation, mask and Greats spent. A Great
     is spent to delay a fill, to move the activation's time, or to move a note over the fever's end; an activation a fill
     Great has reached is that Great. times: earliest and latest per position with every note Perfect; greats: the same
-    with every note Great; fill: the Perfects that fill the bar, and the Great budget; scratch: two state tables. Returns
-    the rows written, -1 when a table is full. A superset of what such a play reaches: it holds every real one."""
+    with every note Great; fill: the Perfects that fill the bar, and the Great budget; scratch: two state tables and a row
+    of sort keys; ends:
+    _window_ends' table at this duration, shared by the cells of a Fever Time. Returns the rows written, -1 when a table is
+    full. A superset of what such a play reaches: it holds every real one."""
     raw_fill, budget = fill
-    current, following = scratch
+    current, following, order_keys = scratch
     n = times[0].shape[0]
     notes = int(np.ceil(raw_fill))
     if notes > n:
@@ -143,12 +157,16 @@ def walk_cell(times, greats, fill, duration, scratch, out):
         states += 1
         delay += 1
     while states > 0:
-        rows = np.argsort(current[:states, 0])
+        # By activation and Greats spent (code 2 x spent + fill flag < 64): the states a merge compares lie together.
+        keys = order_keys[:states]
+        for k in range(states):
+            keys[k] = (current[k, 0] << 6) | current[k, 6]
+        rows = np.argsort(keys)
         pushed = 0
         at = 0
         while at < states:
             group = at
-            while group < states and current[rows[group], 0] == current[rows[at], 0]:
+            while group < states and keys[rows[group]] == keys[rows[at]]:
                 group += 1
             for i in range(at, group):
                 state = current[rows[i]]
@@ -159,13 +177,15 @@ def walk_cell(times, greats, fill, duration, scratch, out):
                 counts = (state[3], state[4], state[5])
                 for j in range(i + 1, group):
                     other = current[rows[j]]
-                    if other[3] >= 0 and other[1] == low and other[2] == high and other[6] == state[6]:
+                    if other[3] >= 0 and other[1] == low and other[2] == high:
                         counts = _merged(counts, (other[3], other[4], other[5]))
                         other[3] = -1
-                first, last = _ends_after(times, a, duration, n)
+                wide = spent < budget or activation_cost == 0
+                _window_ends(ends, times, greats, a, duration, wide)
+                first, last = ends[a, 0], ends[a, 1]
                 great_first, great_last, lowest, highest = first, last, first, last
-                if spent < budget or activation_cost == 0:
-                    great_first, great_last, lowest, highest = _great_ends_after(times, greats, a, duration, n)
+                if wide:
+                    great_first, great_last, lowest, highest = ends[a, 2], ends[a, 3], ends[a, 4], ends[a, 5]
                 for end in range(lowest, highest + 1):
                     cost = min(
                         max(0, first - end, end - last),
@@ -235,13 +255,15 @@ def _walk_grid(times, greats, fills, durations, budget):
     whose head holds so many short windows that its tables overflow is left out: such a cell is far from any song's top."""
     out = np.empty((1 << 12, 5), dtype=np.int64)
     states = _STATE_ROWS if budget == 0 else _GREAT_STATE_ROWS
-    scratch = (np.empty((states, 7), dtype=np.int64), np.empty((states, 7), dtype=np.int64))
+    scratch = (np.empty((states, 7), dtype=np.int64), np.empty((states, 7), dtype=np.int64), np.empty(states, dtype=np.int64))
     expanded = np.empty((1 << 18, 4), dtype=np.int64)
+    ends = np.empty((times[0].shape[0], 6), dtype=np.int64)
     used = 0
     for ft in range(durations.shape[0]):
+        ends[:] = -1
         for ff in range(fills.shape[0]):
             cell = ft * fills.shape[0] + ff
-            rows = walk_cell(times, greats, (fills[ff], budget), durations[ft], scratch, out)
+            rows = walk_cell(times, greats, (fills[ff], budget), durations[ft], scratch, out, ends)
             if rows < 0:
                 if budget == 0:
                     raise ValueError("fever walk: a cell outgrew its tables")
