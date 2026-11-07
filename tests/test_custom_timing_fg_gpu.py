@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from tests.curves_support import synthetic_curves
+from tests.curves_support import no_ftff_gems, synthetic_curves
 from tests.songs_support import make_chart
 from tests.items_support import make_gear, make_song_mini
 
@@ -74,7 +74,7 @@ def _solve_with_fixed_gems(monkeypatch, stats, song, curves):
     from gear_optimizer.frontier.fg_cache import scoring_bundle_covering
     from gear_optimizer.solver.fg_scoring import fg_solve_results, required_response_stat_keys
 
-    monkeypatch.setattr("gear_optimizer.solver.gem_search.GEM_BUDGET", 0)
+    monkeypatch.setattr("gear_optimizer.solver.gem_search.ftff_combo_arrays", no_ftff_gems)
     monkeypatch.setattr("gear_optimizer.solver.fg_scoring.GEM_BUDGET", 0)
     bundle = scoring_bundle_covering(song, curves, required_response_stat_keys([stats]))
     return fg_solve_results([stats], song=song, curves=curves, selected_color="Chill", scoring_bundle=bundle)[0]

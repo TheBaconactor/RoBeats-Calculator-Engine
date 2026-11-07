@@ -111,11 +111,7 @@ def _brute_force_row(loadout, shared):
                         )
                         rank = (-score, g, ls, g_cm, g_fm, g_pp)
                         if best is None or rank < best[0]:
-                            best = (rank, [
-                                score, ls, g_pp, g_cm, g_fm, g_ov, cur_pp + g_pp * STAT_GEM_GAIN_NORMAL,
-                                cur_cm + g_cm * STAT_GEM_GAIN_NORMAL, cur_fm + g_fm * STAT_GEM_GAIN_FEVER, final_primary,
-                                final_secondary,
-                            ])
+                            best = (rank, [score, ls, g_pp, g_cm, g_fm, g_ov])
     return best[0][1], best[1]
 
 

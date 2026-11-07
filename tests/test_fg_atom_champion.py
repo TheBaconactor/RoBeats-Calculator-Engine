@@ -108,7 +108,7 @@ def test_exact_scorer_atom_champion_projection_preserves_declared_domain() -> No
     assert len(proof.champion_surfaces) < len(surfaces)
     assert np.array_equal(proof.full_rows[:, 0], proof.restricted_rows[:, 0])
     assert np.array_equal(proof.full_rows[:, 1], proof.restricted_to_full_surface)
-    assert np.array_equal(proof.full_rows[:, 2:11], proof.restricted_rows[:, 2:11])
+    assert np.array_equal(proof.full_rows[:, 2:], proof.restricted_rows[:, 2:])
     assert np.array_equal(proof.full_rows, proof.atom_rows)
     assert {
         (atom.surface_index, atom.g_pp, atom.g_cm, atom.g_fm, atom.g_ov)

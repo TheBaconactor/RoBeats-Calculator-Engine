@@ -60,7 +60,7 @@ def solve_best_fever_combination_batch(
         gem_winners(groups, pool, colors=(chart.primary, chart.secondary, selected_color), curves=curves),
         strict=True,
     ):
-        _score, _surface, pp, cm, fm, element = winner.inner_row[:6]
+        _score, _surface, pp, cm, fm, element = winner.inner_row
         allocation = (pp, cm, fm, winner.ft, winner.ff, element)
         solves.append(
             GemSolve(allocation, apply_gems(row, dict(zip(GEM_KINDS, allocation)), selected_color), winner.inner_row[0])

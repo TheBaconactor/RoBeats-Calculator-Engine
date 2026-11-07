@@ -79,7 +79,7 @@ def fg_solve_result(
     scoring_bundle: FgResponseFrontierScoringBundle,
 ) -> FgResponseFrontierSolveResult:
     """A loadout's FG solve result from its score row and its pre-gem stats (all 10)."""
-    best_score, _surface, pp, cm, fm, element = score_row.inner_row[:6]
+    best_score, _surface, pp, cm, fm, element = score_row.inner_row
     return FgResponseFrontierSolveResult(
         best_score=best_score,
         ft=score_row.ft,

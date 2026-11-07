@@ -258,11 +258,6 @@ def _score_atom_for_group(
             int(atom.g_cm),
             int(atom.g_fm),
             int(atom.g_ov),
-            int(final_pp),
-            int(final_cm),
-            int(final_fm),
-            int(final_primary),
-            int(final_secondary),
         ],
         dtype=np.int32,
     )
@@ -286,7 +281,7 @@ def _score_champion_atoms(
     curves: dict[str, Any],
 ) -> np.ndarray:
     rows = np.ascontiguousarray(group_meta, dtype=np.int32)
-    out = np.zeros((int(rows.shape[0]), 11), dtype=np.int32)
+    out = np.zeros((int(rows.shape[0]), 6), dtype=np.int32)
     for group_idx, row in enumerate(rows):
         best: np.ndarray | None = None
         for atom in champion_atoms:

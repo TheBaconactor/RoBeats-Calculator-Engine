@@ -78,8 +78,8 @@ class GemGroups:
 
 @dataclass(frozen=True, slots=True)
 class GemWinner:
-    """A loadout's gem-search winner: its FT/FF gems and stat keys, the 11-int row (best score, surface index in its
-    frontier, PP/CM/FM/element gems, final PP/CM/FM/primary/secondary) and the winning surface (11 ints)."""
+    """A loadout's gem-search winner: its FT/FF gems and stat keys, the row (best score, surface index in its frontier,
+    PP/CM/FM/element gems) and the winning surface (11 ints)."""
 
     ft: int
     ff: int
@@ -118,10 +118,10 @@ def _kept_splits(
     ftff_combo_arrays.
 
     A row's splits reach frontiers (frontier_idx_by_stat at the split's clipped FT/FF stats); per frontier, in
-    first-reached order, it keeps the split with the most residual gems (the first one on a tie), or, when the splits
-    reaching it give the song's colors different gains, every split no other split there matches or beats in
-    (residual, primary gain, secondary gain) (the earlier split wins an exact tie), in split order. O(splits) per row,
-    plus the pairwise check inside a frontier reached by splits of different color gains."""
+    first-reached order, it keeps every split no other split there matches or beats in (residual, primary gain, secondary
+    gain) (the earlier split wins an exact tie), in split order: with constant colors, the split with the most residual
+    gems, the first one on a tie. O(splits) per row, plus the pairwise check inside a frontier when FT or FF gems raise the
+    song's colors."""
     key_count = keys.shape[0]
     pair_count = residual_values.shape[0]
     budget = residual_values[0]
@@ -130,7 +130,7 @@ def _kept_splits(
     head = np.empty(frontier_count, dtype=np.int64)
     tail = np.empty(frontier_count, dtype=np.int64)
     best = np.empty(frontier_count, dtype=np.int64)
-    next_pos = np.full(pair_count, -1, dtype=np.int64)
+    next_pos = np.empty(pair_count, dtype=np.int64)
     reached = np.empty(pair_count, dtype=np.int64)
     ft_stats = np.empty(budget + 1, dtype=np.int64)
     ff_stats = np.empty(budget + 1, dtype=np.int64)
@@ -155,11 +155,13 @@ def _kept_splits(
                 if stamp[fid] != c:
                     stamp[fid] = c
                     head[fid] = tail[fid] = best[fid] = pos
+                    next_pos[pos] = -1
                     reached[reached_count] = fid
                     reached_count += 1
                 else:
                     if not score_elements_constant:
                         next_pos[tail[fid]] = pos
+                        next_pos[pos] = -1
                         tail[fid] = pos
                     if residual_values[pos] > residual_values[best[fid]]:
                         best[fid] = pos
@@ -173,21 +175,13 @@ def _kept_splits(
         start = write
         for r in range(reached_count):
             fid = reached[r]
-            first = head[fid]
-            same_colors = True
-            if not score_elements_constant:
-                pos = next_pos[first]
-                while pos >= 0:
-                    if primary_gains[pos] != primary_gains[first] or secondary_gains[pos] != secondary_gains[first]:
-                        same_colors = False
-                        break
-                    pos = next_pos[pos]
-            row = best[fid] if same_colors else first
+            row = best[fid] if score_elements_constant else head[fid]
             while row >= 0:
                 dominated = False
-                other = -1 if same_colors else first
-                while other >= 0:
-                    if other != row and (
+                other = best[fid]  # settles nearly every other split at once
+                rest = -1 if score_elements_constant else head[fid]
+                while other >= 0 and not dominated:
+                    dominated = other != row and (
                         residual_values[other] >= residual_values[row]
                         and primary_gains[other] >= primary_gains[row]
                         and secondary_gains[other] >= secondary_gains[row]
@@ -197,23 +191,14 @@ def _kept_splits(
                             or secondary_gains[other] > secondary_gains[row]
                             or other < row
                         )
-                    ):
-                        dominated = True
-                        break
-                    other = next_pos[other]
+                    )
+                    other, rest = rest, (next_pos[rest] if rest >= 0 else -1)
                 if not dominated:
                     written = rows[write]
                     written[0], written[1], written[2] = residual_values[row], primary_gains[row], secondary_gains[row]
                     written[3], written[4] = fid, row
                     write += 1
-                row = -1 if same_colors else next_pos[row]
-        if not score_elements_constant:
-            for r in range(reached_count):
-                row = head[reached[r]]
-                while row >= 0:
-                    following = next_pos[row]
-                    next_pos[row] = -1
-                    row = following
+                row = -1 if score_elements_constant else next_pos[row]
         counts[c] = write - start
     return rows[:write], counts
 
@@ -559,13 +544,13 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
     surfaces: frontier offsets and lengths, their bound shapes (_frontier_shapes), then SurfacePool's pattern ids, pattern
     words, body counts, head coefficients and head Greats; curves: the Perfect Points, Combo Multiplier, combo ramp and
     Fever Multiplier f64 tables; song: head and body notes and the most a group's FT and FF gems add to delta. Row columns:
-    [best_score, best_surface, g_pp, g_cm, g_fm, g_ov, final_pp, final_cm, final_fm, final_primary, final_secondary].
+    [best_score, best_surface, g_pp, g_cm, g_fm, g_ov].
     """
     frontier_offsets, frontier_lengths, frontier_shapes, pattern_ids, pattern_words, surface_counts, head_coeffs, \
         head_greats = surfaces
     ref_pp, ref_cm, ref_ramp, ref_fm = curves
     head_len, body_total, most_gain = song
-    out = np.zeros((loadouts.shape[0], 11), dtype=np.int64)
+    out = np.zeros((loadouts.shape[0], 6), dtype=np.int64)
     winners = np.zeros(loadouts.shape[0], dtype=np.int64)
 
     pp_p_delta = STAT_GEM_ELEMENT_GAIN * int(color_flags[0])
@@ -767,21 +752,10 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
             if group_best_score > loadout_best:
                 loadout_best = group_best_score
                 winners[c] = g
-                g_ov = residual_budget - group_best_pp - group_best_cm - group_best_fm
                 row = out[c]
                 row[0], row[1] = group_best_score, group_best_surface
-                row[2], row[3], row[4], row[5] = group_best_pp, group_best_cm, group_best_fm, g_ov
-                row[6] = cur_pp + group_best_pp * STAT_GEM_GAIN_NORMAL
-                row[7] = cur_cm + group_best_cm * STAT_GEM_GAIN_NORMAL
-                row[8] = cur_fm + group_best_fm * STAT_GEM_GAIN_FEVER
-                row[9] = (
-                    cur_primary + group_best_pp * pp_p_delta + group_best_cm * cm_p_delta + group_best_fm * fm_p_delta
-                    + g_ov * ov_p_delta
-                )
-                row[10] = (
-                    cur_secondary + group_best_pp * pp_s_delta + group_best_cm * cm_s_delta + group_best_fm * fm_s_delta
-                    + g_ov * ov_s_delta
-                )
+                row[2], row[3], row[4] = group_best_pp, group_best_cm, group_best_fm
+                row[5] = residual_budget - group_best_pp - group_best_cm - group_best_fm
             candidate_best = max(candidate_best, group_best_score)
     return out, winners
 
