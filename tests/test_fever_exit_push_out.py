@@ -1,13 +1,12 @@
-"""Unit coverage for the fever-exit push-out witness (`_mark_fever_exit_push_delta`).
-
-The BASE/FG note graph must push the FIRST NON-FEVER note at a fever-end boundary to its latest
-legal Perfect hit when the replay's drain would otherwise reclaim it into fever -- the mirror of the
-claw-IN-early endpoint logic. These tests drive `timeline_frontier_note_graph` directly (pure Python,
-no GPU) so the behavior is pinned independently of the WebPort replay fixture. CPU-only, deterministic.
+"""The first non-fever note at a fever end: the plan keeps it past the cutoff, the mirror of a fever note clawed in early.
+These tests drive `timeline_frontier_note_graph` directly (no GPU). CPU-only, deterministic.
 """
 
 import numpy as np
+import pytest
 
+from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS
+from gear_optimizer.trace.reconstruct import UnplayableTrace
 from tests.trace_support import timeline_frontier_note_graph
 
 
@@ -37,11 +36,16 @@ def _graph(note_types, cutoff_ms, activation_index=2, fever_end_index=5):
     )
 
 
-def test_exit_note_reclaimed_at_chart_time_is_pushed_to_perfect_hi():
-    # Exit note 5 chart = 500 ms; cutoff 520 ms -> at d=0 the drain reclaims it (500 < 520).
-    # Push to its latest legal Perfect hit (+40) so hit 540 >= cutoff -> stays out.
+def _press(note):
+    return note["hit_time_ms"] + note["delta_ms"]
+
+
+def test_exit_note_reclaimed_at_chart_time_stays_a_frame_margin_past_the_cutoff():
+    # Exit note 5 chart = 500 ms; cutoff 520 ms -> at d=0 the drain reclaims it (500 < 520). The window lasts 320 ms
+    # from the activation, which moves up in its band so that both stay under their bands' frame-safe tops.
     notes = _graph([1] * 10, cutoff_ms=520.0)
-    assert notes[5]["delta_ms"] == 40.0
+    assert _press(notes[5]) >= _press(notes[2]) + 320.0 + FRAME_MARGIN_MS - 1e-3
+    assert notes[5]["delta_ms"] <= 40.0 - FRAME_MARGIN_MS + 1e-9
     assert notes[5]["fever"] is False
     # Notes 2,3,4 are the fever run (comfortably inside the cutoff) -> untouched.
     assert [notes[i]["fever"] for i in (2, 3, 4)] == [True, True, True]
@@ -51,10 +55,11 @@ def test_exit_note_reclaimed_at_chart_time_is_pushed_to_perfect_hi():
 
 
 def test_exit_note_with_a_frame_of_room_is_planned_frame_safe():
-    # Exit note 5 chart = 500 ms needs a hit at or after the cutoff 501 ms. +22 is the latest Perfect every frame
-    # timing judges, and 522 ms is still a frame margin past the cutoff, so the hit lands there, not at +40.
+    # Exit note 5 chart = 500 ms with a cutoff of 501 ms: it stays under the latest Perfect every frame timing judges and
+    # a frame margin past the window.
     notes = _graph([1] * 10, cutoff_ms=501.0)
-    assert notes[5]["delta_ms"] == 22.0
+    assert notes[5]["delta_ms"] <= 40.0 - FRAME_MARGIN_MS
+    assert _press(notes[5]) >= _press(notes[2]) + 301.0 + FRAME_MARGIN_MS - 1e-3
     assert notes[5]["fever"] is False
 
 
@@ -69,16 +74,14 @@ def test_held_tail_exit_note_uses_the_wider_bound():
     note_types = [1] * 10
     note_types[5] = 3
     notes = _graph(note_types, cutoff_ms=560.0)  # 500 < 560 <= 500+80 -> pushable only via the wide bound
-    assert notes[5]["delta_ms"] == 80.0
+    assert 40.0 < notes[5]["delta_ms"] <= 80.0 - FRAME_MARGIN_MS + 1e-9
+    assert _press(notes[5]) >= _press(notes[2]) + 360.0
 
 
-def test_a_cluster_of_reclaimed_exit_notes_is_all_pushed():
-    # Two same-region non-fever notes both before the cutoff must BOTH be pushed, else the replay
-    # reclaims the second. Notes 5 (500) and 6 (600) both < cutoff 640; note 7 (700) is past it.
-    notes = _graph([1] * 12, cutoff_ms=640.0, fever_end_index=5)
-    assert notes[5]["delta_ms"] == 40.0
-    assert notes[6]["delta_ms"] == 40.0
-    assert notes[7]["delta_ms"] == 0.0
+def test_a_window_whose_exit_note_lands_inside_it_has_no_plan():
+    # Note 5 (500 ms) ends a window that lasts 440 ms from note 2 (200 ms): every Perfect of note 5 lands inside it.
+    with pytest.raises(UnplayableTrace, match="no frame of its own"):
+        _graph([1] * 12, cutoff_ms=640.0, fever_end_index=5)
 
 
 def test_fever_run_to_end_of_song_has_no_exit_note():
