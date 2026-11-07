@@ -590,19 +590,18 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
         great_points_fit(found, great_points, lines.held, lines.rows, lines.spans, fits)
         found, gaps = found[fits], gaps[fits]
     final = _named_costs(lines, found, gaps, reached, _UNNAMED_AT_TOP if at_top else 0.0)
-    named: dict[int, FoundSet] = {}
+    named: dict[int, list[FoundSet]] = {}
     tries = np.lexsort((gaps, found[:, 16]))
     first = np.searchsorted(found[tries, 16], np.arange(lines.targets.shape[0]))
     last = np.searchsorted(found[tries, 16], np.arange(lines.targets.shape[0]), side="right")
     listed: list[int] = []
     for t in np.argsort(final, kind="stable")[:_SETS_TRIED].tolist():
         span = lines.held[lines.spans[t, 0] : lines.spans[t, 1], 0]
-        for r in tries[first[t] : last[t]].tolist():
-            made = _named_set(song, found[r], lines.rows[span], classes, timelines, float(gaps[r]), play.score)
-            if made is not None:
-                named[t] = replace(made, cost=float(final[t]))
-                break
-        if t in named or last[t] == first[t]:
+        made = (_named_set(song, found[r], lines.rows[span], classes, timelines, float(gaps[r]), play.score) for r in tries[first[t] : last[t]].tolist())
+        sets = [replace(row, cost=float(final[t])) for row in made if row is not None]
+        if sets:
+            named[t] = sets
+        if sets or last[t] == first[t]:
             listed.append(t)
         if len(listed) >= limit:
             break
@@ -610,7 +609,7 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
         StatLine(*lines.targets[t, 1:5].tolist(), int(lines.targets[t, 7]), int(lines.targets[t, 5]), float(final[t]), t in named)
         for t in listed
     ]
-    return [named[t] for t in listed if t in named], stat_lines, lines.targets.shape[0], lines.complete and complete and every_timeline
+    return [row for t in listed for row in named.get(t, ())], stat_lines, lines.targets.shape[0], lines.complete and complete and every_timeline
 
 
 def _widest(song: ReverseSong) -> dict:
