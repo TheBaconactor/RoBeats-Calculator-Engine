@@ -81,6 +81,9 @@ _BAND_NOTES = 8
 _GREAT_ROWS = 1 << 18
 _GREAT_PAIRS = 3_000_000
 _GREAT_SEARCH_ITEMS = 300_000_000
+# The loadouts a search rescores exactly, lowest gem gap first, and the rows it tries on each.
+_GREAT_SETS_TRIED = 512
+_ROWS_PER_SET = 32
 # Lines that may hold loadouts before they are ranked.
 _HELD_LINES = 256
 # Items a lookup may try, a target may try, and what opening a target counts for: ~100 ms past the lines at the most.
@@ -418,7 +421,7 @@ def _great_set(song: ReverseSong, found: np.ndarray, line: np.ndarray, rows: np.
     fixed = song.fixed[found[17]]
     stats = named_loadout_stats(team_buff_effect(fixed.tier, fixed.team_color), gear, minis, song.gears, song.minis, gems, element)
     scored = factors(stats, song.curves, chart.primary, chart.secondary)
-    for row in rows[(rows[:, 1] == line[0]) & (rows[:, 2] == line[1]) & (rows[:, 3] == line[4]) & (rows[:, 5] == scored.great_base)]:
+    for row in rows[rows[:, 5] == scored.great_base][:_ROWS_PER_SET]:
         u, c, fevered = int(row[0]), int(row[4]), int(row[7])
         words = surfaces[0][surfaces[1][u]].tolist()
         body_fever = int(surfaces[2][u])
@@ -438,7 +441,7 @@ def _great_set(song: ReverseSong, found: np.ndarray, line: np.ndarray, rows: np.
     return None
 
 
-def _great_sets(play: PlayInfo, song: ReverseSong, greats: int) -> tuple[list[FoundSet], int, bool]:
+def _great_sets(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tuple[list[FoundSet], int, bool]:
     """The sets of a full combo with this many Greats, the ones whose gems a player would leave first: the sets, the stat
     lines, and whether every line was searched. It needs the Casual score and Gear Power: what tells a line's Greats apart."""
     window = _casual_window(play)
@@ -470,11 +473,21 @@ def _great_sets(play: PlayInfo, song: ReverseSong, greats: int) -> tuple[list[Fo
     done, complete = search_targets(space, song.tables.arrays, song.fixed_rows, points, (song.vertex_values, song.vertex_prices), query, found)
     found = found[:done]
     gaps = _gaps_of(song, found)
-    sets = []
-    for r in np.argsort(gaps, kind="stable").tolist():
-        made = _great_set(song, found[r], targets[found[r, 16]][1:6], rows, classes, (walked.words, patterns, bodies), float(gaps[r]), play)
+    keys = rows[:, 1] * (1 << 32) + rows[:, 2] * (1 << 16) + rows[:, 3]
+    sort = np.argsort(keys, kind="stable")
+    rows, keys = rows[sort], keys[sort]
+    sets: list[FoundSet] = []
+    lines_held: set[int] = set()
+    for r in np.argsort(gaps, kind="stable")[:_GREAT_SETS_TRIED].tolist():
+        target = targets[found[r, 16]]
+        key = int(target[1]) * (1 << 32) + int(target[2]) * (1 << 16) + int(target[5])
+        span = rows[np.searchsorted(keys, key) : np.searchsorted(keys, key, side="right")]
+        made = _great_set(song, found[r], target[1:6], span, classes, (walked.words, patterns, bodies), float(gaps[r]), play)
         if made is not None:
             sets.append(made)
+            lines_held.add(int(found[r, 16]))
+            if len(lines_held) >= limit:
+                break
     return sets, lines.shape[0], every_row and complete
 
 
@@ -636,7 +649,7 @@ def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Rever
     if lost[0] == 0:
         found, count, finished = _perfect_sets(play, song, limit)
     for greats in range(max(lost[0], 1), lost[1] + 1):
-        more, lines, done = _great_sets(play, song, greats)
+        more, lines, done = _great_sets(play, song, greats, limit)
         found, count, finished = found + more, count + lines, finished and done
     found.sort(key=lambda row: row.gem_gap)
     evidence = _casual_evidence(play, song, lost)
