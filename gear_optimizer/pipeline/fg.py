@@ -9,6 +9,7 @@ effective loadout, with their validated FG results, as the song's SongSolve.
 from __future__ import annotations
 
 import logging
+from heapq import heapify, heappop, heappush
 from typing import Any
 
 import numpy as np
@@ -30,12 +31,14 @@ from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combinat
 from gear_optimizer.trace.reconstruct import UnplayableTrace
 from gear_optimizer.frontier.fg_cache import load_response_frontier_scoring_bundle
 from gear_optimizer.frontier.fg_cache_store import release_fg_response_song_memory
-from gear_optimizer.solver.fg_scoring import fg_solve_result, score_fg_base_components
+from gear_optimizer.solver.fg_scoring import bundle_without_surface, fg_solve_result, score_fg_base_components
 from gear_optimizer.stats import GEM_KINDS, apply_gems, gems
 
 logger = logging.getLogger(__name__)
 # The FG search's beam: this many loadouts per GA run (the reasoning level sets the runs: 5 / 10 / 20).
 FG_SEARCH_BEAM_PER_GA_RUN = 1
+# A loadout's FG plans tried before it goes without a result: a surface with no frames is rare, and its neighbours may be too.
+FG_PLAN_TRIES = 8
 
 
 def prepare_fg_static(song: NativeSong) -> None:
@@ -129,18 +132,23 @@ def _selected_surface(song: NativeSong, selection: GaSelection, fg_rows: dict) -
     return [loadout for _key, loadout in meta + fg_board]
 
 
-def best_fg_results(jobs, materialize, song_name: str) -> list[tuple[int, Any]]:
+def best_fg_results(jobs, materialize, next_best, song_name: str) -> list[tuple[int, Any]]:
     """The FG results of jobs ((loadout index, FG solve result)), materialized best solve score first, at most
     LOADOUTS_PER_SONG_LIMIT, best exact FG score first. A loadout whose FG plan no legal hit timing plays (materialize
-    raises UnplayableTrace) keeps no FG result and the next takes its place (owner 09-30)."""
+    raises UnplayableTrace) goes back in line with its next best surface (next_best), FG_PLAN_TRIES plans at the most; then
+    it keeps no FG result (owner 09-30)."""
     results = []
-    for index, result in sorted(jobs, key=lambda job: job[1].best_score, reverse=True):
-        if len(results) == LOADOUTS_PER_SONG_LIMIT:
-            break
+    line = [(-result.best_score, order, index, result, 1) for order, (index, result) in enumerate(jobs)]
+    heapify(line)
+    while line and len(results) < LOADOUTS_PER_SONG_LIMIT:
+        _score, order, index, result, tries = heappop(line)
         try:
             results.append((index, materialize(index, result)))
         except UnplayableTrace as exc:
-            logger.warning("%s: no FG result for loadout %d, its plan is unplayable: %s", song_name, index, exc)
+            logger.warning("%s: FG plan %d of loadout %d is unplayable: %s", song_name, tries, index, exc)
+            if tries < FG_PLAN_TRIES:
+                lower = next_best(index, result)
+                heappush(line, (-lower.best_score, order, index, lower, tries + 1))
     return sorted(results, key=lambda item: item[1].score, reverse=True)
 
 
@@ -179,7 +187,17 @@ def finish_fg(song: NativeSong, ga_result: tuple[GaSelection, dict]) -> SongSolv
             )
             return solved_fg(payload_fg, default_element=selected)
 
-        results = best_fg_results(jobs, materialize, timed.chart.name)
+        without: dict[int, Any] = {}
+
+        def next_best(index: int, result: Any) -> Any:
+            stats = base_stats[index]
+            bundle = without[index] = bundle_without_surface(without.get(index, fg.fg_response_scoring_bundle), result.surface)
+            totals = loadout_totals(stats, song_inputs.primary_color, song_inputs.secondary_color)
+            rows = score_fg_base_components(base_components=np.asarray([totals], dtype=np.int32), song=timed, curves=curves,
+                                            selected_color=selected, scoring_bundle=bundle)
+            return fg_solve_result(score_row=rows[totals], base_stats=stats, selected_color=selected, scoring_bundle=bundle)
+
+        results = best_fg_results(jobs, materialize, next_best, timed.chart.name)
     finally:
         # The surfaces (~0.5-1.5 GB) are not read again; a later access rebuilds them from the on-disk bundle.
         release_fg_response_song_memory(fg.fg_response_scoring_bundle.cache_key)
