@@ -59,7 +59,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _SOLVE_TIMEOUT_S = 30 * 60
 _MAX_CUSTOM_CHART_EVENTS = 4_000
-_MAX_CUSTOM_POOL_ITEMS = 5
+_MAX_CUSTOM_POOL_ITEMS = 15
 _MAX_CUSTOM_STAT = 999
 _MAX_EXCLUDED = {"excludeGear": 400, "excludeMinis": 200}
 _CUSTOM_ITEM_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '\-_.!?()&+:]{0,31}$")

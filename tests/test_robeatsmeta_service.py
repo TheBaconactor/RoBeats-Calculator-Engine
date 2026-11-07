@@ -476,7 +476,8 @@ _SONG = {"chartText": "Song Data\n"}
 
 
 @pytest.mark.parametrize("request_payload", [
-    pytest.param({"customGear": [dict(_CUSTOM_GEAR, name=f"Hat {i}") for i in range(6)]}, id="over-item-cap"),
+    pytest.param({"customGear": [dict(_CUSTOM_GEAR, name=f"Hat {i}") for i in range(16)]}, id="over-item-cap"),
+    pytest.param({"customMinis": [dict(_CUSTOM_MINI, name=f"Mini {i}") for i in range(16)]}, id="over-mini-cap"),
     pytest.param({"customGear": {"name": "Hat"}}, id="not-a-list"),
     pytest.param({"customGear": ["Hat"]}, id="item-not-an-object"),
     pytest.param({"customGear": [dict(_CUSTOM_GEAR, name='a,b"\nHat')]}, id="hostile-name"),
@@ -500,6 +501,15 @@ _SONG = {"chartText": "Song Data\n"}
 def test_an_invalid_custom_pool_is_refused(request_payload):
     with pytest.raises(service.RequestError):
         service.parse_request(_SONG | request_payload)
+
+
+def test_custom_pool_accepts_fifteen_items_of_each_kind():
+    request = service.parse_request(_SONG | {
+        "customGear": [dict(_CUSTOM_GEAR, name=f"Hat {i}") for i in range(15)],
+        "customMinis": [dict(_CUSTOM_MINI, name=f"Mini {i}") for i in range(15)],
+    })
+    assert len(request.custom_pool["customGear"]) == 15
+    assert len(request.custom_pool["customMinis"]) == 15
 
 
 def test_excluded_names_accept_real_catalog_names_with_punctuation():
