@@ -1,8 +1,9 @@
 """An older FG frontier version and the current one hold the same best score at every sampled stat line.
 
-  python tools/verify/validate_cone_lossless.py OLD_VERSION [--stride N] [--cells N] [--lines N]
+  python tools/verify/validate_cone_lossless.py OLD_VERSION... [--stride N] [--cells N] [--lines N]
 
-Both versions' bundles sit in the FG cache directory (a file's name carries its version). A cone filter may drop any surface
+OLD_VERSION...: the old version and the predecessors it ratified, whose files it still serves. Their bundles and the current
+version's sit in the FG cache directory (a file's name carries its version). A cone filter may drop any surface
 no stat line needs and may never lower a stat line's best, so each sampled (FT, FF) cell of each chart is scored at random
 stat lines of the realizable box with the exact per-note floors of gem_search._surface_score. Exit 1 on any difference.
 """
@@ -61,7 +62,7 @@ def _pool(bundle):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("old_version")
+    parser.add_argument("old_versions", nargs="+")
     parser.add_argument("--stride", type=int, default=1, help="every Nth chart")
     parser.add_argument("--cells", type=int, default=64)
     parser.add_argument("--lines", type=int, default=64)
@@ -75,7 +76,10 @@ def main() -> int:
         single = chart.primary == chart.secondary
         for mode in TIMING_MODES:
             key = fg_response_frontier_bundle_cache_key(time_song(chart, mode), curves)
-            old_key = (args.old_version, *key[1:])
+            old_key = next(
+                old_key for old_key in ((version, *key[1:]) for version in args.old_versions)
+                if FG_RESPONSE_FRONTIER_CACHE.file_path(old_key).exists()
+            )
             old = _scoring_bundle(old_key, _read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(old_key)))
             new = _scoring_bundle(key, _read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(key)))
             old_rows += old.pool.counts.shape[0]
