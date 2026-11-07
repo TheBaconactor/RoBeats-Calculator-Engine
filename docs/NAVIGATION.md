@@ -11,6 +11,7 @@ Use this page to find the current owner of a behavior. The
 - HTTP service: `gear_optimizer/robeatsmeta_service.py`
 - Score reverse-lookup: `gear_optimizer/reverse/lookup.py`
   - `python -m gear_optimizer.reverse --song "<Song Name>" --score N`
+  - Benchmark: `tools/verify/score_reverse_benchmark.py`, on simulated plays from `tools/verify/frame_play.py`
 - GeneralMeta: `general_meta/app.py` (`run_general_meta`), which the website's data publish runs on its
   `evolution.db` snapshot
 

@@ -92,10 +92,10 @@ def _write_cells(line, cells, ceiling, power_query, out, found):
 
 
 @jit(nopython=True, cache=True)
-def perfect_targets(score, surfaces, multipliers, notes, ceiling, power_query, out):
+def perfect_targets(score, surfaces, multipliers, notes, ceiling, power_query, pairs, out):
     """Every stat line with exactly this score under the ceiling and, a Gear Power given, at it, into out as rows (surface,
-    CM, FM, FT, FF, base, lowest vertex, slack in 1/1024 points); returns how many there are, or out's rows + 1 where they
-    stop fitting.
+    CM, FM, FT, FF, base, lowest vertex, slack in 1/1024 points), until out is full or `pairs` (CM, FM) pairs are walked;
+    returns how many rows, and whether every line is among them.
     surfaces: (words, coeffs, pattern, body fever, cell_start, cells, the surfaces to walk). power_query: 5 x PP - 2 x its
     points per PP, sorted; and the Gear Power, negative when unknown. What a base leaves of the score past the body's
     exact value must fit the head's floors before the head is summed."""
@@ -105,8 +105,10 @@ def perfect_targets(score, surfaces, multipliers, notes, ceiling, power_query, o
     values, prices, relief = ceiling
     wanted = float(score)
     width_per_base = float(head_len + body_total) / wanted
-    found = 0
+    found = walked = 0
     for u in order:
+        if walked > pairs:
+            return found, False
         p = pattern[u]
         bf = int(body_fever[u])
         a, e, f, g = _shape_terms(coeffs[p], bf, body_total, 0.0)
@@ -118,6 +120,7 @@ def perfect_targets(score, surfaces, multipliers, notes, ceiling, power_query, o
                 shape = alpha_top * fever[fm_top] + beta_top
                 if _ceiling_at(values, prices, relief, u, cm_block, fm_block, wanted / shape) * shape < wanted:
                     continue
+                walked += (cm_top + 1 - cm_block) * (fm_top + 1 - fm_block)
                 for cm in range(cm_block, cm_top + 1):
                     alpha, beta = a * combo[cm] + f, e * combo[cm] + g
                     for fm in range(fm_block, fm_top + 1):
@@ -136,9 +139,9 @@ def perfect_targets(score, surfaces, multipliers, notes, ceiling, power_query, o
                                     if exact == score:
                                         found = _write_cells((u, cm, fm, base), on_cells, (values, prices), power_query, out, found)
                                         if found > out.shape[0]:
-                                            return found
+                                            return out.shape[0], False
                             base += 1
-    return found
+    return found, True
 
 
 @jit(nopython=True, cache=True)

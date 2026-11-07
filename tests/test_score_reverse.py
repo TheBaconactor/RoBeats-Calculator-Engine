@@ -20,7 +20,7 @@ from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surfac
 from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.store.records import FgResult, Loadout
 from tools.verify.frame_play import Plan, frame_clock, play
-from tools.verify.score_reverse_benchmark import _build, _hacked
+from tools.verify.score_reverse_benchmark import generated_build, hacked_presses
 
 CHART = "Aether (Easy) by Geoxor.txt"
 STORED = dict(zip(STATS, (85, 59, 71, 66, 63, 35, 135, 73, 34, 707)))
@@ -120,7 +120,7 @@ def test_the_frame_simulator_at_a_1_ms_clock_is_the_chart_time_replay(song):
 
 
 def test_a_set_far_below_the_top_gets_sets_that_give_its_score_exactly(song):
-    build = _build(random.Random(4), "colored", song)
+    build = generated_build(random.Random(4), "colored", song)
     played = _simulated(song, build.stats, Plan(np.zeros(song.chart.total_notes)))
     reply = reverse_score(ShownPlay(score=played.score), song)
     assert reply.verdict == "sets"
@@ -133,7 +133,7 @@ def test_a_set_far_below_the_top_gets_sets_that_give_its_score_exactly(song):
 def test_a_fever_hack_shows_in_its_casual_score_and_an_honest_play_does_not(song):
     """Presses in Great windows stated Perfect: a Perfect's points, a Great's fill."""
     chart = song.chart
-    hacked_plan = Plan(_hacked(0.5)(np.random.default_rng(2), chart), states_perfect=True)
+    hacked_plan = Plan(hacked_presses(0.5)(np.random.default_rng(2), chart), states_perfect=True)
     hacked = _simulated(song, STORED, hacked_plan)
     assert (hacked.great, hacked.okay, hacked.miss) == (0, 0, 0)
     honest = _simulated(song, STORED, Plan(np.zeros(chart.total_notes)))

@@ -40,7 +40,7 @@ from gear_optimizer.reverse.lookup import ReverseSong, ShownPlay, prepare_song, 
 from gear_optimizer.score import best_timeline_score, factors
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import fixed_timeline_cell
-from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, fever_axes
+from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE, fever_axes, judgment_bounds
 from gear_optimizer.stats import GEM_KINDS, apply_gems, total
 from gear_optimizer.store.db import load_boards
 from gear_optimizer.store.schema import connect
@@ -74,7 +74,7 @@ def _roll_gems(rng: random.Random, element_share: float) -> dict[str, int]:
     return dict(zip(GEM_KINDS, (*counts, element)))
 
 
-def _build(rng: random.Random, kind: str, song: ReverseSong) -> Build:
+def generated_build(rng: random.Random, kind: str, song: ReverseSong) -> Build:
     """A set from the released items: `any` is uniform over them, with gems no solver would spend; `colored` is what a
     player of the song's colors wears; `climbed` starts there and climbs the all-Perfect chart-time score."""
     chart = song.chart
@@ -170,10 +170,15 @@ def _drift(rng: np.random.Generator, chart: Chart) -> np.ndarray:
     return _inside(chart, wave + rng.normal(0.0, 3.0, chart.total_notes), 1000.0 / 60.0)
 
 
-def _edges(rng: np.random.Generator, chart: Chart) -> np.ndarray:
-    """Every press near an edge of the Perfect window: the most a timing can move fever."""
-    late = rng.random(chart.total_notes) < 0.5
-    return _inside(chart, np.where(late, 40.0, -18.0), 1000.0 / 60.0)
+def _edges(perfect_time: int):
+    """Every press near an edge of this Perfect Time's window: the most a timing can move fever."""
+    def offsets(rng: np.random.Generator, chart: Chart) -> np.ndarray:
+        tap, tail = judgment_bounds(1, perfect_time), judgment_bounds(HELD_TAIL_WINDOW_SCALE, perfect_time)
+        is_tail = chart.note_types == HELD_TAIL_TYPE
+        early = np.where(is_tail, tail.perfect.earliest, tap.perfect.earliest) + 2.0
+        late = np.where(is_tail, tail.perfect.latest, tap.perfect.latest) - 1000.0 / 60.0 - 1.0
+        return np.where(rng.random(chart.total_notes) < 0.5, late, early)
+    return offsets
 
 
 def _human(sigma: float, missing: float):
@@ -205,7 +210,7 @@ def _isolated(chart: Chart) -> np.ndarray:
     return out
 
 
-def _hacked(share: float, sigma: float | None = None):
+def hacked_presses(share: float, sigma: float | None = None):
     """A hacked client's real presses, every one stated Perfect: `share` of the taps that can take it land in a Great
     window, or with `sigma` a human's hand over those taps. Fever slides, no point is lost."""
     def offsets(rng: np.random.Generator, chart: Chart) -> np.ndarray:
@@ -224,17 +229,17 @@ SITUATIONS: dict[str, Situation] = {
     "tight/144": Situation(144.0, 0.0, _tight(9.0, 1000.0 / 144.0)),
     "tight/240-jitter": Situation(240.0, 0.3, _tight(9.0, 1000.0 / 120.0)),
     "drift/60": Situation(60.0, 0.0, _drift),
-    "edges/60": Situation(60.0, 0.0, _edges),
+    "edges/60": Situation(60.0, 0.0, _edges(0)),
     "human/60": Situation(60.0, 0.0, _human(18.0, 0.0)),
     "human/144": Situation(144.0, 0.1, _human(14.0, 0.0)),
     "sloppy/60": Situation(60.0, 0.0, _human(26.0, 0.01)),
     "force-greats-2": Situation(60.0, 0.0, _force_greats(2)),
     "force-greats-8": Situation(60.0, 0.0, _force_greats(8)),
     "casual/perfect-time": Situation(60.0, 0.0, _human(16.0, 0.0), casual=True),
-    "hack/accuracy": Situation(60.0, 0.0, _hacked(1.0, 24.0), True),
-    "hack/fever-2": Situation(60.0, 0.0, _hacked(0.02), True),
-    "hack/fever-10": Situation(60.0, 0.0, _hacked(0.10), True),
-    "hack/fever-30": Situation(60.0, 0.0, _hacked(0.30), True),
+    "hack/accuracy": Situation(60.0, 0.0, hacked_presses(1.0, 24.0), True),
+    "hack/fever-2": Situation(60.0, 0.0, hacked_presses(0.02), True),
+    "hack/fever-10": Situation(60.0, 0.0, hacked_presses(0.10), True),
+    "hack/fever-30": Situation(60.0, 0.0, hacked_presses(0.30), True),
 }
 
 
@@ -275,6 +280,7 @@ class Tally:
         self.outside: list[str] = []
         self.flagged: list[tuple] = []
         self.forged: dict[str, list[float]] = defaultdict(list)
+        self.heights: dict[str, list[float]] = defaultdict(list)  # clean plays' scores over the song's top
 
     def note_prepare(self, ms: float) -> None:
         self.prepare_ms.append(ms)
@@ -318,6 +324,7 @@ class Tally:
             "honest_plays": self.honest(),
             "flagged": self.flagged[:200],
             "forged_note_share": {case: float(np.mean(shares)) for case, shares in sorted(self.forged.items())},
+            "height_over_top": {case: [float(q) for q in np.percentile(shares, (10, 50, 90))] for case, shares in sorted(self.heights.items())},
             "cases": self.summary(),
             "missed": self.missed[:200],
         }
@@ -402,8 +409,13 @@ def _near_meta(tally: Tally, song: ReverseSong, row: tuple, rng: random.Random) 
     frames = frame_clock(noise, float(chart.timestamps[-1]) * 1000.0, 60.0, 0.0)
     played = play(chart, stats, 0, Plan(_tight(9.0, 1000.0 / 60.0)(noise, chart)), frames)
     if played.great + played.okay + played.miss == 0:
+        tally.heights["near-meta"].append(played.score / float(song.surface_tops.max()))
         for shown in _SHOWN:
             _lookup(tally, f"near-meta/tight/{shown}", song, _shown_play(played, stats, chart, shown), stats, gear)
+    worn = _with_perfect_time(Build(stats, tuple(gear), tuple(minis), 0), song, rng)
+    edge = play(chart, worn.stats, worn.perfect_time, Plan(_edges(worn.perfect_time)(noise, chart)), frames)
+    if edge.great + edge.okay + edge.miss == 0:
+        _lookup(tally, "near-meta/perfect-time-edges/full", song, _shown_play(edge, worn.stats, chart, "full"), worn.stats, worn.gear, "honest")
     for name, situation in SITUATIONS.items():
         if situation.cheats:
             hacked = play(chart, stats, 0, Plan(situation.offsets(noise, chart), states_perfect=True), frames)
@@ -450,7 +462,7 @@ def run_song(name: str, chart: Chart, con: sqlite3.Connection, catalog, curves, 
     last_ms = float(chart.timestamps[-1]) * 1000.0
     for build_kind in _BUILDS:
         for situation_name, situation in SITUATIONS.items():
-            build = _build(rng, build_kind, song)
+            build = generated_build(rng, build_kind, song)
             if situation.casual:
                 build = _with_perfect_time(build, song, rng)
             noise = np.random.default_rng(rng.getrandbits(63))
@@ -463,6 +475,7 @@ def run_song(name: str, chart: Chart, con: sqlite3.Connection, catalog, curves, 
                 tally.forged[situation_name].append(played.forged / chart.total_notes)
             clean = played.great + played.okay + played.miss == 0
             if clean and not situation.cheats and not situation.casual:
+                tally.heights[build_kind].append(played.score / float(song.surface_tops.max()))
                 tally.note_reach(_reaches(song, build.stats, build.perfect_time, played), build.perfect_time, f"{name} {build_kind} {situation_name}")
             for shown in _SHOWN:
                 if situation.cheats and shown != "full":

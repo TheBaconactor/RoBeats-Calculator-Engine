@@ -58,7 +58,9 @@ _STAT_PRICE_SHARES = (1.0, 0.7)
 _POINTS_PRICES = (0.6, 1.5)
 _SHARPENING_ROUNDS = 6
 _BOUND_STEPS = 100
+# Stat lines a lookup keeps, and the (CM, FM) pairs it may walk for them: ~100 ms far below a song's top.
 _TARGET_ROWS = 1 << 10
+_LINE_PAIRS = 20_000_000
 _SETS_PER_LINE = 16
 _TOPS_FROM = 0.9
 _SCRATCH_ROWS = 1 << 15
@@ -267,8 +269,8 @@ class UnreleasedItem:
 class Reverse:
     verdict: str  # sets, unresolved, unreleased or exploited
     sets: tuple[FoundSet, ...]
-    lines: int  # the exact stat lines under the ceiling
-    finished: bool  # every line was searched to its end
+    lines: int  # the exact stat lines under the ceiling that the lookup kept
+    finished: bool  # every line was kept and searched to its end
     ceiling: float | None = None  # past the score: the first line found that reaches it
     unreleased: UnreleasedItem | None = None
     evidence: tuple[str, ...] = ()
@@ -309,9 +311,10 @@ def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[
     arrays = surfaces.words, surfaces.coeffs, surfaces.pattern, surfaces.body_fever, surfaces.cell_start, surfaces.cells, order
     power = -1 if play.gear_power is None else play.gear_power
     out = np.empty((_TARGET_ROWS, 8), dtype=np.int64)
-    count = perfect_targets(int(play.score), arrays, song.multipliers, song.notes, song.ceiling, (song.power_terms, power), out)
-    rows = out[: min(count, _TARGET_ROWS)]
-    targets = rows[np.argsort(rows[:, 7], kind="stable"), :7]
+    count, every_line = perfect_targets(
+        int(play.score), arrays, song.multipliers, song.notes, song.ceiling, (song.power_terms, power), _LINE_PAIRS, out
+    )
+    targets = out[np.argsort(out[:count, 7], kind="stable"), :7]
     found = np.empty((limit * _SETS_PER_LINE, 18), dtype=np.int64)
     space = song.space.items, song.space.starts, song.space.gems
     query = targets, power, limit, _SEARCH_ITEMS, _ITEMS_PER_TARGET, _ITEMS_PER_SETUP, _SETS_PER_LINE
@@ -319,7 +322,7 @@ def _perfect_sets(play: ShownPlay, song: ReverseSong, limit: int) -> tuple[list[
     written, complete = search_targets(space, song.tables.arrays, song.fixed_rows, song.curves.f64["Perfect Points"], vertices, query, found)
     slacks = {t: _slack_of(song, targets[t]) for t in set(found[:written, 16].tolist())}
     sets = [_found_set(song, row, targets[row[16]], play, slacks[row[16]]) for row in found[:written]]
-    return sets, count, complete and count <= _TARGET_ROWS
+    return sets, count, complete and every_line
 
 
 def board_sets(play: ShownPlay, song: ReverseSong, board: Iterable[Loadout]) -> list[FoundSet]:
