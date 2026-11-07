@@ -76,7 +76,7 @@ _GREATS_FROM = 0.9
 _GREATS_SEARCHED = 64
 # The most quarters only Greats can cost: an Okay costs three.
 _ONLY_GREATS = 2
-_GREATS_WALKED = 4
+_GREATS_WALKED = 8
 _BAND_NOTES = 8
 _GREAT_ROWS = 1 << 18
 _GREAT_PAIRS = 3_000_000
