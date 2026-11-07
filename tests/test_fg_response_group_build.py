@@ -91,6 +91,31 @@ def _run_case(*, budget, base_components, score_elements_constant, geometry, hea
     _assert_six_equal(kept_group_rows(*args), ref_out)
 
 
+def test_group_build_past_the_stat_caps():
+    base = np.asarray([[1, 2, 3, 4, 5, 151, 157], [1, 2, 3, 4, 5, 160, 149], [1, 2, 3, 4, 5, 0, 158]], dtype=np.int32)
+    for constant in (True, False):
+        _run_case(
+            budget=12, base_components=base, score_elements_constant=constant,
+            geometry=lambda ft, ff: _covering_grid(_FRONTIER_ID_BY_POS["per_pos"](ft, ff), base, ft, ff),
+        )
+
+
+def test_group_build_keeps_the_best_of_equal_gains():
+    ft_values, ff_values, remaining = ftff_combo_arrays(8)
+    ft_values, ff_values = np.ascontiguousarray(ft_values, dtype=np.int32), np.ascontiguousarray(ff_values, dtype=np.int32)
+    residual_values = np.ascontiguousarray(remaining, dtype=np.int32)
+    grid = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
+    for ft, ff in zip(ft_values.tolist(), ff_values.tolist()):
+        grid[ft * STAT_GEM_GAIN_FEVER, ff * STAT_GEM_GAIN_FEVER] = ft  # a frontier per FT: its splits have equal gains
+    base = np.zeros((1, 7), dtype=np.int32)
+    args = (
+        base, ft_values, ff_values, residual_values, grid, np.ascontiguousarray(ft_values * 3, dtype=np.int32),
+        np.zeros_like(ft_values), False, 100, 8,
+    )
+    _assert_six_equal(kept_group_rows(*args), build_response_group_rows_reference(*args))
+    assert kept_group_rows(*args)[5].tolist() == [[0, 9]]  # one split per frontier
+
+
 def test_group_build_constant_path_per_pos_geometry():
     base = np.array(
         [

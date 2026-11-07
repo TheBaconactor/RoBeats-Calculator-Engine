@@ -5,6 +5,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL
@@ -12,14 +13,14 @@ from gear_optimizer.solver import gem_search as search
 from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs, surface_head_greats
 
 
-def _random_batch(key_count: int, seed: int, colors=("Chill", "Flow", "Chill"), head_len: int = 100):
+def _random_batch(key_count: int, seed: int, colors=("Chill", "Flow", "Chill"), head_len: int = 100, budget: int = 25):
     """Two loadouts per key; a key holds 1-5 groups, each on its own frontier of 1-8 surfaces."""
     rng = np.random.default_rng(seed)
     key_starts = np.concatenate(([0], np.cumsum(rng.integers(1, 6, key_count)))).astype(np.int64)
     group_count = int(key_starts[-1])
     groups = np.column_stack(
         [
-            rng.integers(0, 25, group_count),  # residual gem budget
+            rng.integers(0, budget, group_count),  # residual gem budget
             rng.integers(0, 12, group_count),  # the split's primary gain
             rng.integers(0, 12, group_count),  # the split's secondary gain
             np.arange(group_count),  # its frontier
@@ -133,6 +134,94 @@ def test_winners_equal_trying_every_allocation():
             expected_group, expected_row = _brute_force_row(loadout, shared)
             assert int(winner) == expected_group
             assert row.tolist() == [int(value) for value in expected_row]
+
+
+def test_a_floor_at_the_best_score_still_finds_the_winner():
+    """No slack: a bound that falls below the winner's score loses it here."""
+    for seed, colors in ((11, ("Chill", "Flow", "Chill")), (12, ("Rush", "Rush", "Rush")), (13, ("Flow", "Rush", "Rush")),
+                         (14, ("Beat", "Chill", "Beat")), (15, ("Vibe", "Rush", "Vibe"))):
+        loadouts, shared = _random_batch(3, seed, colors, budget=61)
+        expected = [_brute_force_row(loadout, shared) for loadout in loadouts]
+        rows, winners = search._score_loadouts(
+            loadouts, np.asarray([row[0] for _group, row in expected], dtype=np.int64), *shared
+        )
+        assert winners.tolist() == [group for group, _row in expected]
+        assert rows.tolist() == [[int(value) for value in row] for _group, row in expected]
+
+
+@pytest.mark.parametrize("gem_bases, stats", [
+    ((0, 0, 6), (40, 30, 30)), ((0, 2, 6), (0, 0, 0)), ((3, 0, 3), (150, 90, 20)), ((0, 0, 6), (160, 150, 0)), ((6, 3, 3), (80, 0, 160)),
+])
+def test_a_budget_bounds_its_columns_and_a_column_its_blocks_over_the_deltas(gem_bases, stats):
+    curves = stat_curves()
+    pp = search._gem_curve(np.ascontiguousarray(curves.f64["Perfect Points"]), stats[0], STAT_GEM_GAIN_NORMAL, False)
+    cm = search._gem_curve(np.ascontiguousarray(curves.f64["Combo Multiplier"]), stats[1], STAT_GEM_GAIN_NORMAL, True)
+    fm = search._gem_curve(np.ascontiguousarray(curves.f64["Fever Multiplier"]), stats[2], STAT_GEM_GAIN_FEVER, True)
+    tables = search._block_bound_tables()
+    term_max, column_combo, column_first, column_terms, blocks, corners = tables
+    delta_lo, delta_hi = 150.0, 3000.0
+    search._fill_block_bounds(tables, gem_bases, pp, cm, fm, (delta_lo, delta_hi))
+    rng = np.random.default_rng(16)
+    for _ in range(300):
+        shape = tuple(rng.uniform(0.0, 900.0, 4).tolist())
+        budget = int(rng.integers(0, search.GEM_BUDGET + 1))
+        delta = rng.uniform(delta_lo, delta_hi - budget * gem_bases[2] - pp[0])
+        budget_delta = delta + budget * gem_bases[2] + pp[0]
+        best_column = 0.0
+        for j in range(min(len(cm) - 1, budget) // search._TILE + 1):
+            last = min(len(fm) - 1, budget - j * search._TILE) // search._TILE
+            top = column_terms[j, last]
+            column = search._column_bound(column_combo[j], top, budget_delta, shape)
+            best_block = max(
+                search._block_bound(blocks[bi], budget_delta, shape)
+                for bi in range(column_first[j], column_first[j] + last + 1)
+            )
+            assert column >= best_block - 1e-6
+            best_column = max(best_column, column)
+        assert search._budget_bound(term_max[budget], delta, shape) >= best_column - 1e-6
+
+
+def test_a_surface_ceiling_holds_every_live_block():
+    rng = np.random.default_rng(17)
+    for _ in range(3000):
+        live = int(rng.integers(1, 8))
+        blocks = np.zeros((live, 5), dtype=np.float64)
+        blocks[:, 0] = rng.uniform(-300.0, 300.0, live)
+        blocks[:, 3], blocks[:, 4] = rng.uniform(2.0, 2.6, live), rng.uniform(3.0, 5.2, live)
+        blocks[:, 1], blocks[:, 2] = blocks[:, 3] + rng.uniform(0.0, 0.07, live), blocks[:, 4] + rng.uniform(0.0, 0.2, live)
+        deltas = rng.uniform(400.0, 3000.0, live)
+        frontier = tuple(rng.uniform(0.0, 900.0, 4).tolist())
+        shape = tuple((np.asarray(frontier) * rng.uniform(0.0, 1.0, 4)).tolist())
+        great = (*rng.uniform(0.0, 9000.0, 3).tolist(), float(rng.uniform(-90.0, 9000.0)))
+        summary = search._live_summary(blocks, np.arange(live), deltas, live, frontier)
+        ceiling = search._surface_ceiling(summary, frontier, shape, great)
+        worst = max(
+            search._block_bound(block, delta, shape) - search._shape_value(great, block[3], block[4])
+            for block, delta in zip(blocks, deltas)
+        )
+        assert ceiling >= worst - 1e-6
+
+
+def test_a_surface_ceiling_takes_the_least_any_live_block_loses():
+    blocks = np.asarray([[100.0, 2.5, 5.0, 2.1, 3.1], [100.0, 2.5, 5.0, 2.4, 4.9]], dtype=np.float64)
+    deltas = np.asarray([900.0, 900.0], dtype=np.float64)
+    shape = (500.0, 400.0, 30.0, 20.0)
+    great = (1000.0, 1000.0, 1000.0, 0.0)
+    summary = search._live_summary(blocks, np.arange(2), deltas, 2, shape)
+    expected = search._block_bound(blocks[0], 900.0, shape) - search._shape_value(great, 2.1, 3.1)
+    assert search._surface_ceiling(summary, shape, shape, great) == pytest.approx(expected)
+
+
+def test_a_stat_line_range_holds_the_deltas_of_its_loadouts():
+    prefix = np.asarray([210.0, 240.0, 251.0], dtype=np.float64)
+    loadouts = np.asarray([
+        [40, 30, 30, 500, 300, 0], [40, 30, 30, 900, 100, 1], [40, 30, 30, 20, 950, 2], [41, 30, 30, 9000, 9000, 3],
+    ], dtype=np.int32)
+    colors = 2 * loadouts[:3, 3] + loadouts[:3, 4]
+    low, high = search._stat_line_deltas(loadouts, 0, 70, 540, prefix)
+    assert low <= colors.min() + prefix[0]
+    assert high >= colors.max() + 70 + 540 + prefix[-1]
+    assert search._stat_line_deltas(loadouts, 3, 0, 0, prefix)[0] == 27000 + prefix[0]
 
 
 def test_search_kernel_releases_the_gil():

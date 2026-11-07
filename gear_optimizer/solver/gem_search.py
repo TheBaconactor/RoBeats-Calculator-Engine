@@ -392,6 +392,20 @@ def _block_bound(block, delta, shape):
 
 
 @numba.njit(cache=True, nogil=True, inline="always")
+def _surface_ceiling(live, frontier_shape, shape, great_shape):
+    """At least a surface's bound less what its Greats lose at each live block (live: _live_summary): a block's frontier
+    bound less base value x the shape's distance from the frontier's, at the lowest of each over the blocks."""
+    peak, low_base, low_combo, low_fever, low_worst_combo, low_worst_fever = live
+    distance = (
+        frontier_shape[0] - shape[0], frontier_shape[1] - shape[1], frontier_shape[2] - shape[2], frontier_shape[3] - shape[3]
+    )
+    return (
+        peak - low_base * _shape_value(distance, low_combo, low_fever)
+        - _shape_value(great_shape, low_worst_combo, low_worst_fever)
+    )
+
+
+@numba.njit(cache=True, nogil=True, inline="always")
 def _budget_bound(c, delta, shape):
     """The surface bound over a budget's columns: each term of _column_bound at its most (c, the terms' maxima as a value
     and its slope in delta)."""
@@ -490,6 +504,40 @@ def _fill_block_bounds(tables, gem_bases, pp_bound_prefix_max, cm_ref_cache, fm_
 
 
 @jit(nopython=True, cache=True)
+def _stat_line_deltas(loadouts, c, most_gain, budget_gain, pp_bound_prefix_max):
+    """The range of the deltas of the loadouts from c on with c's PP, CM and FM (contiguous): delta holds a loadout's
+    colors (2 x primary + secondary), its FT and FF gems' gain (most_gain at the most), its budget's element gems
+    (budget_gain at the most) and the best PP part of its leftover gems."""
+    lowest = highest = (int(loadouts[c, 3]) << 1) + int(loadouts[c, 4])
+    last = c + 1
+    while last < loadouts.shape[0] and (
+        loadouts[last, 0] == loadouts[c, 0] and loadouts[last, 1] == loadouts[c, 1] and loadouts[last, 2] == loadouts[c, 2]
+    ):
+        colors = (int(loadouts[last, 3]) << 1) + int(loadouts[last, 4])
+        lowest, highest = min(lowest, colors), max(highest, colors)
+        last += 1
+    return (
+        float(lowest) + pp_bound_prefix_max[0],
+        float(highest + most_gain + budget_gain) + pp_bound_prefix_max[len(pp_bound_prefix_max) - 1] + 1.0,
+    )
+
+
+@jit(nopython=True, cache=True)
+def _live_summary(blocks, live_blocks, live_deltas, live, frontier_shape):
+    """Over a group's live blocks: the highest frontier bound, the lowest base value, best corner's combo and fever, and
+    worst corner's combo and fever."""
+    peak = 0.0
+    low_base = low_combo = low_fever = low_worst_combo = low_worst_fever = 1.0e30
+    for position in range(live):
+        block = blocks[live_blocks[position]]
+        peak = max(peak, _block_bound(block, live_deltas[position], frontier_shape))
+        low_base = min(low_base, block[0] + live_deltas[position])
+        low_combo, low_fever = min(low_combo, block[1]), min(low_fever, block[2])
+        low_worst_combo, low_worst_fever = min(low_worst_combo, block[3]), min(low_worst_fever, block[4])
+    return peak, low_base, low_combo, low_fever, low_worst_combo, low_worst_fever
+
+
+@jit(nopython=True, cache=True)
 def _frontier_shapes(group_frontiers, frontier_offsets, frontier_lengths, pattern_ids, counts, head_coeffs, body_total, shapes, done):
     """Into shapes, per frontier a group reaches that is not done yet, the most of each coordinate of its surfaces' shapes
     (_surface_shape). O(groups + the surfaces of those frontiers)."""
@@ -578,18 +626,7 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                 pp_bound_prefix_max[gp] = max(
                     pp_bound_prefix_max[gp - 1], float(gp * delta_pp_vs_ov) + pp_ref_cache[gp]
                 )
-            lowest_colors = highest_colors = (int(loadouts[c, 3]) << 1) + int(loadouts[c, 4])
-            last = c + 1
-            while last < loadouts.shape[0] and (
-                loadouts[last, 0] == cur_pp and loadouts[last, 1] == cur_cm and loadouts[last, 2] == cur_fm
-            ):
-                colors = (int(loadouts[last, 3]) << 1) + int(loadouts[last, 4])
-                lowest_colors, highest_colors = min(lowest_colors, colors), max(highest_colors, colors)
-                last += 1
-            delta_range = (
-                float(lowest_colors) + pp_bound_prefix_max[0],
-                float(highest_colors + most_gain + GEM_BUDGET * w_ov) + pp_bound_prefix_max[full_pp_gems] + 1.0,
-            )
+            delta_range = _stat_line_deltas(loadouts, c, most_gain, GEM_BUDGET * w_ov, pp_bound_prefix_max)
             _fill_block_bounds(tables, (w_cm, w_fm, w_ov), pp_bound_prefix_max, cm_ref_cache, fm_ref_cache, delta_range)
         candidate_best = int(floors[c])
         loadout_best = -2
@@ -608,8 +645,6 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
             group_best_score = -1
             group_best_surface = group_best_pp = group_best_cm = group_best_fm = 0
             live = 0
-            peak = 0.0
-            low_base = low_combo = low_fever = low_worst_combo = low_worst_fever = 1.0e30
             if _budget_bound(term_max[residual_budget], delta, frontier_shape) >= float(candidate_best):
                 for j in range(min(len(cm_ref_cache) - 1, residual_budget) // _TILE + 1):
                     cm0 = j * _TILE
@@ -617,22 +652,17 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                     column_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0)]
                     if _column_bound(column_combo[j], column_terms[j, last_block], column_delta, frontier_shape) >= float(candidate_best):
                         for bi in range(column_first[j], column_first[j] + last_block + 1):
-                            block = blocks[bi]
                             block_delta = column_delta
                             if allow_pp:
                                 block_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0 - block_corners[bi, 2])]
-                            bound = _block_bound(block, block_delta, frontier_shape)
-                            if bound >= float(candidate_best):
+                            if _block_bound(blocks[bi], block_delta, frontier_shape) >= float(candidate_best):
                                 live_blocks[live] = bi
                                 live_deltas[live] = block_delta
                                 live += 1
-                                peak = max(peak, bound)
-                                low_base = min(low_base, block[0] + block_delta)
-                                low_combo, low_fever = min(low_combo, block[1]), min(low_fever, block[2])
-                                low_worst_combo, low_worst_fever = min(low_worst_combo, block[3]), min(low_worst_fever, block[4])
             # A note's Great base is at most 2/3 of its base without PP + 150, and gems only raise what is left.
             gap = delta / 3.0 + pp_ref_base - 150.0
             start = frontier_offsets[frontier]
+            summary = _live_summary(blocks, live_blocks, live_deltas, live, frontier_shape)
             for ls in range(frontier_lengths[frontier] if live else 0):
                 sr = start + ls
                 pattern_row = pattern_ids[sr]
@@ -652,14 +682,7 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                     great_shape = (0.0, 0.0, 0.0, 0.0)
                 best_score, best_pp, best_cm, best_fm = group_best_score, group_best_pp, group_best_cm, group_best_fm
                 threshold = float(max(best_score, candidate_best))
-                distance = (
-                    frontier_shape[0] - shape[0], frontier_shape[1] - shape[1], frontier_shape[2] - shape[2],
-                    frontier_shape[3] - shape[3],
-                )
-                if (
-                    peak - low_base * _shape_value(distance, low_combo, low_fever)
-                    - _shape_value(great_shape, low_worst_combo, low_worst_fever) < threshold
-                ):
+                if _surface_ceiling(summary, frontier_shape, shape, great_shape) < threshold:
                     continue
                 for position in range(live):
                     bi = live_blocks[position]
