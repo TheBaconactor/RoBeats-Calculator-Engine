@@ -76,8 +76,8 @@ _SHARPENING_ROUNDS = 6
 _BOUND_STEPS = 100
 # The base values of (surface, CM, FM) pairs a search may walk: ~35 ns each. Past them a score has more lines than a row can tell
 # apart.
-_LINE_BASES = 10_000_000
-_TOP_LINE_BASES = 100_000_000
+_LINE_BASES = 5_000_000
+_TOP_LINE_BASES = 30_000_000
 _SHARED_BASES = 100_000_000
 _SETS_PER_LINE = 16
 _SCRATCH_ROWS = 1 << 15
