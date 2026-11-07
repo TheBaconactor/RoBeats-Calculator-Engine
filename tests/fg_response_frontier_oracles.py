@@ -26,6 +26,29 @@ from gear_optimizer.frontier.types import (
 INPUT_ORDER_EPS_SEC = 1.0e-6
 
 
+def uncovered_surfaces(frontier, surfaces, total_notes: int) -> list[tuple[int, ...]]:
+    """The surfaces that beat every frontier row at some cell of the realizable stat box: a frontier keeps the best score
+    of every cell, and drops the surfaces no cell needs."""
+    from gear_optimizer.gamedata import stat_curves
+    from gear_optimizer.score import Factors, fg_surface_score
+
+    curves = stat_curves()
+    cells = [
+        Factors(element + curves.factor("Perfect Points", pp), curves.factor("Combo Multiplier", combo), curves.ramp(combo),
+                curves.factor("Fever Multiplier", fever), int(element * 2 / 3) + 150, 0, 0)
+        for element in (0, 700, 1400, 2600, 7000)
+        for pp in (0, 80, 160)
+        for combo in (0, 80, 160)
+        for fever in (0, 80, 160)
+    ]
+    best = [max(fg_surface_score(cell, row, total_notes) for row in frontier) for cell in cells]
+    return [
+        tuple(map(int, surface))
+        for surface in surfaces
+        if any(fg_surface_score(cell, surface, total_notes) > top for cell, top in zip(cells, best))
+    ]
+
+
 def build_activation_reachability_context(
     *,
     timestamps,
@@ -226,14 +249,11 @@ def _head_envelope_reduce_surfaces(
 ) -> tuple[FgResponseSurface, ...]:
     if not surfaces:
         return (_EMPTY_SURFACE,)
-    from gear_optimizer.frontier.producer_kernels import (
-        _HEAD_FILTER_MIN_SURFACES,
-        _numba_head_envelope_filter,
-    )
+    from gear_optimizer.frontier.producer_kernels import _numba_head_envelope_filter
 
     # The surfaces are already the exact Pareto set (_reduce_surfaces).
     rows = np.array([_to_numba_surface(surface) for surface in surfaces], dtype=np.uint64)
-    reduced = _numba_head_envelope_filter(rows, int(lo_pos), int(hi_pos), int(_HEAD_FILTER_MIN_SURFACES))
+    reduced = _numba_head_envelope_filter(rows, int(lo_pos), int(hi_pos))
     return tuple(_from_numba_surface(reduced[idx]) for idx in range(len(reduced))) or (
         _EMPTY_SURFACE,
     )

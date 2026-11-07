@@ -29,7 +29,7 @@ from tests.songs_support import make_chart
 def _curves() -> dict[str, np.ndarray]:
     rows = MAX_STAT + 1
     return synthetic_curves({
-        "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
+        "Perfect Points": np.linspace(200.0, 210.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 4.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(0.3, 1.0, rows, dtype=np.float64) * 0.333,

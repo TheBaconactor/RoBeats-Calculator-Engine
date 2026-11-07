@@ -1335,21 +1335,21 @@ def _numba_touch_body_candidate(
 # `_numba_reduce_touched_body_pairs`; see its docstring for the exactness and ordering proof.
 
 
-# The realizable stat box (lossless head prune). The head+body score is MULTILINEAR in
-# (v=base_value, c=combo_mul, f=fever_mul, g=great_base) on the realizable region (g<=v, c,f>=1, so
-# every floor's max/min is resolved), and a multilinear function attains its extrema at the box
-# VERTICES -- so a surface's exact dominance over the WHOLE box is decided at its 16 corners, with
-# the integer floors bounded by a per-pair margin. No probe sampling. `c`/`f` are the gear's
-# combo/fever-multiplier ranges (gamedata.stat_curves); `v`/`g` are a generous superset of every
-# realizable base_value / great_base. assert_head_dominance_box (fg_cache) fails loud if a
-# gear rebalance pushes c/f outside this box, so the box can never silently under-cover.
-_HEAD_DOM_V = (200.0, 8000.0)
+# The realizable stat box of the lossless cone filters. A surface's score is MULTILINEAR in (E = 2 x primary + secondary,
+# b = the Perfect Points bonus, c = combo_mul, f = fever_mul): the base value v is E + b and the Great base g is 2E/3 + 150, so
+# g < v everywhere (v - g >= 50) and every floor's max/min is resolved, and a multilinear function attains its extrema at the
+# box VERTICES. A surface's exact dominance over the WHOLE box is decided at its 16 corners, with the integer floors bounded
+# by a per-pair margin. No probe sampling. `b`, `c` and `f` span the gear's curves (gamedata.stat_curves), E every stat
+# line. fg_cache._assert_head_dominance_box_covers fails loud if a gear rebalance leaves the box.
+_HEAD_DOM_E = (0.0, 7600.0)
+_HEAD_DOM_B = (200.0, 485.0)
 _HEAD_DOM_C = (1.95, 2.72)
 _HEAD_DOM_F = (2.95, 5.48)
-_HEAD_DOM_G = (150.0, 5500.0)
 # Body floors hit combo_val/fever_val plus the two great penalties; 2x per body-count delta is a
 # safe (over-)estimate of how far they can perturb a pairwise score difference.
 _HEAD_DOM_BODY_FLOOR_W = 2
+# The Great base's two floors put it up to 2 under 2E/3 + 150: at most 2 x c x f on each note judged Great in one row only.
+_HEAD_DOM_GREAT_FLOOR_W = 30
 
 
 @njit(cache=True, nogil=True)
@@ -1360,27 +1360,22 @@ def _numba_popcount64(x):
     return int((x * np.uint64(0x0101010101010101)) >> np.uint64(56))
 
 
-# Only run the lossless cone-envelope prune once a head state's reduced frontier exceeds this size.
-# The early-Great cascade is what inflates a frontier past it; an ordinary (no-early-Great) head
-# state stays well under, and its Pareto set already IS small and a superset of the envelope, so
-# skipping the prune there is exact and cheap. Genuine
-# cascades still cross the threshold and get pruned (preventing the exponential blow-up).
-_HEAD_FILTER_MIN_SURFACES = 96
-
-
 @njit(cache=True, nogil=True)
 def _numba_head_surface_margin(left, right) -> float:
     """The most the score's integer floors can move the gap between two surface rows: their head-class Hamming distance
-    + the body floor weight x their body-count L1 distance."""
-    bw = _HEAD_DOM_BODY_FLOOR_W
+    + the body floor weight x their body-count L1 distance + the Great floor weight x the Great notes they differ on."""
+    normal_greats = abs(int((np.int64(left[5]) - np.int64(left[6])) - (np.int64(right[5]) - np.int64(right[6]))))
+    fever_greats = abs(int(np.int64(left[6]) - np.int64(right[6])))
     return float(
         _numba_popcount64((left[0] ^ right[0]) | (left[2] ^ right[2]))
         + _numba_popcount64((left[1] ^ right[1]) | (left[3] ^ right[3]))
-        + bw
+        + _HEAD_DOM_BODY_FLOOR_W * (abs(int(np.int64(left[4]) - np.int64(right[4]))) + normal_greats + fever_greats)
+        + _HEAD_DOM_GREAT_FLOOR_W
         * (
-            abs(int(np.int64(left[4]) - np.int64(right[4])))
-            + abs(int((np.int64(left[5]) - np.int64(left[6])) - (np.int64(right[5]) - np.int64(right[6]))))
-            + abs(int(np.int64(left[6]) - np.int64(right[6])))
+            _numba_popcount64(left[2] ^ right[2])
+            + _numba_popcount64(left[3] ^ right[3])
+            + normal_greats
+            + fever_greats
         )
     )
 
@@ -1413,7 +1408,7 @@ def _numba_head_basis_corner_score(basis, v, c, f, g, use_hi_c: int) -> float:
 
 @njit(cache=True, nogil=True)
 def _numba_head_corner_scores(rows, terms, term_of):
-    """(m, 16) each surface row's relative score at the 16 corners of the _HEAD_DOM box (v, c, f, g, each low and high);
+    """(m, 16) each surface row's relative score at the 16 corners of the _HEAD_DOM box (E, c, f, b, each low and high);
     row i's head terms are terms[term_of[i]] (_numba_head_pattern_basis's b, c, d at the low and high combo)."""
     m = rows.shape[0]
     scores = np.empty((m, 16), dtype=np.float64)
@@ -1435,11 +1430,12 @@ def _numba_head_corner_scores(rows, terms, term_of):
             head[5],
         )
         col = 0
-        for v in _HEAD_DOM_V:
+        for e in _HEAD_DOM_E:
+            g = e * 2.0 / 3.0 + 150.0
             for ic in range(2):
                 for f in _HEAD_DOM_F:
-                    for g in _HEAD_DOM_G:
-                        scores[i, col] = _numba_head_basis_corner_score(basis, v, _HEAD_DOM_C[ic], f, g, ic)
+                    for b in _HEAD_DOM_B:
+                        scores[i, col] = _numba_head_basis_corner_score(basis, e + b, _HEAD_DOM_C[ic], f, g, ic)
                         col += 1
     return scores
 
@@ -1487,22 +1483,15 @@ def _numba_head_scores_dominate(scores, left_idx: int, right_idx: int, margin: f
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
-    """LOSSLESS prune of the head frontier to its cone-Pareto set -- the surfaces
-    that are best for SOME realizable stat cell. The head+body score is multilinear in (v,c,f,g) on
-    the realizable region (g<=v, c,f>=1 resolve every floor's max/min), so its unfloored value hits
-    its box extrema at the 16 corners. Surface K dominates C over the WHOLE realizable box iff
-    unfloored score(K)-score(C) >= the per-pair floor margin (head-class Hamming distance + body-count
-    delta -- the most the integer floors can move the difference) at all 16 corners. This is the head
-    analog of the closed-form body hull fused into `_numba_reduce_touched_body_pairs`: best-preserving for EVERY
-    realizable cell, by a 16-corner proof, not probe sampling. Composition-safe (the score is additive
-    over disjoint edge/tail head ranges), so an envelope-minimal tail stays representative as the DP
-    prepends edges. `min_surfaces` gates the prune for small (no-cascade) frontiers; skipping only
-    RETAINS surfaces, so it stays lossless."""
+def _numba_head_envelope_filter(frontier, lo_pos, hi_pos):
+    """LOSSLESS prune of the head frontier to its cone-Pareto set -- the surfaces that are best for SOME realizable stat
+    cell. The head+body score is multilinear on the _HEAD_DOM box, so its unfloored value hits its extrema at the 16 corners.
+    Surface K dominates C over the WHOLE box iff unfloored score(K)-score(C) >= the per-pair floor margin at all 16 corners.
+    This is the head analog of `_numba_body_cone_filter`: best-preserving for EVERY realizable cell, by a 16-corner proof, not
+    probe sampling. Composition-safe (the score is additive over disjoint edge/tail head ranges), so an envelope-minimal
+    tail stays representative as the DP prepends edges."""
     m = frontier.shape[0]
-    if m <= min_surfaces:
-        return frontier
-    if int(hi_pos) - int(lo_pos) <= 0:
+    if m < 2:
         return frontier
     # Head sums are computed once per run of rows with the same masks (same floats).
     terms = np.empty((m, 6), dtype=np.float64)
@@ -1527,6 +1516,24 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
     for ki in range(kept_rows.shape[0]):
         out[ki] = frontier[kept_rows[ki]]
     return out
+
+
+@njit(cache=True, nogil=True)
+def _numba_body_cone_filter(values, count: int) -> int:
+    """Drops the rows (body fever, normal Greats, fever Greats, _) of a body state's frontier that another row of it dominates
+    at every corner of the stat box. Every play through the state adds the same counts and head to both, so the dominance
+    holds for all of them. Keeps the rows' order; returns their new count."""
+    if count < 2:
+        return count
+    rows = np.zeros((count, 7), dtype=np.uint64)
+    for i in range(count):
+        rows[i, 4] = np.uint64(values[i, 0])
+        rows[i, 5] = np.uint64(values[i, 1] + values[i, 2])
+        rows[i, 6] = np.uint64(values[i, 2])
+    kept = np.sort(_numba_cone_kept(rows, _numba_head_corner_scores(rows, np.zeros((1, 6)), np.zeros(count, np.int64))))
+    for i in range(kept.shape[0]):
+        values[i] = values[kept[i]]
+    return kept.shape[0]
 
 
 @njit(cache=True, nogil=True)
@@ -2237,6 +2244,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                 bit_stamp_value,
                 reduce_values,
             )
+            frontier_len = _numba_body_cone_filter(reduce_values, int(frontier_len))
             body_values, body_cursor = _numba_store_body_tail_frontier(
                 body_values, body_starts, body_counts, state_i, int(body_cursor), reduce_values, int(frontier_len)
             )
@@ -2725,7 +2733,7 @@ def _numba_points_frontier(points, masks, sizes, head, fen_values, fen_stamps, f
     No points gives the zero surface (the play that never activates) when `empty_is_zero`, else nothing. Returns
     (frontier, Fenwick stamp)."""
     m, patterns, n = sizes
-    lo_pos, hi_pos, min_surfaces, empty_is_zero = head
+    lo_pos, hi_pos, empty_is_zero = head
     if m == 0:
         return np.zeros((1 if empty_is_zero else 0, 7), dtype=np.uint64), fen_stamp
     radix = n + 1
@@ -2769,7 +2777,7 @@ def _numba_points_frontier(points, masks, sizes, head, fen_values, fen_stamps, f
         frontier[k, 4] = np.uint64(stack[k, 0])
         frontier[k, 6] = np.uint64(stack[k, 2])
         frontier[k, 5] = np.uint64(stack[k, 1]) + frontier[k, 6]
-    frontier = _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces)
+    frontier = _numba_head_envelope_filter(frontier, lo_pos, hi_pos)
     rows = frontier.shape[0]
     rank_keys = np.empty(rows, dtype=np.int64)
     for k in range(rows):
@@ -2842,7 +2850,7 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
         capped_perfect_exit_e,
         capped_late_exit_e,
     ) = hits
-    raw_fever_fill, real_fever_time, real_time_idx, use_forced_great_timing_i, head_filter_min = fever
+    raw_fever_fill, real_fever_time, real_time_idx, use_forced_great_timing_i = fever
     (
         region_starts,
         region_offsets,
@@ -3060,7 +3068,7 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
             points,
             masks,
             (m, patterns, n),
-            (state, head_limit, head_filter_min, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
+            (state, head_limit, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
             ws_bit_values,
             ws_bit_stamps,
             int(bit_stamp_value),
@@ -3094,12 +3102,11 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
 @njit(cache=True, nogil=True)
 def _first_frontiers_of_fever_times(sizes, actions, runs, chart, hits, fever, regions, workspace):
     """`_first_frontier_from_precomputed_end_indices_numba` for each fever time of one (fill, non-Fever base) group, with
-    no call back into Python between them. fever: (raw fill, real fever times, their indices, forced timing, head filter
-    size); regions: the eight region tables, then the Perfect and Great end tables per fever-time index; workspace: its
+    no call back into Python between them. fever: (raw fill, real fever times, their indices, forced timing); regions: the eight region tables, then the Perfect and Great end tables per fever-time index; workspace: its
     arrays, then the first successor epoch (one per fever time), and the pair and bit epochs. Returns the frontiers' rows,
     each one's first row (with the end), per fever time (states, generated surfaces, retained surfaces, largest state
     frontier), and the pair and bit epochs."""
-    raw_fever_fill, real_fever_times, real_time_idxs, forced_timing, head_filter_min = fever
+    raw_fever_fill, real_fever_times, real_time_idxs, forced_timing = fever
     r0, r1, r2, r3, r4, r5, r6, r7, perfect_ends, great_ends = regions
     w0, w1, w2, w3, w4, w5, w6, w7, w8, successor_epoch, pair_epoch, bit_epoch = workspace
     count = real_fever_times.shape[0]
@@ -3115,7 +3122,7 @@ def _first_frontiers_of_fever_times(sizes, actions, runs, chart, hits, fever, re
                 runs,
                 chart,
                 hits,
-                (raw_fever_fill, real_fever_times[index], rt, forced_timing, head_filter_min),
+                (raw_fever_fill, real_fever_times[index], rt, forced_timing),
                 (r0, r1, r2, r3, r4, r5, r6, r7, perfect_ends[rt], great_ends[rt]),
                 (w0, w1, w2, w3, w4, w5, w6, w7, w8, successor_epoch + index, pair_epoch, bit_epoch),
             )

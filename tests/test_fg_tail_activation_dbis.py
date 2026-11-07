@@ -186,7 +186,7 @@ def test_directed_tail_charts_bounded_sweep_matches_observed_classifications():
         "tail-activation": {
             "under": [],
             "under_design": [],
-            "over_realized": [(0b111100, 0b000101), (0b111100, 0b000110)],
+            "over_realized": [],
         },
         "same-ts-tail-then-tap": {
             "under": [],

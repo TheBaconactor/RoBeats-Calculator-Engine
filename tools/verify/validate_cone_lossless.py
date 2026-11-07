@@ -1,105 +1,102 @@
-"""Definitive losslessness check for the njit cone-dominance head prune.
+"""An older FG frontier version and the current one hold the same best score at every sampled stat line.
 
-For a worst-case early-Great cascade, build the production cone-dominance frontier (filter ON) and
-the full reduce-only frontier (filter OFF), then score BOTH with the exact floored scorer over a
-dense realizable (v,c,f,g) grid. Since cone_dom is a subset of reduce_only, max(cone_dom,cell) <=
-max(reduce_only,cell) always; LOSSLESS iff they are EQUAL at every cell. Any cell with a strictly
-lower cone_dom max names a dropped winner (a bug in the prune).
+  python tools/verify/validate_cone_lossless.py OLD_VERSION [--stride N] [--cells N] [--lines N]
+
+Both versions' bundles sit in the FG cache directory (a file's name carries its version). A cone filter may drop any surface
+no stat line needs and may never lower a stat line's best, so each sampled (FT, FF) cell of each chart is scored at random
+stat lines of the realizable box with the exact per-note floors of gem_search._surface_score. Exit 1 on any difference.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 import numpy as np
+from numba import njit
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
-import gear_optimizer.frontier.producer_kernels as B
-from tools.verify.measure_head_envelope_stage0 import _build_frontier, _unpack_masks, HEAD_LIMIT
-
-
-def _floored_max(fever_mat, great_mat, body, body_total, cells):
-    """Max exact floored score over surfaces, per cell. Realizable region (g<=v) -> great penalty is
-    perfect-min-great with no clamp; body penalties likewise inactive."""
-    s, h = fever_mat.shape
-    idx = np.arange(h, dtype=np.float64)
-    fm = fever_mat.astype(np.float64); gm = great_mat.astype(np.float64)
-    fgm = (fever_mat & great_mat).astype(np.float64)
-    bf = body[:, 0].astype(np.float64); bg = body[:, 1].astype(np.float64); bfg = body[:, 2].astype(np.float64)
-    bn = body_total - bf; bng = bg - bfg
-    out = np.empty(len(cells), dtype=np.float64)
-    for ci, (v, c, f, g) in enumerate(cells):
-        sig = 1.0 + (c - 1.0) / 100.0 * (idx + 1.0)
-        pf_nf = np.floor(v * sig); pf_f = np.floor(v * sig * f)
-        gr_nf = np.floor(g * sig); gr_f = np.floor(g * sig * f)
-        # per-position: great? gr : pf ; fever picks the *_f variant. h_i = pf - great*(pf-gr).
-        dpf = pf_f - pf_nf                    # fever gain on perfect
-        a = pf_nf - gr_nf                     # great penalty, non-fever
-        bvec = (pf_f - gr_f) - (pf_nf - gr_nf)
-        const = float(pf_nf.sum())
-        head = const + fm @ dpf - gm @ a - fgm @ bvec
-        cv = np.floor(v * c); fv = np.floor(v * c * f)
-        pnp = max(0.0, cv - np.floor(g * c)); pfp = max(0.0, fv - np.floor(g * c * f))
-        bodyv = bf * fv + bn * cv - bng * pnp - bfg * pfp
-        out[ci] = float((head + bodyv).max())
-    return out
+from gear_optimizer.chart import load_chart  # noqa: E402
+from gear_optimizer.frontier.fg_cache import _scoring_bundle  # noqa: E402
+from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key  # noqa: E402
+from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE, _read_bundle  # noqa: E402
+from gear_optimizer.gamedata import stat_curves  # noqa: E402
+from gear_optimizer.settings import DIFFICULTIES, paths  # noqa: E402
+from gear_optimizer.solver.gem_search import _surface_score  # noqa: E402
+from gear_optimizer.solver.timing_envelope import TIMING_MODES, time_song  # noqa: E402
 
 
-def _grid():
-    return [(v, c, f, g)
-            for v in (250.0, 700.0, 1500.0, 3000.0, 5500.0, 7800.0)
-            for c in (2.0, 2.2, 2.45, 2.67)
-            for f in (3.0, 3.6, 4.3, 5.0, 5.42)
-            for g in (160.0, 0.45, 0.62, 0.78, 0.95)]  # g as ratio*v when <1, else absolute
+@njit(cache=True)
+def _best_scores(surfaces, cell, notes, lines, ramps, single):
+    """The best score of one cell's surfaces at each stat line (primary, secondary, Perfect Points, combo, fever)."""
+    pattern_ids, words, counts = surfaces
+    first, length = cell
+    best = np.full(lines.shape[0], -1, np.int64)
+    for s in range(lines.shape[0]):
+        primary, secondary, pp, combo, fever = lines[s]
+        for r in range(first, first + length):
+            surface = (int(counts[r, 0]), int(counts[r, 1]), int(counts[r, 2]))
+            best[s] = max(best[s], _surface_score(
+                words[pattern_ids[r]], surface, notes, int(primary), int(secondary), pp, (combo, ramps[s], fever), single
+            ))
+    return best
 
 
-def _resolve_cells():
-    cells = []
-    for (v, c, f, gp) in _grid():
-        g = gp if gp >= 1.0 else gp * v
-        if g <= v:  # realizable region only
-            cells.append((v, c, f, g))
-    return cells
+def _stat_lines(rng: np.random.Generator, count: int, curves, single: bool) -> tuple[np.ndarray, np.ndarray]:
+    stats = rng.integers(0, 161, (count, 3))
+    primary = rng.integers(0, 1400, count).astype(np.float64)
+    secondary = primary if single else rng.integers(0, 1400, count).astype(np.float64)
+    lines = np.column_stack((
+        primary, secondary, curves.f64["Perfect Points"][stats[:, 0]], curves.f64["Combo Multiplier"][stats[:, 1]],
+        curves.f64["Fever Multiplier"][stats[:, 2]],
+    ))
+    return lines, np.stack([curves.ramp(int(stat)) for stat in stats[:, 1]])
 
 
-def _check(name, ts, nt, geometry):
-    n = len(ts); head_len = min(n, HEAD_LIMIT); body_total = max(0, n - HEAD_LIMIT)
-    orig = B._HEAD_FILTER_MIN_SURFACES
-    fr_on, _ = _build_frontier(ts, nt, geometry)               # cone-dominance (production)
-    B._HEAD_FILTER_MIN_SURFACES = 10 ** 18
-    fr_off, _ = _build_frontier(ts, nt, geometry)              # full reduce-only
-    B._HEAD_FILTER_MIN_SURFACES = orig
-    fm_on, gm_on, b_on = _unpack_masks(fr_on, head_len)
-    fm_off, gm_off, b_off = _unpack_masks(fr_off, head_len)
-    cells = _resolve_cells()
-    max_on = _floored_max(fm_on, gm_on, b_on, body_total, cells)
-    max_off = _floored_max(fm_off, gm_off, b_off, body_total, cells)
-    gap = max_off - max_on
-    worst = float(gap.max())
-    nbad = int((gap > 0.5).sum())
-    print(f"\n=== {name} (N={n}): cone_dom={len(fr_on)} reduce_only={len(fr_off)} cells={len(cells)} ===", flush=True)
-    if nbad == 0:
-        print(f"  LOSSLESS: max(cone_dom)==max(reduce_only) at all {len(cells)} cells (worst gap {worst:.1f})", flush=True)
-    else:
-        bi = int(np.argmax(gap))
-        print(f"  *** LOSSY: {nbad}/{len(cells)} cells under-report. worst gap {worst:.0f} at cell {cells[bi]} "
-              f"(cone={max_on[bi]:.0f} reduce={max_off[bi]:.0f})", flush=True)
-    return nbad
+def _pool(bundle):
+    return bundle.pool.pattern_ids, bundle.pool.pattern_words, bundle.pool.counts
 
 
-def main():
-    rng = np.random.default_rng(44)
-    gaps = rng.choice([0.090, 0.120, 0.150, 0.180, 0.240, 0.300], size=51)
-    t_real = np.concatenate([[0.0], np.cumsum(gaps)]).astype(np.float32)
-    nt = np.ones(t_real.shape[0], dtype=np.int16)
-    nt[rng.choice(t_real.shape[0], size=13, replace=False)] = 3
-    bad = _check("realistic short all-head", t_real, nt, (2.0, 4, 0.5))
-    t_uni = (np.arange(80, dtype=np.float32) * 0.040)
-    bad += _check("uniform-40ms N=80 (S10)", t_uni, np.ones(80, dtype=np.int16), (2.0, 4, 0.5))
-    print(f"\n=> {'ALL LOSSLESS' if bad == 0 else f'{bad} LOSSY CELLS — BUG'}", flush=True)
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("old_version")
+    parser.add_argument("--stride", type=int, default=1, help="every Nth chart")
+    parser.add_argument("--cells", type=int, default=64)
+    parser.add_argument("--lines", type=int, default=64)
+    args = parser.parse_args()
+    curves = stat_curves()
+    rng = np.random.default_rng(20261107)
+    charts = [path for name in DIFFICULTIES for path in sorted(paths().chart_dir(name).glob("*.txt"))][:: args.stride]
+    compared = different = old_rows = new_rows = 0
+    for chart_path in charts:
+        chart = load_chart(chart_path)
+        single = chart.primary == chart.secondary
+        for mode in TIMING_MODES:
+            key = fg_response_frontier_bundle_cache_key(time_song(chart, mode), curves)
+            old_key = (args.old_version, *key[1:])
+            old = _scoring_bundle(old_key, _read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(old_key)))
+            new = _scoring_bundle(key, _read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(key)))
+            old_rows += old.pool.counts.shape[0]
+            new_rows += new.pool.counts.shape[0]
+            notes = (min(new.total_notes, 100), max(0, new.total_notes - 100))
+            for ft, ff in rng.integers(0, 161, (args.cells, 2)).tolist():
+                lines, ramps = _stat_lines(rng, args.lines, curves, single)
+                best = [
+                    _best_scores(_pool(bundle), (
+                        int(bundle.pool.frontier_offsets[bundle.frontier_idx_by_stat[ft, ff]]),
+                        int(bundle.pool.frontier_lengths[bundle.frontier_idx_by_stat[ft, ff]]),
+                    ), notes, lines, ramps, single)
+                    for bundle in (old, new)
+                ]
+                compared += args.lines
+                if not np.array_equal(best[0], best[1]):
+                    different += int((best[0] != best[1]).sum())
+                    print(f"DIFFERENT {chart.name} {mode} ({ft}, {ff})", flush=True)
+    print(f"{len(charts)} charts, surfaces {old_rows} -> {new_rows}, {compared} stat lines compared, {different} different")
+    return 1 if different else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
