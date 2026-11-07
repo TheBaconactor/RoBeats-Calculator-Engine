@@ -230,7 +230,8 @@ def fever_span(times, fills, duration):
 
 @jit(nopython=True, cache=True)
 def _walk_grid(times, greats, fills, durations, budget):
-    """walk_cell over every (Fever Time, Fever Fill) cell: rows (mask low, mask high, body fever, cell)."""
+    """walk_cell over every (Fever Time, Fever Fill) cell: rows (mask low, mask high, body fever, cell). With Greats a cell
+    whose head holds so many short windows that its tables overflow is left out: such a cell is far from any song's top."""
     out = np.empty((1 << 12, 5), dtype=np.int64)
     scratch = (np.empty((_STATE_ROWS, 7), dtype=np.int64), np.empty((_STATE_ROWS, 7), dtype=np.int64))
     expanded = np.empty((1 << 18, 4), dtype=np.int64)
@@ -240,7 +241,9 @@ def _walk_grid(times, greats, fills, durations, budget):
             cell = ft * fills.shape[0] + ff
             rows = walk_cell(times, greats, (fills[ff], budget), durations[ft], scratch, out)
             if rows < 0:
-                raise ValueError("fever walk: a cell outgrew its tables")
+                if budget == 0:
+                    raise ValueError("fever walk: a cell outgrew its tables")
+                continue
             for row in range(rows):
                 lowest, highest, bits = out[row, 2], out[row, 3], out[row, 4]
                 for count in range(lowest, highest + 1):
