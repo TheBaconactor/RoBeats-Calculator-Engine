@@ -84,13 +84,13 @@ def perfect_lines(score, surfaces, multipliers, notes, ceiling, out):
 @jit(nopython=True, cache=True)
 def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
     """The most any line under the ceiling can score, base x shape with `spare` body notes moved into fever, and its
-    (surface, CM, FM)."""
+    (surface, CM, FM, base)."""
     coeffs, pattern, body_fever = surfaces
     combo, fever = multipliers
     head_len, body_total = notes
     values, prices, relief = ceiling
     best = 0.0
-    line = (0, 0, 0)
+    line = (0, 0, 0, 0.0)
     for u in range(body_fever.shape[0]):
         p = pattern[u]
         bf = int(body_fever[u])
@@ -110,10 +110,10 @@ def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
                     alpha, beta = a * combo[cm] + f, e * combo[cm] + g
                     for fm in range(fm_block, fm_top + 1):
                         shape = alpha * fever[fm] + beta
-                        reach = _vertex_bound(values, prices, relief, u, cm, fm, best / shape) * shape
-                        if reach > best:
-                            best = reach
-                            line = (u, cm, fm)
+                        bound = _vertex_bound(values, prices, relief, u, cm, fm, best / shape)
+                        if bound * shape > best:
+                            best = bound * shape
+                            line = (u, cm, fm, bound)
     return best, line
 
 

@@ -133,6 +133,33 @@ def walk_cell(times, fills, duration, scratch, out):
 
 
 @jit(nopython=True, cache=True)
+def fever_span(times, fills, duration):
+    """The fewest and the most events one cell's play keeps in fever: walk_cell's windows without their head masks."""
+    earliest, latest = times
+    fill_lo, fill_hi = fills
+    n = earliest.shape[0]
+    most = np.full(n, -1, dtype=np.int64)
+    least = np.full(n, n + 1, dtype=np.int64)
+    fewest, highest = n, -1
+    if fill_hi > n:
+        fewest, highest = 0, 0
+    for a in range(fill_lo - 1, min(fill_hi, n)):
+        most[a], least[a] = 0, 0
+    for a in range(n):
+        if most[a] < 0:
+            continue
+        first = min(max(int(np.searchsorted(latest, earliest[a] + duration, side="left")), a + 1), n)
+        last = max(min(int(np.searchsorted(earliest, latest[a] + duration, side="left")), n), first)
+        for end in range(first, last + 1):
+            if end + fill_hi >= n:
+                fewest, highest = min(fewest, least[a] + end - a), max(highest, most[a] + end - a)
+            for activation in range(end + fill_lo, min(end + fill_hi + 1, n)):
+                most[activation] = max(most[activation], most[a] + end - a)
+                least[activation] = min(least[activation], least[a] + end - a)
+    return fewest, highest
+
+
+@jit(nopython=True, cache=True)
 def _walk_grid(times, fills, durations):
     """walk_cell over every (Fever Time, Fever Fill) cell: rows (mask low, mask high, body fever, cell)."""
     out = np.empty((1 << 12, 5), dtype=np.int64)
