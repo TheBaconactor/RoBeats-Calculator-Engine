@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+from math import ceil
+
 import numpy as np
 import pytest
 
@@ -11,13 +14,16 @@ from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.gamedata import STATS, empty_stats, stat_curves
 from gear_optimizer.reverse.fever_reach import event_times, fever_surfaces
 from gear_optimizer.reverse.lookup import ShownPlay, judged_play, prepare_song, reverse_score
-from gear_optimizer.score import factors, fg_surface_score
+from gear_optimizer.score import best_timeline_score, factors, fg_surface_score
 from gear_optimizer.settings import paths
-from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
+from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid, fixed_timeline_cell
 from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.store.records import FgResult, Loadout
+from tools.verify.frame_play import Plan, frame_clock, play
+from tools.verify.score_reverse_benchmark import _build, _hacked
 
 CHART = "Aether (Easy) by Geoxor.txt"
+STORED = dict(zip(STATS, (85, 59, 71, 66, 63, 35, 135, 73, 34, 707)))
 
 
 @pytest.fixture(scope="module")
@@ -63,15 +69,14 @@ def test_a_stored_meta_build_is_found_from_its_score_alone(song):
 
 
 def test_gear_power_keeps_only_the_sets_that_show_it(song):
-    stored = dict(zip(STATS, (85, 59, 71, 66, 63, 35, 135, 73, 34, 707)))
     chart = song.chart
 
     def power(stats):
         five = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
         return 5 * sum(stats[key] for key in five) + 4 * stats[chart.primary] + 2 * stats[chart.secondary]
 
-    reply = reverse_score(ShownPlay(score=4_666_274, gear_power=power(stored)), song)
-    assert reply.sets and all(power(row.stats) == power(stored) for row in reply.sets)
+    reply = reverse_score(ShownPlay(score=4_666_274, gear_power=power(STORED)), song)
+    assert reply.sets and all(power(row.stats) == power(STORED) for row in reply.sets)
 
 
 def test_a_score_past_every_released_set_is_not_given_a_set(song):
@@ -96,6 +101,60 @@ def test_a_casual_score_without_shown_judgments_proves_nothing(song):
 def test_a_casual_match_is_never_called_exploited_on_its_casual_score(song):
     reply = reverse_score(ShownPlay(score=4_666_274, casual_score=1, accuracy=100.0, match_mode="Casual"), song)
     assert reply.verdict == "sets"
+
+
+def _simulated(song, stats, plan, seed=1):
+    frames = frame_clock(np.random.default_rng(seed), float(song.chart.timestamps[-1]) * 1000.0, 60.0, 0.0)
+    return play(song.chart, stats, 0, plan, frames)
+
+
+def test_the_frame_simulator_at_a_1_ms_clock_is_the_chart_time_replay(song):
+    """Nothing to judge late at a 1 ms clock: an autoplay is the engine's Non-Precise timeline, note for note."""
+    chart = song.chart
+    durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, song.curves)
+    fill = ceil(thresholds[STORED["Fever Fill Rate"]])
+    cell = fixed_timeline_cell(chart.timestamps, fill_notes=fill, fever_duration=float(durations[STORED["Fever Time"]]))
+    expected = best_timeline_score(factors(STORED, song.curves, chart.primary, chart.secondary), cell, chart.total_notes)[0]
+    clock = np.arange(-1000.0, float(chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)
+    assert play(chart, STORED, 0, Plan(np.zeros(chart.total_notes)), clock).score == expected
+
+
+def test_a_set_far_below_the_top_gets_sets_that_give_its_score_exactly(song):
+    build = _build(random.Random(4), "colored", song)
+    played = _simulated(song, build.stats, Plan(np.zeros(song.chart.total_notes)))
+    reply = reverse_score(ShownPlay(score=played.score), song)
+    assert reply.verdict == "sets"
+    chart = song.chart
+    for row in reply.sets:
+        scored = factors(row.stats, song.curves, chart.primary, chart.secondary)
+        assert fg_surface_score(scored, row.surface, chart.total_notes) == played.score
+
+
+def test_a_fever_hack_shows_in_its_casual_score_and_an_honest_play_does_not(song):
+    """Presses in Great windows stated Perfect: a Perfect's points, a Great's fill."""
+    chart = song.chart
+    hacked_plan = Plan(_hacked(0.5)(np.random.default_rng(2), chart), states_perfect=True)
+    hacked = _simulated(song, STORED, hacked_plan)
+    assert (hacked.great, hacked.okay, hacked.miss) == (0, 0, 0)
+    honest = _simulated(song, STORED, Plan(np.zeros(chart.total_notes)))
+    for played, verdicts in ((hacked, ("exploited",)), (honest, ("sets", "unresolved"))):
+        shown = ShownPlay(score=played.score, casual_score=played.casual, accuracy=100.0)
+        assert reverse_score(shown, song).verdict in verdicts
+
+
+def test_a_play_near_the_top_leaves_no_room_for_a_wide_perfect_window(song):
+    """A Casual score only a Perfect Time past 13 reaches: honest far below the song's top, where gems can buy that window."""
+    casual = 153_285
+    assert reverse_score(ShownPlay(score=4_666_274, casual_score=casual, accuracy=100.0), song).verdict == "exploited"
+    assert reverse_score(ShownPlay(score=2_000_000, casual_score=casual, accuracy=100.0), song).verdict != "exploited"
+
+
+def test_a_gear_multiplier_stands_in_for_the_casual_score(song):
+    honest = _simulated(song, STORED, Plan(np.zeros(song.chart.total_notes)))
+    multiplier = round(honest.score / honest.casual, 2)
+    assert reverse_score(ShownPlay(score=honest.score, gear_multiplier=multiplier, accuracy=100.0), song).evidence == ()
+    reply = reverse_score(ShownPlay(score=honest.score, gear_multiplier=multiplier * 1.3, accuracy=100.0), song)
+    assert reply.verdict == "exploited" and reply.evidence
 
 
 def test_a_copied_force_great_plan_is_found_on_the_board(song):

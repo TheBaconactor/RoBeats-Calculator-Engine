@@ -43,16 +43,18 @@ def main() -> int:
     parser.add_argument("--song", required=True, help="the chart's Song Name")
     parser.add_argument("--score", type=int, required=True, help="the Compete score")
     parser.add_argument("--casual", type=int, help="Play Info's Casual Mode Score")
+    parser.add_argument("--multiplier", type=float, help="the Gear Multiplier, for a row with no Play Info")
     parser.add_argument("--accuracy", type=float, help="the accuracy shown, in percent")
     for count in ("perfect", "great", "okay", "miss"):
         parser.add_argument(f"--{count}", type=int, help="the results screen's count")
     parser.add_argument("--gear-power", type=int, help="Play Info's Gear Power")
     parser.add_argument("--mode", default="Compete", choices=("Compete", "Casual"), help="Play Info's Mode")
-    parser.add_argument("--limit", type=int, default=8, help="the most sets to list")
+    parser.add_argument("--limit", type=int, default=8, help="the most stat lines to list")
     parser.add_argument("--db", help="a results database whose Force Great plans a play may have copied")
     args = parser.parse_args()
     play = ShownPlay(
-        args.score, args.casual, args.accuracy, args.perfect, args.great, args.okay, args.miss, args.gear_power, args.mode
+        args.score, args.casual, args.accuracy, args.perfect, args.great, args.okay, args.miss, args.gear_power, args.mode,
+        args.multiplier,
     )
     song = prepare_song(load_chart(_chart_path(args.song)), load_catalog(paths().game_export), stat_curves())
     reply = reverse_score(play, song, limit=args.limit, board=_stored_plans(args.db, args.song))

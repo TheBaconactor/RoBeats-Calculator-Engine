@@ -180,6 +180,8 @@ Changes to scoring and timing are proved against independent references:
 |---|---|
 | [`tools/verify/gate.py`](tools/verify/gate.py) | A fixed chart set through every output: a lossless change must match a base tree byte for byte, with each solve stage priced side by side |
 | [`tools/verify/game_sim.py`](tools/verify/game_sim.py) | A frame-by-frame simulation of input matching, fever and score |
+| [`tools/verify/frame_play.py`](tools/verify/frame_play.py) | A simulated player through a port of the game's frame loop and server replay |
+| [`tools/verify/score_reverse_benchmark.py`](tools/verify/score_reverse_benchmark.py) | Seeded dev/held-out benchmark of the score reverse-lookup on stored builds and simulated plays |
 | [`tools/verify/verify_fg_game_oracle.py`](tools/verify/verify_fg_game_oracle.py) | Stored Force Great winners rescored by a port of the game's score path |
 | [`tools/verify/reference_oracle/`](tools/verify/reference_oracle/README.md) | Note traces replayed through the reference score engine |
 

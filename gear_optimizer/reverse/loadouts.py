@@ -3,17 +3,20 @@
 A target is a final (CM, FM, FT, FF) and base value. Pricing those four stats and Perfect Points relaxes the loadout's
 choices apart: each slot takes its item worth most at the prices and every gem the gem worth most, so the sum, less the
 target at the same prices, bounds the base value of every loadout that reaches the target (a Lagrangian dual). At its
-lowest the bound sits a few points over the true best (stored rows: 2,148 vs 2,144 and 1,935.6 vs 1,935), so an item
-stays only if what it gives up against its slot's best fits the bound's slack.
+lowest the bound sits a few points over the true best (stored rows: 2,148 vs 2,144 and 1,935.6 vs 1,935).
 
-Cost: O(I) per bound for I = 368 items (~1.6 us), 200 bounds per target; the walk then takes the items the slack leaves,
-near the top of a song a few per slot.
+Exact loadouts come from a subset sum over the slots (ValueTables), O(levels x I x 108 x V / 64) words per element choice,
+~2 ms and 1.3 MB in all for V ~ 3,000 values, and a walk in order of what an item gives up at the target's prices. The walk
+never enters a sum the tables do not hold and stops a slot where what it gave up passes the bound's slack. Cost: O(I) per
+bound for I = 368 items (~1.6 us), and per target O(I log I) to order the items, O(element rows x fixed rows x 161) for the
+openings, then near a song's top a handful of items per slot.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from math import prod
 
 import numpy as np
 
@@ -39,6 +42,9 @@ _ITEMS_EQUIPPED = len(GEAR_SLOTS) + 3
 # What a selected element gem adds: to the primary, to the secondary, to neither.
 _ELEMENT_ROWS = 3
 _GEM_ROWS = len(STAT_GEMS) + _ELEMENT_ROWS
+_LAST_STEP = 0.02
+# Over a bound's float sum: a loadout can sit exactly on the bound, and every test against it keeps that loadout.
+BOUND_ROUNDING = 1.0e-6
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -196,6 +202,7 @@ def lowest_bound(items, starts, gems, points, target, prices, steps):
     current = prices.copy()
     used = np.zeros(5)
     step = 1.0
+    decay = _LAST_STEP ** (1.0 / steps)
     for _ in range(steps):
         value = _price_bound(items, starts, gems, points, target, current, used)
         if value < best:
@@ -205,116 +212,334 @@ def lowest_bound(items, starts, gems, points, target, prices, steps):
         if norm < 1.0e-9:
             break
         current -= step * used / norm
-        step *= 0.985
+        step *= decay
     prices[:] = best_prices
     return best
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class ValueTables:
+    """What a loadout's items are worth once its gems are accounted, per choice of element gem.
+
+    A gem bought for a stat is an element gem not bought, so at a target's final stats the element value of the whole
+    loadout is linear in its items: 2 x primary + secondary + each stat x what a point of it saves, in halves. Exact
+    loadouts are then a subset sum over the slots, carried per residue of the five stats modulo their gem gains (only a
+    matching residue leaves whole gems): layers[e, k, r] holds, as a bit set, the sums of levels k.. (the gear slots, then
+    three minis) at residue r."""
+
+    element_rows: np.ndarray
+    values: np.ndarray  # per element row and item, its value in halves over its slot's lowest
+    floors: np.ndarray  # per element row, the sum of the slots' lowest values
+    layers: np.ndarray
+    prices: np.ndarray  # per element row, in halves per point, PRICED's five
+    removed: np.ndarray  # per item, the residue of its stats' negatives
+    add: np.ndarray  # residue + residue
+    lows: np.ndarray  # per level and stat, the least levels k.. add
+    highs: np.ndarray
+
+    @property
+    def arrays(self) -> tuple[np.ndarray, ...]:
+        return (self.element_rows, self.values, self.floors, self.layers, self.prices, self.removed, self.add, self.lows, self.highs)
+
+
+_GAINS = (STAT_GEM_GAIN_NORMAL, STAT_GEM_GAIN_NORMAL, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_FEVER)
+_RESIDUES = prod(_GAINS)
+
+
 @jit(nopython=True, cache=True)
-def _leaf_gems(total, target, gems, points, bases, counts):
-    """Into counts the gems (PP, CM, FM, FT, FF, element, element row) that take a pre-gem total to the target and a base
-    value in bases (lowest, highest, Gear Power or negative); counts[0] = -1 when none do. target: CM, FM, FT, FF in places
-    1..4."""
-    bought = 0
-    primary, secondary = total[5], total[6]
+def _residue(stats):
+    """A row's five stats modulo their gem gains, as one number."""
+    residue = 0
+    for d in range(5):
+        residue = residue * _GAINS[d] + stats[d] % _GAINS[d]
+    return residue
+
+
+@jit(nopython=True, cache=True)
+def _residues_of(rows):
+    out = np.empty(rows.shape[0], dtype=np.int64)
+    for i in range(rows.shape[0]):
+        out[i] = _residue(rows[i])
+    return out
+
+
+@jit(nopython=True, cache=True)
+def _residue_sums():
+    digits = np.empty((_RESIDUES, 5), dtype=np.int64)
+    for residue in range(_RESIDUES):
+        rest = residue
+        for d in range(4, -1, -1):
+            digits[residue, d] = rest % _GAINS[d]
+            rest //= _GAINS[d]
+    add = np.empty((_RESIDUES, _RESIDUES), dtype=np.int64)
+    for left in range(_RESIDUES):
+        for right in range(_RESIDUES):
+            add[left, right] = _residue(digits[left] + digits[right])
+    return add
+
+
+@jit(nopython=True, cache=True)
+def _fill_layers(layers, values, residues, starts, add):
+    """Each layer from the one after it: every item of the level's slot over every sum of the levels after it."""
+    words = layers.shape[2]
+    levels = layers.shape[0] - 1
+    layers[levels, 0, 0] = 1
+    for level in range(levels - 1, -1, -1):
+        slot = min(level, starts.shape[0] - 2)
+        for i in range(starts[slot], starts[slot + 1]):
+            whole, part = values[i] >> 6, values[i] & 63
+            for source in range(_RESIDUES):
+                from_words = layers[level + 1, source]
+                to_words = layers[level, add[source, residues[i]]]
+                for w in range(words - whole):
+                    bits = from_words[w]
+                    if bits != 0:
+                        to_words[w + whole] |= bits << np.uint64(part)
+                        if part and w + whole + 1 < words:
+                            to_words[w + whole + 1] |= bits >> np.uint64(64 - part)
+
+
+def value_tables(space: LoadoutSpace) -> ValueTables:
+    worth = 2 * space.gems[:, PRIMARY] + space.gems[:, SECONDARY]
+    element_rows = np.asarray(list(dict.fromkeys((PRIMARY, SECONDARY if space.primary != space.secondary else PRIMARY, SECONDARY + 1))))
+    prices = np.asarray([[2 * (worth[row] - worth[d]) // space.gems[d, d] for d in range(len(PRICED))] for row in element_rows])
+    items, starts = space.items, space.starts
+    raw = (2 * (2 * items[:, PRIMARY] + items[:, SECONDARY]))[None, :] + prices @ items[:, : len(PRICED)].T
+    slots = len(starts) - 1
+    level_slots = [*range(slots), slots - 1, slots - 1]
+    lows = np.zeros((len(level_slots) + 1, len(PRICED)), dtype=np.int64)
+    highs = lows.copy()
+    values = raw.copy()
+    floors = np.zeros(len(element_rows), dtype=np.int64)
+    tops = np.zeros(len(element_rows), dtype=np.int64)
+    for level in range(len(level_slots) - 1, -1, -1):
+        span = slice(starts[level_slots[level]], starts[level_slots[level] + 1])
+        lows[level] = lows[level + 1] + items[span, : len(PRICED)].min(axis=0)
+        highs[level] = highs[level + 1] + items[span, : len(PRICED)].max(axis=0)
+        lowest = raw[:, span].min(axis=1)
+        values[:, span] = raw[:, span] - lowest[:, None]
+        floors += lowest
+        tops += values[:, span].max(axis=1)
+    layers = np.zeros((len(element_rows), len(level_slots) + 1, _RESIDUES, int(tops.max()) // 64 + 1), dtype=np.uint64)
+    add = _residue_sums()
+    residues = _residues_of(items)
+    for e in range(len(element_rows)):
+        _fill_layers(layers[e], values[e], residues, starts, add)
+    return ValueTables(element_rows, values, floors, layers, prices, _residues_of(-items), add, lows, highs)
+
+
+@jit(nopython=True, cache=True)
+def _sets_bit(words, value):
+    return value >= 0 and (value >> 6) < words.shape[0] and bool((words[value >> 6] >> np.uint64(value & 63)) & np.uint64(1))
+
+
+@jit(nopython=True, cache=True)
+def _openings(arrays, gems, points, query, out):
+    """The Perfect Points stats a target can open with at one element row: rows (stat, the value left in halves), into
+    out; returns how many. query: (final stats, their place 0 yours to change, base, Gear Power or negative, fixed row)."""
+    floor, first_layer, prices, element_row = arrays
+    target, base, power, fixed = query
+    fever_stats = 0
+    priced = -2 * GEM_BUDGET * (2 * gems[element_row, 5] + gems[element_row, 6]) - 2 * (2 * fixed[5] + fixed[6])
     for d in range(1, 5):
-        gap = target[d] - total[d]
-        gain = gems[d, d]
-        if gap < 0 or gap % gain != 0:
-            counts[0] = -1
-            return
-        counts[d] = gap // gain
-        bought += counts[d]
-        primary += counts[d] * gems[d, 5]
-        secondary += counts[d] * gems[d, 6]
-    if bought > GEM_BUDGET:
-        counts[0] = -1
-        return
-    left = GEM_BUDGET - bought
-    fever_stats = target[1] + target[2] + target[3] + target[4]
-    for pp_gems in range(left + 1):
-        stat = min(total[0] + pp_gems * gems[0, 0], points.shape[0] - 1)
-        colors = 2 * (primary + pp_gems * gems[0, 5]) + secondary + pp_gems * gems[0, 6]
-        element = left - pp_gems
-        for row in range(5, 8):
-            value = colors + element * (2 * gems[row, 5] + gems[row, 6])
-            if bases[0] <= value + int(points[stat]) <= bases[1] and (bases[2] < 0 or 5 * (stat + fever_stats) + 2 * value == bases[2]):
-                counts[0], counts[5], counts[6] = pp_gems, element, row
-                return
-    counts[0] = -1
+        fever_stats += target[d]
+        priced += prices[d] * (target[d] - fixed[d])
+    found = 0
+    for stat in range(points.shape[0]):
+        elements = base - int(points[stat])
+        if power >= 0 and 5 * (stat + fever_stats) + 2 * elements != power:
+            continue
+        target[0] = stat
+        value = 2 * elements + priced + prices[0] * (stat - fixed[0]) - floor
+        if _sets_bit(first_layer[_residue(target - fixed[:5])], value):
+            out[found, 0], out[found, 1] = stat, value
+            found += 1
+    return found
 
 
 @jit(nopython=True, cache=True)
-def walk_loadouts(items, starts, gems, points, query, found, budget):
-    """The loadouts that reach a target, into found (rows: 9 item indices, 7 gem values from _leaf_gems), cheapest first;
-    returns (found rows, items tried), budget + 1 tried when it stopped early. query: (target row, base values (lowest,
-    highest, Gear Power or negative), bound slack at prices, prices, fixed row).
-
-    A loadout gives up what each of its items falls short of its slot's best at the prices, and the bound's slack is all
-    it may give up, so a slot walks only the items inside the slack, and a walk stops at the first that does not fit
-    what the items before it left (a slot's items are in that order). Minis are distinct and in value order, so the
-    third mini measures from the third best."""
-    target, bases, slack, prices, fixed = query
-    n = items.shape[0]
-    values = np.empty(n)
-    for i in range(n):
-        values[i] = _row_value(items[i], prices)
-    order = np.empty(n, dtype=np.int64)
-    lost = np.empty(n)
+def shortfalls(items, starts, prices):
+    """What each item gives up at these prices against the bound (its slot's best, for a mini the third best), and the
+    items of each slot in that order."""
+    short = np.empty(items.shape[0])
+    order = np.empty(items.shape[0], dtype=np.int64)
     for slot in range(starts.shape[0] - 1):
-        first, stop = starts[slot], starts[slot + 1]
-        ranked = np.argsort(-values[first:stop])
-        order[first:stop] = first + ranked
-        lost[first:stop] = values[first + ranked[0]] - values[first + ranked]
-    mini_first, mini_stop = starts[6], starts[7]
-    nodes = 0
-    positions = np.zeros(_ITEMS_EQUIPPED + 1, dtype=np.int64)
-    spent = np.zeros(_ITEMS_EQUIPPED + 1)
-    partial = np.zeros((_ITEMS_EQUIPPED + 1, 7), dtype=np.int64)
+        first = starts[slot]
+        values = np.empty(starts[slot + 1] - first)
+        for i in range(values.shape[0]):
+            values[i] = _row_value(items[first + i], prices)
+        ranked = np.sort(values)
+        reference = ranked[ranked.shape[0] - (3 if slot == starts.shape[0] - 2 else 1)]
+        short[first : starts[slot + 1]] = np.maximum(reference - values, 0.0)
+        order[first : starts[slot + 1]] = first + np.argsort(-values)
+    return short, order
+
+
+@jit(nopython=True, cache=True)
+def _walk_exact(space, arrays, query, scratch, found, budget):
+    """The loadouts of one opening, into found (rows: 9 item indices, 7 gem values); returns (rows, items tried), budget + 1
+    tried when it stopped early. query: (final stats, fixed row, value left, shortfalls and their item order, the bound's
+    slack). A walk never enters a sum the layers do not hold, gives up at most the slack, and keeps every stat within
+    what the slots left and the gems can still add."""
+    items, starts, gems = space
+    values, removed, add, layers, lows, highs, element_row = arrays
+    target, fixed, value, short, order, slack = query
+    positions, partial, left, mods, given, chosen = scratch
+    levels = layers.shape[0] - 1
+    mini_level = starts.shape[0] - 2
     partial[0] = fixed
+    left[0] = value
+    mods[0] = _residue(target - fixed[:5])
+    given[0] = 0.0
     positions[0] = starts[0]
-    counts = np.zeros(7, dtype=np.int64)
-    depth = 0
-    written = 0
+    tried = written = depth = 0
     while True:
-        if depth == _ITEMS_EQUIPPED:
-            _leaf_gems(partial[depth], target, gems, points, bases, counts)
-            if counts[0] >= 0:
-                if written >= found.shape[0]:
-                    return written, budget + 1
-                for d in range(_ITEMS_EQUIPPED):
-                    found[written, d] = order[positions[d] - 1]
-                found[written, _ITEMS_EQUIPPED:] = counts
-                written += 1
+        if depth == levels:
+            if written == found.shape[0]:
+                return written, budget + 1
+            row = found[written]
+            row[:levels] = chosen
+            spent = 0
+            for d in range(5):
+                row[levels + d] = (target[d] - partial[depth, d]) // gems[d, d]
+                spent += row[levels + d]
+            row[levels + 5] = GEM_BUDGET - spent
+            row[levels + 6] = element_row
+            written += 1
             depth -= 1
             continue
-        stop = starts[depth + 1] if depth < 6 else mini_stop
-        i = positions[depth]
-        if i >= stop:
+        at = positions[depth]
+        i = order[at] if at < starts[min(depth, mini_level) + 1] else -1
+        if i < 0 or given[depth] + short[i] > slack:
             if depth == 0:
-                return written, nodes
+                return written, tried
             depth -= 1
             continue
-        positions[depth] = i + 1
-        nodes += 1
-        if nodes > budget:
-            return written, nodes
-        shortfall = lost[i]
-        if depth >= 6:
-            # The mini at this depth stands against the (depth - 6)-th best mini.
-            shortfall = values[order[mini_first + depth - 6]] - values[order[i]]
-        if spent[depth] + shortfall > slack + 1.0e-6:
-            positions[depth] = stop
+        positions[depth] = at + 1
+        tried += 1
+        if tried > budget:
+            return written, tried
+        rest = left[depth] - values[i]
+        residue_left = add[mods[depth], removed[i]]
+        if rest < 0 or not (layers[depth + 1, residue_left, rest >> 6] >> np.uint64(rest & 63)) & np.uint64(1):
             continue
-        spent[depth + 1] = spent[depth] + max(shortfall, 0.0)
-        partial[depth + 1] = partial[depth] + items[order[i]]
+        need = 0
+        for d in range(7):
+            partial[depth + 1, d] = partial[depth, d] + items[i, d]
+        for d in range(5):
+            room = target[d] - partial[depth + 1, d]
+            if room < lows[depth + 1, d]:
+                need = GEM_BUDGET + 1
+                break
+            if room > highs[depth + 1, d]:
+                need += (room - highs[depth + 1, d] + gems[d, d] - 1) // gems[d, d]
+        if need > GEM_BUDGET:
+            continue
+        left[depth + 1] = rest
+        mods[depth + 1] = residue_left
+        given[depth + 1] = given[depth] + short[i]
+        chosen[depth] = i
         depth += 1
-        if depth < 6:
+        if depth <= mini_level:
             positions[depth] = starts[depth]
-        elif depth == 6:
-            positions[depth] = mini_first
-        elif depth < _ITEMS_EQUIPPED:
-            positions[depth] = i + 1
+        elif depth < levels:
+            positions[depth] = at + 1
+
+
+@jit(nopython=True, cache=True)
+def _gift(fixed, price):
+    """The most a TeamBuff gives at this Perfect Points price."""
+    best = -1.0e18
+    for f in range(fixed.shape[0]):
+        best = max(best, 2.0 * fixed[f, 5] + fixed[f, 6] + price * fixed[f, 0])
+    return best
+
+
+@jit(nopython=True, cache=True)
+def lowest_at(space, fixed, points, stats, prices, steps):
+    """The lowest bound subgradient steps find on the base value at final stats (CM, FM, FT, FF at places 1..4), from these
+    prices (changed in place to the best found), over every TeamBuff."""
+    items, starts, gems = space
+    top = np.max(fixed[:, 0])
+    stats[0] = -top
+    bound = lowest_bound(items, starts, gems, points, stats, prices, steps)
+    return bound + _gift(fixed, prices[0]) - prices[0] * top + BOUND_ROUNDING
+
+
+@jit(nopython=True, cache=True)
+def search_targets(space, tables, fixed, points, vertices, query, found):
+    """The loadouts of target rows (surface, CM, FM, FT, FF, base, vertex) in order, into found (rows: 9 item indices, 7 gem
+    values, target, fixed row), until `limit` targets hold loadouts or the work budget ends; returns (rows, whether every
+    target was searched to its end). The vertex prices the target's walks. query: (targets, Gear Power or negative, limit,
+    budget, items a target may try, work per target, rows per target)."""
+    items, starts, gems = space
+    element_rows, values, floors, layers, table_prices, removed, add, lows, highs = tables
+    vertex_values, vertex_prices = vertices
+    targets, power, limit, budget, per_target, setup, rows_per_target = query
+    levels = layers.shape[1] - 1
+    scratch = (
+        np.empty(levels + 1, dtype=np.int64), np.empty((levels + 1, 7), dtype=np.int64), np.empty(levels + 1, dtype=np.int64),
+        np.empty(levels + 1, dtype=np.int64), np.empty(levels + 1), np.empty(levels, dtype=np.int64),
+    )
+    final = np.zeros(5, dtype=np.int64)
+    openings = np.empty((points.shape[0], 2), dtype=np.int64)
+    work = written = held = 0
+    complete = True
+    for t in range(targets.shape[0]):
+        if held >= limit or work > budget:
+            return written, False
+        base = targets[t, 5]
+        prices = vertex_prices[targets[t, 6]]
+        bound = vertex_values[targets[t, 6]]
+        for d in range(1, 5):
+            final[d] = targets[t, d]
+            bound -= prices[d] * targets[t, d]
+        short, order = shortfalls(items, starts, prices)
+        gift = _gift(fixed, prices[0])
+        best_points = points_conjugate(points, prices[0])[0]
+        walked = 0
+        before = written
+        for e in range(element_rows.shape[0]):
+            arrays = (floors[e], layers[e, 0], table_prices[e], element_rows[e])
+            walk_arrays = (values[e], removed, add, layers[e], lows, highs, element_rows[e])
+            for f in range(fixed.shape[0]):
+                slack = bound - gift + 2.0 * fixed[f, 5] + fixed[f, 6] + prices[0] * fixed[f, 0] - base
+                if slack < 0.0:
+                    continue
+                count = _openings(arrays, gems, points, (final, base, power, fixed[f]), openings)
+                for k in range(count):
+                    stat, value = openings[k, 0], openings[k, 1]
+                    room = slack - best_points + points[stat] - prices[0] * stat
+                    allowed = per_target - walked
+                    if room < 0.0 or allowed < 0:
+                        complete = complete and room < 0.0
+                        continue
+                    final[0] = stat
+                    rows_left = min(rows_per_target - (written - before), found.shape[0] - written)
+                    rows, used = _walk_exact(space, walk_arrays, (final, fixed[f], value, short, order, room), scratch, found[written : written + rows_left], allowed)
+                    complete = complete and used <= allowed
+                    found[written : written + rows, 16] = t
+                    found[written : written + rows, 17] = f
+                    written += rows
+                    walked += used
+        work += walked + setup
+        held += written > before
+    return written, complete
+
+
+def time_gem_losses(space: LoadoutSpace, prices: np.ndarray) -> np.ndarray:
+    """Per price vector, what a gem that buys Perfect Time gives up against the gem worth most: PerfectTime+ (+1 with +1
+    Chill, -1 Perfect Points) and PerfectTime++ (+2 with +3 Chill, -2 Combo Multiplier), EquipmentUpgradesSet1.lua:355-417."""
+    time_gems = np.zeros((2, _ROW))
+    time_gems[0, 0], time_gems[1, 1] = -1.0, -2.0
+    for column, color in ((PRIMARY, space.primary), (SECONDARY, space.secondary)):
+        if color == "Chill":
+            time_gems[:, column] = (1.0, 3.0)
+
+    def worth(rows: np.ndarray) -> np.ndarray:
+        return prices @ rows[:, : len(PRICED)].T + 2.0 * rows[:, PRIMARY] + rows[:, SECONDARY]
+
+    return np.maximum(worth(space.gems.astype(np.float64)).max(axis=1), 0.0) - worth(time_gems).max(axis=1)
 
 
 def prices_at_gems(space: LoadoutSpace) -> np.ndarray:
