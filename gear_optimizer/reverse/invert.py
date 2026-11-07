@@ -1,0 +1,160 @@
+"""The stat lines whose exact all-Perfect score is a shown score.
+
+For a surface, the score is at most base x K(combo, fever) and over it by less than one point a note, K the surface's
+bound shape (gem_search._surface_shape), so a (CM, FM) pair leaves at most a couple of whole base values, and base
+values above the loadout bound leave none. Pairs are visited in TILE x TILE blocks whose corner bounds them all.
+
+Cost: O(U (B + J b + p)) for U surfaces, B = 400 blocks, J bound vertices, b blocks that survive and p pairs in them:
+the (CM, FM) square 161^2 is walked only where the loadout bound can still reach the score. The exact score is one
+gem_search._surface_score, O(100), for the ~7% of pairs with a whole base value.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from gear_optimizer.core.jit_setup import jit
+from gear_optimizer.rules import MAX_STAT
+from gear_optimizer.solver.gem_search import _surface_score
+
+_TILE = 8
+
+
+@jit(nopython=True, cache=True)
+def _vertex_bound(values, prices, relief, u, cm, fm, floor):
+    """The lowest vertex bound on a surface's base value at this CM and FM (stopping below floor)."""
+    best = 1.0e18
+    for j in range(values.shape[0]):
+        bound = values[j] - prices[j, 1] * cm - prices[j, 2] * fm + relief[u, j]
+        if bound < best:
+            best = bound
+            if best < floor:
+                return best
+    return best
+
+
+@jit(nopython=True, cache=True)
+def perfect_lines(score, surfaces, multipliers, notes, ceiling, out):
+    """Every (surface, CM, FM, base) with exactly this score under its ceiling, into out; returns how many there are
+    (more than out's rows: the rest is not listed)."""
+    words, coeffs, pattern, body_fever = surfaces
+    combo, ramp, fever = multipliers
+    head_len, body_total = notes
+    values, prices, relief = ceiling
+    total_notes = head_len + body_total
+    wanted = float(score)
+    found = 0
+    for u in range(body_fever.shape[0]):
+        p = pattern[u]
+        bf = int(body_fever[u])
+        n_hn, n_hf, sigma_hn, sigma_hf = coeffs[p, 0], coeffs[p, 1], coeffs[p, 2], coeffs[p, 3]
+        a = bf + sigma_hf * 0.01
+        e = body_total - bf + sigma_hn * 0.01
+        f = n_hf - sigma_hf * 0.01
+        g = n_hn - sigma_hn * 0.01
+        for cm_block in range(0, MAX_STAT + 1, _TILE):
+            cm_top = min(cm_block + _TILE - 1, MAX_STAT)
+            top_combo = combo[cm_top]
+            alpha_top, beta_top = a * top_combo + f, e * top_combo + g
+            for fm_block in range(0, MAX_STAT + 1, _TILE):
+                fm_top = min(fm_block + _TILE - 1, MAX_STAT)
+                shape = alpha_top * fever[fm_top] + beta_top
+                if _vertex_bound(values, prices, relief, u, cm_block, fm_block, wanted / shape) * shape < wanted:
+                    continue
+                for cm in range(cm_block, cm_top + 1):
+                    alpha, beta = a * combo[cm] + f, e * combo[cm] + g
+                    for fm in range(fm_block, fm_top + 1):
+                        shape = alpha * fever[fm] + beta
+                        base = int(np.ceil(wanted / shape))
+                        last = int((wanted + total_notes) / shape)
+                        while base <= last:
+                            if base <= _vertex_bound(values, prices, relief, u, cm, fm, float(base)):
+                                exact = _surface_score(
+                                    words[p], (bf, 0, 0), notes, 0, base, 0.0, (combo[cm], ramp[cm], fever[fm]), 0
+                                )
+                                if exact == score:
+                                    if found < out.shape[0]:
+                                        row = out[found]
+                                        row[0], row[1], row[2], row[3] = u, cm, fm, base
+                                    found += 1
+                            base += 1
+    return found
+
+
+@jit(nopython=True, cache=True)
+def score_ceiling(surfaces, multipliers, notes, ceiling, spare):
+    """The most any line under the ceiling can score: base x shape, with `spare` body notes moved into fever."""
+    coeffs, pattern, body_fever = surfaces
+    combo, fever = multipliers
+    head_len, body_total = notes
+    values, prices, relief = ceiling
+    best = 0.0
+    for u in range(body_fever.shape[0]):
+        p = pattern[u]
+        bf = int(body_fever[u])
+        a = bf + spare + coeffs[p, 3] * 0.01
+        e = body_total - bf - spare + coeffs[p, 2] * 0.01
+        f = coeffs[p, 1] - coeffs[p, 3] * 0.01
+        g = coeffs[p, 0] - coeffs[p, 2] * 0.01
+        for cm_block in range(0, MAX_STAT + 1, _TILE):
+            cm_top = min(cm_block + _TILE - 1, MAX_STAT)
+            alpha_top, beta_top = a * combo[cm_top] + f, e * combo[cm_top] + g
+            for fm_block in range(0, MAX_STAT + 1, _TILE):
+                fm_top = min(fm_block + _TILE - 1, MAX_STAT)
+                shape = alpha_top * fever[fm_top] + beta_top
+                if _vertex_bound(values, prices, relief, u, cm_block, fm_block, best / shape) * shape <= best:
+                    continue
+                for cm in range(cm_block, cm_top + 1):
+                    alpha, beta = a * combo[cm] + f, e * combo[cm] + g
+                    for fm in range(fm_block, fm_top + 1):
+                        shape = alpha * fever[fm] + beta
+                        best = max(best, _vertex_bound(values, prices, relief, u, cm, fm, best / shape) * shape)
+    return best
+
+
+@jit(nopython=True, cache=True)
+def band_lines(score, surfaces, multipliers, notes, ceiling, slip, out):
+    """Every (surface, CM, FM, lowest base, highest base) that can land on this score once notes leave the surface:
+    slip: (body notes that may enter or leave fever, full fever notes' worth of points lost); into out, returning how
+    many there are. A line's score is under base x (shape + spare) and over base x (shape - spare - lost)."""
+    coeffs, pattern, body_fever = surfaces
+    combo, fever = multipliers
+    head_len, body_total = notes
+    values, prices, relief = ceiling
+    spare, lost = slip
+    total_notes = head_len + body_total
+    wanted = float(score)
+    found = 0
+    for u in range(body_fever.shape[0]):
+        p = pattern[u]
+        bf = int(body_fever[u])
+        a = bf + coeffs[p, 3] * 0.01
+        e = body_total - bf + coeffs[p, 2] * 0.01
+        f = coeffs[p, 1] - coeffs[p, 3] * 0.01
+        g = coeffs[p, 0] - coeffs[p, 2] * 0.01
+        for cm_block in range(0, MAX_STAT + 1, _TILE):
+            cm_top = min(cm_block + _TILE - 1, MAX_STAT)
+            top_combo = combo[cm_top]
+            alpha_top, beta_top = (a + spare) * top_combo + f, (e - spare) * top_combo + g
+            for fm_block in range(0, MAX_STAT + 1, _TILE):
+                fm_top = min(fm_block + _TILE - 1, MAX_STAT)
+                shape = alpha_top * fever[fm_top] + beta_top
+                if _vertex_bound(values, prices, relief, u, cm_block, fm_block, wanted / shape) * shape < wanted:
+                    continue
+                for cm in range(cm_block, cm_top + 1):
+                    full = combo[cm]
+                    alpha, beta = a * full + f, e * full + g
+                    for fm in range(fm_block, fm_top + 1):
+                        middle = alpha * fever[fm] + beta
+                        reach = spare * full * (fever[fm] - 1.0)
+                        low = int(np.ceil(wanted / (middle + reach)))
+                        limit = _vertex_bound(values, prices, relief, u, cm, fm, float(low))
+                        if limit < low:
+                            continue
+                        high = min(int(limit), int((wanted + total_notes) / max(middle - reach - lost * full * fever[fm], 1.0)))
+                        if low <= high:
+                            if found < out.shape[0]:
+                                row = out[found]
+                                row[0], row[1], row[2], row[3], row[4] = u, cm, fm, low, high
+                            found += 1
+    return found
