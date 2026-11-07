@@ -265,29 +265,20 @@ def gem_winners(
     floors = np.full(loadout_count, -1, dtype=np.int64) if floors is None else np.ascontiguousarray(floors, dtype=np.int64)
     # Loadouts with equal PP, CM and FM side by side share their bound tables.
     order = np.lexsort(groups.loadouts[:, 2::-1].T)
-    offsets = np.ascontiguousarray(pool.frontier_offsets, dtype=np.int64)
-    lengths = np.ascontiguousarray(pool.frontier_lengths, dtype=np.int64)
-    pattern_ids = np.ascontiguousarray(pool.pattern_ids, dtype=np.int32)
-    counts = np.ascontiguousarray(pool.counts, dtype=np.int32)
-    head_coeffs = np.ascontiguousarray(pool.head_coeffs, dtype=np.int32)
     memo = groups.memo
-    if memo.shapes_done.shape[0] != offsets.shape[0]:
-        memo.frontier_shapes = np.zeros((offsets.shape[0], 4), dtype=np.float64)
-        memo.shapes_done = np.zeros(offsets.shape[0], dtype=np.bool_)
+    frontier_count = pool.frontier_offsets.shape[0]
+    if memo.shapes_done.shape[0] != frontier_count:
+        memo.frontier_shapes = np.zeros((frontier_count, 4), dtype=np.float64)
+        memo.shapes_done = np.zeros(frontier_count, dtype=np.bool_)
     _frontier_shapes(
-        groups.groups[:, 3], offsets, lengths, pattern_ids, counts, head_coeffs, groups.body_total, memo.frontier_shapes,
-        memo.shapes_done,
+        groups.groups[:, 3], pool.frontier_offsets, pool.frontier_lengths, pool.pattern_ids, pool.counts, pool.head_coeffs,
+        groups.body_total, memo.frontier_shapes, memo.shapes_done,
     )
     surfaces = (
-        offsets, lengths, memo.frontier_shapes,
-        pattern_ids, np.ascontiguousarray(pool.pattern_words, dtype=np.uint32), counts, head_coeffs,
-        np.ascontiguousarray(pool.head_greats, dtype=np.int32),
+        pool.frontier_offsets, pool.frontier_lengths, memo.frontier_shapes, pool.pattern_ids, pool.pattern_words, pool.counts,
+        pool.head_coeffs, pool.head_greats,
     )
-    tables = tuple(
-        np.ascontiguousarray(table, dtype=np.float64)
-        for table in (curves.f64["Perfect Points"], curves.f64["Combo Multiplier"], curves.combo_ramp,
-                      curves.f64["Fever Multiplier"])
-    )
+    tables = (curves.f64["Perfect Points"], curves.f64["Combo Multiplier"], curves.combo_ramp, curves.f64["Fever Multiplier"])
     loadouts = np.ascontiguousarray(groups.loadouts[order])
     most_gain = int((2 * groups.groups[:, 1] + groups.groups[:, 2]).max())
     rows, winner_groups = _score_on_cpu_cores(
@@ -305,7 +296,7 @@ def gem_winners(
         _residual_gems, _primary, _secondary, frontier, split = groups.groups[winner_groups[position]].tolist()
         base_ft, base_ff = groups.keys[loadouts[position, 5]].tolist()
         ft, ff = int(ft_values[split]), int(ff_values[split])
-        surface = int(offsets[frontier]) + int(rows[position, 1])
+        surface = int(pool.frontier_offsets[frontier]) + int(rows[position, 1])
         winners[index] = GemWinner(
             ft=ft,
             ff=ff,
@@ -338,10 +329,7 @@ def _surface_score(words, surface, notes, primary_val, secondary_val, pp_factor,
     base_value = float((primary_val * 2) + secondary_val) + pp_factor
     combo_val = int(np.floor(base_value * combo_mul))
     fever_val = int(np.floor(base_value * combo_mul * fever_mul))
-    body_normal = body_total - body_fever
-    if body_normal < 0:
-        body_normal = 0
-    score = body_fever * fever_val + body_normal * combo_val
+    score = body_fever * fever_val + (body_total - body_fever) * combo_val
 
     great_or = int(words[4]) | int(words[5]) | int(words[6]) | int(words[7])
     great_base = 0.0
@@ -353,16 +341,13 @@ def _surface_score(words, surface, notes, primary_val, secondary_val, pp_factor,
         great_combo_val = int(np.floor(great_base * combo_mul))
         great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
         if body_great > 0:
-            body_normal_great = body_great - body_fever_great
-            if body_normal_great < 0:
-                body_normal_great = 0
             body_normal_penalty = combo_val - great_combo_val
             if body_normal_penalty < 0:
                 body_normal_penalty = 0
             body_fever_penalty = fever_val - great_fever_val
             if body_fever_penalty < 0:
                 body_fever_penalty = 0
-            score -= body_normal_great * body_normal_penalty
+            score -= (body_great - body_fever_great) * body_normal_penalty
             score -= body_fever_great * body_fever_penalty
 
     for i in range(head_len):
@@ -514,9 +499,7 @@ def _frontier_shapes(group_frontiers, frontier_offsets, frontier_lengths, patter
             most = shapes[f]
             for row in range(frontier_offsets[f], frontier_offsets[f] + frontier_lengths[f]):
                 coeffs = head_coeffs[pattern_ids[row]]
-                shape = _surface_shape(
-                    counts[row, 0], max(0, body_total - counts[row, 0]), coeffs[0], coeffs[1], coeffs[2], coeffs[3]
-                )
+                shape = _surface_shape(counts[row, 0], body_total - counts[row, 0], coeffs[0], coeffs[1], coeffs[2], coeffs[3])
                 for t in range(4):
                     most[t] = max(most[t], shape[t])
 
@@ -657,14 +640,12 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                 body_great = int(surface_counts[sr, 1])
                 body_fever_great = int(surface_counts[sr, 2])
                 coeffs = head_coeffs[pattern_row]
-                shape = _surface_shape(
-                    body_fever, max(0, body_total - body_fever), coeffs[0], coeffs[1], coeffs[2], coeffs[3]
-                )
+                shape = _surface_shape(body_fever, body_total - body_fever, coeffs[0], coeffs[1], coeffs[2], coeffs[3])
                 # What the Greats lose at the least, as a shape: each is worth gap x its multipliers less, past the score's
                 # floors (one point a body note). A head note's combo ramp is at least 1.
                 if gap >= 1.0:
                     great_shape = (
-                        gap * body_fever_great, gap * max(0, body_great - body_fever_great),
+                        gap * body_fever_great, gap * (body_great - body_fever_great),
                         gap * head_greats[pattern_row, 1], gap * head_greats[pattern_row, 0] - body_great,
                     )
                 else:
@@ -723,14 +704,8 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                             secondary_base = (
                                 cur_secondary + g_cm * cm_s_delta + g_fm * fm_s_delta + leftover_after_fm * ov_s_delta
                             )
-                            record_base_value = -1.0e30
                             for g_pp in range(g_pp_max + 1):
                                 pp_base_value = float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
-                                # Great bases are nonincreasing only when both coordinates are.
-                                if pp_primary_delta <= 0 and pp_secondary_delta <= 0:
-                                    if pp_base_value <= record_base_value:
-                                        continue
-                                    record_base_value = pp_base_value
                                 if pp_base_value * pair_value + 1024.0 - pair_loss < threshold:
                                     continue
                                 score = _surface_score(
