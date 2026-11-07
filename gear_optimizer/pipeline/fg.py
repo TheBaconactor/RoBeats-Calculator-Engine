@@ -3,7 +3,7 @@
 Before the GA: the song's FG scoring bundle (prepare_fg_static). In the GA turn: the FG score rows of the loadouts the
 GA selected, keyed by their pre-gem totals (equal totals score alike; score_payload_fg). After it (finish_fg, host
 only): the stored surface, i.e. the best LOADOUTS_PER_SONG_LIMIT selected loadouts by the GA's Base score, one per
-effective loadout, with their exact Base scores and validated FG results, as the song's SongSolve.
+effective loadout, with their validated FG results, as the song's SongSolve.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from gear_optimizer.trace.materialize import (
     FgTraceMaterializationCache,
     materialize_force_payload_from_response_frontier,
 )
-from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
 from gear_optimizer.trace.reconstruct import UnplayableTrace
 from gear_optimizer.frontier.fg_cache import load_response_frontier_scoring_bundle
@@ -144,20 +143,20 @@ def best_fg_results(jobs, materialize, song_name: str) -> list[tuple[int, Any]]:
 
 
 def finish_fg(song: NativeSong, ga_result: tuple[GaSelection, dict]) -> SongSolve:
-    """The song's SongSolve from its GA result (fg_turn's): the selected surface with exact Base scores, each loadout's
-    FG solve (loadouts with equal pre-gem stats share one) and the FG results best_fg_results keeps."""
+    """The song's SongSolve from its GA result (fg_turn's): the selected surface, each loadout's FG solve (loadouts with
+    equal pre-gem stats share one) and the FG results best_fg_results keeps."""
     gpu_inputs, fg = song.gpu_inputs, song.runtime.fg
     timed, curves, selected = gpu_inputs.timed_song, gpu_inputs.curves, gpu_inputs.meta_primary_color
     selection, fg_rows = ga_result
     try:
-        loadouts, base_stats, paired_stats, perfect_times = [], [], [], []
+        loadouts, base_stats, perfect_times = [], [], []
         items = gpu_inputs.registry.id_to_item
-        for genome, _score, (_s, ft, ff, pp, cm, fm, ov), names, pre_gem in _selected_surface(song, selection, fg_rows):
-            loadouts.append(SolvedLoadout(tuple(names[:6]), tuple(names[6:])))
+        for genome, score, (_s, ft, ff, pp, cm, fm, ov), names, pre_gem in _selected_surface(song, selection, fg_rows):
+            allocation = gems(pp=pp, cm=cm, fm=fm, ft=ft, ff=ff, element=ov)
+            loadouts.append(SolvedLoadout(tuple(names[:6]), tuple(names[6:]), tuple(allocation[k] for k in GEM_KINDS),
+                                          apply_gems(pre_gem, allocation, selected), int(score)))
             base_stats.append(pre_gem)
             perfect_times.append(sum(items[item_id].perfect_time for item_id in genome[:6]))
-            paired_stats.append(apply_gems(pre_gem, gems(pp=pp, cm=cm, fm=fm, ft=ft, ff=ff, element=ov), selected))
-        paired = score_stats_exact_batch(paired_stats, timed, curves)
         song_inputs = timed.fg_inputs
         solves: dict[tuple, Any] = {}
         jobs = []
@@ -172,7 +171,7 @@ def finish_fg(song: NativeSong, ga_result: tuple[GaSelection, dict]) -> SongSolv
 
         def materialize(index: int, result: Any) -> Any:
             payload_fg = materialize_force_payload_from_response_frontier(
-                base_stats=base_stats[index], paired_base_score=paired[index], selected_element=selected,
+                base_stats=base_stats[index], paired_base_score=loadouts[index].score, selected_element=selected,
                 result=result, song=timed, curves=curves, trace_cache=trace_cache,
                 perfect_time=perfect_times[index],
             )

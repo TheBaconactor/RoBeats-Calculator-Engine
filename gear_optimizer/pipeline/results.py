@@ -12,7 +12,7 @@ from typing import Any
 
 from ..core.gem_defs import element_gem_count
 from ..core.utils import get_selected_element
-from ..gamedata import ELEMENTS, STATS, StatCurves
+from ..gamedata import ELEMENTS, STATS, StatCurves, Stats
 from gear_optimizer.store.fg_payload import require_response_surface
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, gems
@@ -33,8 +33,13 @@ class SolvedFg:
 
 @dataclass(frozen=True, slots=True)
 class SolvedLoadout:
+    """A selected loadout and the GA's Base result for it."""
+
     gear: tuple[str, ...]  # 6 names, slot order
     minis: tuple[str, ...]  # 3 names
+    gems: tuple[int, ...]  # per stats.GEM_KINDS
+    stats: Stats  # gems applied
+    score: int
 
 
 @dataclass(frozen=True, slots=True)

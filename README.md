@@ -117,7 +117,7 @@ flowchart LR
     B --> D["Exact Force Great frontier"]
     C --> E["GPU genetic search"]
     D --> E
-    E --> F["Exact gem search and rescore"]
+    E --> F["Force Great gems and exact replay"]
     F --> G["Base leaderboard"]
     F --> H["Force Great leaderboard"]
     G --> I[("evolution.db")]
@@ -127,9 +127,10 @@ flowchart LR
 1. **Prepare.** Read the chart, gear, Mini and stat data, and materialize song-specific state such as Mini Ascension.
 2. **Frontiers.** Load or build the fever-timing and Force Great frontiers: every non-dominated way to play the chart,
    cached per chart and rebuilt only when the logic that produced them changes.
-3. **Search.** The genetic search runs on one GPU thread; its loadouts read the frontiers to score whole builds.
-4. **Finish.** The search has already placed each loadout's Base gems. An exact CPU search places its Force Great gems,
-   an exact replay confirms the winners' scores, and they go to the Base and Force Great leaderboards. A stored build keeps the replay witness that proves it is
+3. **Search.** The genetic search runs on one GPU thread; its loadouts read the frontiers to score whole builds, each
+   with its best gems and its exact score.
+4. **Finish.** An exact CPU search places the loadouts' Force Great gems, an exact replay confirms every score, and the
+   winners go to the Base and Force Great leaderboards. A stored build keeps the replay witness that proves it is
    playable, which later turns into a note-by-note plan.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the full flow, and [`docs/math/`](docs/math/) has the mathematics.

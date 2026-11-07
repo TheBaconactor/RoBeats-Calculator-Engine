@@ -60,8 +60,7 @@ def test_a_polished_best_has_no_better_neighbor():
     flags = gpu_color_flags(inputs.color_flags)
     kernels.load_population_kernel(np.ascontiguousarray(neighbors[:n], dtype=np.int32), n)
     kernels.evaluate_kernel(n, flags, *device.upload_shortlist(inputs.ftff_shortlist))
-    scores = (fields.chunk_best_key.to_numpy()[:n] >> np.uint64(32)).astype(np.int64) - 1
-    assert scores.max() <= best[0]
+    assert fields.chunk_best_results.to_numpy()[:n, 0].max() - 1 <= best[0]
 
 
 def test_the_batch_width_changes_nothing(monkeypatch):
@@ -80,7 +79,7 @@ def test_a_seed_changes_the_search():
 def test_the_memo_serves_a_repeated_population_and_ends_with_the_song():
     first, second = ga_inputs(song(name="First")), ga_inputs(song(n_notes=80, name="Second"))
     device.ensure_ready()
-    fields.ga_eval_cache_key.fill(0)
+    fields.ga_eval_cache_results.fill(0)
     device.hard_reset("a fresh memo")
     fresh = _run(second)
     _run(first)
@@ -104,9 +103,9 @@ def test_a_clone_population_breeds_children_and_keeps_its_elite():
     )
     kernels.start_batch_kernel(0, 1, n_genomes, 123, 0)
     kernels.load_population_kernel(np.tile(row, (n_genomes, 1)), n_genomes)
-    keys = np.zeros(fields.MAX_GENOMES, dtype=np.uint64)
-    keys[:n_genomes] = np.arange(n_genomes + 1, 1, -1, dtype=np.uint64) << np.uint64(32)
-    fields.chunk_best_key.from_numpy(keys)
+    winners = np.zeros((fields.MAX_GENOMES, fields.GA_WINNER_COLS), dtype=np.int32)
+    winners[:n_genomes, 0] = np.arange(n_genomes + 1, 1, -1)
+    fields.chunk_best_results.from_numpy(winners)
     fields.ga_run_best.fill(0)
     kernels.next_generation_kernel(0, 1, n_genomes)
     population = fields.population_indices.to_numpy()[:n_genomes]
@@ -129,32 +128,44 @@ def _prepare_memo(stats):
     values = np.zeros((fields.MAX_GENOMES, 7), dtype=np.int16)
     values[: len(stats)] = stats
     fields.genome_base_stats.from_numpy(values)
-    fields.chunk_best_key.fill(0)
     fields.chunk_best_results.fill(0)
     _find_representatives(len(stats))
     return fields.ga_exact_eval_rep_idx.to_numpy()[: len(stats)]
 
 
+@ti.kernel
+def _finish_lanes(n_genomes: ti.i32):
+    kernels._finish_lanes(n_genomes)
+
+
+def test_a_tie_between_lanes_goes_to_the_lowest_combo():
+    device.ensure_ready()
+    fields.chunk_best_results.fill(0)
+    fields.ga_survivor_count[0] = 3
+    for lane, winner in enumerate(([9, 7, 1, 1, 1, 1], [9, 3, 2, 2, 2, 2], [8, 1, 3, 3, 3, 3])):
+        for column, value in enumerate(winner):
+            fields.ga_lane_best_results[0, lane, column] = value
+    _finish_lanes(1)
+    assert fields.chunk_best_results.to_numpy()[0].tolist() == [9, 3, 2, 2, 2, 2]
+
+
 def _publish(n):
-    keys = np.zeros(fields.MAX_GENOMES, dtype=np.uint64)
-    keys[:n] = ((np.arange(n, dtype=np.uint64) + 123) << 32) | np.arange(n, dtype=np.uint64)
-    gems = np.zeros((fields.MAX_GENOMES, 4), dtype=np.int32)
-    gems[:n] = np.arange(n * 4).reshape(n, 4)
-    fields.chunk_best_key.from_numpy(keys)
-    fields.chunk_best_results.from_numpy(gems)
+    winners = np.zeros((fields.MAX_GENOMES, fields.GA_WINNER_COLS), dtype=np.int32)
+    winners[:n] = np.arange(n * fields.GA_WINNER_COLS).reshape(n, fields.GA_WINNER_COLS) + 123
+    fields.chunk_best_results.from_numpy(winners)
     _scatter_results(n)
-    return fields.chunk_best_key.to_numpy()[:n], fields.chunk_best_results.to_numpy()[:n]
+    return fields.chunk_best_results.to_numpy()[:n]
 
 
 def _unique_rows(n: int) -> int:
     """The rows of the population of n that the search must run: uncached representatives."""
     representatives = fields.ga_exact_eval_rep_idx.to_numpy()[:n]
-    return int(np.count_nonzero((representatives == np.arange(n)) & (fields.chunk_best_key.to_numpy()[:n] == 0)))
+    return int(np.count_nonzero((representatives == np.arange(n)) & (fields.chunk_best_results.to_numpy()[:n, 0] == 0)))
 
 
 def _empty_memo():
     device.ensure_ready()
-    fields.ga_eval_cache_key.fill(0)
+    fields.ga_eval_cache_results.fill(0)
 
 
 def test_all_seven_stats_tell_misses_from_duplicates():
@@ -163,32 +174,29 @@ def test_all_seven_stats_tell_misses_from_duplicates():
     for col in range(7):
         stats[col + 1, col] += -1 if col == 3 else 1
     np.testing.assert_array_equal(_prepare_memo(stats), [0, 1, 2, 3, 4, 5, 6, 7, 0])
-    keys, gems = _publish(9)
-    assert keys[8] == keys[0]
-    np.testing.assert_array_equal(gems[8], gems[0])
+    winners = _publish(9)
+    np.testing.assert_array_equal(winners[8], winners[0])
     _prepare_memo(stats[[0, 8]])
     assert _unique_rows(2) == 0
-    np.testing.assert_array_equal(fields.chunk_best_key.to_numpy()[:2], keys[[0, 8]])
-    np.testing.assert_array_equal(fields.chunk_best_results.to_numpy()[:2], gems[[0, 8]])
+    np.testing.assert_array_equal(fields.chunk_best_results.to_numpy()[:2], winners[[0, 8]])
 
 
 def test_a_memo_collision_never_reuses_another_stat_tuple():
     _empty_memo()
     a, b = [0] * 7, [0] * 6 + [16384]  # FNV's low 14 bits collide when the final input differs by 2**14.
     _prepare_memo([a])
-    a_keys, a_gems = _publish(1)
+    a_winner = _publish(1)
     _prepare_memo([b])
     assert _unique_rows(1) == 1
-    assert int(fields.chunk_best_key.to_numpy()[0]) == 0
+    assert int(fields.chunk_best_results.to_numpy()[0, 0]) == 0
     # Simultaneous colliding misses publish exactly one coherent winner.
-    fields.ga_eval_cache_key.fill(0)
+    fields.ga_eval_cache_results.fill(0)
     _prepare_memo([a, b])
     _publish(2)
     _prepare_memo([b, a])
     assert _unique_rows(2) == 1
-    assert int(fields.chunk_best_key.to_numpy()[0]) == 0
-    assert int(fields.chunk_best_key.to_numpy()[1]) == int(a_keys[0])
-    np.testing.assert_array_equal(fields.chunk_best_results.to_numpy()[1], a_gems[0])
+    assert int(fields.chunk_best_results.to_numpy()[0, 0]) == 0
+    np.testing.assert_array_equal(fields.chunk_best_results.to_numpy()[1], a_winner[0])
 
 
 def test_a_missing_winner_is_never_cached():
@@ -199,31 +207,30 @@ def test_a_missing_winner_is_never_cached():
     assert _unique_rows(1) == 1
 
 
-def test_a_full_population_of_collisions_keeps_keys_and_gems_together():
+def test_a_full_population_of_collisions_keeps_scores_and_gems_together():
     _empty_memo()
     n = fields.MAX_GENOMES
     indices = np.arange(n)
     stats = np.zeros((n, 7), dtype=np.int16)
     stats[:, 6] = indices // 2 + (indices % 2) * 16384  # Every adjacent pair shares a bucket.
     np.testing.assert_array_equal(_prepare_memo(stats), indices)
-    keys, gems = _publish(n)
+    winners = _publish(n)
     _prepare_memo(stats[::-1])
-    restored = fields.chunk_best_key.to_numpy()[:n]
-    hits = restored != 0
+    restored = fields.chunk_best_results.to_numpy()[:n]
+    hits = restored[:, 0] != 0
     assert int(hits.sum()) == (n + 1) // 2
     assert _unique_rows(n) == n // 2
-    np.testing.assert_array_equal(restored[hits], keys[::-1][hits])
-    np.testing.assert_array_equal(fields.chunk_best_results.to_numpy()[:n][hits], gems[::-1][hits])
+    np.testing.assert_array_equal(restored[hits], winners[::-1][hits])
 
 
 def test_a_runtime_reset_discards_the_memo():
     _prepare_memo([[0] * 7])
     _publish(1)
-    assert np.any(fields.ga_eval_cache_key.to_numpy())
+    assert np.any(fields.ga_eval_cache_results.to_numpy())
     device.hard_reset("test")
     _prepare_memo([[0] * 7])
     assert _unique_rows(1) == 1
-    assert not np.any(fields.ga_eval_cache_key.to_numpy())
+    assert not np.any(fields.ga_eval_cache_results.to_numpy())
 
 
 @ti.kernel
@@ -241,7 +248,7 @@ def _score_every_pair(n_genomes: ti.i32, n_combos: ti.i32, flags: GpuColorFlags,
                 best = ti.Vector([-1, 0, 0, 0, 0], dt=ti.i32)
                 for g_cm in range(ctx.max_cm_gems + 1):
                     for g_fm in range(ti.min(ctx.max_fm_gems, ctx.budget - g_cm) + 1):
-                        score = pair_score(ctx, g_cm, g_fm)
+                        score = pair_score(ctx, g_cm, g_fm, 0)
                         g_pp = _best_pp_gems(ctx, ctx.budget - g_cm - g_fm)
                         if _improves(score, g_cm, g_fm, g_pp, best):
                             best = ti.Vector([score, g_pp, g_cm, g_fm, ctx.budget - g_cm - g_fm - g_pp])
@@ -265,9 +272,9 @@ def _reference_bounds(n_genomes: ti.i32, n_combos: ti.i32, flags: GpuColorFlags,
         out[genome, combo] = bound
 
 
-def _exhaustive_winners(n_genomes: int, flags, shortlist) -> tuple[np.ndarray, np.ndarray]:
-    """Each genome's winner over its key's shortlist: the highest score, then the highest combo index. The reference
-    each genome was searched with must bound every combo of it, not only its winner's."""
+def _exhaustive_winners(n_genomes: int, flags, shortlist) -> np.ndarray:
+    """Each genome's winner over its key's shortlist: the highest score, then the lowest combo index. The reference each
+    genome was searched with must bound every combo of it, not only its winner's."""
     out = np.zeros((n_genomes, fields.MAX_FTFF_COMBOS, 5), dtype=np.int32)
     _score_every_pair(n_genomes, fields.MAX_FTFF_COMBOS, flags, out)
     bounds = np.zeros((n_genomes, fields.MAX_FTFF_COMBOS), dtype=np.float32)
@@ -275,15 +282,14 @@ def _exhaustive_winners(n_genomes: int, flags, shortlist) -> tuple[np.ndarray, n
     ti.sync()
     stats = fields.genome_base_stats.to_numpy()[:n_genomes]
     representatives = fields.ga_exact_eval_rep_idx.to_numpy()[:n_genomes]
-    keys, gems = np.zeros(n_genomes, dtype=np.uint64), np.zeros((n_genomes, 4), dtype=np.int32)
+    winners = np.zeros((n_genomes, fields.GA_WINNER_COLS), dtype=np.int32)
     for genome in range(n_genomes):
         key = min(int(stats[genome, 5]), MAX_STAT) * (MAX_STAT + 1) + min(int(stats[genome, 6]), MAX_STAT)
         combos = shortlist.combos[shortlist.start[key] : shortlist.start[key] + shortlist.count[key]]
         assert representatives[genome] != genome or np.all(bounds[genome, combos] >= out[genome, combos, 0]), genome
-        score, combo = max((int(out[genome, combo, 0]), int(combo)) for combo in combos)
-        keys[genome] = (np.uint64(score + 1) << np.uint64(32)) | np.uint64(combo)
-        gems[genome] = out[genome, combo, 1:]
-    return keys, gems
+        score, combo = max((int(out[genome, combo, 0]), -int(combo)) for combo in combos)
+        winners[genome] = [score + 1, -combo, *out[genome, -combo, 1:]]
+    return winners
 
 
 # Loadouts without CM or FM and with high element stats spend every gem on them: the residual budget binds.
@@ -299,19 +305,15 @@ def test_the_culled_shortlist_search_finds_the_exhaustive_winners_every_time(n_n
     flags = gpu_color_flags(inputs.color_flags)
     shortlist = device.upload_shortlist(inputs.ftff_shortlist)
 
-    def search() -> tuple[np.ndarray, np.ndarray]:
-        fields.ga_eval_cache_key.fill(0)
+    def search() -> np.ndarray:
+        fields.ga_eval_cache_results.fill(0)
         kernels.evaluate_kernel(n_genomes, flags, *shortlist)
-        return fields.chunk_best_key.to_numpy()[:n_genomes].copy(), fields.chunk_best_results.to_numpy()[:n_genomes].copy()
+        return fields.chunk_best_results.to_numpy()[:n_genomes].copy()
 
-    keys, gems = search()
-    assert np.count_nonzero(keys) == n_genomes
-    again = search()  # the shared incumbent's atomic order must not reach the winner
-    np.testing.assert_array_equal(again[0], keys)
-    np.testing.assert_array_equal(again[1], gems)
-    expected_keys, expected_gems = _exhaustive_winners(n_genomes, flags, inputs.ftff_shortlist)
-    np.testing.assert_array_equal(keys, expected_keys)
-    np.testing.assert_array_equal(gems, expected_gems)
+    winners = search()
+    assert np.all(winners[:, 0] > 0)
+    np.testing.assert_array_equal(search(), winners)  # the shared incumbent's atomic order must not reach the winner
+    np.testing.assert_array_equal(winners, _exhaustive_winners(n_genomes, flags, inputs.ftff_shortlist))
 
 
 def test_a_table_selects_like_the_stored_surface_would():

@@ -3,9 +3,9 @@
 Per loadout of the GA surface:
 - identity: the effective loadout hash (gear names + each mini's signature as the song sees it) and the minis as
   their equivalence groups in display rotation;
-- meta result: the gem allocation re-solved exhaustively for the loadout's items (song fixed stats: the baseline
-  TeamBuff), scored by exact replay (precise: score + TimelineFrontier witness, physically validated;
-  non-precise: fixed chart timing, no witness); a loadout whose Base play no legal hit timing plays keeps no row;
+- meta result: the GA's gem allocation (song fixed stats: the baseline TeamBuff), scored by exact replay (precise:
+  score + TimelineFrontier witness, physically validated; non-precise: fixed chart timing, no witness), which must
+  give the GA's score; a loadout whose Base play no legal hit timing plays keeps no row;
 - Force Greats result, for every loadout the FG stage solved: its result (solved at the song's timing), scored by an
   exact surface replay of a physically validated trace (the FG materializer's); it stays attached whether or not it
   beats the meta score (the store ranks the FG board);
@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..core.team_buff import team_buff_effect
 from ..data.loadout_equivalence import (
@@ -30,17 +30,13 @@ from ..data.loadout_equivalence import (
 )
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
 from gear_optimizer.data.loadout_hashing import compact_gear_names, compact_mini_names
-from gear_optimizer.solver.song_config import baseline_fixed_stats
 from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
 from gear_optimizer.trace.reconstruct import UnplayableTrace
 from ..solver.timing_envelope import TimedSong
-from ..stats import GEM_KINDS, named_loadout_stats, total
+from ..stats import GEM_KINDS, named_loadout_stats
 from ..store.boards import Row
 from ..store.records import FgResult, Loadout, MetaResult, encode_trace
 from .results import SolvedFg, SolvedLoadout, SongSolve
-
-if TYPE_CHECKING:
-    from ..solver.scoring.fever_solver import GemSolve
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +63,12 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
     fg_by_index = dict(solve.fg)
     if len(fg_by_index) != len(solve.fg):
         raise ValueError(f"{solve.song}: two FG results for one loadout")
-    items = [[gears[n] for n in x.gear] + [song_view[n] for n in x.minis] for x in solve.loadouts]
-    fixed = baseline_fixed_stats(song.chart)
-    solves = _meta_resolve(fixed, items, song, curves, primary)
-
     fixed_tier = team_buff_effect(solve.tier, primary)
     out: list[Row] = []
     seen: set[str] = set()
     for i in row_order(len(solve.loadouts), [i for i, fg in solve.fg if fg.score > fg.paired]):
-        ident = loadout_identity(solve.loadouts[i], song_view, primary, secondary)
+        loadout = solve.loadouts[i]
+        ident = loadout_identity(loadout, song_view, primary, secondary)
         if ident.loadout_hash in seen:
             raise ValueError(f"{solve.song}: the GA surface holds loadout {ident.loadout_hash} twice")
         seen.add(ident.loadout_hash)
@@ -83,16 +76,17 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
         def stats_of(element: str, allocation: tuple[int, ...], solved: Mapping[str, int]) -> tuple[int, ...]:
             return stored_stats(fixed_tier, ident, gears, song_view, element, allocation, solved, (primary, secondary))
 
-        meta_gems, meta_stats = solves[i].gems, {k: int(v) for k, v in solves[i].stats.items()}
         try:
-            score, meta_trace = _meta_score(meta_stats, song, curves, sum(gears[n].perfect_time for n in ident.gear))
+            score, meta_trace = _meta_score(loadout.stats, song, curves, sum(gears[n].perfect_time for n in ident.gear))
         except UnplayableTrace as exc:
             logger.warning(
                 "%s: no row for loadout %s, its Base play is unplayable: %s", solve.song, ident.loadout_hash, exc
             )
             continue
+        if score != loadout.score:
+            raise ValueError(f"{solve.song}: loadout {ident.loadout_hash} replays to {score}, not the GA's {loadout.score}")
         meta = MetaResult(
-            element=primary, gems=meta_gems, stats=stats_of(primary, meta_gems, meta_stats), updated=0, seq=0
+            element=primary, gems=loadout.gems, stats=stats_of(primary, loadout.gems, loadout.stats), updated=0, seq=0
         )
         fg = fg_trace = fg_score = None
         solved = fg_by_index.get(i)
@@ -169,16 +163,6 @@ def stored_stats(
     if changed:
         raise ValueError(f"the canonical minis of {ident.loadout_hash} change scoring stats {changed}")
     return tuple(int(stats[s]) for s in STATS)
-
-
-def _meta_resolve(
-    fixed: Mapping[str, int], items: list[list[Any]], song: TimedSong, curves: StatCurves, primary: str
-) -> list[GemSolve]:
-    """Each loadout's exact base gem allocation."""
-    from ..solver.scoring.fever_solver import solve_best_fever_combination_batch  # loads Taichi
-
-    rows = [total(fixed, *(item.stats for item in row)) for row in items]
-    return solve_best_fever_combination_batch(rows, song, curves, selected_color=primary)
 
 
 def _meta_score(

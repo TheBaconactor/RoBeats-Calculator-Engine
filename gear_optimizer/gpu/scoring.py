@@ -3,11 +3,13 @@ GA's per-cell gem search: every (CM, FM) pair whose admissible bound can beat th
 _FM_RUN pairs first (PP from the PP/element prefix-argmax table).
 
 A surface's shape (A, E, F, G) gives its notes' sum before the score's floors: base value x (combo x (A x fever + E) + F x
-fever + G). Each note's score is at most its share of that, so a bound is that sum, with _BOUND_MARGIN over the float order."""
+fever + G). Each note's score is at most its share of that, so a bound is that sum, with _BOUND_MARGIN over the float order,
+and exact scores cost the head's notes only where the exact body and that sum over the head can reach the floor."""
 
 from collections.abc import Mapping
 
 from gear_optimizer.core.color_flags import COLOR_FLAG_KEYS
+from gear_optimizer.gamedata import COMBO_RAMP_NOTES
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL
 
 from . import fields
@@ -16,6 +18,8 @@ from .runtime import ti
 # FM gem counts per run bound in the exact search's pair loop.
 _FM_RUN = 8
 _BOUND_MARGIN = 1024.0
+_HEAD_MARGIN = 128.0  # Over the head's sum: float32 shapes hold it in sums with the body's notes.
+_FLOAT32_ERROR = 3.0e-7  # Relative: four float32 rounding steps of 2**-24, the multipliers' and the products'.
 
 # The song's color flags as one kernel argument (core.color_flags).
 GpuColorFlags = ti.types.struct(**dict.fromkeys(COLOR_FLAG_KEYS, ti.i32))
@@ -46,38 +50,47 @@ def lookup_ref_fm(value: ti.i32) -> ti.f32:
 
 
 @ti.func
-def _head_word_score(
-    base_value: ti.f32, factor: ti.f32, fever_delta: ti.f32, mask: ti.u32, first: ti.i32, last: ti.i32
-) -> ti.i32:
-    """Head notes first..last - 1, at most one mask word of them: bit i - first says whether note i is in fever."""
-    score = ti.i32(0)
-    t: ti.f32 = ti.cast(first + 1, ti.f32)
-    for i in range(first, last):
-        ramp_val = base_value + (t * factor)
-        is_fever = (mask >> ti.u32(i - first)) & ti.u32(1)
-        # Branchless select: mul is either 1.0 or fever_mul.
-        mul = 1.0 + fever_delta * ti.cast(is_fever, ti.f32)
-        score += ti.cast(ramp_val * mul, ti.i32)
-        t += 1.0
-    return score
+def _float64_bits(words: ti.types.vector(2, ti.u32)) -> ti.u64:
+    return ti.cast(words[0], ti.u64) | (ti.cast(words[1], ti.u64) << ti.u64(32))
 
 
 @ti.func
-def _surface_score(base_value: ti.f32, combo_mul: ti.f32, fever_mul: ti.f32, pool_idx: ti.i32) -> ti.i32:
-    """Notes past the head at full combo, then the head's combo ramp: score[i] = base_value + i * factor (the first 100
-    notes). All values are non-negative: truncation matches the game's floor."""
-    head_len: ti.i32 = fields.song_head_len[0]
-    combo_val = ti.cast(base_value * combo_mul, ti.i32)
-    fever_val = ti.cast(base_value * combo_mul * fever_mul, ti.i32)
-    score = (fields.grid_frontier_body_fever_pool[pool_idx] * fever_val) + (
-        fields.grid_frontier_body_normal_pool[pool_idx] * combo_val
-    )
-    factor: ti.f32 = (combo_mul - 1.0) * base_value / 100.0
-    fever_delta: ti.f32 = fever_mul - 1.0
-    for word in ti.static(range(4)):
-        mask = fields.grid_frontier_masks_bits_pool[pool_idx, word]
-        score += _head_word_score(base_value, factor, fever_delta, mask, word * 32, ti.min(head_len, (word + 1) * 32))
-    return score
+def _float64_of(value: ti.i32) -> ti.u64:
+    """The float64 bits of a positive integer below 2**24, which float32 holds exactly."""
+    bits = ti.cast(ti.bit_cast(ti.cast(value, ti.f32), ti.u32), ti.u64)
+    return ((bits >> ti.u64(23)) + ti.u64(1023 - 127)) << ti.u64(52) | (bits & ti.u64(0x7FFFFF)) << ti.u64(29)
+
+
+@ti.func
+def _float64_product(a: ti.u64, b: ti.u64) -> ti.u64:
+    """a x b in IEEE float64, the game's arithmetic, on GPUs without it: bits of positive normal numbers, in 64-bit
+    integers, rounded to nearest, ties to even."""
+    hidden = ti.u64(1) << ti.u64(52)
+    a_mantissa = (a & (hidden - ti.u64(1))) | hidden
+    b_mantissa = (b & (hidden - ti.u64(1))) | hidden
+    a_high, a_low = a_mantissa >> ti.u64(32), a_mantissa & ti.u64(0xFFFFFFFF)
+    b_high, b_low = b_mantissa >> ti.u64(32), b_mantissa & ti.u64(0xFFFFFFFF)
+    low = a_low * b_low
+    middle = (a_low * b_high) + (a_high * b_low) + (low >> ti.u64(32))
+    product_high = (a_high * b_high) + (middle >> ti.u64(32))
+    product_low = (middle << ti.u64(32)) | (low & ti.u64(0xFFFFFFFF))
+    # The 106-bit product's top bit is 104 or 105: the mantissa is its top 53 bits.
+    carry = product_high >> ti.u64(41)
+    shift = ti.u64(52) + carry
+    mantissa = (product_high << (ti.u64(64) - shift)) | (product_low >> shift)
+    half = ti.u64(1) << (shift - ti.u64(1))
+    dropped = product_low & ((half << ti.u64(1)) - ti.u64(1))
+    if dropped > half or (dropped == half and (mantissa & ti.u64(1)) != ti.u64(0)):
+        mantissa += ti.u64(1)
+    # Added, not or-ed: a mantissa rounded up to 2**53 carries into the exponent.
+    return (((a >> ti.u64(52)) + (b >> ti.u64(52)) + carry - ti.u64(1023)) << ti.u64(52)) + (mantissa - hidden)
+
+
+@ti.func
+def _float64_floor(x: ti.u64) -> ti.i32:
+    """The floor of a float64 at least 1 and below 2**31, from its bits."""
+    hidden = ti.u64(1) << ti.u64(52)
+    return ti.cast(((x & (hidden - ti.u64(1))) | hidden) >> (ti.u64(1023 + 52) - (x >> ti.u64(52))), ti.i32)
 
 
 @ti.func
@@ -152,6 +165,44 @@ def search_context(
 
 
 @ti.func
+def _note_score(base: ti.i32, combo_stat: ti.i32, note: ti.i32, fever_stat: ti.i32, in_fever: ti.u32) -> ti.i32:
+    """A note's score, as score.py: base x combo x fever floored, in the game's float64 and operation order. float32
+    settles it unless an integer lies within its error. Base values are integers: the Perfect Points curve is. All values
+    are positive, so floors truncate."""
+    rough: ti.f32 = ti.cast(base, ti.f32) * fields.note_combo[combo_stat, note]
+    if in_fever != ti.u32(0):
+        rough *= fields.ref_fm_field[fever_stat]
+    whole: ti.f32 = ti.floor(rough)
+    score = ti.cast(whole, ti.i32)
+    if ti.abs(rough - whole - 0.5) >= 0.5 - (rough * _FLOAT32_ERROR):
+        exact = _float64_product(_float64_of(base), _float64_bits(fields.note_combo_bits[combo_stat, note]))
+        if in_fever != ti.u32(0):
+            exact = _float64_product(exact, _float64_bits(fields.fever_bits[fever_stat]))
+        score = _float64_floor(exact)
+    return score
+
+
+@ti.func
+def _surface_score(ctx: SearchContext, base: ti.i32, combo_stat: ti.i32, fever_stat: ti.i32, floor: ti.i32) -> ti.i32:
+    """The exact score of a surface; -1 if it stays below `floor`, which the notes past the head and the head's sum before
+    floors can tell."""
+    body_fever = fields.grid_frontier_body_fever_pool[ctx.pool_idx]
+    body_normal = fields.grid_frontier_body_normal_pool[ctx.pool_idx]
+    score = (body_fever * _note_score(base, combo_stat, COMBO_RAMP_NOTES, fever_stat, ti.u32(1))) + (
+        body_normal * _note_score(base, combo_stat, COMBO_RAMP_NOTES, fever_stat, ti.u32(0))
+    )
+    head_shape = ctx.shape - ti.Vector([ti.cast(body_fever, ti.f32), ti.cast(body_normal, ti.f32), 0.0, 0.0])
+    head_sum = ti.cast(base, ti.f32) * shape_value(head_shape, fields.ref_cm_field[combo_stat], fields.ref_fm_field[fever_stat])
+    if score + ti.cast(head_sum + _HEAD_MARGIN, ti.i32) < floor:
+        score = -1
+    else:
+        for note in range(fields.song_head_len[0]):
+            word = fields.grid_frontier_masks_bits_pool[ctx.pool_idx, note >> 5]
+            score += _note_score(base, combo_stat, note, fever_stat, (word >> ti.cast(note & 31, ti.u32)) & ti.u32(1))
+    return score
+
+
+@ti.func
 def _best_pp_gems(ctx: SearchContext, leftover: ti.i32) -> ti.i32:
     """The prefix table's PP gems of `leftover` gems split between PP and element gems: O(1) per (CM, FM) pair instead of
     a scan of the splits."""
@@ -181,11 +232,21 @@ def pair_bound(ctx: SearchContext, g_cm: ti.i32, g_fm: ti.i32) -> ti.f32:
 
 
 @ti.func
-def pair_score(ctx: SearchContext, g_cm: ti.i32, g_fm: ti.i32) -> ti.i32:
-    """The exact score of a (CM, FM) pair, its PP gems from the prefix table."""
+def pair_floor(ctx: SearchContext, g_cm: ti.i32, g_fm: ti.i32) -> ti.i32:
+    """A score the pair is sure to reach: its value less a floor on each note, with a margin over the float order."""
+    notes: ti.i32 = (
+        fields.grid_frontier_body_fever_pool[ctx.pool_idx] + fields.grid_frontier_body_normal_pool[ctx.pool_idx]
+        + fields.song_head_len[0]
+    )
+    return ti.cast(pair_bound(ctx, g_cm, g_fm) - (2.0 * _BOUND_MARGIN), ti.i32) - notes
+
+
+@ti.func
+def pair_score(ctx: SearchContext, g_cm: ti.i32, g_fm: ti.i32, floor: ti.i32) -> ti.i32:
+    """The exact score of a (CM, FM) pair, its PP gems from the prefix table (-1 below `floor`: _surface_score)."""
     return _surface_score(
-        _pair_base(ctx, g_cm, g_fm), lookup_ref_cm(ctx.cur_cm + (g_cm * STAT_GEM_GAIN_NORMAL)),
-        lookup_ref_fm(ctx.cur_fm + (g_fm * STAT_GEM_GAIN_FEVER)), ctx.pool_idx,
+        ctx, ti.cast(_pair_base(ctx, g_cm, g_fm), ti.i32), _stat_index(ctx.cur_cm + (g_cm * STAT_GEM_GAIN_NORMAL)),
+        _stat_index(ctx.cur_fm + (g_fm * STAT_GEM_GAIN_FEVER)), floor,
     )
 
 
@@ -220,19 +281,20 @@ def _seed_pair(ctx: SearchContext) -> ti.types.vector(2, ti.i32):
 
 
 @ti.func
-def surface_search(ctx: SearchContext, floor: ti.i32) -> ti.types.vector(5, ti.i32):
-    """The best [score, PP, CM, FM, element gems] on one surface; a pair whose bound is below `floor` (the caller's
-    incumbent: a result under it cannot win) is not scored. Without one, a seed pair's score starts the pruning.
+def surface_search(ctx: SearchContext, floor: ti.i32, exact: ti.template()) -> ti.types.vector(5, ti.i32):
+    """The best [score, PP, CM, FM, element gems] on one surface. Exact: a pair whose bound is below `floor` (the caller's
+    incumbent: a result under it cannot win) is not scored. Else the scores are the pairs' bounds: no result on the
+    surface passes the best of them, and a seed pair's bound starts the pruning.
 
     Along a row, an FM gem replaces an element gem and gains less base value (a song's element gem is worth the most), so
     a run's best base value is at its fewest FM gems (PP's share never falls with more leftover) and its highest fever
     multiplier at the most."""
     best = ti.Vector([-1, 0, 0, 0, 0], dt=ti.i32)
     seed = ti.Vector([-1, -1], dt=ti.i32)
-    if floor <= 0:
+    if ti.static(not exact):
         seed = _seed_pair(ctx)
         g_pp: ti.i32 = _best_pp_gems(ctx, ctx.budget - seed[0] - seed[1])
-        best = ti.Vector([pair_score(ctx, seed[0], seed[1]), g_pp, seed[0], seed[1], ctx.budget - seed[0] - seed[1] - g_pp])
+        best = ti.Vector([ti.cast(pair_bound(ctx, seed[0], seed[1]), ti.i32), g_pp, seed[0], seed[1], ctx.budget - seed[0] - seed[1] - g_pp])
     floor_value: ti.f32 = ti.cast(floor, ti.f32)
     g_cm: ti.i32 = 0
     while g_cm <= ctx.max_cm_gems:
@@ -255,9 +317,10 @@ def surface_search(ctx: SearchContext, floor: ti.i32) -> ti.types.vector(5, ti.i
                 base_value: ti.f32 = _pair_base(ctx, g_cm, g_fm)
                 fever_mul: ti.f32 = lookup_ref_fm(ctx.cur_fm + (g_fm * STAT_GEM_GAIN_FEVER))
                 bound: ti.f32 = base_value * ((alpha * fever_mul) + beta) + _BOUND_MARGIN
-                # The seed was already scored.
-                if bound > ti.cast(best[0], ti.f32) and bound >= floor_value and (g_cm != seed[0] or g_fm != seed[1]):
-                    score = _surface_score(base_value, combo_mul, fever_mul, ctx.pool_idx)
+                if bound > ti.cast(best[0], ti.f32) and bound >= floor_value:
+                    score = ti.cast(bound, ti.i32)
+                    if ti.static(exact):
+                        score = pair_score(ctx, g_cm, g_fm, ti.max(best[0], floor))
                     g_pp: ti.i32 = _best_pp_gems(ctx, ctx.budget - g_cm - g_fm)
                     if _improves(score, g_cm, g_fm, g_pp, best):
                         best = ti.Vector([score, g_pp, g_cm, g_fm, ctx.budget - g_cm - g_fm - g_pp])
@@ -269,10 +332,10 @@ def surface_search(ctx: SearchContext, floor: ti.i32) -> ti.types.vector(5, ti.i
 
 
 @ti.func
-def gem_reference(ctx: SearchContext, base: ti.i32, best_score: ti.i32) -> fields.GemReference:
-    """The reference of a search over the largest budget of a genome's combos, its best score best_score; `base`: its base
-    value without (CM, FM) or PP gems. A pair's value is at most best_score plus the notes' floors, with a margin over the
-    float order. A base value that may reach zero bounds nothing: every combo stays."""
+def gem_reference(ctx: SearchContext, base: ti.i32, best_bound: ti.i32) -> fields.GemReference:
+    """The reference of a surface over the largest budget of a genome's combos, best_bound the highest of its pairs' bounds;
+    `base`: its base value without (CM, FM) or PP gems. A base value that may reach zero bounds nothing: every combo
+    stays."""
     cm_cost: ti.i32 = ctx.w_ov - ctx.w_cm
     fm_cost: ti.i32 = ctx.w_ov - ctx.w_fm
     pp_base: ti.f32 = lookup_ref_pp(ctx.cur_pp)
@@ -280,11 +343,7 @@ def gem_reference(ctx: SearchContext, base: ti.i32, best_score: ti.i32) -> field
     base_hi: ti.f32 = _split_base_value(ctx, 0, 0, _best_pp_gems(ctx, ctx.budget))
     lowest: ti.i32 = ti.max(base - (ctx.max_cm_gems * cm_cost) - (ctx.max_fm_gems * fm_cost), ctx.base_init)
     base_lo: ti.f32 = ti.cast(lowest, ti.f32) + pp_base
-    notes: ti.i32 = (
-        fields.grid_frontier_body_fever_pool[ctx.pool_idx] + fields.grid_frontier_body_normal_pool[ctx.pool_idx]
-        + fields.song_head_len[0]
-    )
-    top: ti.f32 = ti.cast(best_score + notes + 64, ti.f32) * 1.00001 if base_lo > 0.0 else 1.0e20
+    top: ti.f32 = ti.cast(best_bound, ti.f32) * 1.00001 if base_lo > 0.0 else 1.0e20
     combo_lo: ti.f32 = lookup_ref_cm(ctx.cur_cm)
     combo_hi: ti.f32 = lookup_ref_cm(ctx.cur_cm + (ctx.max_cm_gems * STAT_GEM_GAIN_NORMAL))
     fever_lo: ti.f32 = lookup_ref_fm(ctx.cur_fm)
@@ -333,7 +392,7 @@ def exact_gem_search(
     base: ti.f32 = ti.cast(base_init + (budget * gem_weights(flags)[3]), ti.f32)
     for pool_idx in range(option[0], option[0] + option[1]):
         if reference_bound(reference, base, fields.grid_frontier_shape_pool[pool_idx]) >= ti.cast(floor, ti.f32):
-            candidate = surface_search(search_context(budget, stats, base_init, flags, pool_idx), floor)
+            candidate = surface_search(search_context(budget, stats, base_init, flags, pool_idx), floor, True)
             if candidate[0] > result[0]:
                 result = candidate
     return result

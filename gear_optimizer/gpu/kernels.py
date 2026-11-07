@@ -10,7 +10,7 @@ from gear_optimizer.solver.genetic_pipeline import (
 )
 
 from . import fields
-from .fields import GA_FG_CANDIDATES_PER_RUN, GA_FTFF_LANES, GA_RESULT_COLS, ITEM_STAT_DIM, MAX_SLOTS
+from .fields import GA_FG_CANDIDATES_PER_RUN, GA_FTFF_LANES, GA_RESULT_COLS, GA_WINNER_COLS, ITEM_STAT_DIM, MAX_SLOTS
 from .runtime import ti
 from .scoring import (
     GpuColorFlags,
@@ -21,7 +21,7 @@ from .scoring import (
     lookup_ref_cm,
     lookup_ref_fm,
     lookup_ref_pp,
-    pair_score,
+    pair_floor,
     reference_bound,
     search_context,
     shape_value,
@@ -202,22 +202,20 @@ def _find_representatives(n_genomes: ti.i32):
         fields.ga_survivor_count[g] = 0
         stats = fields.genome_base_stats[g]
         slot = _memo_slot(g)
-        hit = fields.ga_eval_cache_key[slot] != ti.u64(0)
+        hit = fields.ga_eval_cache_results[slot][0] != 0
         for i in ti.static(range(7)):
             if stats[i] != fields.ga_eval_cache_stats[slot][i]:
                 hit = False
         if hit:
-            fields.chunk_best_key[g] = fields.ga_eval_cache_key[slot]
-            for i in ti.static(range(4)):
+            for i in ti.static(range(GA_WINNER_COLS)):
                 fields.chunk_best_results[g, i] = fields.ga_eval_cache_results[slot][i]
         else:
-            fields.chunk_best_key[g] = ti.u64(0)
-            for i in ti.static(range(4)):
+            for i in ti.static(range(GA_WINNER_COLS)):
                 fields.chunk_best_results[g, i] = 0
             ti.atomic_min(fields.ga_eval_cache_owner[slot], g)
     for g in range(n_genomes):
         rep = g
-        if fields.chunk_best_key[g] == ti.u64(0):
+        if fields.chunk_best_results[g, 0] == 0:
             owner = fields.ga_eval_cache_owner[_memo_slot(g)]
             same = True
             for i in ti.static(range(7)):
@@ -234,8 +232,7 @@ def _scatter_results(n_genomes: ti.i32):
     for g in range(n_genomes):
         rep = fields.ga_exact_eval_rep_idx[g]
         if rep != g:
-            fields.chunk_best_key[g] = fields.chunk_best_key[rep]
-            for i in ti.static(range(4)):
+            for i in ti.static(range(GA_WINNER_COLS)):
                 fields.chunk_best_results[g, i] = fields.chunk_best_results[rep, i]
     # One deterministic writer per slot; lookup completed before this dispatch.
     for slot in range(fields.GA_EVAL_CACHE_SIZE):
@@ -243,8 +240,7 @@ def _scatter_results(n_genomes: ti.i32):
         if g < n_genomes:
             for i in ti.static(range(7)):
                 fields.ga_eval_cache_stats[slot][i] = ti.cast(fields.genome_base_stats[g][i], ti.i32)
-            fields.ga_eval_cache_key[slot] = fields.chunk_best_key[g]
-            for i in ti.static(range(4)):
+            for i in ti.static(range(GA_WINNER_COLS)):
                 fields.ga_eval_cache_results[slot][i] = fields.chunk_best_results[g, i]
 
 
@@ -295,14 +291,14 @@ def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRA
     """What each unique uncached row needs before its combos are searched: an incumbent, its reference and the combos
     that can reach the incumbent.
 
-    The surface most valuable at capped multipliers is searched exactly over the largest residual budget of the row's
-    combos, at the base value of its own budget: so its best score caps its value at every (CM, FM) pair any combo can
-    spend, up to the notes' floors (scoring.gem_reference), and each other surface's follows through their ratios
-    (scoring.reference_bound). A combo of that budget can spend the best pair, and the surface most valuable there,
-    nearly always the row's winner, scored there is the incumbent."""
+    The surface most valuable at capped multipliers is searched over the largest residual budget of the row's combos, at
+    the base value of its own budget: so its best bound caps its value at every (CM, FM) pair any combo can spend
+    (scoring.gem_reference), and each other surface's follows through their ratios (scoring.reference_bound). A combo of
+    that budget can spend the best pair, and what the surface most valuable there, nearly always the row's winner, is sure
+    to score at it is the incumbent."""
     w_ov: ti.i32 = gem_weights(flags)[3]
     for genome in range(n_genomes):
-        if fields.ga_exact_eval_rep_idx[genome] == genome and fields.chunk_best_key[genome] == ti.u64(0):
+        if fields.ga_exact_eval_rep_idx[genome] == genome and fields.chunk_best_results[genome, 0] == 0:
             stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
             stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
             span = ti.Vector([starts[stat_key], counts[stat_key]])
@@ -311,10 +307,10 @@ def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRA
                 top = _most_valuable_surface(combos, span, stats, flags, caps, 0)
                 base: ti.i32 = top[2] + (top[1] * w_ov)
                 wide = search_context(top[3], stats, base - (top[3] * w_ov), flags, top[0])
-                best = surface_search(wide, 0)
+                best = surface_search(wide, 0, False)
                 pair = ti.Vector([best[2], best[3]])
                 top = _most_valuable_surface(combos, span, stats, flags, pair, pair[0] + pair[1])
-                incumbent = pair_score(search_context(top[1], stats, top[2], flags, top[0]), pair[0], pair[1])
+                incumbent = pair_floor(search_context(top[1], stats, top[2], flags, top[0]), pair[0], pair[1])
                 reference = gem_reference(wide, base, best[0])
                 fields.ga_eval_incumbent_score[genome] = incumbent
                 fields.ga_gem_reference[genome] = reference
@@ -339,9 +335,9 @@ def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRA
 
 @ti.func
 def _search_combos(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, counts: _I32_ARRAY, combos: _I32_ARRAY):
-    """The exact search of the listed combos, each thread its genome's lane, which keeps its lane's winner; finish_lanes
-    reduces the lanes (no u64 atomics: MoltenVK rejects atomic_fetch_max on ulong). A row with too many combos to list
-    has every lane stride its shortlist.
+    """The exact search of the listed combos, each thread its genome's lane, which keeps its lane's winner (the first of
+    its best scores: combos ascend); finish_lanes reduces the lanes. A row with too many combos to list has every lane
+    stride its shortlist.
 
     The launch is sized by the host-known population; the live threads are read on the device, so a generation needs no
     host readback (a full pipeline drain). A SIMD group runs as long as its slowest thread, so they are packed."""
@@ -353,13 +349,9 @@ def _search_combos(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, 
         genome = entry // lanes
         lane = entry - genome * lanes
         survivors = fields.ga_survivor_count[genome]
-        fields.ga_lane_best_key[genome, lane] = ti.u64(0)
-        for i in ti.static(range(4)):
-            fields.ga_lane_best_results[genome, lane, i] = 0
         stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
         reference = fields.ga_gem_reference[genome]
-        best_key = ti.u64(0)
-        best = ti.Vector([0, 0, 0, 0, 0], dt=ti.i32)
+        best = ti.Vector.zero(ti.i32, GA_WINNER_COLS)
         stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
         listed = survivors <= lanes
         n_combos: ti.i32 = survivors if listed else counts[stat_key]
@@ -371,34 +363,30 @@ def _search_combos(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, 
             # The threshold is the best exact score found for this genome (here or in another lane), not score + 1:
             # culling only bound < score keeps every tie, so the winning combo is unchanged. Stale reads of the shared
             # incumbent only cull less.
-            cull_threshold: ti.i32 = ti.max(best[0], fields.ga_eval_incumbent_score[genome])
+            cull_threshold: ti.i32 = ti.max(best[0] - 1, fields.ga_eval_incumbent_score[genome])
             result = exact_gem_search(_combo_option(combo_idx, stats, flags), stats, flags, cull_threshold, reference)
-            if result[0] >= 0:
-                key = (ti.cast(result[0] + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-                if key > best_key:
-                    best_key = key
-                    best = result
-                    ti.atomic_max(fields.ga_eval_incumbent_score[genome], result[0])
+            if result[0] + 1 > best[0]:
+                best = ti.Vector([result[0] + 1, combo_idx, result[1], result[2], result[3], result[4]])
+                ti.atomic_max(fields.ga_eval_incumbent_score[genome], result[0])
             local_c += lanes
-        if best_key != ti.u64(0):
-            fields.ga_lane_best_key[genome, lane] = best_key
-            for i in ti.static(range(4)):
-                fields.ga_lane_best_results[genome, lane, i] = best[1 + i]
+        for i in ti.static(range(GA_WINNER_COLS)):
+            fields.ga_lane_best_results[genome, lane, i] = best[i]
 
 
 @ti.func
 def _finish_lanes(n_genomes: ti.i32):
+    """Each searched row's winner: its lanes' best score, the lowest combo of a tie."""
     for g in range(n_genomes):
-        best_key = fields.chunk_best_key[g]
+        best_score, best_combo = 0, 0
         best_lane = ti.i32(-1)
         for lane in range(ti.min(fields.ga_survivor_count[g], GA_FTFF_LANES)):
-            key = fields.ga_lane_best_key[g, lane]
-            if key > best_key:
-                best_key = key
+            score = fields.ga_lane_best_results[g, lane, 0]
+            combo = fields.ga_lane_best_results[g, lane, 1]
+            if score > best_score or (score == best_score and combo < best_combo):
+                best_score, best_combo = score, combo
                 best_lane = lane
         if best_lane >= 0:
-            fields.chunk_best_key[g] = best_key
-            for i in ti.static(range(4)):
+            for i in ti.static(range(GA_WINNER_COLS)):
                 fields.chunk_best_results[g, i] = fields.ga_lane_best_results[g, best_lane, i]
 
 
@@ -417,14 +405,13 @@ def evaluate_kernel(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY,
 @ti.func
 def _result_row(genome: ti.i32) -> ti.types.vector(GA_RESULT_COLS, ti.i32):
     """[score, FT, FF, PP, CM, FM, element gems] of a genome's winner."""
-    key = fields.chunk_best_key[genome]
-    combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+    combo_idx = fields.chunk_best_results[genome, 1]
     result = ti.Vector.zero(ti.i32, GA_RESULT_COLS)
-    result[0] = ti.cast(key >> ti.u64(32), ti.i32) - 1
+    result[0] = fields.chunk_best_results[genome, 0] - 1
     result[1] = fields.ftff_combo_ft[combo_idx]
     result[2] = fields.ftff_combo_ff[combo_idx]
     for i in ti.static(range(4)):
-        result[3 + i] = fields.chunk_best_results[genome, i]
+        result[3 + i] = fields.chunk_best_results[genome, 2 + i]
     return result
 
 
@@ -432,7 +419,7 @@ def _result_row(genome: ti.i32) -> ti.types.vector(GA_RESULT_COLS, ti.i32):
 def _refresh_scores_and_runs_best(run_start: ti.i32, n_runs: ti.i32, n_genomes: ti.i32):
     """Every genome's score from its winner (-1 without one), and each run's best row where the run improved."""
     for g in range(n_runs * n_genomes):
-        fields.ga_scores[g] = ti.cast(fields.chunk_best_key[g] >> ti.u64(32), ti.i32) - 1
+        fields.ga_scores[g] = fields.chunk_best_results[g, 0] - 1
     for r in range(n_runs):
         start: ti.i32 = r * n_genomes
         best_score: ti.i32 = -1

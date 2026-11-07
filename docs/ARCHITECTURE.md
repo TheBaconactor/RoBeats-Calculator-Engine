@@ -134,8 +134,8 @@ change a result. A missing or incompatible exact surface is an error.
 `gear_optimizer/pipeline/storing.py` stores a solved song in the worker that
 solved it. The song arrives as a `SongSolve` (`pipeline/results.py`: the GA
 surface and the Force Great results the FG stage published);
-`pipeline/canonical.py` turns it into store rows (the exhaustive meta gem
-re-solve, exact replays, identity and stats, each computed once) and
+`pipeline/canonical.py` turns it into store rows (exact replays, which must
+give the GA's scores, identity and stats, each computed once) and
 `store_solve` merges them with `store.db.store_results()` and prints what the
 database holds. Every Force
 Great result the FG stage evaluated stays attached to its loadout with its

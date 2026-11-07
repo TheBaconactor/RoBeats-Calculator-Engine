@@ -11,9 +11,10 @@ from gear_optimizer.pipeline import canonical
 from gear_optimizer.pipeline.canonical import canonical_rows, loadout_identity, row_order, stored_stats
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, SongSolve
 from gear_optimizer.settings import paths
-from gear_optimizer.solver.scoring.fever_solver import GemSolve
+from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
 from gear_optimizer.trace.reconstruct import UnplayableTrace
-from gear_optimizer.stats import GEM_KINDS, gems, named_loadout_stats
+from gear_optimizer.solver.song_config import baseline_fixed_stats
+from gear_optimizer.stats import GEM_KINDS, gems, named_loadout_stats, total
 from gear_optimizer.store.records import decode_trace
 from tests.items_support import make_gear, make_mini
 from tests.songs_support import make_song
@@ -51,18 +52,22 @@ def _stats(gear, minis, allocation) -> dict[str, int]:
     return named_loadout_stats(team_buff_effect("T5", "Flow"), gear, minis, GEARS, VIEW, allocation, "Flow")
 
 
+def _loadout(gear, minis, score=0) -> SolvedLoadout:
+    return SolvedLoadout(gear, minis, _gems(META_GEMS), _stats(list(gear), list(minis), META_GEMS), score)
+
+
 def test_equivalent_minis_share_one_identity_with_their_group_and_representative():
-    twin = loadout_identity(SolvedLoadout(("Helmet", "Vest"), ("Chroma Twin", "Marie")), VIEW, "Flow", "Vibe")
-    plain = loadout_identity(SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie")), VIEW, "Flow", "Vibe")
+    twin = loadout_identity(_loadout(("Helmet", "Vest"), ("Chroma Twin", "Marie")), VIEW, "Flow", "Vibe")
+    plain = loadout_identity(_loadout(("Helmet", "Vest"), ("Chroma", "Marie")), VIEW, "Flow", "Vibe")
     assert twin == plain
     assert sorted(twin.groups) == [("Chroma", "Chroma Twin"), ("Marie",)]
     assert sorted(twin.reps) == ["Chroma", "Marie"]
-    other = loadout_identity(SolvedLoadout(("Cap", "Vest"), ("Chroma", "Marie")), VIEW, "Flow", "Vibe")
+    other = loadout_identity(_loadout(("Cap", "Vest"), ("Chroma", "Marie")), VIEW, "Flow", "Vibe")
     assert other.loadout_hash != twin.loadout_hash
 
 
 def test_stored_stats_come_from_the_representatives_and_must_keep_the_scoring_stats():
-    ident = loadout_identity(SolvedLoadout(("Helmet", "Vest"), ("Chroma Twin", "Marie")), VIEW, "Flow", "Vibe")
+    ident = loadout_identity(_loadout(("Helmet", "Vest"), ("Chroma Twin", "Marie")), VIEW, "Flow", "Vibe")
     solved = _stats(["Helmet", "Vest"], ["Chroma Twin", "Marie"], META_GEMS)  # the GA's names: Rush 9 from the twin
     fixed = team_buff_effect("T5", "Flow")
     got = dict(zip(STATS, stored_stats(fixed, ident, GEARS, VIEW, "Flow", _gems(META_GEMS), solved, ("Flow", "Vibe"))))
@@ -98,25 +103,17 @@ def _fg(score, trace=None, gear=("Helmet", "Vest"), paired=1000, minis=("Chroma"
 
 @pytest.fixture
 def scored(monkeypatch):
-    """Canonicalization with the gem re-solve and the replays replaced: meta scores by loadout (first gear name),
-    FG scores by the solved result's score (`scored` lists the meta scores in row order)."""
+    """Canonicalization with the replays replaced: FG scores by the solved result's score (`scored` lists the meta scores
+    in row order)."""
     meta_scores = []
-
-    def meta_resolve(fixed, items, song, curves, primary):
-        return [
-            GemSolve(_gems(META_GEMS), _stats([g.name for g in row[:2]], [m.name for m in row[2:]], META_GEMS), 0)
-            for row in items
-        ]
-
-    monkeypatch.setattr(canonical, "_meta_resolve", meta_resolve)
     monkeypatch.setattr(canonical, "_meta_score", lambda stats, song, curves, perfect_time: (meta_scores.pop(0), {"trace": 1}))
     return meta_scores
 
 
 def test_an_fg_result_stays_attached_whether_or_not_it_beats_the_meta_score(scored):
-    helmet = SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))
     for meta_score, fg_score in ((1000, 1500), (1500, 1500), (1600, 1500)):
         scored.append(meta_score)
+        helmet = _loadout(("Helmet", "Vest"), ("Chroma", "Marie"), meta_score)
         (row,) = canonical_rows(_solve([helmet], [(0, _fg(fg_score))]), GEARS, MINIS)
         x = row.loadout
         assert (x.score, x.fg_score, x.mini_ascension, x.primary, x.secondary) == (
@@ -132,9 +129,9 @@ def test_an_fg_result_stays_attached_whether_or_not_it_beats_the_meta_score(scor
 
 
 def test_rows_follow_the_store_order_and_a_repeated_loadout_fails_loudly(scored):
-    a = SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))
-    b = SolvedLoadout(("Cap", "Vest"), ("Chroma", "Marie"))
-    c = SolvedLoadout(("Helmet", "Vest"), ("Marie", "Marie"))
+    a = _loadout(("Helmet", "Vest"), ("Chroma", "Marie"), 900)
+    b = _loadout(("Cap", "Vest"), ("Chroma", "Marie"), 800)
+    c = _loadout(("Helmet", "Vest"), ("Marie", "Marie"), 700)
     scored.extend([900, 800, 700])
     # c's FG result does not beat the base it was solved against: c keeps its surface place.
     fg = [(1, _fg(1100, gear=c.gear, paired=1200, minis=c.minis)), (2, _fg(1000, gear=b.gear, paired=800))]
@@ -143,14 +140,20 @@ def test_rows_follow_the_store_order_and_a_repeated_loadout_fails_loudly(scored)
         loadout_identity(x, VIEW, "Flow", "Vibe").loadout_hash for x in (a, b, c)
     ]
     scored.extend([900, 800])
-    twin = SolvedLoadout(("Helmet", "Vest"), ("Chroma Twin", "Marie"))
+    twin = _loadout(("Helmet", "Vest"), ("Chroma Twin", "Marie"), 800)
     with pytest.raises(ValueError, match="holds loadout"):
         canonical_rows(_solve([a, twin]), GEARS, MINIS)
 
 
+def test_a_replay_that_misses_the_gas_score_fails_loudly(scored):
+    scored.append(901)
+    with pytest.raises(ValueError, match="replays to 901, not the GA's 900"):
+        canonical_rows(_solve([_loadout(("Helmet", "Vest"), ("Chroma", "Marie"), 900)]), GEARS, MINIS)
+
+
 def test_a_loadout_whose_base_play_no_hit_timing_plays_keeps_no_row(scored, monkeypatch):
-    a = SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))
-    b = SolvedLoadout(("Cap", "Vest"), ("Chroma", "Marie"))
+    a = _loadout(("Helmet", "Vest"), ("Chroma", "Marie"), 900)
+    b = _loadout(("Cap", "Vest"), ("Chroma", "Marie"), 800)
     outcomes = [UnplayableTrace("no float32 hit of note 594 in [102.944999695, 102.984991981] s ends its fever"), 800]
 
     def meta_score(stats, song, curves, perfect_time):
@@ -165,7 +168,7 @@ def test_a_loadout_whose_base_play_no_hit_timing_plays_keeps_no_row(scored, monk
 
 
 def test_an_fg_result_without_a_replay_trace_is_rejected():
-    solve = _solve([SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))])
+    solve = _solve([_loadout(("Helmet", "Vest"), ("Chroma", "Marie"))])
     with pytest.raises(ValueError, match="without a frontier trace"):
         canonical._fg_trace(_fg(1500, trace={"raw_fever_fill": 1.0}), solve.timed)
 
@@ -184,10 +187,11 @@ def test_real_song_base_result_is_the_exhaustive_gem_optimum_scored_by_exact_rep
     build_or_load_timeline_frontier_payload(song, curves)
     base = frozen["base_entry"]
     catalog = load_catalog(paths().game_export)
-    solve = SongSolve(
-        song.chart.name, "T5", song, curves, (SolvedLoadout(tuple(base["gear"]), tuple(base["minis"])),), ()
-    )
-    (row,) = canonical_rows(solve, catalog.gears, catalog.minis)
+    view = {m.name: m for m in song_minis(catalog.minis.values(), song.chart.name, song.chart.primary, song.chart.secondary)}
+    pre_gem = total(baseline_fixed_stats(song.chart), *(catalog.gears[n].stats for n in base["gear"]), *(view[n].stats for n in base["minis"]))
+    (gem_solve,) = solve_best_fever_combination_batch([pre_gem], song, curves, selected_color=song.chart.primary)
+    loadout = SolvedLoadout(tuple(base["gear"]), tuple(base["minis"]), gem_solve.gems, gem_solve.stats, gem_solve.score)
+    (row,) = canonical_rows(SongSolve(song.chart.name, "T5", song, curves, (loadout,), ()), catalog.gears, catalog.minis)
     x = row.loadout
     assert x.score == base["expected_score"] == 47192170
     assert (x.fg, x.fg_score) == (None, None)

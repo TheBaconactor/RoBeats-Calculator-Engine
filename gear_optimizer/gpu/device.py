@@ -35,17 +35,26 @@ def _pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
     return best_idx
 
 
+def _float64_words(values: np.ndarray) -> np.ndarray:
+    return values.astype(np.float64).view(np.uint32).reshape(*values.shape, 2)
+
+
 def ensure_ready() -> None:
     global _ready
     if _ready:
         return
     init_taichi()
     fields.allocate_fields()
-    curves = stat_curves().f32
+    all_curves = stat_curves()
+    curves = all_curves.f32
     fields.ref_pp_field.from_numpy(curves["Perfect Points"])
     fields.ref_cm_field.from_numpy(curves["Combo Multiplier"])
     fields.ref_fm_field.from_numpy(curves["Fever Multiplier"])
     fields.exact_pp_best_gems_prefix.from_numpy(_pp_best_gems_prefix(curves["Perfect Points"]))
+    note_combo = np.column_stack((all_curves.combo_ramp, all_curves.f64["Combo Multiplier"]))
+    fields.note_combo.from_numpy(note_combo.astype(np.float32))
+    fields.note_combo_bits.from_numpy(_float64_words(note_combo))
+    fields.fever_bits.from_numpy(_float64_words(all_curves.f64["Fever Multiplier"]))
     ft, ff, _budget_left = ftff_combo_arrays(GEM_BUDGET)
     fields.ftff_combo_ft.from_numpy(ft.astype(np.int32))
     fields.ftff_combo_ff.from_numpy(ff.astype(np.int32))
@@ -66,7 +75,7 @@ def upload_timeline(key: tuple, payload: TimelineFrontierGridPayload) -> None:
     global _timeline_key
     if key == _timeline_key:
         return
-    fields.ga_eval_cache_key.fill(0)
+    fields.ga_eval_cache_results.fill(0)
 
     def cell(array: np.ndarray, dtype) -> np.ndarray:
         return np.ascontiguousarray(np.asarray(array, dtype=dtype)[0])
