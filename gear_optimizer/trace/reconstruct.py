@@ -22,22 +22,13 @@ class UnplayableTrace(ValueError):
     """A trace whose judgments no legal hit timing realizes in the exact input order."""
 
 
-class _Edge(NamedTuple):
-    """A section's response surface: its head's fever and Great notes as bit masks, and its body counts."""
-
-    fever: int
-    great: int
-    body_fever: int
-    body_great: int
-    body_fever_great: int
-
-
 class _SectionTable(NamedTuple):
-    """A section start's options in emission order (section_kernels.section_rows): the (edge, next state) the search
-    walks, and the rows and witness hit windows an accepted one reads."""
+    """A section start's options in emission order (section_kernels.section_rows): their response-surface edges, each
+    its head's fever and Great masks in two 64-bit words each, then its body counts, and the rows and witness hit windows
+    an accepted one reads."""
 
     section_start: int
-    walk: list[tuple[_Edge, int]]
+    edges: np.ndarray
     rows: np.ndarray
     hits: np.ndarray
 
@@ -51,37 +42,31 @@ class FgTraceEdgeOptionsCache:
     options: int = 0
 
     def add(self, key: tuple[Any, ...], table: _SectionTable) -> None:
-        if self.options + len(table.walk) > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS:
+        if self.options + len(table.rows) > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS:
             self.tables.clear()
             self.options = 0
         self.tables[key] = table
-        self.options += len(table.walk)
+        self.options += len(table.rows)
 
 
-def _edge_of_surface(surface: FgResponseSurface) -> _Edge:
-    fever = great = 0
-    for word in range(4):
-        fever |= surface[word] << (32 * word)
-        great |= surface[4 + word] << (32 * word)
-    return _Edge(fever, great, surface.body_fever, surface.body_great, surface.body_fever_great)
+def _edge_of_surface(surface: FgResponseSurface) -> tuple[int, ...]:
+    """A surface as the columns of _SectionTable.edges."""
+    head = [surface[word] | surface[word + 1] << 32 for word in (0, 2, 4, 6)]
+    return (*head, surface.body_fever, surface.body_great, surface.body_fever_great)
 
 
-def _subtract_edge(remaining: _Edge, edge: _Edge) -> _Edge | None:
-    """The surface left after an edge; None when the edge does not fit."""
-    if (
-        edge.fever & ~remaining.fever
-        or edge.great & ~remaining.great
-        or edge.body_fever > remaining.body_fever
-        or edge.body_great > remaining.body_great
-        or edge.body_fever_great > remaining.body_fever_great
-    ):
-        return None
-    return _Edge(
-        remaining.fever & ~edge.fever,
-        remaining.great & ~edge.great,
-        remaining.body_fever - edge.body_fever,
-        remaining.body_great - edge.body_great,
-        remaining.body_fever_great - edge.body_fever_great,
+def _fitting_edges(edges: np.ndarray, remaining: tuple[int, ...]) -> np.ndarray:
+    """The rows of `edges` that fit in the surface `remaining`: their notes in it and their counts within it."""
+    left = np.array(remaining, dtype=np.uint64)
+    return np.flatnonzero(
+        (np.bitwise_or.reduce(edges[:, :4] & ~left[:4], axis=1) == 0) & (edges[:, 4:] <= left[4:]).all(axis=1)
+    )
+
+
+def _subtract_edge(remaining: tuple[int, ...], edge: list[int]) -> tuple[int, ...]:
+    return (
+        remaining[0] & ~edge[0], remaining[1] & ~edge[1], remaining[2] & ~edge[2], remaining[3] & ~edge[3],
+        remaining[4] - edge[4], remaining[5] - edge[5], remaining[6] - edge[6],
     )
 
 
@@ -203,7 +188,7 @@ def _stored_section(table: _SectionTable, index: int, context: SectionContext) -
         raise ValueError("FG accepted edge has no unique exact lane-prefix witness for its scored surface")
     schedule = schedule_rows[0]
     chart_time = float(timestamps[activation_idx])
-    edge = table.walk[index][0]
+    body_fever, body_great, body_fever_great = table.edges[index, 4:].tolist()
     return {
         "next_state": next_state,
         "activation_index": activation_idx,
@@ -243,9 +228,9 @@ def _stored_section(table: _SectionTable, index: int, context: SectionContext) -
         "preactivation_event_count": schedule.preactivation_event_count,
         "preactivation_great_count": schedule.preactivation_great_count,
         "forced_count": k,
-        "body_fever": edge.body_fever,
-        "body_great": edge.body_great,
-        "body_fever_great": edge.body_fever_great,
+        "body_fever": body_fever,
+        "body_great": body_great,
+        "body_fever_great": body_fever_great,
     }
 
 
@@ -258,12 +243,7 @@ def section_table(
         context, np.asarray(actions, dtype=np.int64), np.asarray(fills, dtype=np.int64),
         np.asarray(forced, dtype=np.int64), first, state,
     )
-    walk = [
-        (_Edge(fever_lo | fever_hi << 64, great_lo | great_hi << 64, body_fever, body_great, body_fever_great), next_state)
-        for (fever_lo, fever_hi, great_lo, great_hi, body_fever, body_great, body_fever_great), next_state
-        in zip(edges.tolist(), rows[:, 1].tolist())
-    ]
-    return _SectionTable(0 if first else state + 1, walk, rows, hits)
+    return _SectionTable(0 if first else state + 1, edges, rows, hits)
 
 
 def reconstruct_force_greats_response_trace(
@@ -299,7 +279,7 @@ def reconstruct_force_greats_response_trace(
     # The ordered edge list is independent of the target surface, so the up-to-51 surfaces of one song reuse it.
     shared_tables = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
     table_prefix = (non_fever_base, raw_fever_fill, real_fever_time, use_forced_great_timing)
-    memo: set[tuple[int, bool, _Edge]] = set()
+    memo: set[tuple[int, bool, tuple[int, ...]]] = set()
     unplayable: list[UnplayableTrace] = []
 
     def _section_table_at(state: int, first: bool) -> _SectionTable:
@@ -311,18 +291,17 @@ def reconstruct_force_greats_response_trace(
             shared_tables.add(key, table)
         return table
 
-    def _search(state: int, first: bool, remaining: _Edge) -> tuple[dict[str, Any], ...] | None:
+    def _search(state: int, first: bool, remaining: tuple[int, ...]) -> tuple[dict[str, Any], ...] | None:
         key = (state, first, remaining)
         if key in memo:
             return None
         table = _section_table_at(state, first)
-        for index, (edge, next_state) in enumerate(table.walk):
-            left = _subtract_edge(remaining, edge)
-            if left is None:
-                continue
+        for index in _fitting_edges(table.edges, remaining).tolist():
+            left = _subtract_edge(remaining, table.edges[index].tolist())
+            next_state = int(table.rows[index, 1])
             if not any(left):
                 tail = ()
-            elif next_state >= n or (left.fever | left.great) & ((2 << next_state) - 1):
+            elif next_state >= n or ((left[0] | left[2]) | (left[1] | left[3]) << 64) & ((2 << next_state) - 1):
                 continue  # the next section starts past next_state: no section can take a head note before it
             else:
                 tail = _search(next_state, False, left)

@@ -6,7 +6,7 @@ geometry-at-a-time orchestration. They are differential oracles, never runtime r
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 import numpy as np
 
@@ -15,7 +15,7 @@ from gear_optimizer.frontier.fg_cache_patterns import EXPANDED_COEFF_COLUMNS, in
 
 from gear_optimizer.frontier.producer_batch import action_table
 from gear_optimizer.frontier.producer_batch import song_arrays
-from gear_optimizer.trace.reconstruct import _Edge, _stored_section, section_table
+from gear_optimizer.trace.reconstruct import _stored_section, section_table
 from gear_optimizer.trace.section_kernels import SectionContext
 from gear_optimizer.frontier.types import (
     FgResponseFrontierResult,
@@ -47,6 +47,23 @@ def build_activation_reachability_context(
     )
 
 
+class Edge(NamedTuple):
+    """A section's response surface: its head's fever and Great notes as bit masks, and its body counts."""
+
+    fever: int
+    great: int
+    body_fever: int
+    body_great: int
+    body_fever_great: int
+
+
+def _table_edges(table) -> list[Edge]:
+    return [
+        Edge(fever_lo | fever_hi << 64, great_lo | great_hi << 64, body_fever, body_great, body_fever_great)
+        for fever_lo, fever_hi, great_lo, great_hi, body_fever, body_great, body_fever_great in table.edges.tolist()
+    ]
+
+
 def section_options(
     *, context, i, first, actions, fills, forced, real_fever_time, use_forced_great_timing
 ) -> list[dict[str, Any]]:
@@ -54,7 +71,7 @@ def section_options(
     context = context._replace(real_fever_time=float(real_fever_time), use_forced_great_timing=use_forced_great_timing)
     table = section_table(context, actions, fills, forced, int(i), bool(first))
     options = []
-    for row, (edge, _next_state) in zip(table.rows.tolist(), table.walk):
+    for row, edge in zip(table.rows.tolist(), _table_edges(table)):
         k, next_state, activation, late_great, run_start, run_count, tail_start, tail_end, _end, _exit = row
         options.append({
             "k": k,
@@ -95,7 +112,7 @@ def edge_surface(
     activation_great_idx: int = -1,
     early_great_start: int = -1,
     early_great_end: int = -1,
-) -> _Edge:
+) -> Edge:
     """A plain-Python twin of the kernels' edge: the section's fever range, forced Greats, activation Great and tail."""
     great = _head_mask(great_start, great_end, n)
     if 0 <= activation_great_idx < min(n, 100):
@@ -112,8 +129,8 @@ def edge_surface(
         great |= _head_mask(early_great_start, early_great_end, n)
         body_great += _body_count(early_great_start, early_great_end, n)
         body_fever_great += _body_overlap(fever_start, fever_end, early_great_start, early_great_end, n)
-    return _Edge(_head_mask(fever_start, fever_end, n), great, _body_count(fever_start, fever_end, n), body_great,
-                 body_fever_great)
+    return Edge(_head_mask(fever_start, fever_end, n), great, _body_count(fever_start, fever_end, n), body_great,
+                body_fever_great)
 
 
 def response_surface(edge) -> FgResponseSurface:
@@ -317,9 +334,7 @@ def edge_surface_option_details(
     )
     fills, forced = (first_fill, first_forced) if first else (later_fill, later_forced)
     table = section_table(context, actions, fills, forced, int(i), bool(first))
-    return [
-        {**_stored_section(table, index, context), "surface": edge} for index, (edge, _state) in enumerate(table.walk)
-    ]
+    return [{**_stored_section(table, index, context), "surface": edge} for index, edge in enumerate(_table_edges(table))]
 
 
 def input_engine_rebuild_first_frontier(

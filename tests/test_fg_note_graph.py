@@ -191,7 +191,7 @@ def test_trace_edge_cache_starts_over_when_full():
     )
 
     def table(count):
-        return _SectionTable(0, [None] * count, None, None)
+        return _SectionTable(0, None, [None] * count, None)
 
     cache = FgTraceEdgeOptionsCache()
     cache.add(("first",), table(_TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS - 1))
