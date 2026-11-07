@@ -24,15 +24,17 @@ from gear_optimizer.chart import Chart
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_ORDER, team_buff_effect
 from gear_optimizer.data.game_export import Catalog
+from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
 from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.gamedata import ELEMENTS, SongMini, StatCurves, empty_stats, song_minis
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT
 from gear_optimizer.score import HEAD_NOTES, factors, fg_surface_score
+from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
 from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.stats import GEM_KINDS, named_loadout_stats
 
 from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, great_times, pattern_words, walk_cell
-from .greats import HEAD_LISTED, ROW_COLUMNS, casual_classes, cell_lines, cell_sums, great_rows, head_witness
+from .greats import HEAD_LISTED, ROW_COLUMNS, band_surfaces, casual_classes, cell_lines, cell_sums, great_rows, head_witness
 from .invert import perfect_targets, score_ceiling, surface_tops
 from .loadouts import (
     BOUND_ROUNDING,
@@ -43,6 +45,7 @@ from .loadouts import (
     LoadoutSpace,
     ValueTables,
     fixed_stats,
+    gem_gaps,
     loadout_space,
     lowest_at,
     points_conjugate,
@@ -51,6 +54,7 @@ from .loadouts import (
     search_targets,
     time_gem_losses,
     value_tables,
+    with_points_stat,
 )
 
 _AXIS = MAX_STAT + 1
@@ -58,8 +62,8 @@ _STAT_PRICE_SHARES = (1.0, 0.7)
 _POINTS_PRICES = (0.6, 1.5)
 _SHARPENING_ROUNDS = 6
 _BOUND_STEPS = 100
-# Stat lines a lookup keeps, and the (CM, FM) pairs it may walk for them: ~100 ms far below a song's top.
-_TARGET_ROWS = 1 << 10
+# Stat lines a lookup keeps, and the (CM, FM) pairs it may walk for them.
+_TARGET_ROWS = 1 << 14
 _LINE_PAIRS = 20_000_000
 _SETS_PER_LINE = 16
 _TOPS_FROM = 0.9
@@ -67,12 +71,18 @@ _SCRATCH_ROWS = 1 << 15
 _PREFERRED_TIER = "T5"
 # A play with Greats is searched from this share of the song's top: below it far more sets fit than the numbers tell apart.
 _GREATS_FROM = 0.9
-# The most Greats whose timelines a lookup walks, the rows it keeps, and the lines that may hold loadouts before their Great
-# points are checked.
-_GREATS_WALKED = 8
+# The most Greats a lookup searches, the most whose timelines it walks, and past those how far from a walked timeline it looks:
+# a dev run's most, 4 notes up to 64 Greats, doubled. The rows it keeps, and the (pair, base) rows it may walk.
+_GREATS_SEARCHED = 64
+# The most quarters only Greats can cost: an Okay costs three.
+_ONLY_GREATS = 2
+_GREATS_WALKED = 4
+_BAND_NOTES = 8
 _GREAT_ROWS = 1 << 18
-_GREAT_LINES = 128
+_GREAT_PAIRS = 3_000_000
 _GREAT_SEARCH_ITEMS = 300_000_000
+# Lines that may hold loadouts before they are ranked.
+_HELD_LINES = 256
 # Items a lookup may try, a target may try, and what opening a target counts for: ~100 ms past the lines at the most.
 _SEARCH_ITEMS = 3_000_000
 _ITEMS_PER_TARGET = 10_000
@@ -120,8 +130,10 @@ class ReverseSong:
     tables: ValueTables
     surface_order: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
     surface_tops: np.ndarray = field(default_factory=lambda: np.empty(0))
+    line_shape: np.ndarray = field(default_factory=lambda: np.empty((0, 4)))  # per cell, its chart-time timeline's shape
     widest: dict = field(default_factory=dict)  # _widest
     budgets: dict = field(default_factory=dict)  # _great_surfaces
+    walked: dict = field(default_factory=dict)  # _great_surfaces
 
     @property
     def ceiling(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -162,6 +174,21 @@ def prepare_song(chart: Chart, catalog: Catalog, curves: StatCurves) -> ReverseS
     return _ranked(_sharpened(song))
 
 
+def _chart_shapes(chart: Chart, curves: StatCurves) -> np.ndarray:
+    """Per (Fever Time, Fever Fill) cell the bound shape of its chart-time timeline, what a set plain-scores by."""
+    durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
+    fever, normal = np.zeros((_AXIS, _AXIS), np.int32), np.zeros((_AXIS, _AXIS), np.int32)
+    words = np.zeros((_AXIS, _AXIS, 4), np.uint32)
+    extra = np.zeros((_AXIS, _AXIS), np.int32), np.zeros((_AXIS, _AXIS), np.int32)
+    calculate_fever_timeline_surface_grid(chart.timestamps, chart.total_notes, durations, np.ceil(thresholds).astype(np.int64), (fever, normal, words, *extra))
+    head = min(chart.total_notes, HEAD_NOTES)
+    coeffs = surface_head_coeffs(np.concatenate((words.reshape(-1, 4), np.zeros((_AXIS * _AXIS, 4), np.uint32)), axis=1), head_len=head).astype(np.float64)
+    body_fever = fever.reshape(-1).astype(np.float64)
+    body_normal = normal.reshape(-1).astype(np.float64)
+    ramp_fever, ramp_normal = coeffs[:, 3] * 0.01, coeffs[:, 2] * 0.01
+    return np.column_stack((body_fever + ramp_fever, body_normal + ramp_normal, coeffs[:, 1] - ramp_fever, coeffs[:, 0] - ramp_normal))
+
+
 def _ranked(song: ReverseSong) -> ReverseSong:
     """The song with its surfaces' tops, in a shuffled order: a score that leaves more lines than a lookup keeps keeps
     a sample of every surface, not all of the first few."""
@@ -170,7 +197,7 @@ def _ranked(song: ReverseSong) -> ReverseSong:
     floor = _TOPS_FROM * score_ceiling(arrays, song.multipliers[::2], song.notes, song.ceiling, 0.0, np.inf)[0]
     tops = surface_tops(arrays, song.multipliers[::2], song.notes, song.ceiling, floor)
     order = np.random.default_rng(0).permutation(tops.shape[0])
-    return replace(song, surface_order=order, surface_tops=tops[order])
+    return replace(song, surface_order=order, surface_tops=tops[order], line_shape=_chart_shapes(song.chart, song.curves))
 
 
 def _sharpened(song: ReverseSong) -> ReverseSong:
@@ -222,7 +249,7 @@ def lost_quarters(play: PlayInfo, notes: int) -> tuple[int, int]:
 
 @dataclass(frozen=True, slots=True)
 class FoundSet:
-    """A released set that gives the score exactly on `surface` (its slack: how far under the loadout bound it sits)."""
+    """A released set that gives the score exactly on `surface`; gem_gap: the share of its score the best one-gem move adds."""
 
     gear: tuple[str, ...]
     minis: tuple[str, ...]
@@ -232,7 +259,7 @@ class FoundSet:
     team_color: str
     stats: dict[str, int]
     surface: FgResponseSurface
-    slack: float
+    gem_gap: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,7 +283,7 @@ class Reverse:
     evidence: tuple[str, ...] = ()
 
 
-def _found_set(song: ReverseSong, row: np.ndarray, target: np.ndarray, play: PlayInfo, slack: float) -> FoundSet:
+def _found_set(song: ReverseSong, row: np.ndarray, target: np.ndarray, play: PlayInfo, gem_gap: float) -> FoundSet:
     """A search's found row, after gear_optimizer.score confirms the score."""
     chart = song.chart
     gear = tuple(song.space.names[i] for i in row[:6].tolist())
@@ -272,19 +299,28 @@ def _found_set(song: ReverseSong, row: np.ndarray, target: np.ndarray, play: Pla
     value = fg_surface_score(factors(stats, song.curves, chart.primary, chart.secondary), surface, chart.total_notes)
     if value != play.score:
         raise ValueError(f"reverse lookup: a set of line {target.tolist()} scores {value}, not {play.score}")
-    return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, slack)
+    return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, gem_gap)
 
 
-def _slack_of(song: ReverseSong, target: np.ndarray) -> float:
-    """How far a target's base sits under the lowest bound the steps find at its stats."""
-    at = target[:5].astype(np.float64)
-    prices = song.vertex_prices[target[6]].copy()
-    space = song.space.items, song.space.starts, song.space.gems
-    return lowest_at(space, song.fixed_rows, song.curves.f64["Perfect Points"], at, prices, _BOUND_STEPS) - float(target[5])
+def _gaps_of(song: ReverseSong, found: np.ndarray) -> np.ndarray:
+    """Per found loadout, gem_gaps."""
+    gaps = np.empty(found.shape[0])
+    tables = song.line_shape, song.multipliers[0], song.multipliers[2], song.curves.f64["Perfect Points"]
+    gem_gaps(found, (song.space.items, song.space.gems), song.fixed_rows, tables, gaps)
+    return gaps
+
+
+def _best_lines(found: np.ndarray, gaps: np.ndarray, limit: int) -> list[int]:
+    """The found rows of the `limit` targets with the lowest gap, lowest gap first."""
+    best: dict[int, float] = {}
+    for target, gap in zip(found[:, 16].tolist(), gaps.tolist()):
+        best[target] = min(best.get(target, 1.0), gap)
+    kept = set(sorted(best, key=best.__getitem__)[:limit])
+    return sorted((r for r, target in enumerate(found[:, 16].tolist()) if target in kept), key=lambda r: (best[found[r, 16]], gaps[r]))
 
 
 def _perfect_sets(play: PlayInfo, song: ReverseSong, limit: int) -> tuple[list[FoundSet], int, bool]:
-    """The sets of an all-Perfect play, nearest the loadout bound first, until `limit` stat lines hold sets or the search
+    """The sets of an all-Perfect play, the ones whose gems a player would leave first, until `limit` stat lines or the search
     budget ends: the sets, the stat lines, and whether every line was searched to its end."""
     surfaces = song.surfaces
     order = song.surface_order[song.surface_tops >= play.score]
@@ -294,35 +330,46 @@ def _perfect_sets(play: PlayInfo, song: ReverseSong, limit: int) -> tuple[list[F
     count, every_line = perfect_targets(
         int(play.score), arrays, song.multipliers, song.notes, song.ceiling, (song.power_terms, power), _LINE_PAIRS, out
     )
-    targets = np.column_stack((out[np.argsort(out[:count, 7], kind="stable"), :7], np.full(count, -1, dtype=np.int64)))
-    found = np.empty((limit * _SETS_PER_LINE, 18), dtype=np.int64)
+    points = song.curves.f64["Perfect Points"]
+    if power < 0:
+        targets = np.column_stack((out[:count, :7], np.full(count, -1, dtype=np.int64)))
+    else:
+        targets = np.empty((2 * count, 8), dtype=np.int64)
+        targets = targets[: with_points_stat(out[:count], power, points, targets)]
+    found = np.empty((_HELD_LINES * _SETS_PER_LINE, 18), dtype=np.int64)
     space = song.space.items, song.space.starts, song.space.gems
-    query = targets, power, limit, _SEARCH_ITEMS, _ITEMS_PER_TARGET, _ITEMS_PER_SETUP, _SETS_PER_LINE
+    query = targets, power, _HELD_LINES, _SEARCH_ITEMS, _ITEMS_PER_TARGET, _ITEMS_PER_SETUP, _SETS_PER_LINE
     vertices = song.vertex_values, song.vertex_prices
-    written, complete = search_targets(space, song.tables.arrays, song.fixed_rows, song.curves.f64["Perfect Points"], vertices, query, found)
-    slacks = {t: _slack_of(song, targets[t]) for t in set(found[:written, 16].tolist())}
-    sets = [_found_set(song, row, targets[row[16]], play, slacks[row[16]]) for row in found[:written]]
+    written, complete = search_targets(space, song.tables.arrays, song.fixed_rows, points, vertices, query, found)
+    found = found[:written]
+    gaps = _gaps_of(song, found)
+    sets = [_found_set(song, found[r], targets[found[r, 16]], play, float(gaps[r])) for r in _best_lines(found, gaps, limit)]
     return sets, count, complete and every_line
 
 
 def _great_surfaces(song: ReverseSong, greats: int) -> tuple:
-    """The timelines of a play with this many Greats, the first time a lookup needs them: the surfaces, their relief, the
-    FT + FF of their cells and whether any has head fever."""
-    if greats not in song.budgets:
-        surfaces = fever_surfaces(song.chart, song.curves, 0, greats)
-        relief = _cell_relief(surfaces.cell_start, surfaces.cells, song.vertex_prices)
-        song.budgets[greats] = surfaces, relief, cell_sums(surfaces.cell_start, surfaces.cells), bool(np.any(surfaces.words[:, :4]))
-    return song.budgets[greats]
+    """The timelines of a play with this many Greats, the first time a lookup needs them: walked for few Greats, past
+    that the band around those walked for _GREATS_WALKED. Returns the walked surfaces, whether any has head fever, and the
+    band's arrays (band_surfaces)."""
+    walked_for = min(greats, _GREATS_WALKED)
+    band = 0 if greats <= _GREATS_WALKED else _BAND_NOTES
+    if (walked_for, band) not in song.budgets:
+        if ("greats", walked_for) not in song.walked:
+            surfaces = fever_surfaces(song.chart, song.curves, 0, walked_for)
+            song.walked["greats", walked_for] = surfaces, _cell_relief(surfaces.cell_start, surfaces.cells, song.vertex_prices), cell_sums(surfaces.cell_start, surfaces.cells)
+        surfaces, relief, sums = song.walked["greats", walked_for]
+        song.budgets[walked_for, band] = surfaces, bool(np.any(surfaces.words[:, :4])), band_surfaces((surfaces.pattern, surfaces.body_fever), relief, sums, band, song.notes[1])
+    return song.budgets[walked_for, band]
 
 
-def _casual_timelines(song: ReverseSong, greats: int) -> list[tuple[int, np.ndarray]]:
+def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> list[tuple[int, np.ndarray]]:
     """Per Casual timeline of a play with this many Greats: its score with no Greats, what a Great costs at each head note."""
     chart = song.chart
     naked = factors(empty_stats(), song.curves, chart.primary, chart.secondary)
-    times, threshold, duration = _casual_axes(song, 0, 0)
+    times, threshold, duration = _casual_axes(song, 0, perfect_time)
     scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64))
     out = np.empty((_SCRATCH_ROWS, 5), dtype=np.int64)
-    written = walk_cell(times, great_times(chart, 0), (threshold, greats), duration, scratch, out)
+    written = walk_cell(times, great_times(chart, perfect_time), (threshold, greats), duration, scratch, out)
     if written < 0:
         raise ValueError("fever walk: the casual cell outgrew its tables")
     head = min(chart.total_notes, HEAD_NOTES)
@@ -359,7 +406,7 @@ def _head_of(song: ReverseSong, line: np.ndarray, classes: np.ndarray, words: li
     return out.tolist() if head_witness(gear, casual, int(row[0]), (wanted, int(row[7]), int(row[8])), out) else None
 
 
-def _great_set(song: ReverseSong, found: np.ndarray, line: np.ndarray, rows: np.ndarray, classes: np.ndarray, surfaces: FeverSurfaces, slack: float, play: PlayInfo) -> FoundSet | None:
+def _great_set(song: ReverseSong, found: np.ndarray, line: np.ndarray, rows: np.ndarray, classes: np.ndarray, surfaces: tuple, gem_gap: float, play: PlayInfo) -> FoundSet | None:
     """A search's loadout, if a row of its line gives the score at the loadout's own Great points."""
     chart = song.chart
     gear = tuple(song.space.names[i] for i in found[:6].tolist())
@@ -373,8 +420,9 @@ def _great_set(song: ReverseSong, found: np.ndarray, line: np.ndarray, rows: np.
     scored = factors(stats, song.curves, chart.primary, chart.secondary)
     for row in rows[(rows[:, 1] == line[0]) & (rows[:, 2] == line[1]) & (rows[:, 3] == line[4]) & (rows[:, 5] == scored.great_base)]:
         u, c, fevered = int(row[0]), int(row[4]), int(row[7])
-        words = surfaces.words[surfaces.pattern[u]].tolist()
-        clean = fg_surface_score(scored, FgResponseSurface(*words[:4], 0, 0, 0, 0, int(surfaces.body_fever[u]), 0, 0), chart.total_notes)
+        words = surfaces[0][surfaces[1][u]].tolist()
+        body_fever = int(surfaces[2][u])
+        clean = fg_surface_score(scored, FgResponseSurface(*words[:4], 0, 0, 0, 0, body_fever, 0, 0), chart.total_notes)
         body = int(classes[c, 1])
         body_loss = fevered * (floor(scored.base * scored.combo * scored.fever) - floor(float(scored.great_base) * scored.combo * scored.fever))
         body_loss += (body - fevered) * (floor(scored.base * scored.combo) - floor(float(scored.great_base) * scored.combo))
@@ -384,49 +432,47 @@ def _great_set(song: ReverseSong, found: np.ndarray, line: np.ndarray, rows: np.
         great_words = [0, 0, 0, 0]
         for note in notes:
             great_words[note >> 5] |= 1 << (note & 31)
-        surface = FgResponseSurface(*words[:4], *great_words, int(surfaces.body_fever[u]), body, fevered)
+        surface = FgResponseSurface(*words[:4], *great_words, body_fever, body, fevered)
         if fg_surface_score(scored, surface, chart.total_notes) == play.score:
-            return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, slack)
+            return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, gem_gap)
     return None
 
 
 def _great_sets(play: PlayInfo, song: ReverseSong, greats: int) -> tuple[list[FoundSet], int, bool]:
-    """The sets of a full combo with this many Greats, nearest the loadout bound first: the sets, the stat lines, and
-    whether every line was searched. It needs the Casual score and Gear Power: what tells a line's Greats apart."""
+    """The sets of a full combo with this many Greats, the ones whose gems a player would leave first: the sets, the stat
+    lines, and whether every line was searched. It needs the Casual score and Gear Power: what tells a line's Greats apart."""
     window = _casual_window(play)
-    if window is None or play.gear_power is None or greats > _GREATS_WALKED or play.score < _GREATS_FROM * float(song.surface_tops.max()):
+    if window is None or play.gear_power is None or greats > _GREATS_SEARCHED or play.score < _GREATS_FROM * float(song.surface_tops.max()):
         return [], 0, False
-    surfaces, relief, sums, head_fever = _great_surfaces(song, greats)
+    walked, head_fever, (patterns, bodies, relief, sums, bands) = _great_surfaces(song, greats)
     classes = casual_classes(window, _casual_timelines(song, greats), greats, HEAD_LISTED if head_fever else 0)
     if classes.shape[0] == 0:
         return [], 0, True
     points = song.curves.f64["Perfect Points"]
     chart = song.chart
     rows = np.empty((_GREAT_ROWS, ROW_COLUMNS), dtype=np.int64)
-    game = classes, points, chart.primary == chart.secondary, play.gear_power
-    arrays = surfaces.words, surfaces.coeffs, surfaces.pattern, surfaces.body_fever, *sums
+    game = classes, points, chart.primary == chart.secondary, play.gear_power, _GREAT_PAIRS
+    arrays = walked.words, walked.coeffs, patterns, bodies, sums
     count = great_rows(play.score, arrays, song.multipliers, song.notes, (song.vertex_values, song.vertex_prices, relief), game, rows)
     every_row = count <= _GREAT_ROWS
     rows = rows[:min(count, _GREAT_ROWS)]
     held = np.empty((_GREAT_ROWS, 8), dtype=np.int64)
-    written = cell_lines(rows, play.gear_power, points, (surfaces.cell_start, surfaces.cells), (song.vertex_values, song.vertex_prices), held)
+    written = cell_lines(rows, play.gear_power, points, (bands, walked.cell_start, walked.cells), (song.vertex_values, song.vertex_prices), held)
     every_row = every_row and written <= _GREAT_ROWS
     lines = np.unique(held[:min(written, _GREAT_ROWS), 1:8], axis=0)
     if lines.shape[0] == 0:
         return [], 0, every_row
-    bounds = song.vertex_values[None, :] - lines[:, :4].astype(np.float64) @ song.vertex_prices[:, 1:].T
-    vertex = np.argmin(bounds, axis=1)
-    slacks = bounds[np.arange(lines.shape[0]), vertex] - lines[:, 4]
-    order = np.argsort(slacks, kind="stable")
-    targets = np.column_stack((np.zeros(lines.shape[0], dtype=np.int64), lines[:, :5], vertex, lines[:, 6]))[order]
-    found = np.empty((_GREAT_LINES * _SETS_PER_LINE, 18), dtype=np.int64)
+    vertex = np.argmin(song.vertex_values[None, :] - lines[:, :4].astype(np.float64) @ song.vertex_prices[:, 1:].T, axis=1)
+    targets = np.column_stack((np.zeros(lines.shape[0], dtype=np.int64), lines[:, :5], vertex, lines[:, 6]))
+    found = np.empty((_HELD_LINES * _SETS_PER_LINE, 18), dtype=np.int64)
     space = song.space.items, song.space.starts, song.space.gems
-    query = targets, play.gear_power, _GREAT_LINES, _GREAT_SEARCH_ITEMS, _ITEMS_PER_TARGET, _ITEMS_PER_SETUP, _SETS_PER_LINE
+    query = targets, play.gear_power, _HELD_LINES, _GREAT_SEARCH_ITEMS, _ITEMS_PER_TARGET, _ITEMS_PER_SETUP, _SETS_PER_LINE
     done, complete = search_targets(space, song.tables.arrays, song.fixed_rows, points, (song.vertex_values, song.vertex_prices), query, found)
+    found = found[:done]
+    gaps = _gaps_of(song, found)
     sets = []
-    for row in found[:done]:
-        target = targets[row[16]]
-        made = _great_set(song, row, target[1:6], rows, classes, surfaces, float(slacks[order[row[16]]]), play)
+    for r in np.argsort(gaps, kind="stable").tolist():
+        made = _great_set(song, found[r], targets[found[r, 16]][1:6], rows, classes, (walked.words, patterns, bodies), float(gaps[r]), play)
         if made is not None:
             sets.append(made)
     return sets, lines.shape[0], every_row and complete
@@ -529,6 +575,36 @@ def _casual_evidence(play: PlayInfo, song: ReverseSong, lost: tuple[int, int]) -
     return f"Casual score {low:.0f}..{high:.0f} is over {highest:.0f}, the most a play at this accuracy reaches"
 
 
+def _no_clean_line(play: PlayInfo, song: ReverseSong) -> str | None:
+    """Why no honest clean play gives this score, if none does: no stats under the ceiling reach it on any timeline of the
+    widest Perfect window a build at this score wears, at its Gear Power. This holds for any level of gear: it asks for
+    stat lines, not sets."""
+    perfect_time = _honest_time(play, song)
+    if ("window", perfect_time) not in song.walked:
+        surfaces = fever_surfaces(song.chart, song.curves, perfect_time)
+        song.walked["window", perfect_time] = surfaces, _cell_relief(surfaces.cell_start, surfaces.cells, song.vertex_prices)
+    surfaces, relief = song.walked["window", perfect_time]
+    order = np.arange(surfaces.body_fever.shape[0])
+    arrays = surfaces.words, surfaces.coeffs, surfaces.pattern, surfaces.body_fever, surfaces.cell_start, surfaces.cells, order
+    out = np.empty((1, 8), dtype=np.int64)
+    ceiling = song.vertex_values, song.vertex_prices, relief
+    count, every_line = perfect_targets(int(play.score), arrays, song.multipliers, song.notes, ceiling, (song.power_terms, play.gear_power), _LINE_PAIRS, out)
+    if count or not every_line:
+        return None
+    return f"no stats at Gear Power {play.gear_power} give {play.score} on any clean timeline up to Perfect Time {perfect_time}"
+
+
+def _no_great_place(play: PlayInfo, song: ReverseSong, greats: int) -> str | None:
+    """Why no honest play with this many Greats gives this Casual score, if none does; only Greats cost so few quarters."""
+    window = _casual_window(play)
+    if window is None or play.match_mode != "Compete":
+        return None
+    timelines = _casual_timelines(song, greats, _honest_time(play, song))
+    if casual_classes(window, timelines, greats, 0).shape[0]:
+        return None
+    return f"Casual score {window[0]:.0f}..{window[1]:.0f} is no placement of {greats} Greats on any honest timeline"
+
+
 def _honest_ceiling(play: PlayInfo, song: ReverseSong, lost: tuple[int, int]) -> tuple[float, float]:
     """The most an honest play scores with any released loadout at any Perfect window, never under a real score, or the
     first line past the play's score; and the base value there."""
@@ -562,8 +638,12 @@ def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Rever
     for greats in range(max(lost[0], 1), lost[1] + 1):
         more, lines, done = _great_sets(play, song, greats)
         found, count, finished = found + more, count + lines, finished and done
-    found.sort(key=lambda row: row.slack)
+    found.sort(key=lambda row: row.gem_gap)
     evidence = _casual_evidence(play, song, lost)
+    if evidence is None and not found and lost[1] == 0 and count == 0 and finished and play.gear_power is not None and play.accuracy is not None and play.match_mode == "Compete":
+        evidence = _no_clean_line(play, song)
+    if evidence is None and 0 < lost[0] == lost[1] <= _ONLY_GREATS:
+        evidence = _no_great_place(play, song, lost[0])
     if evidence is not None:
         return Reverse("exploited", tuple(found), count, finished, evidence=(evidence,))
     if found:

@@ -20,7 +20,7 @@ from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid, fixed_timeline_cell
 from gear_optimizer.solver.timing_envelope import fever_axes
 from tools.verify.frame_play import Plan, frame_clock, play
-from tools.verify.score_reverse_benchmark import generated_build, hacked_presses
+from tools.verify.fake_players import fake_player
 
 CHART = "Aether (Easy) by Geoxor.txt"
 STORED = dict(zip(STATS, (85, 59, 71, 66, 63, 35, 135, 73, 34, 707)))
@@ -120,8 +120,8 @@ def test_the_frame_simulator_at_a_1_ms_clock_is_the_chart_time_replay(song):
 
 
 def test_a_set_far_below_the_top_gets_sets_that_give_its_score_exactly(song):
-    build = generated_build(random.Random(4), "colored", song)
-    played = _simulated(song, build.stats, Plan(np.zeros(song.chart.total_notes)))
+    player = fake_player(random.Random(4), song, dict(load_catalog(paths().game_export).minis), "solid", "pro")
+    played = _simulated(song, player.stats, Plan(np.zeros(song.chart.total_notes)))
     reply = reverse_score(PlayInfo(score=played.score), song)
     assert reply.verdict == "sets"
     chart = song.chart
@@ -130,10 +130,25 @@ def test_a_set_far_below_the_top_gets_sets_that_give_its_score_exactly(song):
         assert fg_surface_score(scored, row.surface, chart.total_notes) == played.score
 
 
+def _late_on_lone_taps(chart):
+    """A press in the Great window on every other tap with no note of its lane within 200 ms: such a press loses no note."""
+    times = np.asarray(chart.timestamps, dtype=np.float64) * 1000.0
+    lanes = np.asarray(chart.lanes)
+    lone = np.asarray(chart.note_types) == 1
+    for lane in np.unique(lanes):
+        rows = np.flatnonzero(lanes == lane)
+        close = np.diff(times[rows]) < 200.0
+        lone[rows[:-1][close]] = False
+        lone[rows[1:][close]] = False
+    offsets = np.zeros(chart.total_notes)
+    offsets[np.flatnonzero(lone)[::2]] = 100.0
+    return offsets
+
+
 def test_a_fever_hack_shows_in_its_casual_score_and_an_honest_play_does_not(song):
     """Presses in Great windows stated Perfect: a Perfect's points, a Great's fill."""
     chart = song.chart
-    hacked_plan = Plan(hacked_presses(0.5)(np.random.default_rng(2), chart), states_perfect=True)
+    hacked_plan = Plan(_late_on_lone_taps(chart), states_perfect=True)
     hacked = _simulated(song, STORED, hacked_plan)
     assert (hacked.great, hacked.okay, hacked.miss) == (0, 0, 0)
     honest = _simulated(song, STORED, Plan(np.zeros(chart.total_notes)))

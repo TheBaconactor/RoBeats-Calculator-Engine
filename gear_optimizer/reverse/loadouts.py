@@ -27,6 +27,7 @@ from gear_optimizer.gamedata import ELEMENTS, Gear, song_minis
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
     GEM_BUDGET,
+    MAX_STAT,
     STAT_GEM_ELEMENT_GAIN,
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
@@ -534,6 +535,65 @@ def search_targets(space, tables, fixed, points, vertices, query, found):
         work += walked
         held += written > before
     return written, complete
+
+
+@jit(nopython=True, cache=True)
+def with_points_stat(targets, power, points, out):
+    """Target rows with the Perfect Points stat Gear Power leaves them, one row per stat, into out; returns the rows."""
+    found = 0
+    for t in range(targets.shape[0]):
+        row = targets[t]
+        left = power - 5 * (row[1] + row[2] + row[3] + row[4]) - 2 * row[5]
+        for stat in range(points.shape[0]):
+            if 5 * stat - 2 * int(points[stat]) == left and found < out.shape[0]:
+                out[found, :7] = row[:7]
+                out[found, 7] = stat
+                found += 1
+    return found
+
+
+@jit(nopython=True, cache=True)
+def _plain_score(stats, line_shape, multipliers, points):
+    """About a stat row's all-Perfect score at chart time: its base value x the bound shape of its cell's timeline."""
+    fever_time, fever_fill = min(max(stats[3], 0), MAX_STAT), min(max(stats[4], 0), MAX_STAT)
+    a, e, f, g = line_shape[fever_time * (MAX_STAT + 1) + fever_fill]
+    combo, fever = multipliers
+    cm, fm = min(max(stats[1], 0), MAX_STAT), min(max(stats[2], 0), MAX_STAT)
+    base = float(2 * stats[5] + stats[6]) + points[min(max(stats[0], 0), MAX_STAT)]
+    return base * (combo[cm] * (a * fever[fm] + e) + f * fever[fm] + g)
+
+
+@jit(nopython=True, cache=True)
+def gem_gaps(found, space, fixed, tables, gaps):
+    """Into gaps, per found loadout, the share of its score the best move of one gem would add: players place their gems, so
+    the set behind a play is one that move barely helps. tables: (per cell the (A, E, F, G) of its chart-time timeline, combo,
+    fever, points per Perfect Points stat)."""
+    items, gems = space
+    line_shape, combo, fever, points = tables
+    stats = np.empty(7, dtype=np.int64)
+    trial = np.empty(7, dtype=np.int64)
+    kinds = gems.shape[0]
+    counts = np.empty(kinds, dtype=np.int64)
+    for r in range(found.shape[0]):
+        row = found[r]
+        stats[:] = fixed[row[17]][:7]
+        for level in range(9):
+            stats += items[row[level]][:7]
+        counts[:] = 0
+        counts[:5] = row[9:14]
+        counts[row[15]] = row[14]
+        for kind in range(kinds):
+            stats += counts[kind] * gems[kind][:7]
+        plain = _plain_score(stats, line_shape, (combo, fever), points)
+        best = plain
+        for kind in range(kinds):
+            if counts[kind] == 0:
+                continue
+            for other in range(kinds):
+                if other != kind and (other < 5 or other == row[15]):
+                    trial[:] = stats - gems[kind][:7] + gems[other][:7]
+                    best = max(best, _plain_score(trial, line_shape, (combo, fever), points))
+        gaps[r] = (best - plain) / plain
 
 
 def time_gem_losses(space: LoadoutSpace, prices: np.ndarray) -> np.ndarray:

@@ -19,9 +19,8 @@ of the decompile, `file:line` below) and needs no player:
 Stat curves and each note's points come from game_sim. At a 1 ms clock an autoplay equals the engine's chart-time score.
 
 Where it differs from the game: the order of controls inside a frame is track 2, 3, 4, 1, what Luau's pairs() probably gives
-(not verified in game); the clock has no audio resync (AudioManager.lua:609-621) or hitch skip (GameLagDelaySync); the fill of
-Perfect and Great is the reference port's, get_powerbar_noteresult_fill failed to decompile and Okay and Miss are taken to add
-none; a player presses at most what the plan says, with no tap releases.
+(not verified in game); the fill of Perfect and Great is the reference port's, get_powerbar_noteresult_fill failed to decompile and Okay and Miss are taken to add
+none; there are no tap releases, and no audio sync of the clock (a force sync moves it by up to 0.5 s, AudioManager.lua:609-621).
 """
 
 from __future__ import annotations
@@ -133,6 +132,9 @@ class Plan:
     offsets: np.ndarray
     states_perfect: bool = False  # an accuracy hack: every hit claims Perfect, its time offset stays the real one
     casual: bool = False  # the client judges at Perfect Time 0 (ScoreManager.lua:112-116), the server at the gear's
+    strays: tuple[tuple[float, int], ...] = ()  # presses at no note: (song ms, lane)
+    lost: tuple[tuple[float, float], ...] = ()  # song ms spans of frames the lag sync skipped: a press there never lands
+    omits_misses: bool = False  # a hacked client never sends its Miss events: nothing on the server asks for them
 
 
 @dataclass(slots=True)
@@ -150,12 +152,21 @@ class Played:
     forged: int = 0  # events whose stated result is not the one their time offset computes
 
 
-def frame_clock(rng: np.random.Generator, last_ms: float, fps: float, jitter: float) -> np.ndarray:
-    """The song clock of every frame: a dt accumulator from a random phase (AudioManager.lua:569-587)."""
+def frame_clock(rng: np.random.Generator, last_ms: float, fps: float, jitter: float, gaps: tuple[tuple[float, float], ...] = ()) -> np.ndarray:
+    """The song clock of every frame: a dt accumulator from a random phase (AudioManager.lua:569-587). gaps: (song ms, ms)
+    frames that took that much longer and the lag sync let through (GameLagDelaySync.lua:36-79)."""
     step = 1000.0 / fps
     count = int((last_ms + 2000.0) / step * 1.3) + 16
     steps = step * (1.0 + jitter * rng.standard_normal(count)) if jitter else np.full(count, step)
-    return -1000.0 + rng.uniform(0.0, step) + np.cumsum(np.maximum(steps, 1000.0 / 480.0))
+    clock = -1000.0 + rng.uniform(0.0, step) + np.cumsum(np.maximum(steps, 1000.0 / 480.0))
+    for at, extra in gaps:
+        clock[np.searchsorted(clock, at):] += extra
+    return clock
+
+
+def shown_accuracy(accuracy: float) -> float:
+    """The accuracy a row shows: saved to 5 decimals (PlayerSongPlay.lua:251, SPUtil.lua:2249-2253), printed to 2."""
+    return float(f"{math.floor(accuracy * 100000.0 + 0.5) / 100000.0 * 100.0:.2f}")
 
 
 def _notes_of(chart: Chart, hit: np.ndarray) -> list[_Note]:
@@ -185,14 +196,15 @@ def play(chart: Chart, stats: dict[str, int], perfect_time: int, plan: Plan, fra
     client_edges = _note_times(_statsdict_from({ORACLE_STATS[stat]: value for stat, value in stats.items()})) if plan.casual else server_edges
     client = PlayerScore(gear, colors, hit_objects, approx_ms)
     notes = _notes_of(chart, hit)
-    presses: dict[int, list[tuple[int, _Note]]] = {}
+    presses: dict[int, set[int]] = {}
     releases: dict[int, list[_Note]] = {}
+    pressed_at = [(note.hit + plan.offsets[note.row], note.lane) for note in notes if not math.isnan(plan.offsets[note.row])]
+    for when, lane in [*pressed_at, *plan.strays]:
+        if not any(start < when <= end for start, end in plan.lost):
+            presses.setdefault(int(np.searchsorted(frames, when)), set()).add(lane)
     for note in notes:
-        planned = plan.offsets[note.row]
-        if not math.isnan(planned):
-            presses.setdefault(int(np.searchsorted(frames, note.hit + planned)), []).append((note.lane, note))
-            if note.tail_row is not None and not math.isnan(plan.offsets[note.tail_row]):
-                releases.setdefault(int(np.searchsorted(frames, note.end + plan.offsets[note.tail_row])), []).append(note)
+        if note.tail_row is not None and not math.isnan(plan.offsets[note.row]) and not math.isnan(plan.offsets[note.tail_row]):
+            releases.setdefault(int(np.searchsorted(frames, note.end + plan.offsets[note.tail_row])), []).append(note)
     events: list[tuple[int, int, str, float, str]] = []
     last_whiff = True
 
@@ -208,7 +220,8 @@ def play(chart: Chart, stats: dict[str, int], perfect_time: int, plan: Plan, fra
         client.update(0.0)
         client.register(result, mode)
         stated = "perfect" if plan.states_perfect and result != "miss" else result
-        events.append((math.floor(when), row, stated, delta, mode))
+        if result != "miss" or not plan.omits_misses:
+            events.append((math.floor(when), row, stated, delta, mode))
 
     first_live = 0
     previous = frames[0]
@@ -232,7 +245,7 @@ def play(chart: Chart, stats: dict[str, int], perfect_time: int, plan: Plan, fra
                 if note.state in (_HOLDING, _MISSED):
                     register(now, note.tail_row, "miss", 0.0, "tail_time")
                 note.state = _GONE
-        pressed_lanes = {lane for lane, _note in presses.get(index, ())}
+        pressed_lanes = presses.get(index, ())
         released = releases.get(index, ())
         for lane in _CONTROL_ORDER:
             if lane in pressed_lanes:

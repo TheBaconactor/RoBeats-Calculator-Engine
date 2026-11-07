@@ -263,7 +263,7 @@ def song_secondary(primary: str, secondary: str | None) -> str:
     return "" if not secondary or secondary == primary else secondary
 
 
-def ascension_element_bonus(mini: Mini, primary: str, secondary: str) -> dict[str, int]:
+def ascension_element_bonus(mini: Mini, primary: str, secondary: str, level: int = ASCENSION_LEVEL) -> dict[str, int]:
     """Mini Ascension elemental bonus for a mini that targets the song (in-game two-component model).
 
     For each of the mini's two highest level-1 colors (value v, ascension level A):
@@ -285,14 +285,14 @@ def ascension_element_bonus(mini: Mini, primary: str, secondary: str) -> dict[st
     pool = 0
     bonus: dict[str, int] = {}
     for position, (color, value) in enumerate(ranked):
-        pool += math.floor(value * ASCENSION_LEVEL * 0.5)
+        pool += math.floor(value * level * 0.5)
         if color == primary:
             extra_share = 0.5 if position == 0 else 0.25
         elif secondary and color == secondary:
             extra_share = 0.25 if position == 0 else 0.5
         else:
             continue
-        bonus[color] = bonus.get(color, 0) + math.floor(value * ASCENSION_LEVEL * extra_share)
+        bonus[color] = bonus.get(color, 0) + math.floor(value * level * extra_share)
     if secondary:
         split = {primary: math.floor(pool * 2 / 3), secondary: math.floor(pool / 3)}
     else:
