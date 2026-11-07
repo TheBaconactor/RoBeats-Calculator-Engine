@@ -1,9 +1,9 @@
 """
 CPU exact score replay of a timed song.
 
-The scores are the game's exact visible scores (float64 like the game's Luau numbers), not the
-optimizer's float32 GPU search scores. The math lives in the rewrite's core (gear_optimizer.score and
-solver.fever_timeline); this module adds the timing frontier lookup and the base trace reconstruction.
+The scores are the game's exact visible scores (float64 like the game's Luau numbers). The math lives in the
+rewrite's core (gear_optimizer.score and solver.fever_timeline); this module adds the timing frontier lookup and the
+base trace reconstruction.
 """
 
 from __future__ import annotations
