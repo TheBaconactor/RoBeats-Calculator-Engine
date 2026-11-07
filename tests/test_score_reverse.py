@@ -14,7 +14,7 @@ from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.gamedata import STATS, empty_stats, stat_curves
 from gear_optimizer.reverse.fever_reach import fever_surfaces
 from gear_optimizer.reverse.greats import _great_options
-from gear_optimizer.reverse.lookup import PlayInfo, lost_quarters, prepare_song, reverse_score
+from gear_optimizer.reverse.lookup import PlayInfo, lost_quarters, prepare_song, reverse_score, shared_lines
 from gear_optimizer.score import best_timeline_score, factors, fg_surface_score
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid, fixed_timeline_cell
@@ -204,3 +204,16 @@ def test_great_points_are_among_the_options_of_their_elements():
         for secondary in range(40):
             count = _great_options(2 * primary + secondary, False, options)
             assert (4 * primary) // 3 + (2 * secondary) // 3 + 150 in options[:count].tolist()
+
+
+def test_rows_of_one_set_on_two_songs_share_its_stats(song):
+    """A set a player wore on two charts of other colors: each row leaves many lines, both leave few, the truth among them."""
+    other = prepare_song(load_chart(paths().chart_dir("Hard") / "Bermuda Triangle (Hard) by Camellia feat The8BitDrummer.txt"), load_catalog(paths().game_export), stat_curves())
+    five = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
+    rows = []
+    for each in (song, other):
+        chart = each.chart
+        played = _simulated(each, STORED, Plan(np.zeros(chart.total_notes)))
+        power = 5 * sum(STORED[key] for key in five) + 4 * STORED[chart.primary] + 2 * STORED[chart.secondary]
+        rows.append((PlayInfo(played.score, 100.0, played.casual, gear_power=power), each))
+    assert [59, 71, 63, 66, 85] in shared_lines(rows).tolist()

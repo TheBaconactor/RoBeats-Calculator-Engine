@@ -82,10 +82,11 @@ _GREAT_ROWS = 1 << 18
 _GREAT_PAIRS = 100_000_000
 _GREAT_SEARCH_ITEMS = 300_000_000
 # The loadouts a search rescores exactly, lowest gem gap first, and the rows it tries on each.
-_GREAT_SETS_TRIED = 512
+_GREAT_SETS_TRIED = 4096
 _ROWS_PER_SET = 32
 # Lines that may hold loadouts before they are ranked.
-_HELD_LINES = 256
+_HELD_LINES = 1024
+_SHARED_ROWS = 1 << 21
 # Items a lookup may try, a target may try, and what opening a target counts for: ~100 ms past the lines at the most.
 _SEARCH_ITEMS = 3_000_000
 _ITEMS_PER_TARGET = 10_000
@@ -641,6 +642,31 @@ def _unreleased_item(play: PlayInfo, song: ReverseSong, ceiling: float, base: fl
         choices.append((extra / max(float(weights[strongest]), 1.0), name, space.names[int(space.starts[slot]) + strongest]))
     share, slot, item = min(choices)
     return UnreleasedItem(slot, item, extra, share <= _PLAUSIBLE_SHARE)
+
+
+def _clean_lines(play: PlayInfo, song: ReverseSong) -> tuple[np.ndarray, bool]:
+    """Every (CM, FM, FT, FF, Perfect Points) that gives a clean play at its Gear Power, under the ceiling, and whether they
+    are all."""
+    surfaces = song.surfaces
+    order = np.arange(surfaces.body_fever.shape[0])
+    arrays = surfaces.words, surfaces.coeffs, surfaces.pattern, surfaces.body_fever, surfaces.cell_start, surfaces.cells, order
+    out = np.empty((_SHARED_ROWS, 8), dtype=np.int64)
+    count, every_line = perfect_targets(int(play.score), arrays, song.multipliers, song.notes, song.ceiling, (song.power_terms, play.gear_power), 1 << 40, out)
+    targets = np.empty((2 * count, 8), dtype=np.int64)
+    written = with_points_stat(out[:count], play.gear_power, song.curves.f64["Perfect Points"], targets)
+    return np.unique(targets[:written][:, [1, 2, 3, 4, 7]], axis=0), every_line
+
+
+def shared_lines(rows: list[tuple[PlayInfo, ReverseSong]]) -> np.ndarray:
+    """The stats one player's clean rows on several songs can share: (CM, FM, FT, FF, Perfect Points) rows. One row leaves
+    thousands far below a song's top, and each more leaves a sliver of them, so this names arbitrary gear where a row cannot,
+    if the player wore one set for all of them. Every row needs its Gear Power."""
+    shared = None
+    for play, song in rows:
+        lines, _ = _clean_lines(play, song)
+        keys = lines[:, 0] * 161**4 + lines[:, 1] * 161**3 + lines[:, 2] * 161**2 + lines[:, 3] * 161 + lines[:, 4]
+        shared = keys if shared is None else np.intersect1d(shared, keys)
+    return np.column_stack(((shared // 161**4), (shared // 161**3) % 161, (shared // 161**2) % 161, (shared // 161) % 161, shared % 161))
 
 
 def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Reverse:
