@@ -48,6 +48,7 @@ from .greats import (
     head_witness,
 )
 from .invert import score_ceiling
+from .replay import play_offsets
 from .loadouts import (
     BOUND_ROUNDING,
     GEAR_SLOTS,
@@ -307,6 +308,7 @@ class FoundSet:
     surface: FgResponseSurface
     gem_gap: float
     cost: float = 0.0  # how far-fetched its line is, lower first
+    hits: dict[int, float] | None = None  # the play's hit offsets in ms, per note off its chart time (replay.play_offsets)
 
 
 @dataclass(frozen=True, slots=True)
@@ -844,6 +846,7 @@ def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Rever
         more, stat_lines, lines, done = _sets_of(play, song, greats, limit)
         found, listed, count, finished = found + more, listed + stat_lines, count + lines, finished and done
     found.sort(key=lambda row: row.cost)
+    found = [replace(row, hits=play_offsets(song.chart, song.curves, song.gears, row.gear, row.stats, row.surface)) for row in found]
     listed = sorted(listed, key=lambda line: line.cost)[:limit]
     evidence = _casual_evidence(play, song, lost)
     if evidence is None and not found and lost[1] == 0 and count == 0 and finished and play.gear_power is not None and play.accuracy is not None and play.match_mode == "Compete":

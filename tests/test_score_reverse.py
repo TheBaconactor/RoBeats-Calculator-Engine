@@ -16,7 +16,7 @@ import pytest
 from gear_optimizer.chart import load_chart
 from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.frontier.types import FgResponseSurface
-from gear_optimizer.gamedata import STATS, empty_stats, stat_curves
+from gear_optimizer.gamedata import STATS, empty_stats, perfect_time_of, stat_curves
 from gear_optimizer.reverse.fever_reach import fever_surfaces
 from gear_optimizer.reverse.lookup import PlayInfo, lost_quarters, prepare_song, reverse_score, shared_lines, warm_song
 from gear_optimizer.score import best_timeline_score, factors, fg_surface_score
@@ -278,3 +278,21 @@ def test_a_known_team_buff_keeps_the_sets_to_it(song):
     for tier, color in (("T5", "Vibe"), ("T1", "Rush"), ("T50", None), ("NONE", None)):
         reply = reverse_score(PlayInfo(score=4_666_274, team_buff=tier, team_color=color), song, limit=64)
         assert all(row.team_buff == tier and (color is None or row.team_color == color) for row in reply.sets)
+
+
+def test_a_named_sets_hits_replay_the_rows_score(song):
+    """The hit offsets a named set carries replay, frame by frame in the game's port, to the row's exact score and Casual
+    score: the play behind the score, Greats and fever where they were."""
+    offsets = np.zeros(song.chart.total_notes)
+    offsets[150] = -70.0  # an early Great for a tap and a hold tail alike
+    played = _simulated(song, STORED, Plan(offsets))
+    reply = reverse_score(play_info(played, gear_power(STORED, song.chart), "Compete"), song)
+    assert reply.verdict == "sets"
+    found = reply.sets[0]
+    assert found.hits is not None
+    hits = np.zeros(song.chart.total_notes)
+    for note, delta in found.hits.items():
+        hits[note] = delta
+    frames = frame_clock(np.random.default_rng(1), float(song.chart.timestamps[-1]) * 1000.0, 60.0, 0.0)
+    replayed = play(song.chart, found.stats, perfect_time_of(found.gear, load_catalog(paths().game_export).gears), Plan(hits), frames)
+    assert (replayed.score, replayed.casual) == (played.score, played.casual)
