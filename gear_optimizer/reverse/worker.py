@@ -19,7 +19,6 @@ from dataclasses import asdict
 from typing import Any
 
 from gear_optimizer.chart import load_chart
-from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.data.game_export import Catalog, load_catalog
 from gear_optimizer.gamedata import StatCurves, stat_curves
 from gear_optimizer.settings import paths
@@ -44,7 +43,7 @@ def answer(request: dict[str, Any], songs: OrderedDict[str, ReverseSong], catalo
         warm_song(song, request.get("accuracy"))
         return {"prepared": True}
     play = PlayInfo(request["score"], request.get("accuracy"), request.get("casualScore"), request.get("gearMultiplier"), request.get("gearPower"), request.get("matchMode", "Compete"))
-    return asdict(reverse_score(play, song, limit=request.get("limit", 8), mode=request.get("timingMode", PRECISE)))
+    return asdict(reverse_score(play, song, limit=request.get("limit", 8)))
 
 
 def _compile_kernels(catalog: Catalog, curves: StatCurves) -> None:

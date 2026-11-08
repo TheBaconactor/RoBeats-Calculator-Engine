@@ -1,7 +1,7 @@
 """A named set's play as the song page plays it: the hit offsets that give the row's score.
 
 A lookup's set gives the score on a response surface, its fever and Greats. The song page plans a build's run from the section
-trace whose edges add up to its surface (trace.reconstruct), in the timing mode it shows: a surface without Greats as it plans a
+trace whose edges add up to its surface (trace.reconstruct), in Precise, its first view: a surface without Greats as it plans a
 Meta build, one with Greats as it plans a Force Great build. The trace is checked against a physical replay at the build's
 windows (trace.physical_replay), then gives its notes' hit offsets (trace.note_graph). So a set that is a stored build, at the
 build's own score, plays the build's own run, and the page shows the build's own frame guarantee for it.
@@ -13,6 +13,7 @@ from math import ceil
 
 import numpy as np
 
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.gamedata import perfect_time_of
 from gear_optimizer.rules import MAX_STAT
@@ -23,15 +24,15 @@ from gear_optimizer.trace.physical_replay import validate_base_physical_replay, 
 from gear_optimizer.trace.reconstruct import UnplayableTrace, reconstruct_base_trace, reconstruct_force_greats_response_trace
 
 
-def play_offsets(chart, curves, gears, set_gear: tuple[str, ...], stats: dict[str, int], surface: FgResponseSurface, mode: str) -> dict[int, float] | None:
-    """Per note off its chart time, its hit offset in ms in the play behind a set's score, planned in timing mode `mode`; None
-    when no trace plays the surface in that mode (the lookup's walk reaches a little past what the planners plan)."""
-    inputs = time_song(chart, mode).fg_inputs
+def play_offsets(chart, curves, gears, set_gear: tuple[str, ...], stats: dict[str, int], surface: FgResponseSurface) -> dict[int, float] | None:
+    """Per note off its chart time, its hit offset in ms in the play behind a set's score, planned in Precise, the song page's
+    first view; None when no trace plays the surface (the lookup's walk reaches a little past what the planners plan)."""
+    inputs = time_song(chart, PRECISE).fg_inputs
     real_time_by_ft, raw_fill_by_ff = fever_axes(inputs.total_notes, inputs.long_notes, inputs.last_note_time, curves)
     ft, ff = min(stats["Fever Time"], MAX_STAT), min(stats["Fever Fill Rate"], MAX_STAT)
     raw_fill, real_time = float(raw_fill_by_ff[ff]), float(real_time_by_ft[ft])
     denominator = float(fever_fill_denominators(int(inputs.total_notes) - int(inputs.long_notes), curves.f64["Fever Fill Rate"][ff]))
-    notes = dict(timestamps=chart.timestamps, note_types=chart.note_types, lanes=chart.lanes, timing_mode=mode, perfect_time=perfect_time_of(set_gear, gears))
+    notes = dict(timestamps=chart.timestamps, note_types=chart.note_types, lanes=chart.lanes, timing_mode=PRECISE, perfect_time=perfect_time_of(set_gear, gears))
     head = (surface.fever0, surface.fever1, surface.fever2, surface.fever3)
     try:
         if surface.body_great == 0 and not any((surface.great0, surface.great1, surface.great2, surface.great3)):

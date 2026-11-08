@@ -24,7 +24,6 @@ import numpy as np
 from gear_optimizer.chart import Chart
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_ORDER, team_buff_effect
-from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.data.game_export import Catalog
 from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
 from gear_optimizer.frontier.types import FgResponseSurface
@@ -877,16 +876,16 @@ def warm_song(song: ReverseSong, accuracy: float | None) -> None:
         _timelines_of(song, greats, greats > 0)
 
 
-def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8, mode: str = PRECISE) -> Reverse:
-    """The sets behind a play, ranked, each with its play's hit offsets planned in timing mode `mode`; or what it would take;
-    or the verdict that no honest play gives it."""
+def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Reverse:
+    """The sets behind a play, ranked, each with its play's hit offsets; or what it would take; or the verdict that no honest
+    play gives it."""
     lost = lost_quarters(play, song.chart.total_notes)
     found, listed, count, finished = [], [], 0, True
     for greats in range(lost[0], min(lost[1], _GREATS_SEARCHED) + 1):
         more, stat_lines, lines, done = _sets_of(play, song, greats, limit)
         found, listed, count, finished = found + more, listed + stat_lines, count + lines, finished and done
     found.sort(key=lambda row: row.cost)
-    found = [replace(row, hits=play_offsets(song.chart, song.curves, song.gears, row.gear, row.stats, row.surface, mode)) for row in found]
+    found = [replace(row, hits=play_offsets(song.chart, song.curves, song.gears, row.gear, row.stats, row.surface)) for row in found]
     listed = sorted(listed, key=lambda line: line.cost)[:limit]
     evidence = _casual_evidence(play, song, lost)
     if evidence is None and not found and lost[1] == 0 and count == 0 and finished and play.gear_power is not None and play.accuracy is not None and play.match_mode == "Compete":

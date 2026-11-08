@@ -271,14 +271,17 @@ def test_warming_a_song_changes_no_answer(song):
     assert walked and walked <= set(cold.timelines)
 
 
-def test_a_stored_meta_runs_own_row_looks_up_to_its_own_run(song):
-    """A set the song page shows, at its own score, plays the run the page plays for it in either timing mode, so the page
-    shows the same frame guarantee: in Non-Precise every note on its chart time, in Precise the planned witness offsets."""
-    clock = np.arange(-1000.0, float(song.chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)  # the chart-time run, as a Meta build's
+def test_a_clean_rows_set_plays_its_meta_run(song):
+    """A row with no Greats plays as the song page plans a Meta build's run (the Base trace, in Precise), and that run replays
+    frame by frame to the row's exact score."""
+    clock = np.arange(-1000.0, float(song.chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)
     played = play(song.chart, STORED, 0, Plan(np.zeros(song.chart.total_notes)), clock)
-    shown = play_info(played, gear_power(STORED, song.chart), "Compete")
-    assert reverse_score(shown, song, mode="non-precise").sets[0].hits == {}
-    assert reverse_score(shown, song, mode="precise").sets[0].hits is not None
+    found = reverse_score(play_info(played, gear_power(STORED, song.chart), "Compete"), song).sets[0]
+    hits = np.zeros(song.chart.total_notes)
+    for note, delta in found.hits.items():
+        hits[note] = delta
+    replayed = play(song.chart, found.stats, perfect_time_of(found.gear, load_catalog(paths().game_export).gears), Plan(hits), clock)
+    assert replayed.score == played.score
 
 
 def test_a_partly_upgraded_players_row_names_a_partly_upgraded_set(song):
@@ -288,7 +291,7 @@ def test_a_partly_upgraded_players_row_names_a_partly_upgraded_set(song):
     player = fake_player(random.Random(1), song, dict(catalog.minis), "casual", "machine")
     clock = np.arange(-1000.0, float(song.chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)
     played = play(song.chart, player.stats, player.perfect_time, Plan(np.zeros(song.chart.total_notes)), clock)
-    reply = reverse_score(play_info(played, gear_power(player.stats, song.chart), "Compete"), song, mode="non-precise")
+    reply = reverse_score(play_info(played, gear_power(player.stats, song.chart), "Compete"), song)
     guessed = next(row for row in reply.sets if row.mini_states)
     assert sum(guessed.gems.values()) <= 90
     assert all(1 <= rank <= 4 and 1 <= level <= 20 + 10 * (rank - 1) and 0 <= ascension <= 10 for rank, level, ascension in guessed.mini_states)
