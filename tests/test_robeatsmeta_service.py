@@ -660,6 +660,7 @@ def test_a_lookup_takes_its_own_queue_and_no_solve_slot(data_root, monkeypatch):
     assert taken[0]["score"] == 5
     assert taken[0]["accuracy"] == 99.91
     assert taken[0]["gearPower"] == 40
+    assert taken[0]["timingMode"] == "precise"  # the site's default: each set's play is planned in the mode the page shows
     assert taken[0]["chartPath"].endswith("song.txt")
 
 
@@ -680,7 +681,7 @@ def test_a_prepare_readies_the_song_in_the_lookup_queue(data_root, monkeypatch):
         assert answers[0][0] == service.HTTPStatus.BAD_REQUEST
 
 
-@pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}))
+@pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}, {"targetSongId": "Feeding [Hard]", "score": 5, "timingMode": "fast"}))
 def test_a_lookup_with_a_row_no_menu_shows_is_refused(data_root, monkeypatch, body):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
     handler, answers = _lookup_handler(monkeypatch, body)

@@ -617,6 +617,10 @@ def parse_lookup(raw: dict[str, Any]) -> dict[str, Any]:
     shown = {"chartPath": chart, "score": score, "matchMode": raw.get("matchMode", "Compete")}
     if shown["matchMode"] not in ("Compete", "Casual"):
         raise RequestError("matchMode must be Compete or Casual")
+    # The timing mode the page shows: each set's play is planned in it, as the song page plans a build's run.
+    shown["timingMode"] = raw.get("timingMode", PRECISE)
+    if shown["timingMode"] not in TIMING_MODES:
+        raise RequestError(f"timingMode must be one of {', '.join(TIMING_MODES)}")
     return {**shown, **_shown_numbers(raw, tuple(_SHOWN_NUMBERS))}
 
 

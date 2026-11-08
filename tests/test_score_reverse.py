@@ -271,6 +271,16 @@ def test_warming_a_song_changes_no_answer(song):
     assert walked and walked <= set(cold.timelines)
 
 
+def test_a_stored_meta_runs_own_row_looks_up_to_its_own_run(song):
+    """A set the song page shows, at its own score, plays the run the page plays for it in either timing mode, so the page
+    shows the same frame guarantee: in Non-Precise every note on its chart time, in Precise the planned witness offsets."""
+    clock = np.arange(-1000.0, float(song.chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)  # the chart-time run, as a Meta build's
+    played = play(song.chart, STORED, 0, Plan(np.zeros(song.chart.total_notes)), clock)
+    shown = play_info(played, gear_power(STORED, song.chart), "Compete")
+    assert reverse_score(shown, song, mode="non-precise").sets[0].hits == {}
+    assert reverse_score(shown, song, mode="precise").sets[0].hits is not None
+
+
 def test_a_named_sets_hits_replay_the_rows_score(song):
     """The hit offsets a named set carries replay, frame by frame in the game's port, to the row's exact score and Casual
     score: the play behind the score, Greats and fever where they were."""
