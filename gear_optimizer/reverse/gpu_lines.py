@@ -7,16 +7,18 @@ GPU's threads wrote their rows in. Each chunk runs three packed stages, each thr
   tiles  8 x 8 (CM, FM) blocks whose best corner reaches the score under the ceiling, at an FT + FF the surface has
   pairs  the (CM, FM) of those likewise, as entries of up to 16 base values
   rows   a thread per base value: each Perfect Points stat of it and each class, in float32, and those that can hold in the game's
-         float64, the head's notes summed
+         float64, the head's notes summed; a play's many classes with few body Greats go class by class in a pass of their
+         own, each to the few stats its deficit leaves (_narrow_rows)
 
 The float32 test never waits for float64: a value float32 cannot floor keeps both floors and a Great's floors are left to the
 exact test. A SIMD group runs as long as its slowest thread, so a rare slow path in a common test costs every lane of the group.
 The exact test is inline for the same reason a list of what to test costs more: threads queue for its one atomic counter (320 ns a
 candidate on the M4 against 2 ns to test one), and a row is a thirtieth of the candidates.
 
-Cost: O(U (B + J b + p J + b' (log s + s' o c) + h r)) for U surfaces, B = 441 tiles, b tiles left, p pairs left, J vertices, b'
-base values, s stats of a residue of which s' give a sum the surface has, o <= 3 Great points, c classes, h head notes and r
-candidates: on the M4 5 to 50 ms for most plays (numba: 20 ms to 4 s, the same rows).
+Cost: O(U (B + J b + p J + b' (log s + s' o c + c' g (log A + a o)) + h r)) for U surfaces, B = 441 tiles, b tiles left, p pairs
+left, J vertices, b' base values, s stats of a residue of which s' give a sum the surface has, o <= 3 Great points, c classes
+with many body Greats and c' with few (g <= 5 counts of them in fever, a of the A = 161 stats in the range each leaves), h head
+notes and r candidates: on the M4 5 to 50 ms for most plays (numba: 20 ms to 4 s, the same rows).
 """
 
 from dataclasses import dataclass
@@ -52,6 +54,12 @@ _GREAT_GAP = 185.0
 _SPAN_EDGE = 1.0e-3
 _HEAD_FLOAT_POINTS = 4
 _SPANNED_EDGE = 0.02  # Over float32's order of a class's head span; `lookup._named_set` confirms each point of it.
+# What _narrow_rows widens a deficit's drop range by, over float32's order of _fevered's arithmetic: a share each way, then 2 points.
+_DROP_LOW, _DROP_HIGH = 0.999, 1.001
+# casual_classes sorts classes by head Greats, so by body Greats down: those with this many or fewer come last, and when they
+# are this many a pass of their own tests them class by class (_narrow_rows); fewer cost that pass more than it saves.
+_NARROW_BODIES = 4
+_NARROW_CLASSES = 512
 _COUNTERS = 4
 _LIVE, _PAIRS, _BASES, _ROWS = range(_COUNTERS)
 _ONE_BITS = (0, 0x3FF00000)  # 1.0 as float64 words
@@ -67,6 +75,7 @@ _Search = ti.types.struct(
     body_total=ti.i32,
     single_color=ti.i32,
     class_count=ti.i32,
+    narrow_from=ti.i32,
     term_low=ti.f32,
     term_high=ti.f32,
 )
@@ -75,6 +84,7 @@ _Vec2f = ti.types.vector(2, ti.f32)
 _Vec2u = ti.types.vector(2, ti.u32)
 _Vec3i = ti.types.vector(3, ti.i32)
 _Vec4i = ti.types.vector(4, ti.i32)
+_Vec7i = ti.types.vector(7, ti.i32)
 _Vec4f = ti.types.vector(4, ti.f32)
 _Vec9i = ti.types.vector(_CLASS_COLUMNS, ti.i32)
 _I32_ARRAY = ti.types.ndarray(dtype=ti.i32)
@@ -346,67 +356,125 @@ def _head_loss_span(row: _Vec9i, u: ti.i32, cm: ti.i32, drop: ti.f32, multiplier
 
 
 @ti.func
-def _class_rows(q: _Search, pair: _Vec3i, line: _Vec4i, need: _Vec2i, multipliers: _Vec2f) -> ti.i32:
-    """The rows of the classes and body Greats in fever a line's deficit can give: a division, within the notes of the surface's
-    body. A Great's floors move its loss by a point each way, in fever and out of it. The first class past float32 sums the
-    head, a thread's slow path: the rest test the exact deficit. line: (base, Great points, stat, its clean score or -1). Returns
-    the clean score."""
+def _first_past(values: ti.template(), first: ti.i32, last: ti.i32, bound: ti.i32, strict: ti.i32) -> ti.i32:
+    """The first index of first..last whose value is at least bound, or over it when strict; the values do not fall there."""
+    while first < last:
+        middle = (first + last) >> 1
+        if values[middle] < bound or (strict != 0 and values[middle] == bound):
+            first = middle + 1
+        else:
+            last = middle
+    return first
+
+
+@ti.func
+def _narrow_rows(q: _Search, pair: _Vec3i, base: ti.i32, need: _Vec2i, multipliers: _Vec2f):
+    """The rows of a base value's classes with few body Greats (from q.narrow_from on), class by class and count of them in
+    fever: a Great point's drop then costs a known rate, so the deficit leaves a drop range, a Great points range and through
+    the elements a Perfect Points range, a binary search on the curve. The stats there that Gear Power ties to an FT + FF the
+    surface has are tested as _class_rows tests them (_fevered, then the exact deficit), and give the same rows. The deficit is
+    the line's clean score less the score, summed once, for the first class past the float32 range; till then the base's
+    float32 range of it."""
     u, cm = pair[0], pair[1]
-    base, great, stat, clean = line[0], line[1], line[2], line[3]
-    drop: ti.f32 = ti.cast(base - great, ti.f32)
-    lost: ti.f32 = drop * multipliers[0]
-    gap: ti.f32 = lost * (multipliers[1] - 1.0)
+    combo, fever = multipliers[0], multipliers[1]
     bf: ti.i32 = tables.body_fever[u]
     outside: ti.i32 = q.body_total - bf
+    rest: ti.i32 = q.power - 5 * (pair[1] + pair[2]) - 2 * base
+    residue: ti.i32 = (2 * base - q.power) % 5
+    span = tables.sum_span[u]
+    low, high = need[0], need[1]
+    clean: ti.i32 = -1
+    for k in range(q.narrow_from, q.class_count):
+        row = tables.classes[k]
+        bodies = row[1]
+        rate = _head_loss_span(row, u, cm, 1.0, multipliers)
+        spare: ti.f32 = ti.cast(row[0] + 2 * bodies, ti.f32) + 1.0
+        body_rate: ti.f32 = ti.cast(bodies, ti.f32) * combo
+        f = ti.max(0, bodies - outside)
+        while f <= ti.min(bodies, bf):
+            fevered_rate: ti.f32 = ti.cast(f, ti.f32) * combo * (fever - 1.0)
+            lowest: ti.f32 = (ti.cast(low, ti.f32) - spare) / (rate[1] + body_rate + fevered_rate)
+            highest: ti.f32 = (ti.cast(high, ti.f32) + spare) / (rate[0] + body_rate + fevered_rate)
+            great_low: ti.i32 = base - ti.cast(ti.floor(highest * _DROP_HIGH), ti.i32) - 2
+            great_high: ti.i32 = base - ti.cast(ti.ceil(ti.max(lowest, 0.0) * _DROP_LOW), ti.i32) + 2
+            # A Great's points are 2/3 of the elements + 150, within a point, so the elements lie within 3/2 of that.
+            first = _first_past(tables.points, 0, _AXIS, base - (3 * (great_high - 147)) // 2 - 2, 0)
+            for stat in range(first, _first_past(tables.points, first, _AXIS, base - (3 * (great_low - 150)) // 2 + 2, 1)):
+                total: ti.i32 = (rest - (5 * stat - 2 * tables.points[stat])) // 5
+                elements: ti.i32 = base - tables.points[stat]
+                if (2 * tables.points[stat]) % 5 == residue and span[0] <= total and total <= span[1] and elements > 0:
+                    if ((tables.sum_bits[u, total >> 5] >> ti.cast(total & 31, ti.u32)) & ti.u32(1)) != ti.u32(0):
+                        previous = -1
+                        for option in range(3):
+                            great = _great_points(elements, q.single_color, option)
+                            if great != previous and great != 0 and great < base:
+                                previous = great
+                                if great_low <= great and great <= great_high:
+                                    fevered = _fevered(q, pair, row, ti.Vector([base, great]), ti.Vector([low, high]), multipliers)
+                                    if fevered[0] <= f and f <= fevered[1] and clean < 0:
+                                        clean = _clean_score(q, pair, base)
+                                        low, high = clean - q.score, clean - q.score
+                                        fevered = _fevered(q, pair, row, ti.Vector([base, great]), ti.Vector([low, high]), multipliers)
+                                    if fevered[0] <= f and f <= fevered[1] and low > 0 and _keeps(pair, base, (k << 16) | f, great, low) != 0:
+                                        _row(pair, base, (k << 16) | f, great, stat)
+            f += 1
+
+
+@ti.func
+def _class_rows(q: _Search, pair: _Vec3i, line: _Vec4i, need: _Vec2i, multipliers: _Vec2f) -> ti.i32:
+    """The rows of the classes with many body Greats (up to q.narrow_from) a line's deficit can give: the float32 range of body
+    Greats in fever (_fevered), then the exact deficit. The first class past float32 sums the head, a thread's slow path: the
+    rest test the exact deficit. line: (base, Great points, stat, its clean score or -1). Returns the clean score."""
+    base, great, stat, clean = line[0], line[1], line[2], line[3]
     low, high = need[0], need[1]
     if clean >= 0:
         low, high = clean - q.score, clean - q.score
-    for k in range(q.class_count):
+    for k in range(q.narrow_from):
         row = tables.classes[k]
-        bodies: ti.i32 = row[1]
-        span = _head_loss_span(row, u, cm, drop, multipliers)
-        spare: ti.f32 = ti.cast(row[0] + 2 * bodies, ti.f32) + 1.0
-        body_lost: ti.f32 = ti.cast(bodies, ti.f32) * lost
-        fevered: ti.i32 = ti.max(ti.cast(ti.ceil((ti.cast(low, ti.f32) - span[1] - spare - body_lost) / gap), ti.i32), ti.max(0, bodies - outside))
-        last: ti.i32 = ti.min(ti.cast(ti.floor((ti.cast(high, ti.f32) - span[0] + spare - body_lost) / gap), ti.i32), ti.min(bodies, bf))
-        if fevered <= last and clean < 0:
+        fevered = _fevered(q, pair, row, ti.Vector([base, great]), ti.Vector([low, high]), multipliers)
+        if fevered[0] <= fevered[1] and clean < 0:
             clean = _clean_score(q, pair, base)
             low, high = clean - q.score, clean - q.score
-            fevered = ti.max(ti.cast(ti.ceil((ti.cast(low, ti.f32) - span[1] - spare - body_lost) / gap), ti.i32), ti.max(0, bodies - outside))
-            last = ti.min(ti.cast(ti.floor((ti.cast(high, ti.f32) - span[0] + spare - body_lost) / gap), ti.i32), ti.min(bodies, bf))
-        while fevered <= last:
-            if low > 0 and _keeps(pair, base, (k << 16) | fevered, great, low) != 0:
-                _row(pair, base, (k << 16) | fevered, great, stat)
-            fevered += 1
+            fevered = _fevered(q, pair, row, ti.Vector([base, great]), ti.Vector([low, high]), multipliers)
+        f = fevered[0]
+        while f <= fevered[1]:
+            if low > 0 and _keeps(pair, base, (k << 16) | f, great, low) != 0:
+                _row(pair, base, (k << 16) | f, great, stat)
+            f += 1
     return clean
+
+
+@ti.func
+def _fevered(q: _Search, pair: _Vec3i, row: _Vec9i, line: _Vec2i, need: _Vec2i, multipliers: _Vec2f) -> _Vec2i:
+    """The fewest and most body Greats in fever a class's float32 bounds leave at a line (base, Great points) for a deficit in
+    need. A Great's floors move its loss by a point each way, in fever and out of it."""
+    u, cm = pair[0], pair[1]
+    drop: ti.f32 = ti.cast(line[0] - line[1], ti.f32)
+    lost: ti.f32 = drop * multipliers[0]
+    gap: ti.f32 = lost * (multipliers[1] - 1.0)
+    bf: ti.i32 = tables.body_fever[u]
+    bodies: ti.i32 = row[1]
+    span = _head_loss_span(row, u, cm, drop, multipliers)
+    spare: ti.f32 = ti.cast(row[0] + 2 * bodies, ti.f32) + 1.0
+    body_lost: ti.f32 = ti.cast(bodies, ti.f32) * lost
+    fevered: ti.i32 = ti.max(ti.cast(ti.ceil((ti.cast(need[0], ti.f32) - span[1] - spare - body_lost) / gap), ti.i32), ti.max(0, bodies - (q.body_total - bf)))
+    last: ti.i32 = ti.min(ti.cast(ti.floor((ti.cast(need[1], ti.f32) - span[0] + spare - body_lost) / gap), ti.i32), ti.min(bodies, bf))
+    return ti.Vector([fevered, last])
 
 
 @ti.func
 def _stat_range(residue: ti.i32, low: ti.i32, high: ti.i32) -> _Vec2i:
     """The stats of a residue whose term lies in low..high: where they start and end in stats_by_term."""
-    start: ti.i32 = tables.residue_start[residue]
     end: ti.i32 = tables.residue_start[residue + 1]
-    first, last = start, end
-    while first < last:
-        middle = (first + last) >> 1
-        if tables.stat_terms[middle] < low:
-            first = middle + 1
-        else:
-            last = middle
-    stop, last = first, end
-    while stop < last:
-        middle = (stop + last) >> 1
-        if tables.stat_terms[middle] <= high:
-            stop = middle + 1
-        else:
-            last = middle
-    return ti.Vector([first, stop])
+    first = _first_past(tables.stat_terms, tables.residue_start[residue], end, low, 0)
+    return ti.Vector([first, _first_past(tables.stat_terms, first, end, high, 1)])
 
 
 @ti.func
 def _stat_rows(q: _Search, pair: _Vec3i, base: ti.i32, need: _Vec2i, multipliers: _Vec2f):
-    """A base value's Perfect Points stats: Gear Power ties each to an FT + FF, and the surface must have it. A base's clean score
-    is summed once, for the first line that needs it."""
+    """A base value's Perfect Points stats: Gear Power ties each to an FT + FF, and the surface must have it. A clean play's
+    clean score is summed once, for the first that needs it; a play with Greats tests its classes with many body Greats there
+    (_class_rows), and _find_narrow_rows the rest."""
     u = pair[0]
     rest: ti.i32 = q.power - 5 * (pair[1] + pair[2]) - 2 * base
     span = tables.sum_span[u]
@@ -422,7 +490,7 @@ def _stat_rows(q: _Search, pair: _Vec3i, base: ti.i32, need: _Vec2i, multipliers
                     clean = _clean_score(q, pair, base)
                 if clean == q.score:
                     _row(pair, base, 0, 0, stat)
-            elif elements > 0:
+            elif elements > 0 and q.narrow_from > 0:
                 previous = -1
                 for option in range(3):
                     great = _great_points(elements, q.single_color, option)
@@ -431,32 +499,50 @@ def _stat_rows(q: _Search, pair: _Vec3i, base: ti.i32, need: _Vec2i, multipliers
                         clean = _class_rows(q, pair, ti.Vector([base, great, stat, clean]), need, multipliers)
 
 
+@ti.func
+def _thread(q: _Search, i: ti.i32) -> _Vec7i:
+    """A rows thread's base value and pair, and the deficit range its float32 bounds leave: (live, surface, CM, FM, base,
+    lowest, highest)."""
+    entry = tables.pairs[i >> _BASE_BITS]
+    base: ti.i32 = entry[1] + (i & (_ENTRY_BASES - 1))
+    u = entry[0] >> 16
+    cm = (entry[0] >> 8) & 255
+    fm = entry[0] & 255
+    combo: ti.f32 = tables.combo[cm]
+    fever: ti.f32 = tables.fever[fm]
+    bf: ti.i32 = tables.body_fever[u]
+    rough: ti.f32 = ti.cast(base, ti.f32) * combo
+    rough_fever: ti.f32 = rough * fever
+    body_low: ti.i32 = bf * ti.cast(rough_fever * _FLOOR_LOW, ti.i32) + (q.body_total - bf) * ti.cast(rough * _FLOOR_LOW, ti.i32)
+    body_high: ti.i32 = bf * ti.cast(rough_fever * _FLOOR_HIGH, ti.i32) + (q.body_total - bf) * ti.cast(rough * _FLOOR_HIGH, ti.i32)
+    # A head's floors lie within head_len of base x its shape.
+    head: ti.i32 = ti.cast(ti.cast(base, ti.f32) * _shape_at(tables.head_terms[u], combo, fever), ti.i32)
+    need_high: ti.i32 = body_high + head - q.score + _HEAD_FLOAT_POINTS
+    need_low: ti.i32 = body_low + head - q.score - q.head_len - _HEAD_FLOAT_POINTS
+    live = base <= entry[2] and tables.counters[_ROWS] <= MAX_ROWS and need_high >= 0 and (q.greats > 0 or need_low <= 0)
+    return ti.Vector([ti.cast(live, ti.i32), u, cm, fm, base, need_low, need_high])
+
+
 @ti.kernel
 def _find_rows(q: _Search):
     for i in range(ti.min(tables.counters[_PAIRS], _MAX_PAIRS) * _ENTRY_BASES):
-        entry = tables.pairs[i >> _BASE_BITS]
-        base: ti.i32 = entry[1] + (i & (_ENTRY_BASES - 1))
-        if base <= entry[2] and tables.counters[_ROWS] <= MAX_ROWS:
-            u = entry[0] >> 16
-            cm = (entry[0] >> 8) & 255
-            fm = entry[0] & 255
-            combo: ti.f32 = tables.combo[cm]
-            fever: ti.f32 = tables.fever[fm]
-            bf: ti.i32 = tables.body_fever[u]
-            rough: ti.f32 = ti.cast(base, ti.f32) * combo
-            rough_fever: ti.f32 = rough * fever
-            body_low: ti.i32 = bf * ti.cast(rough_fever * _FLOOR_LOW, ti.i32) + (q.body_total - bf) * ti.cast(rough * _FLOOR_LOW, ti.i32)
-            body_high: ti.i32 = bf * ti.cast(rough_fever * _FLOOR_HIGH, ti.i32) + (q.body_total - bf) * ti.cast(rough * _FLOOR_HIGH, ti.i32)
-            # A head's floors lie within head_len of base x its shape.
-            head: ti.i32 = ti.cast(ti.cast(base, ti.f32) * _shape_at(tables.head_terms[u], combo, fever), ti.i32)
-            need_high: ti.i32 = body_high + head - q.score + _HEAD_FLOAT_POINTS
-            need_low: ti.i32 = body_low + head - q.score - q.head_len - _HEAD_FLOAT_POINTS
-            if need_high >= 0 and (q.greats > 0 or need_low <= 0):
-                if q.power < 0:
-                    if _clean_score(q, ti.Vector([u, cm, fm]), base) == q.score:
-                        _row(ti.Vector([u, cm, fm]), base, 0, 0, -1)
-                else:
-                    _stat_rows(q, ti.Vector([u, cm, fm]), base, ti.Vector([need_low, need_high]), ti.Vector([combo, fever]))
+        t = _thread(q, i)
+        if t[0] != 0:
+            pair = ti.Vector([t[1], t[2], t[3]])
+            if q.power < 0:
+                if _clean_score(q, pair, t[4]) == q.score:
+                    _row(pair, t[4], 0, 0, -1)
+            else:
+                _stat_rows(q, pair, t[4], ti.Vector([t[5], t[6]]), ti.Vector([tables.combo[t[2]], tables.fever[t[3]]]))
+
+
+@ti.kernel
+def _find_narrow_rows(q: _Search):
+    """_find_rows for a play's classes with few body Greats, a kernel of its own so that the common one keeps its registers."""
+    for i in range(ti.min(tables.counters[_PAIRS], _MAX_PAIRS) * _ENTRY_BASES):
+        t = _thread(q, i)
+        if t[0] != 0 and q.power >= 0:
+            _narrow_rows(q, ti.Vector([t[1], t[2], t[3]]), t[4], ti.Vector([t[5], t[6]]), ti.Vector([tables.combo[t[2]], tables.fever[t[3]]]))
 
 
 @ti.kernel
@@ -625,6 +711,26 @@ class LineQuery:
     bases: int  # the base values of (surface, CM, FM) pairs the search may walk; a play's classes multiply what one counts for
 
 
+def _narrow_from(classes: np.ndarray) -> int:
+    """Where a play's classes with few body Greats start, when there are enough of them for a pass of their own; else past
+    the last."""
+    narrow_from = int(np.count_nonzero(classes[:, 1] > _NARROW_BODIES))
+    return narrow_from if classes.shape[0] - narrow_from >= _NARROW_CLASSES else classes.shape[0]
+
+
+def scan_order(rows: np.ndarray, threads: np.ndarray, classes: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """The order of line_rows' rows (threads: a key per row that orders their threads) that every later step reads: by
+    thread, and in a thread as its scan of stats by Gear Power term, each stat's Great points down, then classes and body
+    Greats in fever. A thread writes its rows so, but those of a pass of narrow classes (_narrow_rows) after the rest."""
+    if _narrow_from(classes) == classes.shape[0]:
+        return np.argsort(threads, kind="stable")
+    at = np.empty(points.shape[0], dtype=np.int64)
+    at[_stats_by_term(points.astype(np.int64))[0]] = np.arange(points.shape[0])
+    stat = rows[:, 5].astype(np.int64)
+    within = (np.where(stat >= 0, at[stat], 0) << 41) | ((4095 - rows[:, 4].astype(np.int64)) << 29) | rows[:, 3].astype(np.int64)
+    return np.lexsort((within, threads))
+
+
 def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tuple[np.ndarray, bool]:
     """Every row (surface, CM << 8 | FM, base, class << 16 | body Greats in fever, Great points, Perfect Points stat) of a
     score, in no order, and whether they are all: the search stops before a chunk that would pass `bases`, or at MAX_ROWS rows."""
@@ -634,9 +740,11 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
         _load_vectors(tables.classes, query.classes.shape[0], query.classes.astype(np.int32))
     terms = 5.0 * np.arange(song.points.shape[0]) - 2.0 * song.points
     vertices = song.vertex_values.shape[0]
+    narrow_from = _narrow_from(query.classes)
     search = _Search(
         score=query.score, wanted=float(query.score), vertices=vertices, greats=query.greats, power=query.power, head_len=song.head_len,
-        body_total=song.body_total, single_color=int(song.single_color), class_count=query.classes.shape[0], term_low=float(terms.min()), term_high=float(terms.max()),
+        body_total=song.body_total, single_color=int(song.single_color), class_count=query.classes.shape[0],
+        narrow_from=narrow_from, term_low=float(terms.min()), term_high=float(terms.max()),
     )
     counters = np.zeros(_COUNTERS, dtype=np.int32)
     _clear(_COUNTERS)
@@ -660,6 +768,8 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
             size = max(size >> 2, 1)
             continue
         _find_rows(search)
+        if narrow_from < query.classes.shape[0]:
+            _find_narrow_rows(search)
         _read_counters(counters)
         # A list that overflowed holds what the threads' race left: the chunk goes, so a run repeats.
         if counters[_ROWS] > MAX_ROWS:

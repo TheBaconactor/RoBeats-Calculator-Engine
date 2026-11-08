@@ -34,8 +34,8 @@ from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surfac
 from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.stats import GEM_KINDS, apply_gems, named_loadout_stats, total
 
-from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, great_times, pattern_words, walk_cell
-from .gpu_lines import MAX_CLASSES, MAX_ROWS, LineQuery, SongTables, line_rows, surface_tables
+from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, great_times, pattern_words, walk_cell, walk_scratch
+from .gpu_lines import MAX_CLASSES, MAX_ROWS, LineQuery, SongTables, line_rows, scan_order, surface_tables
 from .greats import (
     HEAD_LISTED,
     ROW_COLUMNS,
@@ -175,11 +175,6 @@ class ReverseSong:
     @property
     def ceiling(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         return self.vertex_values, self.vertex_prices, self.relief
-
-    @property
-    def power_terms(self) -> np.ndarray:
-        points = self.curves.f64["Perfect Points"]
-        return np.sort(5.0 * np.arange(points.shape[0]) - 2.0 * points)
 
     @property
     def notes(self) -> tuple[int, int]:
@@ -411,17 +406,17 @@ def _window_timelines(song: ReverseSong, perfect_time: int) -> Timelines:
     return song.timelines["window", perfect_time]
 
 
-def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> list[tuple[int, np.ndarray]] | None:
-    """Per Casual timeline of a play with this many Greats: its score with no Greats, what a Great costs at each head note.
-    Past _GREATS_WALKED the band around the timelines walked for those, as in _timelines_of. None when the walk's tables
-    cannot hold them."""
+def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> list[tuple[int, np.ndarray, np.ndarray]] | None:
+    """Per Casual timeline of a play with this many Greats: its score with no Greats, what a Great costs at each head note, and
+    the same outside Casual fever, -1 inside it. Past _GREATS_WALKED the band around the timelines walked for those, as in
+    _timelines_of. None when the walk's tables cannot hold them."""
     chart = song.chart
     naked = factors(empty_stats(), song.curves, chart.primary, chart.secondary)
     times, threshold, duration = _casual_axes(song, 0, perfect_time)
-    scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty(_SCRATCH_ROWS, dtype=np.int64))
     out = np.empty((_SCRATCH_ROWS, 5), dtype=np.int64)
     ends = np.full((chart.total_notes, 6), -1, dtype=np.int64)
-    written = walk_cell(times, great_times(chart, perfect_time), (threshold, min(greats, _GREATS_WALKED)), duration, scratch, out, ends)
+    walked = min(greats, _GREATS_WALKED)
+    written = walk_cell(times, great_times(chart, perfect_time), (threshold, walked), duration, walk_scratch(chart.total_notes, walked, _SCRATCH_ROWS), out, ends)
     if written < 0:
         return None
     band = _BAND_NOTES if greats > _GREATS_WALKED else 0
@@ -433,9 +428,10 @@ def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> 
     timelines = []
     for words, (lowest, highest, bits) in zip(pattern_words(out[:written, 0], out[:written, 1]).tolist(), out[:written, 2:5].tolist()):
         in_fever = np.unpackbits(np.asarray(words[:4], dtype="<u4").view(np.uint8), bitorder="little")[:head].astype(bool)
+        losses, outside = np.where(in_fever, inside, normal), np.where(in_fever, -1, normal)
         for body_fever in range(max(lowest - band, 0), min(highest + band, song.notes[1]) + 1):
             if band or bits < 0 or (bits >> (body_fever - lowest)) & 1:
-                timelines.append((fg_surface_score(naked, FgResponseSurface(*words, body_fever, 0, 0), chart.total_notes), np.where(in_fever, inside, normal)))
+                timelines.append((fg_surface_score(naked, FgResponseSurface(*words, body_fever, 0, 0), chart.total_notes), losses, outside))
     return timelines
 
 
@@ -562,13 +558,13 @@ def _stat_lines(song: ReverseSong, timelines: Timelines, query: LineQuery) -> Fo
     order = np.random.default_rng(0).permutation(timelines.pattern.shape[0])
     tables = surface_tables(order, (walked.words, walked.coeffs), (timelines.pattern, timelines.body_fever), timelines.sums, timelines.relief, song.notes[1])
     packed, complete = line_rows(song.gpu, tables, query)
-    # The GPU appends rows in the order its threads race; each thread owns one (surface, CM, FM, base) and appends in program
-    # order, so a stable sort by that, surfaces in their shuffled order, makes every later step repeat run for run, and a cut
-    # below keep the surfaces the search walked first.
+    # The GPU appends rows in the order its threads race; each thread owns one (surface, CM, FM, base), so a sort by that,
+    # surfaces in their shuffled order, then by a thread's scan (scan_order) makes every later step repeat run for run, and a
+    # cut below keep the surfaces the search walked first.
     rank = np.empty(order.shape[0], dtype=np.int64)
     rank[order] = np.arange(order.shape[0])
     thread = (rank[packed[:, 0]] << 36) | (packed[:, 1].astype(np.int64) << 20) | packed[:, 2]
-    packed = packed[np.argsort(thread, kind="stable")]
+    packed = packed[scan_order(packed, thread, query.classes, song.curves.f64["Perfect Points"])]
     rows = np.empty((packed.shape[0], ROW_COLUMNS), dtype=np.int64)
     rows[:, 0], rows[:, 1], rows[:, 2], rows[:, 3] = packed[:, 0], packed[:, 1] >> 8, packed[:, 1] & 255, packed[:, 2]
     rows[:, 4], rows[:, 5], rows[:, 6], rows[:, 7] = packed[:, 3] >> 16, packed[:, 4], packed[:, 5], packed[:, 3] & 65535
@@ -627,16 +623,19 @@ def _classes_of(play: PlayInfo, song: ReverseSong, greats: int, timelines: Timel
 def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tuple[list[FoundSet], list[StatLine], int, bool]:
     """The likeliest lines of a full combo with this many Greats and the sets that reach them: sets, lines, how many lines there
     are, and whether every line was searched."""
-    timelines = _timelines_of(song, greats, greats > 0)
-    classes = _classes_of(play, song, greats, timelines, greats > 0)
-    if classes is None:
-        return [], [], 0, False
     power = -1 if play.gear_power is None else play.gear_power
     at_top = play.score >= _PLAN_HEIGHT * song.top
     bases = _TOP_LINE_BASES if at_top else _LINE_BASES
+    # A play with Greats is searched near chart time first; with fewer lines than _WIDE_UNDER there, or at a song's top where
+    # Force Great plans move their fever on purpose, on every timeline.
+    near = greats > 0 and not at_top
+    timelines = _timelines_of(song, greats, near)
+    classes = _classes_of(play, song, greats, timelines, near)
+    if classes is None:
+        return [], [], 0, False
     lines = _stat_lines(song, timelines, LineQuery(play.score, power, greats, classes, bases))
-    every_timeline = greats == 0 or lines.targets.shape[0] < _WIDE_UNDER or at_top
-    if greats and every_timeline:
+    if near and lines.targets.shape[0] < _WIDE_UNDER:
+        near = False
         timelines = _timelines_of(song, greats, False)
         classes = _classes_of(play, song, greats, timelines)
         if classes is None:
@@ -687,7 +686,7 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
         StatLine(*lines.targets[t, 1:5].tolist(), int(lines.targets[t, 7]), int(lines.targets[t, 5]), float(final[t]), t in named)
         for t in listed
     ]
-    return [row for t in listed for row in named.get(t, ())], stat_lines, lines.targets.shape[0], lines.complete and complete and every_timeline
+    return [row for t in listed for row in named.get(t, ())], stat_lines, lines.targets.shape[0], lines.complete and complete and not near
 
 
 def _widest(song: ReverseSong) -> dict:
@@ -726,25 +725,12 @@ def _casual_axes(song: ReverseSong, greats: int, perfect_time: int) -> tuple:
 def _clean_casual_values(song: ReverseSong, perfect_time: int) -> set[int]:
     """Every Casual score of a clean play: base stats, any timing inside this Perfect window."""
     known = _widest(song)["casual"]
-    if perfect_time in known:
-        return known[perfect_time]
-    chart = song.chart
-    naked = factors(empty_stats(), song.curves, chart.primary, chart.secondary)
-    times, threshold, duration = _casual_axes(song, 0, perfect_time)
-    scratch = (np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty((_SCRATCH_ROWS, 7), dtype=np.int64), np.empty(_SCRATCH_ROWS, dtype=np.int64))
-    out = np.empty((_SCRATCH_ROWS, 5), dtype=np.int64)
-    ends = np.full((chart.total_notes, 6), -1, dtype=np.int64)
-    written = walk_cell(times, great_times(chart, perfect_time), (threshold, 0), duration, scratch, out, ends)
-    if written < 0:
-        raise ValueError("fever walk: the casual cell outgrew its tables")
-    words = pattern_words(out[:written, 0], out[:written, 1])
-    values = set()
-    for pattern, (lowest, highest, bits) in zip(words.tolist(), out[:written, 2:5].tolist()):
-        for body_fever in range(lowest, highest + 1):
-            if bits < 0 or (bits >> (body_fever - lowest)) & 1:
-                values.add(fg_surface_score(naked, FgResponseSurface(*pattern, body_fever, 0, 0), chart.total_notes))
-    known[perfect_time] = values
-    return values
+    if perfect_time not in known:
+        timelines = _casual_timelines(song, 0, perfect_time)
+        if timelines is None:
+            raise ValueError("fever walk: the casual cell outgrew its tables")
+        known[perfect_time] = {score for score, _losses, _outside in timelines}
+    return known[perfect_time]
 
 
 def _casual_highest(song: ReverseSong, quarters: int) -> float:
@@ -870,11 +856,13 @@ def shared_lines(rows: list[tuple[PlayInfo, ReverseSong]]) -> np.ndarray:
 
 
 def warm_song(song: ReverseSong, accuracy: float | None) -> None:
-    """Ahead of a lookup, the walk it starts with at this accuracy: each Great count's first timelines, so the lookup itself
-    only searches. It changes no answer: lookups walk the same timelines, once per song."""
+    """Ahead of a lookup, the walk it may need at this accuracy: each Great count's timelines near chart time and on every
+    timeline (_sets_of), so the lookup itself only searches. It changes no answer: lookups walk the same timelines, once per
+    song."""
     lost = lost_quarters(PlayInfo(1, accuracy), song.chart.total_notes)
     for greats in range(lost[0], min(lost[1], _GREATS_SEARCHED) + 1):
-        _timelines_of(song, greats, greats > 0)
+        for near in (True, False) if greats else (False,):
+            _timelines_of(song, greats, near)
 
 
 def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Reverse:

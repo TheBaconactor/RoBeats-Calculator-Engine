@@ -34,6 +34,8 @@ _SET_BITS = 62
 _ALL_COUNTS = -1
 _STATE_ROWS = 1 << 15
 _GREAT_STATE_ROWS = 1 << 11
+# The sets a body state's fevers keep apart: a window that may or may not fit before the song's end parts them by its notes.
+_BODY_SETS = 8
 
 
 def event_times(chart: Chart, perfect_time: int, greats: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -132,17 +134,143 @@ def _keep_timeline(out, written, low, high, counts):
 
 
 @jit(nopython=True, cache=True)
+def walk_scratch(notes, budget, rows):
+    """walk_cell's scratch for a chart of this many notes at this Great budget: two state tables of `rows` rows, a row of sort
+    keys, a table of moves for the head and one for the body, and the body's memo: per (activation, code) its sets, how many,
+    the walk that wrote them, a stack and the walk counter."""
+    codes = 2 * budget + 2
+    moves = (notes + 2) * (budget + 2)
+    return (
+        np.empty((rows, 7), dtype=np.int64), np.empty((rows, 7), dtype=np.int64), np.empty(rows, dtype=np.int64),
+        np.empty((moves, 3), dtype=np.int64), np.empty((moves, 3), dtype=np.int64),
+        np.empty((notes, codes, _BODY_SETS, 3), dtype=np.int64), np.empty((notes, codes), dtype=np.int64),
+        np.zeros((notes, codes), dtype=np.int64), np.empty((2 * notes * codes, 2), dtype=np.int64), np.zeros(1, dtype=np.int64),
+    )
+
+
+@jit(nopython=True, cache=True)
+def _moves(times, greats, fill, duration, ends, state, out):
+    """The moves of a state (activation, code: Greats spent x 2 + whether a fill Great reached the activation): per window end
+    and fill delay its Greats allow, rows (end, next activation, its code) into out, the next activation n where no fever
+    follows; returns how many. A Great is spent to delay a fill, to move the activation's time, or to move a note over the
+    fever's end; an activation a fill Great has reached is that Great."""
+    raw_fill, budget = fill
+    a, code = state
+    n = times[0].shape[0]
+    notes = int(np.ceil(raw_fill))
+    spent, activation_cost = code >> 1, 1 - (code & 1)
+    wide = spent < budget or activation_cost == 0
+    _window_ends(ends, times, greats, a, duration, wide)
+    first, last = ends[a, 0], ends[a, 1]
+    great_first, great_last, lowest, highest = first, last, first, last
+    if wide:
+        great_first, great_last, lowest, highest = ends[a, 2], ends[a, 3], ends[a, 4], ends[a, 5]
+    count = 0
+    for end in range(lowest, highest + 1):
+        cost = min(max(0, first - end, end - last), activation_cost + max(0, great_first - end, end - great_last))
+        delay = 0
+        while spent + cost + _fill_delay_cost(raw_fill, delay) <= budget:
+            activation = min(end + notes + delay, n)
+            out[count, 0], out[count, 1], out[count, 2] = end, activation, 2 * (spent + cost + _fill_delay_cost(raw_fill, delay)) + (delay > 0)
+            count += 1
+            if activation == n:
+                break
+            delay += 1
+    return count
+
+
+@jit(nopython=True, cache=True)
+def _add_set(sets, count, added):
+    """sets[:count] with the body fever set `added` joined: into one it fits beside within _SET_BITS, else a set of its own; past
+    _BODY_SETS of them into the nearest, as one set. Returns the count."""
+    low, high, bits = added
+    nearest, gap = 0, 1 << 62
+    for k in range(count):
+        if max(sets[k, 1], high) - min(sets[k, 0], low) <= _SET_BITS:
+            sets[k, 0], sets[k, 1], sets[k, 2] = _merged((sets[k, 0], sets[k, 1], sets[k, 2]), added)
+            return count
+        if max(sets[k, 0] - high, low - sets[k, 1]) < gap:
+            nearest, gap = k, max(sets[k, 0] - high, low - sets[k, 1])
+    if count < sets.shape[0]:
+        sets[count, 0], sets[count, 1], sets[count, 2] = low, high, bits
+        return count + 1
+    sets[nearest, 0], sets[nearest, 1], sets[nearest, 2] = _merged((sets[nearest, 0], sets[nearest, 1], sets[nearest, 2]), added)
+    return count
+
+
+@jit(nopython=True, cache=True)
+def _body_fevers(times, greats, fill, duration, ends, body, start):
+    """Whether the body fevers a state at activation start[0] >= HEAD_NOTES and code start[1] gains to the song's end are worked
+    out into body: walk_cell's windows past the head, where no mask changes, so each (activation, code) is worked out once per
+    walk, children first (an activation only moves on), as up to _BODY_SETS exact sets. body: (moves, sets, how many, the walk
+    that wrote them, a stack, the walk's number); False when the stack is full."""
+    moves, sets, counts, seen, stack, walk = body
+    n = times[0].shape[0]
+    stack[0, 0], stack[0, 1] = start
+    top = 1
+    while top > 0:
+        a, code = stack[top - 1, 0], stack[top - 1, 1]
+        if seen[a, code] == walk:
+            top -= 1
+            continue
+        waiting = False
+        held = 0
+        for m in range(_moves(times, greats, fill, duration, ends, (a, code), moves)):
+            end, activation, child = moves[m, 0], moves[m, 1], moves[m, 2]
+            if activation == n:
+                if not waiting:
+                    held = _add_set(sets[a, code], held, (end - a, end - a, 1))
+            elif seen[activation, child] != walk:
+                if top == stack.shape[0]:
+                    return False
+                stack[top, 0], stack[top, 1] = activation, child
+                top += 1
+                waiting = True
+            elif not waiting:
+                for k in range(counts[activation, child]):
+                    known = sets[activation, child, k]
+                    held = _add_set(sets[a, code], held, (known[0] + end - a, known[1] + end - a, known[2]))
+        if not waiting:
+            counts[a, code] = held
+            seen[a, code] = walk
+            top -= 1
+    return True
+
+
+@jit(nopython=True, cache=True)
+def _finished(out, written, mask, counts, times, greats, fill, duration, ends, body, start):
+    """A head state with mask (low, high) and body fever counts that reaches the body at activation and code `start`: its
+    timelines into out's rows, each count with each set the body adds (_keep_timeline); -1 when a table is full. Counts that
+    are every count between their lowest and highest stay so."""
+    if not _body_fevers(times, greats, fill, duration, ends, body, start):
+        return -1
+    sets = body[1][start[0], start[1]]
+    for k in range(body[2][start[0], start[1]]):
+        if counts[2] == _ALL_COUNTS:
+            written = _keep_timeline(out, written, mask[0], mask[1], (counts[0] + sets[k, 0], counts[1] + sets[k, 1], _ALL_COUNTS))
+        else:
+            for shift in range(counts[1] - counts[0] + 1):
+                if written >= 0 and (counts[2] >> shift) & 1:
+                    added = counts[0] + shift
+                    written = _keep_timeline(out, written, mask[0], mask[1], (sets[k, 0] + added, sets[k, 1] + added, sets[k, 2]))
+        if written < 0:
+            return -1
+    return written
+
+
+@jit(nopython=True, cache=True)
 def walk_cell(times, greats, fill, duration, scratch, out, ends):
     """Into out the timelines of one cell of a play with at most fill[1] Greats, as rows (mask low, mask high, lowest,
-    highest, bits): one fever window per round, states of a round merged by activation, mask and Greats spent. A Great
-    is spent to delay a fill, to move the activation's time, or to move a note over the fever's end; an activation a fill
-    Great has reached is that Great. times: earliest and latest per position with every note Perfect; greats: the same
-    with every note Great; fill: the Perfects that fill the bar, and the Great budget; scratch: two state tables and a row
-    of sort keys; ends:
-    _window_ends' table at this duration, shared by the cells of a Fever Time. Returns the rows written, -1 when a table is
-    full. A superset of what such a play reaches: it holds every real one."""
+    highest, bits): one fever window per round (_moves), states of a round merged by activation, mask and Greats spent. Past
+    the head no mask changes: a state that reaches it takes what its activation and Greats spent reach in the body, worked out
+    once (_body_fevers). times: earliest and latest per position with every note Perfect; greats: the same with every note
+    Great; fill: the Perfects that fill the bar, and the Great budget; scratch: walk_scratch's; ends: _window_ends' table at
+    this duration, shared by the cells of a Fever Time. Returns the rows written, -1 when a table is full. A superset of what
+    such a play reaches: it holds every real one."""
     raw_fill, budget = fill
-    current, following, order_keys = scratch
+    current, following, order_keys, moves = scratch[0], scratch[1], scratch[2], scratch[3]
+    body = scratch[4], scratch[5], scratch[6], scratch[7], scratch[8], scratch[9][0] + 1
+    scratch[9][0] += 1
     n = times[0].shape[0]
     notes = int(np.ceil(raw_fill))
     if notes > n:
@@ -151,10 +279,15 @@ def walk_cell(times, greats, fill, duration, scratch, out, ends):
     written = states = 0
     delay = 0
     while notes - 1 + delay < n and _fill_delay_cost(raw_fill, delay) <= budget:
-        row = current[states]
-        row[0], row[1], row[2], row[3], row[4], row[5] = notes - 1 + delay, 0, 0, 0, 0, 1
-        row[6] = 2 * _fill_delay_cost(raw_fill, delay) + (delay > 0)
-        states += 1
+        code = 2 * _fill_delay_cost(raw_fill, delay) + (delay > 0)
+        if notes - 1 + delay >= HEAD_NOTES:
+            written = _finished(out, written, (0, 0), (0, 0, 1), times, greats, fill, duration, ends, body, (notes - 1 + delay, code))
+            if written < 0:
+                return -1
+        else:
+            row = current[states]
+            row[0], row[1], row[2], row[3], row[4], row[5], row[6] = notes - 1 + delay, 0, 0, 0, 0, 1, code
+            states += 1
         delay += 1
     while states > 0:
         # By activation and Greats spent (code 2 x spent + fill flag < 64): the states a merge compares lie together.
@@ -173,26 +306,14 @@ def walk_cell(times, greats, fill, duration, scratch, out, ends):
                 if state[3] < 0:
                     continue
                 a, low, high = state[0], state[1], state[2]
-                spent, activation_cost = state[6] >> 1, 1 - (state[6] & 1)
                 counts = (state[3], state[4], state[5])
                 for j in range(i + 1, group):
                     other = current[rows[j]]
                     if other[3] >= 0 and other[1] == low and other[2] == high:
                         counts = _merged(counts, (other[3], other[4], other[5]))
                         other[3] = -1
-                wide = spent < budget or activation_cost == 0
-                _window_ends(ends, times, greats, a, duration, wide)
-                first, last = ends[a, 0], ends[a, 1]
-                great_first, great_last, lowest, highest = first, last, first, last
-                if wide:
-                    great_first, great_last, lowest, highest = ends[a, 2], ends[a, 3], ends[a, 4], ends[a, 5]
-                for end in range(lowest, highest + 1):
-                    cost = min(
-                        max(0, first - end, end - last),
-                        activation_cost + max(0, great_first - end, end - great_last),
-                    )
-                    if spent + cost > budget:
-                        continue
+                for m in range(_moves(times, greats, fill, duration, ends, (a, state[6]), moves)):
+                    end, activation, code = moves[m, 0], moves[m, 1], moves[m, 2]
                     next_low, next_high = low, high
                     for position in range(a, min(end, HEAD_NOTES)):
                         if position < _LOW_WORD_BITS:
@@ -200,21 +321,19 @@ def walk_cell(times, greats, fill, duration, scratch, out, ends):
                         else:
                             next_high |= 1 << (position - _LOW_WORD_BITS)
                     gain = max(0, end - max(a, HEAD_NOTES))
-                    delay = 0
-                    while spent + cost + _fill_delay_cost(raw_fill, delay) <= budget:
-                        if end + notes + delay >= n:
-                            written = _keep_timeline(out, written, next_low, next_high, (counts[0] + gain, counts[1] + gain, counts[2]))
-                            if written < 0:
-                                return -1
-                            break
-                        if pushed >= following.shape[0]:
-                            return -1
+                    gained = (counts[0] + gain, counts[1] + gain, counts[2])
+                    if activation == n:
+                        written = _keep_timeline(out, written, next_low, next_high, gained)
+                    elif activation >= HEAD_NOTES:
+                        written = _finished(out, written, (next_low, next_high), gained, times, greats, fill, duration, ends, body, (activation, code))
+                    elif pushed >= following.shape[0]:
+                        return -1
+                    else:
                         row = following[pushed]
-                        row[0], row[1], row[2] = end + notes + delay, next_low, next_high
-                        row[3], row[4], row[5] = counts[0] + gain, counts[1] + gain, counts[2]
-                        row[6] = 2 * (spent + cost + _fill_delay_cost(raw_fill, delay)) + (delay > 0)
+                        row[0], row[1], row[2], row[3], row[4], row[5], row[6] = activation, next_low, next_high, gained[0], gained[1], gained[2], code
                         pushed += 1
-                        delay += 1
+                    if written < 0:
+                        return -1
             at = group
         current, following = following, current
         states = pushed
@@ -252,10 +371,9 @@ def fever_span(times, fills, duration):
 @jit(nopython=True, cache=True)
 def _walk_grid(times, greats, fills, durations, budget):
     """walk_cell over every (Fever Time, Fever Fill) cell: rows (mask low, mask high, body fever, cell). With Greats a cell
-    whose head holds so many short windows that its tables overflow is left out: such a cell is far from any song's top."""
+    whose head states overflow their table is left out (none on the dev charts at 8 Greats)."""
     out = np.empty((1 << 12, 5), dtype=np.int64)
-    states = _STATE_ROWS if budget == 0 else _GREAT_STATE_ROWS
-    scratch = (np.empty((states, 7), dtype=np.int64), np.empty((states, 7), dtype=np.int64), np.empty(states, dtype=np.int64))
+    scratch = walk_scratch(times[0].shape[0], budget, _STATE_ROWS if budget == 0 else _GREAT_STATE_ROWS)
     expanded = np.empty((1 << 18, 4), dtype=np.int64)
     ends = np.empty((times[0].shape[0], 6), dtype=np.int64)
     used = 0
@@ -296,8 +414,8 @@ class FeverSurfaces:
     cells: np.ndarray
 
 
-def _distinct(columns: tuple[np.ndarray, ...]) -> tuple[np.ndarray, np.ndarray]:
-    """The first row of each distinct row of `columns`, and each row's distinct id."""
+def _distinct(columns: tuple[np.ndarray, ...]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The first row of each distinct row of `columns`, each row's distinct id, and the rows by id, a stable sort."""
     order = np.lexsort(columns[::-1])
     new = np.zeros(order.shape[0], dtype=bool)
     new[:1] = True
@@ -305,7 +423,7 @@ def _distinct(columns: tuple[np.ndarray, ...]) -> tuple[np.ndarray, np.ndarray]:
         new[1:] |= column[order[1:]] != column[order[:-1]]
     ids = np.empty(order.shape[0], dtype=np.int32)
     ids[order] = np.cumsum(new) - 1
-    return order[new], ids
+    return order[new], ids, order
 
 
 def pattern_words(low: np.ndarray, high: np.ndarray) -> np.ndarray:
@@ -325,10 +443,12 @@ def fever_surfaces(chart: Chart, curves: StatCurves, perfect_time: int, greats: 
     durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
     times = event_times(chart, perfect_time), great_times(chart, perfect_time)
     rows = _walk_grid(*times, thresholds.astype(np.float64), durations * 1000.0, greats)
-    first, ids = _distinct((rows[:, 0], rows[:, 1], rows[:, 2]))
-    patterns, pattern_ids = _distinct((rows[first, 0], rows[first, 1]))
+    first, ids, order = _distinct((rows[:, 0], rows[:, 1], rows[:, 2]))
+    patterns, pattern_ids, _order = _distinct((rows[first, 0], rows[first, 1]))
     words = pattern_words(rows[first[patterns], 0], rows[first[patterns], 1])
-    pairs = np.unique(ids.astype(np.int64) * CELLS + rows[:, 3])
+    # _walk_grid writes rows by cell and the sort is stable, so (surface, cell) pairs come sorted: only repeats to drop.
+    pairs = ids[order].astype(np.int64) * CELLS + rows[order, 3]
+    pairs = pairs[np.concatenate(([True], pairs[1:] != pairs[:-1]))]
     return FeverSurfaces(
         words=words,
         coeffs=surface_head_coeffs(words, head_len=min(chart.total_notes, HEAD_NOTES)),

@@ -256,8 +256,8 @@ def test_the_lookup_worker_answers_each_line_and_outlives_a_bad_request(song):
 
 
 def test_warming_a_song_changes_no_answer(song):
-    """warm_song walks ahead what a lookup at that accuracy walks first, and nothing it would not: the lookup after it answers
-    byte for byte the same."""
+    """warm_song walks ahead every timeline a lookup at that accuracy may read, near chart time and wide, since only the score
+    tells which: the lookup after it walks nothing more and answers byte for byte the same."""
     offsets = np.zeros(song.chart.total_notes)
     offsets[150] = -70.0  # an early Great for a tap and a hold tail alike
     played = _simulated(song, STORED, Plan(offsets))
@@ -268,7 +268,7 @@ def test_warming_a_song_changes_no_answer(song):
     warm_song(warmed, shown.accuracy)
     walked = set(warmed.timelines)
     assert asdict(reverse_score(shown, warmed)) == asdict(reverse_score(shown, cold))
-    assert walked and walked <= set(cold.timelines)
+    assert set(cold.timelines) <= walked
 
 
 def test_a_clean_rows_set_plays_its_meta_run(song):
