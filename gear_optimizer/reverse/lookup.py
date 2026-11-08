@@ -406,10 +406,10 @@ def _window_timelines(song: ReverseSong, perfect_time: int) -> Timelines:
     return song.timelines["window", perfect_time]
 
 
-def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> list[tuple[int, np.ndarray, np.ndarray]] | None:
-    """Per Casual timeline of a play with this many Greats: its score with no Greats, what a Great costs at each head note, and
-    the same outside Casual fever, -1 inside it. Past _GREATS_WALKED the band around the timelines walked for those, as in
-    _timelines_of. None when the walk's tables cannot hold them."""
+def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> list[tuple[int, np.ndarray]] | None:
+    """Per Casual timeline of a play with this many Greats: its score with no Greats, what a Great costs at each head note.
+    Past _GREATS_WALKED the band around the timelines walked for those, as in _timelines_of. None when the walk's tables
+    cannot hold them."""
     chart = song.chart
     naked = factors(empty_stats(), song.curves, chart.primary, chart.secondary)
     times, threshold, duration = _casual_axes(song, 0, perfect_time)
@@ -428,10 +428,10 @@ def _casual_timelines(song: ReverseSong, greats: int, perfect_time: int = 0) -> 
     timelines = []
     for words, (lowest, highest, bits) in zip(pattern_words(out[:written, 0], out[:written, 1]).tolist(), out[:written, 2:5].tolist()):
         in_fever = np.unpackbits(np.asarray(words[:4], dtype="<u4").view(np.uint8), bitorder="little")[:head].astype(bool)
-        losses, outside = np.where(in_fever, inside, normal), np.where(in_fever, -1, normal)
+        losses = np.where(in_fever, inside, normal)
         for body_fever in range(max(lowest - band, 0), min(highest + band, song.notes[1]) + 1):
             if band or bits < 0 or (bits >> (body_fever - lowest)) & 1:
-                timelines.append((fg_surface_score(naked, FgResponseSurface(*words, body_fever, 0, 0), chart.total_notes), losses, outside))
+                timelines.append((fg_surface_score(naked, FgResponseSurface(*words, body_fever, 0, 0), chart.total_notes), losses))
     return timelines
 
 
@@ -729,7 +729,7 @@ def _clean_casual_values(song: ReverseSong, perfect_time: int) -> set[int]:
         timelines = _casual_timelines(song, 0, perfect_time)
         if timelines is None:
             raise ValueError("fever walk: the casual cell outgrew its tables")
-        known[perfect_time] = {score for score, _losses, _outside in timelines}
+        known[perfect_time] = {score for score, _losses in timelines}
     return known[perfect_time]
 
 

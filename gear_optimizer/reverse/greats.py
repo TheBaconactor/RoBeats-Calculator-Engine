@@ -69,14 +69,12 @@ def _listed_head(losses, count, target, out):
 @jit(nopython=True, cache=True)
 def _position_spans(losses, count, top):
     """For every set size up to `count` and every sum of head losses up to top, the fewest and the most summed 1-based
-    positions, a walk over the notes, a negative loss barring its note; the most is negative where no set sums to it."""
+    positions, a walk over the notes; the most is negative where no set sums to it."""
     fewest = np.full((count + 1, top + 1), 1 << 30, dtype=np.int64)
     most = np.full((count + 1, top + 1), -1, dtype=np.int64)
     fewest[0, 0], most[0, 0] = 0, 0
     for k in range(losses.shape[0]):
         loss = int(losses[k])
-        if loss < 0:
-            continue
         for used in range(count - 1, -1, -1):
             for total in range(top - loss, -1, -1):
                 if most[used, total] >= 0:
@@ -85,18 +83,17 @@ def _position_spans(losses, count, top):
     return fewest, most
 
 
-def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.ndarray, np.ndarray]], greats: int, listed_up_to: int) -> np.ndarray:
+def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.ndarray]], greats: int, listed_up_to: int) -> np.ndarray:
     """Where a play with this many Greats can have them, for a Casual score within casual: rows (head Greats, body Greats,
     fewest and most summed head positions, the head notes when listed: up to listed_up_to of them, none where no surface has
     head fever and only the sum of positions matters; then the lowest and highest Casual loss of the head). timelines: per
-    Casual timeline, its score with no Greats, what a Great costs at each head note there, and the same outside Casual fever
-    (-1 inside). A body Great costs 100 outside the Casual fever, 300 inside. A class that holds only the span of its head
-    positions has its head Greats outside fever, Casual and Compete, as gpu_lines and lookup._head_of test it."""
+    Casual timeline, its score with no Greats and what a Great costs at each head note there. A body Great costs 100 outside
+    the Casual fever, 300 inside."""
     rows: set[tuple[int, ...]] = set()
     listed = np.empty((_LISTED_SETS, 3), dtype=np.int64)
     spans: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
     wider: dict[tuple[int, int], list[int]] = {}
-    for clean, losses, outside in timelines:
+    for clean, losses in timelines:
         for head in range(min(greats, _HEAD_SPANNED) + 1):
             body = greats - head
             for inside in range(body + 1):
@@ -111,9 +108,9 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
                             total = sum(note + 1 for note in row if note >= 0)
                             rows.add((head, body, total, total, *row, low, high))
                         continue
-                key = outside.tobytes()
+                key = losses.tobytes()
                 if key not in spans:
-                    spans[key] = _position_spans(outside, _HEAD_SPANNED, int(_HEAD_SPANNED * max(outside.max(), 0)))
+                    spans[key] = _position_spans(losses, _HEAD_SPANNED, int(_HEAD_SPANNED * losses.max()))
                 fewest, most = spans[key][0][head], spans[key][1][head]
                 hits = [total for total in range(max(low, 0), min(high, most.shape[0] - 1) + 1) if most[total] >= 0]
                 if hits:
