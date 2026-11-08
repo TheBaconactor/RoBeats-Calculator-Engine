@@ -1,14 +1,15 @@
 """A partly upgraded set for a stat line no max-level set reaches: the best guess at what a player wears.
 
-One row leaves many partly upgraded sets on a line and nothing public tells them apart, so the guess is the exact fit furthest
-along of the first few found in the order a player gets along: the song's best minis by color at the highest ranks, then its best gear by color; Combo and
-Fever stats from ++ gems (a deficit the gem's gain divides), Perfect Points from ascension and then ++ gems, the elements from
-mini levels and element gems on one of the song's colors, all within the 90 gems: of those, the levels and gems furthest
-along. Gems are the ++ kinds the Gear
-Calculator places; a mini's rank, level and ascension follow PetUtils (gamedata.worn_mini_stats).
+One row leaves many partly upgraded sets on a line and nothing public tells them apart. The search tries minis and gear in the
+order a player gets along (the song's best minis by color at the highest ranks, then its best gear by color; a last pass from the
+weakest up, a starting player's), and every choice of them settles the rest: Combo and Fever stats from ++ gems (a deficit the
+gem's gain divides), Perfect Points from ascension and then ++ gems, elements from mini levels and element gems on one of the
+song's colors, all within the 90 gems. Of the first _FITS exact fits it keeps the one furthest along: mini ranks and levels over
+their caps, gems over the budget. Gems are the ++ kinds the Gear Calculator places; a mini's rank, level and ascension follow
+PetUtils (gamedata.worn_mini_stats).
 
-Cost: O(T (B + G (R + R g))) for T mini triples at their ranks, B the bit set of their level sums (3 x 50 shifts of ~30 words),
-G gear combinations of the shortlist, R TeamBuff rows and g element gem counts; the first fit or the work budget ends it.
+Cost: O(T (B + G R g)) for T mini triples at their ranks, B the bit set of their level sums (3 x 50 shifts of ~50 words), G gear
+combinations of the shortlist, R TeamBuff rows and g element gem counts; _FITS fits or the work budget end a pass.
 """
 
 from __future__ import annotations
@@ -28,12 +29,16 @@ _LEVELS = mini_level_cap(MINI_RANKS)
 _ASCENSIONS = 11
 _ASCENSION_POINTS = 2
 _SUM_WORDS = 48  # level sums of three minis' elements fit 3,072 points
-# Shortlists, widest last, the last from the weakest items up (a starting player's); the fits a pass weighs before it keeps the
-# one furthest along.
+# Shortlists (minis, gear items per slot, from the weakest up), widest last, and the exact fits a pass weighs.
 _WIDTHS = ((8, 3, 0), (16, 6, 0), (16, 6, 1))
 _FITS = 16
-OUT_GEAR, OUT_MINIS, OUT_RANKS, OUT_LEVELS, OUT_ASCENSIONS, OUT_GEMS = slice(0, 6), slice(6, 9), slice(9, 12), slice(12, 15), slice(15, 18), slice(18, 23)
-OUT_ELEMENT_GEMS, OUT_ELEMENT_ROW, OUT_FIXED = 23, 24, 25
+# A guess as a row of ints: 6 gear rows (-1 a slot left empty), 3 mini rows, their ranks, levels and ascensions, the 5 stat gem
+# counts (Perfect Points, CM, FM, FT, FF), the element gem count, its gem row and the TeamBuff row.
+_MINIS, _RANKS, _LEVEL, _ASCENSION, _GEMS = 6, 9, 12, 15, 18
+_ELEMENT_GEMS, _ELEMENT_ROW, _FIXED = 23, 24, 25
+_WIDTH = 26
+GEAR, MINIS, RANKS, LEVELS, ASCENSIONS = slice(0, _MINIS), slice(_MINIS, _RANKS), slice(_RANKS, _LEVEL), slice(_LEVEL, _ASCENSION), slice(_ASCENSION, _GEMS)
+GEMS, ELEMENT_GEMS, ELEMENT_ROW, FIXED = slice(_GEMS, _ELEMENT_GEMS), _ELEMENT_GEMS, _ELEMENT_ROW, _FIXED
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -57,6 +62,10 @@ def partial_space(catalog: Catalog, space: LoadoutSpace, fixed_rows: np.ndarray,
     gear_end = int(space.starts[len(GEAR_SLOTS)])
     mini_names = space.names[gear_end:]
     primary, secondary = space.primary, space.secondary
+
+    def scored(p: int, s: int) -> int:  # what the base value counts: 2 x primary + secondary, 3 x a one-color song's
+        return 3 * p if primary == secondary else 2 * p + s
+
     perf = np.zeros((len(mini_names), 4), dtype=np.int64)
     elements = np.zeros((len(mini_names), _LEVELS + 1), dtype=np.int64)
     ascension = np.zeros((len(mini_names), _ASCENSIONS), dtype=np.int64)
@@ -66,24 +75,23 @@ def partial_space(catalog: Catalog, space: LoadoutSpace, fixed_rows: np.ndarray,
         first, second = mini.level1_elements.get(primary, 0), mini.level1_elements.get(secondary, 0)
         for level in range(1, _LEVELS + 1):
             line = 1.0 + (level - 1) * 4.0 / 49.0
-            p, s = int(np.floor(first * line)), int(np.floor(second * line))
-            elements[m, level] = 3 * p if primary == secondary else 2 * p + s
+            elements[m, level] = scored(int(np.floor(first * line)), int(np.floor(second * line)))
         if song_name in mini.song_targets:
             for a in range(_ASCENSIONS):
                 bonus = ascension_element_bonus(mini, primary, secondary, a)
-                p, s = bonus.get(primary, 0), bonus.get(secondary, 0)
-                ascension[m, a] = 3 * p if primary == secondary else 2 * p + s
+                ascension[m, a] = scored(bonus.get(primary, 0), bonus.get(secondary, 0))
     return PartialSpace(space.items[:gear_end], space.starts[: len(GEAR_SLOTS) + 1], space.names, mini_names, perf, elements, ascension, fixed_rows, space.gems)
 
 
 @jit(nopython=True, cache=True)
-def _level_sums(elements, minis, caps, out):
-    """Into out, as a bit set, every sum of the three minis' element values at levels 1..their caps."""
+def _level_sums(elements, minis, caps, scratch, out):
+    """Into out, as a bit set, every sum of the three minis' element values at levels 1..their caps. scratch: two rows of out's
+    size."""
+    shifted, merged = scratch
     out[:] = 0
     out[0] = 1
-    shifted = np.empty_like(out)
     for k in range(3):
-        merged = np.zeros_like(out)
+        merged[:] = 0
         for level in range(1, caps[k] + 1):
             value = elements[minis[k], level]
             whole, part = value >> 6, value & 63
@@ -120,49 +128,44 @@ def _levels_for(elements, minis, caps, need, out):
 
 
 @jit(nopython=True, cache=True)
-def _first_fit(space, target, widths, budget, out):
-    """The exact fit furthest along of the first _FITS (module docstring) of target (Perfect Points, CM, FM, FT, FF, 2 x primary
-    + secondary) into out:
-    OUT_GEAR (-1 an empty slot), OUT_MINIS, OUT_RANKS, OUT_LEVELS, OUT_ASCENSIONS, OUT_GEMS (Perfect Points, CM, FM, FT, FF),
-    then the element gem count, its gem row and the TeamBuff row; whether it found one. widths: (minis, gear items per slot, 1
-    to try the weakest first) the search tries; budget: the gear combinations it may visit. Returns (found, combinations
-    visited)."""
+def _guess(space, target, widths, budget, out):
+    """Of the first _FITS exact fits (module docstring) of target (Perfect Points, CM, FM, FT, FF, 2 x primary + secondary), the
+    one furthest along into out (the guess row); widths: (minis, gear items per slot, 1 from the weakest up). Returns (whether
+    one fits, gear combinations visited); budget bounds the second."""
     gear, gear_starts, mini_perf, mini_elements, mini_ascension, fixed, gems = space
     mini_count, per_slot, weakest = widths
     mini_count = min(mini_count, mini_perf.shape[0])
-    mini_last = mini_perf.shape[0] - 1
     gains = np.array([gems[d, d] for d in range(5)])
     gem_value = 2 * gems[:, PRIMARY] + gems[:, SECONDARY]
     bits = np.empty(_SUM_WORDS, dtype=np.uint64)
-    minis = np.empty(3, dtype=np.int64)
-    ranks = np.empty(3, dtype=np.int64)
-    caps = np.empty(3, dtype=np.int64)
-    levels = np.empty(3, dtype=np.int64)
+    shifts = (np.empty(_SUM_WORDS, dtype=np.uint64), np.empty(_SUM_WORDS, dtype=np.uint64))
+    minis, ranks, caps, levels = np.empty(3, dtype=np.int64), np.empty(3, dtype=np.int64), np.empty(3, dtype=np.int64), np.empty(3, dtype=np.int64)
+    room = np.empty(4, dtype=np.int64)
     chosen = np.empty(6, dtype=np.int64)
     position = np.empty(6, dtype=np.int64)
-    sums = np.zeros((7, 7), dtype=np.int64)  # per depth: Perfect Points, CM, FM, FT, FF, elements of the gear so far
+    sums = np.zeros((7, 6), dtype=np.int64)  # per depth: Perfect Points, CM, FM, FT, FF, elements of the gear so far
     trial = np.zeros_like(out)
     best = -1.0
     work = fits = 0
     for i in range(mini_count):
         for j in range(i + 1, mini_count):
             for k in range(j + 1, mini_count):
-                minis[0], minis[1], minis[2] = (mini_last - i, mini_last - j, mini_last - k) if weakest else (i, j, k)
+                last_mini = mini_perf.shape[0] - 1
+                minis[0], minis[1], minis[2] = (last_mini - i, last_mini - j, last_mini - k) if weakest else (i, j, k)
                 for code in range(MINI_RANKS**3):
                     ranks[0], ranks[1], ranks[2] = MINI_RANKS - code // 16, MINI_RANKS - (code // 4) % 4, MINI_RANKS - code % 4
-                    room = np.empty(4, dtype=np.int64)
-                    fits = True
+                    under = True
                     for d in range(4):
                         room[d] = target[1 + d]
                         for m in range(3):
                             room[d] -= mini_perf[minis[m], d] // MINI_RANKS * ranks[m]
-                        fits = fits and room[d] >= 0
-                    if not fits:
+                        under = under and room[d] >= 0
+                    if not under:
                         continue
                     for m in range(3):
                         caps[m] = MINI_FIRST_CAP + MINI_LEVEL_STEP * (ranks[m] - 1)  # gamedata.mini_level_cap
-                    _level_sums(mini_elements, minis, caps, bits)
-                    # The gear, slot by slot, best color first, within what the minis leave.
+                    _level_sums(mini_elements, minis, caps, shifts, bits)
+                    # The gear, slot by slot, best color first, within what the minis leave; a slot's last choice is empty.
                     depth = 0
                     position[0] = 0
                     while depth >= 0:
@@ -175,10 +178,10 @@ def _first_fit(space, target, widths, budget, out):
                                 fits += 1
                                 if progress > best:
                                     best = progress
-                                    out[12:] = trial[12:]
-                                    out[:6] = chosen
-                                    out[6:9] = minis
-                                    out[9:12] = ranks
+                                    out[:] = trial
+                                    out[:_MINIS] = chosen
+                                    out[_MINIS:_RANKS] = minis
+                                    out[_RANKS:_LEVEL] = ranks
                                 if fits >= _FITS:
                                     return True, work
                             depth -= 1
@@ -189,16 +192,14 @@ def _first_fit(space, target, widths, budget, out):
                             depth -= 1
                             continue
                         position[depth] = step + 1
-                        at = gear_starts[depth + 1] - 1 - step if weakest else gear_starts[depth] + step
+                        at = -1 if step == last else (gear_starts[depth + 1] - 1 - step if weakest else gear_starts[depth] + step)
                         over = False
-                        if step == last:  # the slot left empty
-                            at = -1
-                            sums[depth + 1] = sums[depth]
-                        else:
+                        sums[depth + 1] = sums[depth]
+                        if at >= 0:
                             for d in range(5):
-                                sums[depth + 1, d] = sums[depth, d] + gear[at, d]
+                                sums[depth + 1, d] += gear[at, d]
                                 over = over or (d > 0 and sums[depth + 1, d] > room[d - 1])
-                            sums[depth + 1, 5] = sums[depth, 5] + 2 * gear[at, PRIMARY] + gear[at, SECONDARY]
+                            sums[depth + 1, 5] += 2 * gear[at, PRIMARY] + gear[at, SECONDARY]
                         if over:
                             continue
                         chosen[depth] = at
@@ -210,10 +211,10 @@ def _first_fit(space, target, widths, budget, out):
 
 @jit(nopython=True, cache=True)
 def _settled(target, worn, room, gems_of, fixed, mini_ascension, minis_of, out):
-    """Gems, ascension, levels and TeamBuff for a choice of gear and minis: of those that fit, the one furthest along (levels and
-    ranks over their caps, gems over the budget) into out[12:] and its progress, -1 when none fits. worn: the gear's
-    sums (Perfect Points, CM, FM, FT, FF, elements); room: what the gear and gems may add to CM, FM, FT, FF past the minis;
-    gems_of: (each stat gem's gain, each gem row's 2 x primary + secondary)."""
+    """Gems, ascension, levels and TeamBuff for a choice of gear and minis: of those that fit, the one furthest along into out's
+    _LEVEL.. columns, and its progress, -1 when none fits. worn: the gear's sums (Perfect Points, CM, FM, FT, FF, elements); room:
+    what the gear and gems may add to CM, FM, FT, FF past the minis; gems_of: (each stat gem's gain, each gem row's 2 x primary
+    + secondary)."""
     gains, gem_value = gems_of
     minis, ranks, caps, levels, bits, mini_elements = minis_of
     best = -1.0
@@ -223,30 +224,27 @@ def _settled(target, worn, room, gems_of, fixed, mini_ascension, minis_of, out):
         deficit = room[d] - worn[1 + d]
         if deficit % gains[1 + d]:
             return best
-        out[19 + d] = deficit // gains[1 + d]
-        stat_gems += out[19 + d]
-        elements += out[19 + d] * gem_value[1 + d]
+        out[_GEMS + 1 + d] = deficit // gains[1 + d]
+        stat_gems += out[_GEMS + 1 + d]
+        elements += out[_GEMS + 1 + d] * gem_value[1 + d]
     if stat_gems > GEM_BUDGET:
         return best
     for f in range(fixed.shape[0]):
         points = target[0] - fixed[f, 0] - worn[0]
         if points < 0 or points % _ASCENSION_POINTS:
             continue
-        half = points // _ASCENSION_POINTS
-        ascended = min(half, 3 * (_ASCENSIONS - 1))
-        point_gems = (half - ascended) * _ASCENSION_POINTS // gains[0]
-        if point_gems * gains[0] != (half - ascended) * _ASCENSION_POINTS or stat_gems + point_gems > GEM_BUDGET:
+        ascended = min(points // _ASCENSION_POINTS, 3 * (_ASCENSIONS - 1))
+        rest = points - ascended * _ASCENSION_POINTS
+        point_gems = rest // gains[0]
+        if point_gems * gains[0] != rest or stat_gems + point_gems > GEM_BUDGET:
             continue
+        top = _ASCENSIONS - 1
+        ascensions = (min(top, ascended), min(top, max(0, ascended - top)), max(0, ascended - 2 * top))
         given = elements + 2 * fixed[f, PRIMARY] + fixed[f, SECONDARY] + point_gems * gem_value[0]
-        ascensions = (
-            min(_ASCENSIONS - 1, ascended), min(_ASCENSIONS - 1, max(0, ascended - (_ASCENSIONS - 1))), max(0, ascended - 2 * (_ASCENSIONS - 1)),
-        )
         for m in range(3):
             given += mini_ascension[minis[m], ascensions[m]]
-        left = GEM_BUDGET - stat_gems - point_gems
-        # Of the fits, the one furthest along: its minis' levels over their caps and its gems over the budget. Element gems on a
-        # color the song does not score would add nothing: slots left empty do the same.
-        for count in range(left, -1, -1):
+        # Element gems on a color the song does not score would add nothing: slots left empty do the same.
+        for count in range(GEM_BUDGET - stat_gems - point_gems, -1, -1):
             for row in range(5, gem_value.shape[0]):
                 if gem_value[row] == 0 or (count == 0 and row > 5):
                     continue
@@ -257,20 +255,20 @@ def _settled(target, worn, room, gems_of, fixed, mini_ascension, minis_of, out):
                         progress += levels[m] / caps[m] + ranks[m] / MINI_RANKS
                     if progress > best:
                         best = progress
-                        out[12:15] = levels
-                        out[15], out[16], out[17] = ascensions
-                        out[18], out[23], out[24], out[25] = point_gems, count, row, f
+                        out[_LEVEL:_ASCENSION] = levels
+                        out[_ASCENSION], out[_ASCENSION + 1], out[_ASCENSION + 2] = ascensions
+                        out[_GEMS], out[_ELEMENT_GEMS], out[_ELEMENT_ROW], out[_FIXED] = point_gems, count, row, f
     return best
 
 
-def first_fit(space: PartialSpace, target: np.ndarray, budget: int) -> tuple[np.ndarray | None, int]:
-    """The guess for target (Perfect Points, CM, FM, FT, FF, 2 x primary + secondary) as _first_fit writes it, the shortlists
-    widening while none fits, None when none does; and the gear combinations visited, within `budget` (~1 us each)."""
+def guess_set(space: PartialSpace, target: np.ndarray, budget: int) -> tuple[np.ndarray | None, int]:
+    """The guess for target (Perfect Points, CM, FM, FT, FF, 2 x primary + secondary) as a row (GEAR, MINIS, ... FIXED), the
+    shortlists widening while none fits, None when none does; and the gear combinations visited, within `budget` (~1 us each)."""
     arrays = (space.gear, space.gear_starts, space.mini_perf, space.mini_elements, space.mini_ascension, space.fixed, space.gems)
-    out = np.zeros(26, dtype=np.int64)
+    out = np.zeros(_WIDTH, dtype=np.int64)
     used = 0
     for widths in _WIDTHS:
-        found, work = _first_fit(arrays, target.astype(np.int64), np.asarray(widths, dtype=np.int64), budget - used, out)
+        found, work = _guess(arrays, target.astype(np.int64), np.asarray(widths, dtype=np.int64), budget - used, out)
         used += work
         if found:
             return out, used

@@ -48,7 +48,8 @@ from .greats import (
     head_witness,
 )
 from .invert import score_ceiling
-from .partial_sets import OUT_ASCENSIONS, OUT_ELEMENT_GEMS, OUT_ELEMENT_ROW, OUT_FIXED, OUT_GEAR, OUT_GEMS, OUT_LEVELS, OUT_MINIS, OUT_RANKS, PartialSpace, first_fit, partial_space
+from . import partial_sets
+from .partial_sets import PartialSpace, guess_set, partial_space
 from .replay import play_offsets
 from .loadouts import (
     BOUND_ROUNDING,
@@ -520,15 +521,15 @@ def _guessed_set(song: ReverseSong, line: np.ndarray, rows: np.ndarray, plays: t
     if stat < 0:
         return None, 0
     elements = int(line[5]) - int(song.curves.f64["Perfect Points"][stat])
-    out, used = first_fit(space, np.asarray([stat, *line[1:5].tolist(), elements], dtype=np.int64), budget)
-    if out is None:
+    row, used = guess_set(space, np.asarray([stat, *line[1:5].tolist(), elements], dtype=np.int64), budget)
+    if row is None:
         return None, used
-    gear = tuple(space.names[i] for i in out[OUT_GEAR].tolist() if i >= 0)
-    minis = tuple(space.mini_names[i] for i in out[OUT_MINIS].tolist())
-    worn = tuple(zip(out[OUT_RANKS].tolist(), out[OUT_LEVELS].tolist(), out[OUT_ASCENSIONS].tolist()))
-    gems = dict(zip(GEM_KINDS, (*out[OUT_GEMS].tolist(), int(out[OUT_ELEMENT_GEMS]))))
-    element = chart.primary if out[OUT_ELEMENT_ROW] == PRIMARY else song.space.secondary
-    fixed = song.fixed[int(out[OUT_FIXED])]
+    gear = tuple(space.names[i] for i in row[partial_sets.GEAR].tolist() if i >= 0)
+    minis = tuple(space.mini_names[i] for i in row[partial_sets.MINIS].tolist())
+    worn = tuple(zip(row[partial_sets.RANKS].tolist(), row[partial_sets.LEVELS].tolist(), row[partial_sets.ASCENSIONS].tolist()))
+    gems = dict(zip(GEM_KINDS, (*row[partial_sets.GEMS].tolist(), int(row[partial_sets.ELEMENT_GEMS]))))
+    element = chart.primary if row[partial_sets.ELEMENT_ROW] == PRIMARY else song.space.secondary
+    fixed = song.fixed[int(row[partial_sets.FIXED])]
     items = [song.gears[name].stats for name in gear] + [worn_mini_stats(song.catalog_minis[name], state, chart.name, chart.primary, chart.secondary) for name, state in zip(minis, worn)]
     stats = apply_gems(total(team_buff_effect(fixed.tier, fixed.team_color), *items), gems, element)
     guess = FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, None, 0.0, mini_states=worn)
