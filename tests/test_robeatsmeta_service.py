@@ -680,7 +680,7 @@ def test_a_prepare_readies_the_song_in_the_lookup_queue(data_root, monkeypatch):
         assert answers[0][0] == service.HTTPStatus.BAD_REQUEST
 
 
-@pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}, {"targetSongId": "Feeding [Hard]", "score": 5, "teamBuff": "T99"}, {"targetSongId": "Feeding [Hard]", "score": 5, "teamColor": "Pink"}))
+@pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}))
 def test_a_lookup_with_a_row_no_menu_shows_is_refused(data_root, monkeypatch, body):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
     handler, answers = _lookup_handler(monkeypatch, body)

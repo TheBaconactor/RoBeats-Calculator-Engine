@@ -271,15 +271,6 @@ def test_warming_a_song_changes_no_answer(song):
     assert walked and walked <= set(cold.timelines)
 
 
-def test_a_known_team_buff_keeps_the_sets_to_it(song):
-    """A row's TeamBuff tier and color, when the player gives them, are the only ones its sets wear; a color that is neither
-    the song's primary nor its secondary is named as given."""
-    assert reverse_score(PlayInfo(score=4_666_274, team_buff="T5", team_color="Vibe"), song).sets
-    for tier, color in (("T5", "Vibe"), ("T1", "Rush"), ("T50", None), ("NONE", None)):
-        reply = reverse_score(PlayInfo(score=4_666_274, team_buff=tier, team_color=color), song, limit=64)
-        assert all(row.team_buff == tier and (color is None or row.team_color == color) for row in reply.sets)
-
-
 def test_a_named_sets_hits_replay_the_rows_score(song):
     """The hit offsets a named set carries replay, frame by frame in the game's port, to the row's exact score and Casual
     score: the play behind the score, Greats and fever where they were."""

@@ -51,10 +51,8 @@ from typing import Any
 
 from gear_optimizer.chart import read_header
 from gear_optimizer.core.macos_background import make_process_background_only
-from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_ORDER
 from gear_optimizer.core.timing_modes import PRECISE, TIMING_MODES
 from gear_optimizer.data.game_export import CUSTOM_GEAR_STATS, CUSTOM_MINI_STATS, game_song_names, load_catalog
-from gear_optimizer.gamedata import ELEMENTS
 from gear_optimizer.service_update import ServiceUpdater
 from gear_optimizer.settings import DIFFICULTIES, REASONING_LEVELS, paths, service_settings
 from gear_optimizer.store import schema
@@ -619,12 +617,6 @@ def parse_lookup(raw: dict[str, Any]) -> dict[str, Any]:
     shown = {"chartPath": chart, "score": score, "matchMode": raw.get("matchMode", "Compete")}
     if shown["matchMode"] not in ("Compete", "Casual"):
         raise RequestError("matchMode must be Compete or Casual")
-    for name, allowed in (("teamBuff", TEAM_BUFF_TIER_ORDER), ("teamColor", ELEMENTS)):
-        value = raw.get(name)
-        if value is not None:
-            if value not in allowed:
-                raise RequestError(f"{name} must be one of {', '.join(allowed)}")
-            shown[name] = value
     return {**shown, **_shown_numbers(raw, tuple(_SHOWN_NUMBERS))}
 
 
