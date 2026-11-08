@@ -302,6 +302,34 @@ def ascension_element_bonus(mini: Mini, primary: str, secondary: str, level: int
     return {color: amount for color, amount in bonus.items() if amount}
 
 
+# A mini's rank (1..4) caps its level: 20 + 10 x (rank - 1) (PetUtils.lua:291-306).
+MINI_RANKS = 4
+MINI_LEVEL_STEP = 10
+MINI_FIRST_CAP = 20
+
+
+def mini_level_cap(rank: int) -> int:
+    return MINI_FIRST_CAP + MINI_LEVEL_STEP * (rank - 1)
+
+
+def worn_mini_stats(mini: Mini, worn: tuple[int, int, int], song_name: str, primary: str, secondary: str) -> Stats:
+    """A mini at (rank, level, ascension) on a song (PetUtils.lua:433-464, 1221-1239): its Combo and Fever stats are its max's
+    quarters by rank, its element stats grow from level 1 to 5x at level 50, ascension adds 2 Perfect Points a level, and a
+    song target gets the elemental bonus of its ascension. At (4, 50, 10) it is ascended_mini_stats."""
+    rank, level, ascension = worn
+    stats = empty_stats()
+    for stat in ("Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate"):
+        stats[stat] = mini.stats[stat] // MINI_RANKS * rank
+    line = 1.0 + (level - 1) * 4.0 / 49.0
+    for color, value in mini.level1_elements.items():
+        stats[color] = math.floor(value * line)
+    stats["Perfect Points"] = 2 * ascension
+    if song_name in mini.song_targets:
+        for color, amount in ascension_element_bonus(mini, primary, secondary, ascension).items():
+            stats[color] += amount
+    return stats
+
+
 def ascended_mini_stats(mini: Mini, song_name: str, primary: str, secondary: str) -> Stats:
     """A mini's stats in one song: every mini gains Perfect Points; song targets also gain elements."""
     stats = dict(mini.stats)

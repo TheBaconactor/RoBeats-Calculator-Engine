@@ -28,12 +28,12 @@ from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.data.game_export import Catalog
 from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
 from gear_optimizer.frontier.types import FgResponseSurface
-from gear_optimizer.gamedata import ELEMENTS, SongMini, StatCurves, empty_stats, song_minis
+from gear_optimizer.gamedata import ELEMENTS, Mini, SongMini, StatCurves, empty_stats, song_minis, worn_mini_stats
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT
 from gear_optimizer.score import HEAD_NOTES, Factors, factors, fg_surface_score
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
 from gear_optimizer.solver.timing_envelope import fever_axes
-from gear_optimizer.stats import GEM_KINDS, named_loadout_stats
+from gear_optimizer.stats import GEM_KINDS, apply_gems, named_loadout_stats, total
 
 from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, great_times, pattern_words, walk_cell
 from .gpu_lines import MAX_CLASSES, MAX_ROWS, LineQuery, SongTables, line_rows, surface_tables
@@ -49,6 +49,7 @@ from .greats import (
     head_witness,
 )
 from .invert import score_ceiling
+from .partial_sets import OUT_ASCENSIONS, OUT_ELEMENT_GEMS, OUT_ELEMENT_ROW, OUT_FIXED, OUT_GEAR, OUT_GEMS, OUT_LEVELS, OUT_MINIS, OUT_RANKS, PartialSpace, first_fit, partial_space
 from .replay import play_offsets
 from .loadouts import (
     BOUND_ROUNDING,
@@ -88,6 +89,10 @@ _PREFERRED_TIER = "T5"
 # a dev run's most, 4 notes up to 64 Greats, doubled.
 _GREATS_SEARCHED = 64
 _GREATS_WALKED = 8
+# The gear combinations partial_sets may visit per Great count of a lookup and per line, ~1 us each: most guesses that fit take
+# under 30,000, and a line no guess fits takes all of its share.
+_GUESS_WORK = 1_200_000
+_GUESS_LINE_WORK = 150_000
 _BAND_NOTES = 8
 # The most quarters only Greats can cost: an Okay costs three.
 _ONLY_GREATS = 2
@@ -164,6 +169,8 @@ class ReverseSong:
     widest: dict = field(default_factory=dict)  # _widest
     timelines: dict = field(default_factory=dict)  # _timelines_of
     gpu: SongTables | None = None
+    partial: PartialSpace | None = None  # what partial_sets' guess reads
+    catalog_minis: dict[str, Mini] = field(default_factory=dict)  # the catalog's minis, for a guess's minis below max
 
     @property
     def ceiling(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -211,9 +218,11 @@ def prepare_song(chart: Chart, catalog: Catalog, curves: StatCurves) -> ReverseS
         for vertex in prices
     ])
     minis = {mini.name: mini for mini in song_minis(catalog.minis.values(), chart.name, chart.primary, chart.secondary)}
+    fixed_rows = np.stack([row.row for row in fixed])
     song = ReverseSong(
-        chart, curves, dict(catalog.gears), minis, surfaces, space, tuple(fixed), np.stack([row.row for row in fixed]), values,
+        chart, curves, dict(catalog.gears), minis, surfaces, space, tuple(fixed), fixed_rows, values,
         prices, _cell_relief(surfaces.cell_start, surfaces.cells, prices), value_tables(space),
+        partial=partial_space(catalog, space, fixed_rows, chart.name), catalog_minis=dict(catalog.minis),
     )
     return _ranked(_sharpened(song))
 
@@ -308,6 +317,7 @@ class FoundSet:
     gem_gap: float
     cost: float = 0.0  # how far-fetched its line is, lower first
     hits: dict[int, float] | None = None  # the play's hit offsets in ms, per note off its chart time (replay.play_offsets)
+    mini_states: tuple[tuple[int, int, int], ...] = ()  # per mini (rank, level, ascension) of a guessed set; none at max
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,7 +347,7 @@ class UnreleasedItem:
 
 @dataclass(frozen=True, slots=True)
 class Reverse:
-    verdict: str  # sets, lines (stats fit, no released max-level set), unresolved, unreleased or exploited
+    verdict: str  # sets, lines (stats fit, no set reaches or guess fits them), unresolved, unreleased or exploited
     sets: tuple[FoundSet, ...]
     lines: int  # the exact stat lines under the ceiling that the lookup kept
     finished: bool  # every line was kept and searched to its end
@@ -482,7 +492,15 @@ def _named_set(song: ReverseSong, found: np.ndarray, rows: np.ndarray, plays: tu
     gems = dict(zip(GEM_KINDS, (pp, cm, fm, ft, ff, element_gems)))
     fixed = song.fixed[found[17]]
     stats = named_loadout_stats(team_buff_effect(fixed.tier, fixed.team_color), gear, minis, song.gears, song.minis, gems, element)
-    scored = factors(stats, song.curves, chart.primary, chart.secondary)
+    return _played_set(song, FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, None, gem_gap), rows, plays, score)
+
+
+def _played_set(song: ReverseSong, worn: FoundSet, rows: np.ndarray, plays: tuple[np.ndarray, Timelines, dict], score: int) -> FoundSet | None:
+    """A set with its surface, if a row of its line gives the score at the set's own stats and Great points. plays: as
+    _named_set's."""
+    classes, timelines, known = plays
+    chart = song.chart
+    scored = factors(worn.stats, song.curves, chart.primary, chart.secondary)
     fitting = rows if classes.shape[0] == 0 else rows[rows[:, 5] == scored.great_base]
     for row in fitting[:_ROWS_PER_SET]:
         key = (*row.tolist(), scored.great_base)
@@ -490,8 +508,32 @@ def _named_set(song: ReverseSong, found: np.ndarray, rows: np.ndarray, plays: tu
             known[key] = _played_surface(song, scored, row, classes, timelines, score)
         surface = known[key]
         if surface is not None and fg_surface_score(scored, surface, chart.total_notes) == score:
-            return FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, surface, gem_gap)
+            return replace(worn, surface=surface)
     return None
+
+
+def _guessed_set(song: ReverseSong, line: np.ndarray, rows: np.ndarray, plays: tuple[np.ndarray, Timelines, dict], score: int, budget: int) -> tuple[FoundSet | None, int]:
+    """partial_sets' guess at a line no max-level set reaches, a search_targets row (surface, CM, FM, FT, FF, base, vertex,
+    Perfect Points stat), within `budget` gear combinations, and how many it visited; None without the line's Perfect Points
+    stat (a row with no Gear Power) or a guess that fits."""
+    chart, space = song.chart, song.partial
+    stat = int(line[7])
+    if stat < 0:
+        return None, 0
+    elements = int(line[5]) - int(song.curves.f64["Perfect Points"][stat])
+    out, used = first_fit(space, np.asarray([stat, *line[1:5].tolist(), elements], dtype=np.int64), budget)
+    if out is None:
+        return None, used
+    gear = tuple(space.names[i] for i in out[OUT_GEAR].tolist() if i >= 0)
+    minis = tuple(space.mini_names[i] for i in out[OUT_MINIS].tolist())
+    worn = tuple(zip(out[OUT_RANKS].tolist(), out[OUT_LEVELS].tolist(), out[OUT_ASCENSIONS].tolist()))
+    gems = dict(zip(GEM_KINDS, (*out[OUT_GEMS].tolist(), int(out[OUT_ELEMENT_GEMS]))))
+    element = chart.primary if out[OUT_ELEMENT_ROW] == PRIMARY else song.space.secondary
+    fixed = song.fixed[int(out[OUT_FIXED])]
+    items = [song.gears[name].stats for name in gear] + [worn_mini_stats(song.catalog_minis[name], state, chart.name, chart.primary, chart.secondary) for name, state in zip(minis, worn)]
+    stats = apply_gems(total(team_buff_effect(fixed.tier, fixed.team_color), *items), gems, element)
+    guess = FoundSet(gear, minis, gems, element, fixed.tier, fixed.team_color, stats, None, 0.0, mini_states=worn)
+    return _played_set(song, guess, rows, plays, score), used
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -628,6 +670,18 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
         if sets or last[t] == first[t]:
             listed.append(t)
         if len(listed) >= limit:
+            break
+    # With no line a max-level set reaches, lines get a guess, likeliest first, until one fits; at a song's top such a line is not
+    # real.
+    budget = 0 if at_top or named else _GUESS_WORK
+    for t in [t for t in listed if t not in named]:
+        if budget <= 0:
+            break
+        span = lines.held[lines.spans[t, 0] : lines.spans[t, 1], 0]
+        guess, used = _guessed_set(song, lines.targets[t], lines.rows[span], plays, play.score, min(budget, _GUESS_LINE_WORK))
+        budget -= used
+        if guess is not None:
+            named[t] = [replace(guess, cost=float(final[t]))]
             break
     stat_lines = [
         StatLine(*lines.targets[t, 1:5].tolist(), int(lines.targets[t, 7]), int(lines.targets[t, 5]), float(final[t]), t in named)

@@ -281,6 +281,24 @@ def test_a_stored_meta_runs_own_row_looks_up_to_its_own_run(song):
     assert reverse_score(shown, song, mode="precise").sets[0].hits is not None
 
 
+def test_a_partly_upgraded_players_row_names_a_partly_upgraded_set(song):
+    """A row no max-level set gives comes back with a guess below max, minis at a rank, level and ascension and up to 90 gems,
+    whose own stats replay frame by frame to the row's exact score."""
+    catalog = load_catalog(paths().game_export)
+    player = fake_player(random.Random(1), song, dict(catalog.minis), "casual", "machine")
+    clock = np.arange(-1000.0, float(song.chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)
+    played = play(song.chart, player.stats, player.perfect_time, Plan(np.zeros(song.chart.total_notes)), clock)
+    reply = reverse_score(play_info(played, gear_power(player.stats, song.chart), "Compete"), song, mode="non-precise")
+    guessed = next(row for row in reply.sets if row.mini_states)
+    assert sum(guessed.gems.values()) <= 90
+    assert all(1 <= rank <= 4 and 1 <= level <= 20 + 10 * (rank - 1) and 0 <= ascension <= 10 for rank, level, ascension in guessed.mini_states)
+    hits = np.zeros(song.chart.total_notes)
+    for note, delta in guessed.hits.items():
+        hits[note] = delta
+    replayed = play(song.chart, guessed.stats, perfect_time_of(guessed.gear, catalog.gears), Plan(hits), clock)
+    assert replayed.score == played.score
+
+
 def test_a_named_sets_hits_replay_the_rows_score(song):
     """The hit offsets a named set carries replay, frame by frame in the game's port, to the row's exact score and Casual
     score: the play behind the score, Greats and fever where they were."""

@@ -22,7 +22,7 @@ import numpy as np
 
 from gear_optimizer.chart import Chart
 from gear_optimizer.core.team_buff import team_buff_effect
-from gear_optimizer.gamedata import ELEMENTS, Mini, ascension_element_bonus, empty_stats
+from gear_optimizer.gamedata import ELEMENTS, Mini, empty_stats, worn_mini_stats
 from gear_optimizer.reverse.lookup import PlayInfo, ReverseSong
 from gear_optimizer.score import best_timeline_score, factors
 from gear_optimizer.solver.fever_timeline import fixed_timeline_cell
@@ -126,21 +126,6 @@ def gear_power(stats: dict[str, int], chart: Chart) -> int:
 def play_info(played: Played, power: int, match_mode: str) -> PlayInfo:
     """The Top Scores row and its View popup."""
     return PlayInfo(played.score, shown_accuracy(played.accuracy), played.casual, float(f"{played.score / max(played.casual, 1):.2f}"), power, match_mode)
-
-
-def worn_mini_stats(mini: Mini, worn: WornMini, song_name: str, primary: str, secondary: str) -> dict[str, int]:
-    """A mini at a rank, level and ascension on a song (PetUtils.lua:433-464, 1221-1239; ascension_element_bonus)."""
-    stats = empty_stats()
-    for stat in _FIVE[1:]:
-        stats[stat] = mini.stats[stat] // 4 * worn.rank
-    line = 1.0 + (worn.level - 1) * 4.0 / 49.0
-    for color, value in mini.level1_elements.items():
-        stats[color] = math.floor(value * line)
-    stats["Perfect Points"] = 2 * worn.ascension
-    if song_name in mini.song_targets:
-        for color, amount in ascension_element_bonus(mini, primary, secondary, worn.ascension).items():
-            stats[color] += amount
-    return stats
 
 
 def _sum_stats(start: dict[str, int], items: list[dict[str, int]], gems: dict[str, int]) -> tuple[dict[str, int], int]:
@@ -261,7 +246,7 @@ def _improved(rng: random.Random, song: ReverseSong, kind: str, start: dict[str,
 
 def _item_stats(song: ReverseSong, gear: dict, minis: list[WornMini]) -> list[dict[str, int]]:
     chart = song.chart
-    return [item.stats for item in gear.values()] + [worn_mini_stats(_CATALOG[mini.name], mini, chart.name, chart.primary, chart.secondary) for mini in minis]
+    return [item.stats for item in gear.values()] + [worn_mini_stats(_CATALOG[mini.name], (mini.rank, mini.level, mini.ascension), chart.name, chart.primary, chart.secondary) for mini in minis]
 
 
 _CATALOG: dict[str, Mini] = {}
