@@ -42,7 +42,10 @@ def answer(request: dict[str, Any], songs: OrderedDict[str, ReverseSong], catalo
     if request.get("prepare"):
         warm_song(song, request.get("accuracy"))
         return {"prepared": True}
-    play = PlayInfo(request["score"], request.get("accuracy"), request.get("casualScore"), request.get("gearMultiplier"), request.get("gearPower"), request.get("matchMode", "Compete"))
+    play = PlayInfo(
+        request["score"], request.get("accuracy"), request.get("casualScore"), request.get("gearMultiplier"), request.get("gearPower"),
+        request.get("matchMode", "Compete"), request.get("teamBuff"), request.get("teamColor"),
+    )
     return asdict(reverse_score(play, song, limit=request.get("limit", 8)))
 
 

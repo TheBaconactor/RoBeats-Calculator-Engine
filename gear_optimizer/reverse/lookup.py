@@ -279,6 +279,8 @@ class PlayInfo:
     gear_multiplier: float | None = None
     gear_power: int | None = None
     match_mode: str = "Compete"
+    team_buff: str | None = None  # the guild's TeamBuff tier when the player knows it (TEAM_BUFF_TIER_ORDER)
+    team_color: str | None = None  # and its team color
 
 
 def lost_quarters(play: PlayInfo, notes: int) -> tuple[int, int]:
@@ -579,6 +581,18 @@ def _classes_of(play: PlayInfo, song: ReverseSong, greats: int, timelines: Timel
     return None if classes.shape[0] > MAX_CLASSES else classes
 
 
+def _team_rows(song: ReverseSong, play: PlayInfo) -> np.ndarray:
+    """The TeamBuff rows a row's sets may wear: its tier and team color when the player gave them. A team color acts as the
+    song's primary, its secondary or neither, as fixed_stats lists them; NONE has no color."""
+    color = play.team_color
+    if color is not None and color not in (song.space.primary, song.space.secondary):
+        color = next(row.team_color for row in song.fixed if row.team_color not in (song.space.primary, song.space.secondary))
+    return np.flatnonzero([
+        (play.team_buff is None or row.tier == play.team_buff) and (color is None or play.team_buff == "NONE" or row.team_color == color)
+        for row in song.fixed
+    ])
+
+
 def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tuple[list[FoundSet], list[StatLine], int, bool]:
     """The likeliest lines of a full combo with this many Greats and the sets that reach them: sets, lines, how many lines there
     are, and whether every line was searched."""
@@ -602,8 +616,10 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
     found = np.empty((_LINES_HELD * _SETS_PER_LINE, 18), dtype=np.int64)
     space = song.space.items, song.space.starts, song.space.gems
     search = lines.targets, power, _LINES_HELD, _PLAN_SEARCH_ITEMS if at_top else _SEARCH_ITEMS, _ITEMS_PER_TARGET, _ITEMS_PER_SETUP, _SETS_PER_LINE
-    done, reached, complete = search_targets(space, song.tables.arrays, song.fixed_rows, song.curves.f64["Perfect Points"], (song.vertex_values, song.vertex_prices), search, found)
+    teams = _team_rows(song, play)
+    done, reached, complete = search_targets(space, song.tables.arrays, song.fixed_rows[teams], song.curves.f64["Perfect Points"], (song.vertex_values, song.vertex_prices), search, found)
     found = found[:done]
+    found[:, 17] = teams[found[:, 17]]
     gaps, great_points = _gaps_of(song, found)
     if greats:
         fits = np.empty(found.shape[0], dtype=bool)
@@ -619,7 +635,7 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
     for t in np.argsort(final, kind="stable")[:_SETS_TRIED].tolist():
         span = lines.held[lines.spans[t, 0] : lines.spans[t, 1], 0]
         made = (_named_set(song, found[r], lines.rows[span], plays, float(gaps[r]), play.score) for r in tries[first[t] : last[t]].tolist())
-        sets = [replace(row, cost=float(final[t])) for row in made if row is not None]
+        sets = [replace(row, cost=float(final[t]), team_color=play.team_color or row.team_color) for row in made if row is not None]
         if sets:
             named[t] = sets
         if sets or last[t] == first[t]:
