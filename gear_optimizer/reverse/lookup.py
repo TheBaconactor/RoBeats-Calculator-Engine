@@ -396,13 +396,15 @@ def _timelines_of(song: ReverseSong, greats: int, near: bool) -> Timelines:
     """The timelines of a play with this many Greats, the first time a lookup needs them: walked for few Greats, past that the
     band around those walked for _GREATS_WALKED; near: only those near a cell's chart-time timeline."""
     walked_for = min(greats, _GREATS_WALKED)
-    band = 0 if near or greats <= _GREATS_WALKED else _BAND_NOTES
-    if (walked_for, band, near) not in song.timelines:
+    same_head = greats <= _GREATS_WALKED
+    band = 0 if near or same_head else _BAND_NOTES
+    key = walked_for, band, near, same_head
+    if key not in song.timelines:
         if ("walked", walked_for) not in song.timelines:
             song.timelines["walked", walked_for] = song.surfaces if walked_for == 0 else fever_surfaces(song.chart, song.curves, 0, walked_for)
         surfaces = song.timelines["walked", walked_for]
-        song.timelines[walked_for, band, near] = _with_cells(song, _near_chart_time(song, surfaces, greats <= _GREATS_WALKED) if near else surfaces, band)
-    return song.timelines[walked_for, band, near]
+        song.timelines[key] = _with_cells(song, _near_chart_time(song, surfaces, same_head) if near else surfaces, band)
+    return song.timelines[key]
 
 
 def _window_timelines(song: ReverseSong, perfect_time: int) -> Timelines:

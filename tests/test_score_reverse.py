@@ -22,7 +22,7 @@ from gear_optimizer.reverse.lookup import PlayInfo, lost_quarters, prepare_song,
 from gear_optimizer.score import best_timeline_score, factors, fg_surface_score
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid, fixed_timeline_cell
-from gear_optimizer.solver.timing_envelope import fever_axes
+from gear_optimizer.solver.timing_envelope import fever_axes, judgment_edges
 from tools.verify.frame_play import Plan, frame_clock, play
 from tools.verify.fake_players import fake_player, gear_power, play_info
 
@@ -334,3 +334,27 @@ def test_a_named_sets_hits_replay_the_rows_score(song):
     frames = frame_clock(np.random.default_rng(1), float(song.chart.timestamps[-1]) * 1000.0, 60.0, 0.0)
     replayed = play(song.chart, found.stats, perfect_time_of(found.gear, load_catalog(paths().game_export).gears), Plan(hits), frames)
     assert (replayed.score, replayed.casual) == (played.score, played.casual)
+
+
+def test_near_timelines_walked_for_eight_greats_do_not_serve_more(song):
+    """The near timelines of up to _GREATS_WALKED Greats share a cell's head with its chart-time timeline; more need not.
+    Both used to sit in one cache slot keyed by the walk alone, so whichever Great count looked up first served the other
+    and a row's answer turned on which rows the song had already seen."""
+    catalog = load_catalog(paths().game_export)
+
+    def row(rng, greats):
+        player = fake_player(rng, song, dict(catalog.minis), "any", "average")
+        taps = np.flatnonzero(song.chart.note_types == 1)
+        offsets = np.zeros(song.chart.total_notes)
+        offsets[rng.sample(sorted(taps[taps >= 100].tolist()), greats)] = float(np.floor(judgment_edges(player.perfect_time)[2])) + 1.0
+        clock = frame_clock(np.random.default_rng(0), float(song.chart.timestamps[-1]) * 1000.0, 240.0, 0.0)
+        played = play(song.chart, player.stats, player.perfect_time, Plan(offsets), clock)
+        assert played.great == greats
+        return play_info(played, gear_power(player.stats, song.chart), "Compete")
+
+    eight, more = row(random.Random(75), 8), row(random.Random(3), 14)
+    answers = []
+    for pair in ((("eight", eight), ("more", more)), (("more", more), ("eight", eight))):
+        fresh = prepare_song(song.chart, catalog, song.curves)
+        answers.append({name: asdict(reverse_score(r, fresh)) for name, r in pair})
+    assert answers[0] == answers[1]
