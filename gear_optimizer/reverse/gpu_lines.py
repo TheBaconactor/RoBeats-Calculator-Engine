@@ -614,9 +614,8 @@ class SongTables:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class SurfaceTables:
-    """The surfaces a search walks, in that order: `ids` their places in the arrays the rows name."""
+    """The surfaces a search walks, in that order: a row names a surface by its place."""
 
-    ids: np.ndarray
     words: np.ndarray  # per surface its head mask
     head_terms: np.ndarray
     shape_terms: np.ndarray
@@ -625,18 +624,18 @@ class SurfaceTables:
     relief: np.ndarray
 
 
-def surface_tables(ids: np.ndarray, patterns: tuple[np.ndarray, np.ndarray], surfaces: tuple[np.ndarray, np.ndarray], sums: np.ndarray, relief: np.ndarray, body_total: int) -> SurfaceTables:
-    """The surfaces `ids` of arrays by surface. patterns: (words, coeffs) per head pattern; surfaces: (pattern, body fever)."""
+def surface_tables(patterns: tuple[np.ndarray, np.ndarray], surfaces: tuple[np.ndarray, np.ndarray], sums: np.ndarray, relief: np.ndarray, body_total: int) -> SurfaceTables:
+    """The tables of arrays by surface, in their order. patterns: (words, coeffs) per head pattern; surfaces: (pattern, body fever)."""
     words, coeffs = patterns
     pattern, bodies = surfaces
-    picked = coeffs[pattern[ids]].astype(np.float64)
+    picked = coeffs[pattern].astype(np.float64)
     ramp_fever, ramp_normal = picked[:, 3] * 0.01, picked[:, 2] * 0.01
     head = np.column_stack((ramp_fever, ramp_normal, picked[:, 1] - ramp_fever, picked[:, 0] - ramp_normal))
     shape = head.copy()
-    shape[:, 0] += bodies[ids]
-    shape[:, 1] += body_total - bodies[ids]
-    bits = np.ascontiguousarray(sums[ids]).view(np.uint32).reshape(ids.shape[0], _SUM_WORDS)
-    return SurfaceTables(ids, words[pattern[ids], :_MASK_WORDS].astype(np.uint32), head.astype(np.float32), shape.astype(np.float32), bodies[ids].astype(np.int32), bits, relief[ids].astype(np.float32))
+    shape[:, 0] += bodies
+    shape[:, 1] += body_total - bodies
+    bits = np.ascontiguousarray(sums).view(np.uint32).reshape(pattern.shape[0], _SUM_WORDS)
+    return SurfaceTables(words[pattern, :_MASK_WORDS].astype(np.uint32), head.astype(np.float32), shape.astype(np.float32), bodies.astype(np.int32), bits, relief.astype(np.float32))
 
 
 def _sum_spans(bits: np.ndarray) -> np.ndarray:
@@ -692,7 +691,7 @@ def _load_song(song: SongTables) -> None:
 def _load_chunk(surfaces: SurfaceTables, first: int, last: int, vertices: int) -> None:
     span = slice(first, last)
     count = last - first
-    _load(tables.surface_id, count, surfaces.ids[span].astype(np.int32))
+    _load(tables.surface_id, count, np.arange(first, last, dtype=np.int32))
     _load_vectors(tables.shape_terms, count, surfaces.shape_terms[span])
     _load_vectors(tables.head_terms, count, surfaces.head_terms[span])
     _load_vectors(tables.head_words, count, surfaces.words[span])
@@ -752,8 +751,8 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
     size = CHUNK_SURFACES
     complete = True
     per_base = 1 + query.classes.shape[0] // _CLASSES_PER_BASE
-    while first < surfaces.ids.shape[0]:
-        last = min(first + size, surfaces.ids.shape[0])
+    while first < surfaces.body_fever.shape[0]:
+        last = min(first + size, surfaces.body_fever.shape[0])
         _load_chunk(surfaces, first, last, vertices)
         _clear(_ROWS)  # the rows stay
         _find_tiles(last - first, search)

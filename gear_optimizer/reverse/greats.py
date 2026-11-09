@@ -234,10 +234,10 @@ def great_points_fit(found, greats, held, rows, spans, out):
 @jit(nopython=True, cache=True)
 def band_surfaces(surfaces, relief, sums, band, body_total):
     """Per head pattern every body fever count within `band` of a walked surface: most Greats do not move a timeline, and a
-    few move it a few notes. Returns (pattern, body fever, relief, FT + FF bits, lowest and highest, per surface the first
-    and last + 1 walked surface in its band); walked surfaces come sorted by pattern, then body fever. surfaces: (pattern,
-    body fever)."""
-    pattern, body_fever = surfaces
+    few move it a few notes. Returns (pattern, body fever, relief, FT + FF bits, per surface the first and last + 1 walked
+    surface in its band, and the fewest notes its body fever lies off a cell's chart-time timeline there); walked surfaces come
+    sorted by pattern, then body fever. surfaces: (pattern, body fever, cell_start, cells, per cell its chart-time body fever)."""
+    pattern, body_fever, cell_start, cells, chart_fever = surfaces
     walked = pattern.shape[0]
     total = 0
     first = 0
@@ -252,6 +252,7 @@ def band_surfaces(surfaces, relief, sums, band, body_total):
     out_relief = np.full((total, relief.shape[1]), -1.0e18)
     out_sums = np.zeros((total, sums.shape[1]), dtype=np.int64)
     bands = np.empty((total, 2), dtype=np.int64)
+    off = np.full(total, body_total + 1, dtype=np.int64)
     at = first = 0
     while first < walked:
         last = first
@@ -268,10 +269,12 @@ def band_surfaces(surfaces, relief, sums, band, body_total):
             for u in range(low, high):
                 out_relief[at] = np.maximum(out_relief[at], relief[u])
                 out_sums[at] |= sums[u]
+            for k in range(cell_start[low], cell_start[high]):
+                off[at] = min(off[at], abs(body - chart_fever[cells[k]]))
             at += 1
         first = last + 1
     kept = bands[:, 1] > bands[:, 0]
-    return out_pattern[kept], out_body[kept], out_relief[kept], out_sums[kept], bands[kept]
+    return out_pattern[kept], out_body[kept], out_relief[kept], out_sums[kept], bands[kept], off[kept]
 
 
 @jit(nopython=True, cache=True)

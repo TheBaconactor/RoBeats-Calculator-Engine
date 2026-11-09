@@ -35,7 +35,7 @@ from gear_optimizer.solver.timing_envelope import fever_axes
 from gear_optimizer.stats import GEM_KINDS, apply_gems, named_loadout_stats, total
 
 from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, great_times, pattern_words, walk_cell, walk_scratch
-from .gpu_lines import MAX_CLASSES, MAX_ROWS, LineQuery, SongTables, line_rows, scan_order, surface_tables
+from .gpu_lines import MAX_CLASSES, MAX_ROWS, LineQuery, SongTables, SurfaceTables, line_rows, scan_order, surface_tables
 from .greats import (
     HEAD_LISTED,
     ROW_COLUMNS,
@@ -104,10 +104,13 @@ _ROWS_PER_SET = 32
 _NEAR_NOTES = 2
 _WIDE_UNDER = 4096
 _HEAD_CHANCE = 0.01  # and leaves out head Greats beyond what chance gives this share of plays
-# What a gem gap costs a line, in nats per share of the score. A plan that moves its fever on purpose (a Force Great plan) fits any
-# timeline and needs no chance in its Greats: it costs this, on a build whose gem gap costs more; at this share of a song's top a
-# search always looks at every timeline, since such plans live there.
+# What a gem gap costs a line, in nats per share of the score; half that on a play with Greats, whose play cost already holds how
+# likely its Greats lie where they do: tuned on the dev split (with the true line found, the first 8 hold it on 21 of 76 Great plays
+# at 100, 15 at 200; the benchmark lists 2 more), 14 more true lines listed held out. A plan that moves its fever on purpose (a
+# Force Great plan) fits any timeline and needs no chance in its Greats: it costs this, on a build whose gem gap costs more; at this
+# share of a song's top a search always looks at every timeline, since such plans live there.
 _GAP_COST = 200.0
+_GREAT_GAP_COST = 100.0
 _PLAN_COST = 1.0
 _PLAN_GAP_COST = 1000.0
 _PLAN_HEIGHT = 0.95
@@ -187,16 +190,16 @@ class ReverseSong:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Timelines:
-    """The surfaces a search walks: per surface its head pattern, body fever, relief, FT + FF bits and the first and last + 1
-    walked surface in its band. walked.cells are sorted by FT + FF within a surface."""
+    """The surfaces a search walks, likeliest first: by the fewest notes their body fever lies off a cell's chart-time timeline, so
+    a search its budget cuts keeps the timelines a play is likeliest to have taken. Per surface its head pattern, body fever, first
+    and last + 1 walked surface in its band, and the GPU's tables of them; walked.cells are sorted by FT + FF within a surface."""
 
     walked: FeverSurfaces
     head_fever: bool
     pattern: np.ndarray
     body_fever: np.ndarray
-    relief: np.ndarray
-    sums: np.ndarray
     bands: np.ndarray
+    tables: SurfaceTables
 
 
 def prepare_song(chart: Chart, catalog: Catalog, curves: StatCurves) -> ReverseSong:
@@ -382,8 +385,11 @@ def _near_chart_time(song: ReverseSong, surfaces: FeverSurfaces, same_head: bool
 def _with_cells(song: ReverseSong, surfaces: FeverSurfaces, band: int) -> Timelines:
     relief = _cell_relief(surfaces.cell_start, surfaces.cells, song.vertex_prices)
     sums = cell_sums(surfaces.cell_start, surfaces.cells)
-    pattern, body, wide_relief, wide_sums, bands = band_surfaces((surfaces.pattern, surfaces.body_fever), relief, sums, band, song.notes[1])
-    return Timelines(_sorted_cells(surfaces), bool(np.any(surfaces.words[:, :4])), pattern, body, wide_relief, wide_sums, bands)
+    walk = surfaces.pattern, surfaces.body_fever, surfaces.cell_start, surfaces.cells, song.chart_fever
+    pattern, body, wide_relief, wide_sums, bands, off = band_surfaces(walk, relief, sums, band, song.notes[1])
+    first = np.argsort(off, kind="stable")
+    tables = surface_tables((surfaces.words, surfaces.coeffs), (pattern[first], body[first]), wide_sums[first], wide_relief[first], song.notes[1])
+    return Timelines(_sorted_cells(surfaces), bool(np.any(surfaces.words[:, :4])), pattern[first], body[first], bands[first], tables)
 
 
 def _timelines_of(song: ReverseSong, greats: int, near: bool) -> Timelines:
@@ -478,8 +484,6 @@ def _played_surface(song: ReverseSong, scored: Factors, row: np.ndarray, classes
 def _named_set(song: ReverseSong, found: np.ndarray, rows: np.ndarray, plays: tuple[np.ndarray, Timelines, dict], gem_gap: float, score: int) -> FoundSet | None:
     """A search's loadout, if a row of its line gives the score at the loadout's own Great points. plays: (classes, timelines,
     the surfaces found so far by row and Great points: every loadout of a line with the same Great points has the same)."""
-    classes, timelines, known = plays
-    chart = song.chart
     gear = tuple(song.space.names[i] for i in found[:6].tolist())
     minis = tuple(song.space.names[i] for i in found[6:9].tolist())
     pp, cm, fm, ft, ff, element_gems, element_row = found[9:16].tolist()
@@ -546,24 +550,19 @@ class FoundLines:
     complete: bool
 
 
-def _line_costs(plays: np.ndarray, gaps: np.ndarray) -> np.ndarray:
-    """How far-fetched lines are at these gem gaps, the likelier of an honest play and a plan."""
-    return np.minimum(plays + _GAP_COST * gaps, _PLAN_COST + _PLAN_GAP_COST * gaps)
+def _line_costs(plays: np.ndarray, gaps: np.ndarray, greats: int) -> np.ndarray:
+    """How far-fetched lines of a play with this many Greats are at these gem gaps, the likelier of an honest play and a plan."""
+    return np.minimum(plays + (_GREAT_GAP_COST if greats else _GAP_COST) * gaps, _PLAN_COST + _PLAN_GAP_COST * gaps)
 
 
 def _stat_lines(song: ReverseSong, timelines: Timelines, query: LineQuery) -> FoundLines:
-    """The lines of a query, the plausible first: a play near chart time, gems a player would leave alone. Surfaces go to the GPU
-    in a shuffle, so a score that leaves more than a search may walk keeps a sample of them all."""
+    """The lines of a query, the plausible first: a play near chart time, gems a player would leave alone."""
     walked = timelines.walked
-    order = np.random.default_rng(0).permutation(timelines.pattern.shape[0])
-    tables = surface_tables(order, (walked.words, walked.coeffs), (timelines.pattern, timelines.body_fever), timelines.sums, timelines.relief, song.notes[1])
-    packed, complete = line_rows(song.gpu, tables, query)
-    # The GPU appends rows in the order its threads race; each thread owns one (surface, CM, FM, base), so a sort by that,
-    # surfaces in their shuffled order, then by a thread's scan (scan_order) makes every later step repeat run for run, and a
-    # cut below keep the surfaces the search walked first.
-    rank = np.empty(order.shape[0], dtype=np.int64)
-    rank[order] = np.arange(order.shape[0])
-    thread = (rank[packed[:, 0]] << 36) | (packed[:, 1].astype(np.int64) << 20) | packed[:, 2]
+    packed, complete = line_rows(song.gpu, timelines.tables, query)
+    # The GPU appends rows in the order its threads race; each thread owns one (surface, CM, FM, base), so a sort by that, then
+    # by a thread's scan (scan_order), makes every later step repeat run for run, and a cut below keep the surfaces the search
+    # walked first.
+    thread = (packed[:, 0].astype(np.int64) << 36) | (packed[:, 1].astype(np.int64) << 20) | packed[:, 2]
     packed = packed[scan_order(packed, thread, query.classes, song.curves.f64["Perfect Points"])]
     rows = np.empty((packed.shape[0], ROW_COLUMNS), dtype=np.int64)
     rows[:, 0], rows[:, 1], rows[:, 2], rows[:, 3] = packed[:, 0], packed[:, 1] >> 8, packed[:, 1] & 255, packed[:, 2]
@@ -585,20 +584,20 @@ def _stat_lines(song: ReverseSong, timelines: Timelines, query: LineQuery) -> Fo
     plays = np.empty(targets.shape[0])
     log_factorial = np.concatenate(([0.0], np.cumsum(np.log(np.arange(1, _GREATS_SEARCHED + 2)))))
     explanation_costs(held, rows, query.classes, (song.chart_fever, timelines.body_fever, *song.notes[::-1], log_factorial), spans, plays)
-    costs = _line_costs(plays, gaps)
+    costs = _line_costs(plays, gaps, query.greats)
     shuffled = np.random.default_rng(0).permutation(costs.shape[0])
     plausible = shuffled[np.argsort(costs[shuffled], kind="stable")]
     return FoundLines(targets[plausible], plays[plausible], costs[plausible], rows, held, spans[plausible], complete)
 
 
-def _named_costs(lines: FoundLines, found: np.ndarray, gaps: np.ndarray, reached: int, unnamed: float) -> np.ndarray:
+def _named_costs(lines: FoundLines, found: np.ndarray, gaps: np.ndarray, reached: int, unnamed: float, greats: int) -> np.ndarray:
     """What lines cost once the search has walked `reached` of them: a loadout's own gem gap, less what it tells that a released
     set reaches a line, the rarer among the lines walked the more. A line no set reaches costs `unnamed` more."""
     best = np.full(lines.targets.shape[0], np.inf)
     np.minimum.at(best, found[:, 16], gaps)
     named = np.isfinite(best)
     costs = lines.costs + unnamed
-    costs[named] = _line_costs(lines.plays[named], best[named]) - np.log((reached + 1.0) / (np.count_nonzero(named) + 1.0))
+    costs[named] = _line_costs(lines.plays[named], best[named], greats) - np.log((reached + 1.0) / (np.count_nonzero(named) + 1.0))
     return costs
 
 
@@ -627,7 +626,7 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
     at_top = play.score >= _PLAN_HEIGHT * song.top
     bases = _TOP_LINE_BASES if at_top else _LINE_BASES
     # A play with Greats is searched near chart time first; with fewer lines than _WIDE_UNDER there, or at a song's top where
-    # Force Great plans move their fever on purpose, on every timeline.
+    # Force Great plans move their fever on purpose, on every timeline, whose lines replace the near ones unless they are fewer.
     near = greats > 0 and not at_top
     timelines = _timelines_of(song, greats, near)
     classes = _classes_of(play, song, greats, timelines, near)
@@ -635,14 +634,14 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
         return [], [], 0, False
     lines = _stat_lines(song, timelines, LineQuery(play.score, power, greats, classes, bases))
     if near and lines.targets.shape[0] < _WIDE_UNDER:
-        near = False
-        timelines = _timelines_of(song, greats, False)
-        classes = _classes_of(play, song, greats, timelines)
-        if classes is None:
-            return [], [], 0, False
-        lines = _stat_lines(song, timelines, LineQuery(play.score, power, greats, classes, bases))
+        wide = _timelines_of(song, greats, False)
+        wide_classes = _classes_of(play, song, greats, wide)
+        if wide_classes is not None:
+            wider = _stat_lines(song, wide, LineQuery(play.score, power, greats, wide_classes, bases))
+            if wider.targets.shape[0] >= lines.targets.shape[0]:
+                lines, timelines, classes, near = wider, wide, wide_classes, False
     if lines.targets.shape[0] == 0:
-        return [], [], 0, lines.complete
+        return [], [], 0, lines.complete and not near
     found = np.empty((_LINES_HELD * _SETS_PER_LINE, 18), dtype=np.int64)
     space = song.space.items, song.space.starts, song.space.gems
     search = lines.targets, power, _LINES_HELD, _PLAN_SEARCH_ITEMS if at_top else _SEARCH_ITEMS, _ITEMS_PER_TARGET, _ITEMS_PER_SETUP, _SETS_PER_LINE
@@ -653,7 +652,7 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
         fits = np.empty(found.shape[0], dtype=bool)
         great_points_fit(found, great_points, lines.held, lines.rows, lines.spans, fits)
         found, gaps = found[fits], gaps[fits]
-    final = _named_costs(lines, found, gaps, reached, _UNNAMED_AT_TOP if at_top else 0.0)
+    final = _named_costs(lines, found, gaps, reached, _UNNAMED_AT_TOP if at_top else 0.0, greats)
     named: dict[int, list[FoundSet]] = {}
     tries = np.lexsort((gaps, found[:, 16]))
     first = np.searchsorted(found[tries, 16], np.arange(lines.targets.shape[0]))

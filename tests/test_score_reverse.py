@@ -233,6 +233,22 @@ def test_a_low_score_with_many_greats_ends_at_its_budget(song):
     assert not reply.finished or reply.lines == 0
 
 
+def test_near_lines_a_cut_wider_search_cannot_beat_keep_their_sets(song):
+    """A play with Greats is searched near chart time first and, finding few lines there, on every timeline. Far below the top
+    that search's budget leaves it fewer lines than the near one found: the near lines stay, and their sets are confirmed on the
+    timelines and Great places those lines came from, each giving the row's score exactly."""
+    player = fake_player(random.Random(4), song, dict(load_catalog(paths().game_export).minis), "any", "machine")
+    offsets = np.zeros(song.chart.total_notes)
+    offsets[150] = -70.0  # an early Great for a tap and a hold tail alike
+    played = _simulated(song, player.stats, Plan(offsets))
+    reply = reverse_score(play_info(played, gear_power(player.stats, song.chart), "Compete"), song)
+    assert played.great == 1 and reply.verdict == "sets" and not reply.finished
+    chart = song.chart
+    for row in reply.sets:
+        scored = factors(row.stats, song.curves, chart.primary, chart.secondary)
+        assert fg_surface_score(scored, row.surface, chart.total_notes) == played.score
+
+
 def test_the_lookup_worker_answers_each_line_and_outlives_a_bad_request(song):
     """The service's lookup process, its own process and GPU context: a request it cannot serve costs only that answer."""
     environment = {**os.environ, "EVOLUTION_DB_PATH": "/nonexistent"}
