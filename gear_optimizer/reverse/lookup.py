@@ -887,7 +887,7 @@ def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Rever
     if found:
         return Reverse("sets", tuple(found), count, finished, stat_lines=tuple(listed))
     if listed:
-        return Reverse("lines", (), count, finished, stat_lines=tuple(listed))
+        return Reverse("lines", (), count, finished, _honest_ceiling(play, song, lost)[0], stat_lines=tuple(listed))
     ceiling, base = _honest_ceiling(play, song, lost)
     if play.score <= ceiling:
         return Reverse("unresolved", (), count, finished, ceiling)
