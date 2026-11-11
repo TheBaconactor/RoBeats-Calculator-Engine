@@ -239,8 +239,8 @@ def _body_fevers(times, greats, fill, duration, ends, body, start):
 @jit(nopython=True, cache=True)
 def _finished(out, written, mask, counts, sets, held):
     """A head state with mask (low, high) and body fever counts that reaches the body, where it gains the `held` sets of
-    _body_fevers: its timelines into out's rows, each count with each set (_keep_timeline); -1 when a table is full, or held
-    is. Counts that are every count between their lowest and highest stay so."""
+    _body_fevers: its timelines into out's rows, each count with each set (_keep_timeline); -1 when a table is full or
+    _body_fevers' stack was (held < 0). Counts that are every count between their lowest and highest stay so."""
     if held < 0:
         return -1
     for k in range(held):
