@@ -40,6 +40,7 @@ _HEAD = 100
 _MASK_WORDS = 4
 _SUM_WORDS = 12
 _MAX_VERTICES = 64
+_POINTS = 1024  # over every Perfect Points value: the curve ends at 485
 MAX_CLASSES = 1 << 13
 CHUNK_SURFACES = 512
 _MAX_TILES = CHUNK_SURFACES * _TILES
@@ -62,6 +63,10 @@ _DROP_LOW, _DROP_HIGH = 0.999, 1.001
 # are this many a pass of their own tests them class by class (_narrow_rows); fewer cost that pass more than it saves.
 _NARROW_BODIES = 4
 _NARROW_CLASSES = 512
+# Threads a GPU work group of the rows kernels: a group runs as long as its slowest thread, and their threads' work is uneven.
+# On the M4's GPU, the heaviest searches of 10 gate rows (19 searches, 124 launches): 16.5 s at 1024, 9.3 s at 256 (the
+# runtime's default), 5.2 s at 64, 4.4 s at 32, 6.2 s at 16, 15.4 s at 1.
+_ROWS_BLOCK = 32
 _COUNTERS = 4
 _LIVE, _PAIRS, _BASES, _ROWS = range(_COUNTERS)
 _ONE_BITS = (0, 0x3FF00000)  # 1.0 as float64 words
@@ -102,6 +107,7 @@ _FIELDS = {
     "vertex_values": (ti.f32, _MAX_VERTICES),
     "vertex_prices": (ti.f32, _MAX_VERTICES, 2),
     "points": (ti.i32, _AXIS),
+    "stats_under": (ti.i32, _POINTS + 1),  # per points value, how many stats give fewer: the points never fall along the stats
     "stat_terms": (ti.i32, _AXIS),  # 5 x stat - 2 x its points, sorted within each residue of it mod 5
     "stats_by_term": (ti.i32, _AXIS),
     "residue_start": (ti.i32, 6),
@@ -382,7 +388,7 @@ def _first_past(values: ti.template(), first: ti.i32, last: ti.i32, bound: ti.i3
 def _narrow_rows(q: _Search, pair: _Vec3i, base: ti.i32, need: _Vec2i, multipliers: _Vec2f):
     """The rows of a base value's classes with few body Greats (from q.narrow_from on), class by class and count of them in
     fever: a Great point's drop then costs a known rate, so the deficit leaves a drop range, a Great points range and through
-    the elements a Perfect Points range, a binary search on the curve. The stats there that Gear Power ties to an FT + FF the
+    the elements a Perfect Points range, whose stats stats_under holds. The stats there that Gear Power ties to an FT + FF the
     surface has are tested as _class_rows tests them (_fevered, then the exact deficit), and give the same rows. The deficit is
     the line's clean score less the score, summed once, for the first class past the float32 range; till then the base's
     float32 range of it."""
@@ -409,8 +415,8 @@ def _narrow_rows(q: _Search, pair: _Vec3i, base: ti.i32, need: _Vec2i, multiplie
             great_low: ti.i32 = base - ti.cast(ti.floor(highest * _DROP_HIGH), ti.i32) - 2
             great_high: ti.i32 = base - ti.cast(ti.ceil(ti.max(lowest, 0.0) * _DROP_LOW), ti.i32) + 2
             # A Great's points are 2/3 of the elements + 150, within a point, so the elements lie within 3/2 of that.
-            first = _first_past(tables.points, 0, _AXIS, base - (3 * (great_high - 147)) // 2 - 2, 0)
-            for stat in range(first, _first_past(tables.points, first, _AXIS, base - (3 * (great_low - 150)) // 2 + 2, 1)):
+            first = tables.stats_under[ti.min(ti.max(base - (3 * (great_high - 147)) // 2 - 2, 0), _POINTS)]
+            for stat in range(first, tables.stats_under[ti.min(ti.max(base - (3 * (great_low - 150)) // 2 + 3, 0), _POINTS)]):
                 total: ti.i32 = (rest - (5 * stat - 2 * tables.points[stat])) // 5
                 elements: ti.i32 = base - tables.points[stat]
                 if (2 * tables.points[stat]) % 5 == residue and span[0] <= total and total <= span[1] and elements > 0:
@@ -537,6 +543,7 @@ def _thread(q: _Search, i: ti.i32) -> _Vec7i:
 @ti.kernel
 def _find_rows(q: _Search) -> ti.i32:
     """The rows of a chunk's pairs, a thread per base value of their entries; returns the rows of the search so far."""
+    ti.loop_config(block_dim=_ROWS_BLOCK)
     for i in range(ti.min(tables.counters[_PAIRS], _MAX_PAIRS) * _ENTRY_BASES):
         t = _thread(q, i)
         if t[0] != 0:
@@ -553,6 +560,7 @@ def _find_rows(q: _Search) -> ti.i32:
 def _find_narrow_rows(q: _Search) -> ti.i32:
     """_find_rows for a play's classes with few body Greats, a kernel of its own so that the common one keeps its registers
     (the two as loops of one kernel do not compile for Vulkan: Taichi 1.7.4, 'Value does not yet exist')."""
+    ti.loop_config(block_dim=_ROWS_BLOCK)
     for i in range(ti.min(tables.counters[_PAIRS], _MAX_PAIRS) * _ENTRY_BASES):
         t = _thread(q, i)
         if t[0] != 0 and q.power >= 0:
@@ -652,9 +660,9 @@ def _load_song(song: SongTables) -> None:
     global _loaded_song
     if song is _loaded_song:
         return
-    vertices = song.vertex_values.shape[0]
-    if vertices > _MAX_VERTICES:
-        raise ValueError(f"reverse lookup: {vertices} vertices, the GPU tables hold {_MAX_VERTICES}")
+    vertices, most = song.vertex_values.shape[0], int(song.points.max())
+    if vertices > _MAX_VERTICES or most >= _POINTS:
+        raise ValueError(f"reverse lookup: {vertices} vertices and Perfect Points up to {most}, the GPU tables hold {_MAX_VERTICES} and under {_POINTS}")
     by_term, terms, starts = _stats_by_term(song.points.astype(np.int64))
     values, prices = np.zeros(_MAX_VERTICES, dtype=np.float32), np.zeros((_MAX_VERTICES, 2), dtype=np.float32)
     values[:vertices], prices[:vertices] = song.vertex_values, song.vertex_prices
@@ -667,6 +675,7 @@ def _load_song(song: SongTables) -> None:
     tables.vertex_values.from_numpy(values)
     tables.vertex_prices.from_numpy(prices)
     tables.points.from_numpy(song.points.astype(np.int32))
+    tables.stats_under.from_numpy(np.searchsorted(song.points, np.arange(_POINTS + 1)).astype(np.int32))
     tables.stat_terms.from_numpy(terms)
     tables.stats_by_term.from_numpy(by_term)
     tables.residue_start.from_numpy(starts)
