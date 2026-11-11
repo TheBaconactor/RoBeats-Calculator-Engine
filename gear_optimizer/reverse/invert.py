@@ -8,12 +8,14 @@ Cost: O(U (B + J b + p)) for U surfaces, B = 400 blocks, J ceiling vertices, b b
 
 from __future__ import annotations
 
+import numpy as np
 
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.rules import MAX_STAT
 
 _AXIS = MAX_STAT + 1
 _TILE = 8
+_SAMPLE = 16
 
 
 @jit(nopython=True, cache=True)
@@ -68,10 +70,16 @@ def _surface_best(u, shape_terms, combo, fever, ceiling, best, enough):
 @jit(nopython=True, cache=True)
 def score_ceiling(surfaces, multipliers, notes, ceiling, spare, enough):
     """The most any line under the ceiling can score, base x shape with `spare` body notes moved into fever, and its
-    (surface, CM, FM, base); the first line past `enough` ends the search."""
+    (surface, CM, FM, base); the first line past `enough` ends the search. Every _SAMPLE-th surface goes first: the scan of
+    all of them starts a float under the most those score (and under `enough`), so it skips what cannot pass that and still
+    ends on the line a scan from nothing ends on, the first in its order to score the most (or to pass `enough`)."""
     coeffs, pattern, body_fever = surfaces
     combo, fever = multipliers
     best = 0.0
+    for u in range(0, body_fever.shape[0], _SAMPLE):
+        terms = _shape_terms(coeffs[pattern[u]], int(body_fever[u]), notes[1], spare)
+        best = _surface_best(u, terms, combo, fever, ceiling, best, enough)[0]
+    best = np.nextafter(min(best, enough), 0.0)
     line = (0, 0, 0, 0.0)
     for u in range(body_fever.shape[0]):
         terms = _shape_terms(coeffs[pattern[u]], int(body_fever[u]), notes[1], spare)
