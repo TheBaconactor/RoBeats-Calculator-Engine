@@ -372,7 +372,6 @@ def build_timeline_payload(song: TimedSong, curves: StatCurves) -> TimelineFront
     chart = song.chart
     fever_durations, fill_thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
     return build_timeline_frontier_grid_payload(
-        total_notes=chart.total_notes,
         timestamps=chart.timestamps,
         perfect_candidate_timestamps=song.perfect_candidates,
         perfect_floor_timestamps=song.perfect_floor,

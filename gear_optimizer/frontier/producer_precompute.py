@@ -1,379 +1,169 @@
+"""What a song's frontier build derives before its kernels run: the records of its stage values, the fever-end tables of
+its fever times, and the geometries that need a kernel run of their own."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import ceil
+from typing import NamedTuple
 
 import numpy as np
 
 
-def _first_only_region_groups(items: list[tuple]) -> dict[tuple[float, int], list[tuple]]:
-    """Partition canonical prepared items by their region-core-table key.
+class SongArrays(NamedTuple):
+    """One song's per-note arrays in chart order, as producer_batch.song_arrays parses them: contiguous, the times in
+    float32 seconds."""
 
-    The region-run core work depends on the geometry only through its non-Fever base and region action counts (item
-    slots 1 and 4) and its fill, never ``real_fever_time``; and on the fill only through its half-unit count
-    ceil(2 * raw_fever_fill): every fill crossing, region offset, k-scan stop, shifted-head test and fill-window check
-    compares whole half-units (each subtracts half-integers from the fill, which is exact). Items sharing those share
-    one table, keyed by the first such item's (raw_fever_fill, non_fever_base). Keys keep first-appearance order and
-    items keep their canonical order within a key, so the batch scheduler can build tables serially, reduce admitted
-    groups concurrently, and restore canonical result order deterministically.
+    timestamps: np.ndarray  # the chart times, non-decreasing
+    perfect_candidates: np.ndarray  # each note's latest Perfect hit
+    great_candidates: np.ndarray  # its latest late-Great hit
+    perfect_floor: np.ndarray  # its earliest Perfect hit after every earlier note's (a prefix maximum)
+    great_floor: np.ndarray  # its earliest Great hit, likewise
+    late_great_floor: np.ndarray  # its earliest late-Great hit
+    exit_ceiling: np.ndarray  # the latest cutoff it and every later note can still be hit at or past (a suffix minimum)
+    lanes: np.ndarray  # int32
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ActionTable:
+    """The fever activations of one fill threshold (`raw_fever_fill`, in Perfects) with up to `non_fever_base` forced
+    Greats in a section. `action_k` holds every action's forced-Great count. The other arrays hold one row per distinct
+    (later, first) pair of activation offsets: the offset in a later section and in the first one, the forced Greats
+    of a Perfect activation there (-1: another family prices that placement) and those before a late-Great activation
+    (-1: no late Great activates there)."""
+
+    raw_fever_fill: float
+    non_fever_base: int
+    action_k: np.ndarray
+    later_fill: np.ndarray
+    first_fill: np.ndarray
+    later_forced: np.ndarray
+    first_forced: np.ndarray
+    later_activation_forced: np.ndarray
+    first_activation_forced: np.ndarray
+
+    @property
+    def arrays(self) -> tuple[np.ndarray, ...]:
+        """The seven arrays, in the kernels' order."""
+        return (self.action_k, self.later_fill, self.first_fill, self.later_forced, self.first_forced,
+                self.later_activation_forced, self.first_activation_forced)
+
+
+class Geometry(NamedTuple):
+    """One fever geometry of a build: its index in the request, its action table, and its fever time's row in the
+    fever-end tables."""
+
+    source: int
+    table: ActionTable
+    fever_row: int
+
+
+class FeverEnds(NamedTuple):
+    """Where fevers end, per distinct fever time (a row), as note indices: a fever's cutoff is its activation's hit time
+    plus the fever time, and its end the first note whose floor lies at or past the cutoff.
+
+    Per activation note, clamped to (activation, n]: the end its latest reachable Perfect / late-Great hit reaches on
+    the Perfect floor (`perfect_e`, `late_e`) and on the Great floor (`eg_perfect_e`, `eg_late_e`), and the earliest
+    end it can exit at, hit at its earliest (`perfect_exit_e`, `late_exit_e`). `no_exit_e` stands for both exit tables
+    at a fill that plans no early exit: every entry is n, so each activation keeps its own latest end. Per hit token
+    (producer_kernels._REGION_HIT_*: kind * n + note), unclamped: its end on the Perfect floor and on the Great floor.
     """
-    groups: dict[tuple[float, int], list[tuple]] = {}
-    key_by_class: dict[tuple[int, int, bytes], tuple[float, int]] = {}
-    for item in items:
-        table_class = (
-            int(np.ceil(2.0 * float(item[2]))),
-            int(item[1]),
-            np.ascontiguousarray(item[4], dtype=np.int32).tobytes(),
-        )
-        key = key_by_class.setdefault(table_class, (float(item[2]), int(item[1])))
-        groups.setdefault(key, []).append(item)
-    return groups
+
+    fever_times: np.ndarray
+    perfect_e: np.ndarray
+    late_e: np.ndarray
+    eg_perfect_e: np.ndarray
+    eg_late_e: np.ndarray
+    perfect_exit_e: np.ndarray
+    late_exit_e: np.ndarray
+    no_exit_e: np.ndarray
+    perfect_floor_by_hit: np.ndarray
+    great_floor_by_hit: np.ndarray
 
 
-def _action_arrays_signature(item: tuple) -> tuple[bytes, ...]:
-    return tuple(np.ascontiguousarray(value, dtype=np.int32).tobytes() for value in item[4:])
+def fever_ends(song: SongArrays, perfect_hit: np.ndarray, late_hit: np.ndarray, fever_times: np.ndarray) -> FeverEnds:
+    """The fever-end tables of the distinct `fever_times`; `perfect_hit` / `late_hit` hold each activation's latest
+    reachable Perfect / late-Great hit. A cutoff is the float32 of the float64 sum, as the kernels form it."""
+    n = song.timestamps.shape[0]
+    first_end = np.arange(1, n + 1, dtype=np.int64)
 
+    def cutoffs(hits: np.ndarray) -> np.ndarray:
+        return (hits + fever_times[:, None]).astype(np.float32)
 
-@dataclass(frozen=True)
-class FirstOnlyCanonicalization:
-    prepared: list[tuple]
-    duplicate_sources_by_source: dict[int, tuple[int, ...]]
-    real_time_index_by_source: dict[int, int]
-    unique_real_times: np.ndarray
-    timestamp_end_idx: np.ndarray
-    perfect_end_idx: np.ndarray
-    great_end_idx: np.ndarray
-    great_floor_end_idx: np.ndarray
-    capped_perfect_edge_e: np.ndarray
-    capped_late_edge_e: np.ndarray
-    capped_eg_perfect_e: np.ndarray
-    capped_eg_late_e: np.ndarray
-    capped_perfect_exit_e: np.ndarray
-    capped_late_exit_e: np.ndarray
-    hit_ends: np.ndarray
+    def activation_ends(floor: np.ndarray, cutoff: np.ndarray) -> np.ndarray:
+        return np.clip(np.searchsorted(floor, cutoff), first_end, n).astype(np.int32)
 
-
-def _canonicalize_first_only_prepared_items_with_end_indices(
-    *,
-    prepared: list[tuple],
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    prefix_perfect_hit: np.ndarray,
-    prefix_late_hit: np.ndarray,
-    exit_ceiling_timestamps: np.ndarray,
-    late_great_floor_timestamps: np.ndarray,
-    use_forced_great_timing: bool,
-    lanes: np.ndarray | None = None,
-) -> FirstOnlyCanonicalization:
-    # Song tokens (producer_kernels._REGION_HIT_*) index the endpoint tables directly.
-    hit_values = np.concatenate((
-        timestamps, perfect_candidate_timestamps, great_candidate_timestamps,
-        perfect_candidate_timestamps.astype(np.float64) - 0.000001,
-        great_candidate_timestamps.astype(np.float64) - 0.000001,
-    ))
-    real_times = np.asarray([item[3] for item in prepared], dtype=np.float64)
-    unique_real_times = np.unique(real_times)
-    cutoffs = (hit_values[None, :] + unique_real_times[:, None]).astype(np.float32)
-    hit_ends = np.asarray((
-        np.searchsorted(perfect_floor_timestamps, cutoffs),
-        np.searchsorted(great_floor_timestamps, cutoffs),
-    ), dtype=np.int32)
-    if not prepared:
-        empty = np.empty((0, 0), dtype=np.int32)
-        empty3 = np.empty((0, 0, 2), dtype=np.int32)
-        return FirstOnlyCanonicalization(
-            [],
-            {},
-            {},
-            np.empty(0, dtype=np.float64),
-            empty,
-            empty,
-            empty,
-            empty3,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-            empty,
-            hit_ends,
-        )
-    (
-        real_time_index,
-        timestamp_end_idx,
-        perfect_end_idx,
-        great_end_idx,
-        great_floor_end_idx,
-        capped_perfect_edge_e,
-        capped_late_edge_e,
-        capped_eg_perfect_e,
-        capped_eg_late_e,
-        capped_perfect_exit_e,
-        capped_late_exit_e,
-    ) = _precompute_end_indices(
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidate_timestamps,
-        great_candidate_timestamps=great_candidate_timestamps,
-        perfect_floor_timestamps=perfect_floor_timestamps,
-        great_floor_timestamps=great_floor_timestamps,
-        prefix_perfect_hit=prefix_perfect_hit,
-        prefix_late_hit=prefix_late_hit,
-        exit_ceiling_timestamps=exit_ceiling_timestamps,
-        late_great_floor_timestamps=late_great_floor_timestamps,
-        lanes=lanes,
-        real_times=real_times,
+    perfect_cutoffs, late_cutoffs = cutoffs(perfect_hit), cutoffs(late_hit)
+    perfect_exit_e = activation_ends(song.exit_ceiling, cutoffs(song.perfect_floor))
+    # Every hit an activation can be capped to: a chart time, a latest Perfect or Great, or 1 us before one.
+    token_cutoffs = cutoffs(np.concatenate((
+        song.timestamps, song.perfect_candidates, song.great_candidates,
+        song.perfect_candidates.astype(np.float64) - 0.000001, song.great_candidates.astype(np.float64) - 0.000001,
+    )))
+    return FeverEnds(
+        fever_times=fever_times,
+        perfect_e=activation_ends(song.perfect_floor, perfect_cutoffs),
+        late_e=activation_ends(song.perfect_floor, late_cutoffs),
+        eg_perfect_e=activation_ends(song.great_floor, perfect_cutoffs),
+        eg_late_e=activation_ends(song.great_floor, late_cutoffs),
+        perfect_exit_e=perfect_exit_e,
+        late_exit_e=activation_ends(song.exit_ceiling, cutoffs(song.late_great_floor)),
+        no_exit_e=np.full_like(perfect_exit_e, n),
+        perfect_floor_by_hit=np.searchsorted(song.perfect_floor, token_cutoffs).astype(np.int32),
+        great_floor_by_hit=np.searchsorted(song.great_floor, token_cutoffs).astype(np.int32),
     )
-    if len(prepared) == 1:
-        source_idx = int(prepared[0][0])
-        return FirstOnlyCanonicalization(
-            prepared,
-            {source_idx: (source_idx,)},
-            {source_idx: int(real_time_index[0])},
-            unique_real_times,
-            timestamp_end_idx,
-            perfect_end_idx,
-            great_end_idx,
-            great_floor_end_idx,
-            capped_perfect_edge_e,
-            capped_late_edge_e,
-            capped_eg_perfect_e,
-            capped_eg_late_e,
-            capped_perfect_exit_e,
-            capped_late_exit_e,
-            hit_ends,
-        )
-    end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
-    end_class_by_signature: dict[tuple[bytes, ...], int] = {}
-    for idx in range(int(timestamp_end_idx.shape[0])):
-        signature = (
-            np.ascontiguousarray(timestamp_end_idx[idx], dtype=np.int32).tobytes(),
-            np.ascontiguousarray(perfect_end_idx[idx], dtype=np.int32).tobytes(),
-            np.ascontiguousarray(great_end_idx[idx], dtype=np.int32).tobytes(),
-            # Issue #44: the early-Great extended fever-end is part of an item's end-class, so
-            # geometries that differ ONLY in their great_floor boundary are not wrongly deduped.
-            np.ascontiguousarray(great_floor_end_idx[idx], dtype=np.int32).tobytes(),
-            # So are the earliest fever ends a Perfect activation can exit at, and a late-Great one where Greats are
-            # timed (elsewhere no late-Great activation exists and its table is never read).
-            np.ascontiguousarray(capped_perfect_exit_e[idx], dtype=np.int32).tobytes(),
-            *(
-                (np.ascontiguousarray(capped_late_exit_e[idx], dtype=np.int32).tobytes(),)
-                if use_forced_great_timing
-                else ()
+
+
+def end_classes(ends: FeverEnds, late_great_exits: bool) -> list[int]:
+    """Per fever-time row, a number its row shares with the rows whose fevers end alike: at every note's chart time,
+    latest Perfect and latest Great on the Perfect floor, at the latter two on the Great floor, and at its earliest
+    exits (a late Great's only where Greats are timed: elsewhere none activates)."""
+    n = ends.perfect_e.shape[1]
+    classes: dict[tuple, int] = {}
+    return [
+        classes.setdefault(
+            (
+                ends.perfect_floor_by_hit[row, : 3 * n].tobytes(),
+                ends.great_floor_by_hit[row, n : 3 * n].tobytes(),
+                ends.perfect_exit_e[row].tobytes(),
+                ends.late_exit_e[row].tobytes() if late_great_exits else None,
             ),
+            len(classes),
         )
-        class_idx = end_class_by_signature.get(signature)
-        if class_idx is None:
-            class_idx = len(end_class_by_signature)
-            end_class_by_signature[signature] = int(class_idx)
-        end_class_by_index[idx] = int(class_idx)
+        for row in range(ends.fever_times.shape[0])
+    ]
 
-    canonical_items: list[tuple] = []
-    duplicate_sources_by_source: dict[int, list[int]] = {}
-    action_class_by_object: dict[tuple[int, ...], int] = {}
-    action_class_by_signature: dict[tuple[bytes, ...], int] = {}
-    canonical_by_signature: dict[tuple[int, int], int] = {}
-    real_time_index_by_source: dict[int, int] = {}
-    for local_idx, item in enumerate(prepared):
-        source_idx = int(item[0])
-        action_object_key = tuple(id(value) for value in item[4:])
-        action_class = action_class_by_object.get(action_object_key)
-        if action_class is None:
-            action_signature = _action_arrays_signature(item)
-            action_class = action_class_by_signature.get(action_signature)
-            if action_class is None:
-                action_class = len(action_class_by_signature)
-                action_class_by_signature[action_signature] = int(action_class)
-            action_class_by_object[action_object_key] = int(action_class)
-        signature = (
-            int(action_class),
-            int(end_class_by_index[int(real_time_index[int(local_idx)])]),
-        )
-        canonical_source_idx = canonical_by_signature.get(signature)
-        if canonical_source_idx is None:
-            canonical_by_signature[signature] = int(source_idx)
-            canonical_items.append(item)
-            duplicate_sources_by_source[int(source_idx)] = [int(source_idx)]
-            real_time_index_by_source[int(source_idx)] = int(real_time_index[int(local_idx)])
+
+def canonical_groups(
+    geometries: list[Geometry], end_class: list[int]
+) -> tuple[list[list[Geometry]], dict[int, list[int]]]:
+    """The geometries that need a kernel run, in groups that share a region table, and per kept geometry's source the
+    sources it stands for (itself first).
+
+    Two geometries build one frontier when their action tables hold the same arrays and their fever times share an end
+    class: the first is kept. The region-run cores read a fill only in whole half-units (every fill crossing, region
+    offset, k-scan stop, shifted-head test and fill-window check subtracts half-integers from it, which is exact), so
+    kept geometries with the same half-unit fill count, non-Fever base and action counts share one table, built for the
+    first of them. Groups come in the order of their first geometry and keep their geometries in request order."""
+    action_class: dict[ActionTable, int] = {}
+    class_of_arrays: dict[tuple[bytes, ...], int] = {}
+    kept_source: dict[tuple[int, int], int] = {}
+    sources: dict[int, list[int]] = {}
+    group_of_table: dict[ActionTable, list[Geometry]] = {}
+    groups: dict[tuple[int, int, bytes], list[Geometry]] = {}
+    for geometry in geometries:
+        table = geometry.table
+        if table not in action_class:
+            arrays = tuple(array.tobytes() for array in table.arrays)
+            action_class[table] = class_of_arrays.setdefault(arrays, len(class_of_arrays))
+        kept = kept_source.setdefault((action_class[table], end_class[geometry.fever_row]), geometry.source)
+        if kept != geometry.source:
+            sources[kept].append(geometry.source)
             continue
-        duplicate_sources_by_source[int(canonical_source_idx)].append(int(source_idx))
-
-    return FirstOnlyCanonicalization(
-        canonical_items,
-        {
-            int(source_idx): tuple(int(value) for value in source_indices)
-            for source_idx, source_indices in duplicate_sources_by_source.items()
-        },
-        real_time_index_by_source,
-        unique_real_times,
-        timestamp_end_idx,
-        perfect_end_idx,
-        great_end_idx,
-        great_floor_end_idx,
-        capped_perfect_edge_e,
-        capped_late_edge_e,
-        capped_eg_perfect_e,
-        capped_eg_late_e,
-        capped_perfect_exit_e,
-        capped_late_exit_e,
-        hit_ends,
-    )
-
-
-
-def _precompute_end_indices(
-    *,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    real_times: np.ndarray,
-    prefix_perfect_hit: np.ndarray,
-    prefix_late_hit: np.ndarray,
-    exit_ceiling_timestamps: np.ndarray,
-    late_great_floor_timestamps: np.ndarray,
-    lanes: np.ndarray | None = None,
-) -> tuple[np.ndarray, ...]:
-    unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float64), return_inverse=True)
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
-    perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
-    great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
-    if lanes is None:
-        raise ValueError("lanes are required for input-engine-aware FG precompute")
-    if int(np.asarray(lanes, dtype=np.int32).reshape(-1).shape[0]) != int(ts.shape[0]):
-        raise ValueError("lanes length must match timestamps")
-    # Endpoint-early fever inclusion (issue #42): a later note is in fever iff its EARLIEST
-    # legal hit precedes the cutoff, so the fever boundary searches the monotone earliest-
-    # Perfect floor envelope, not chart. `floor_ts` is prebuilt prefix-max-monotone and shares
-    # the candidate's quantized int-ms lattice (bit-consistent with the searched values).
-    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(floor_ts.shape[0]) != int(ts.shape[0]):
-        raise ValueError("perfect_floor_timestamps length must match timestamps")
-    # Greats-side endpoint-early fever inclusion (issue #44): a boundary note 20-95ms past the
-    # cutoff is out of Perfect reach but reachable into fever as a GREAT, so its EXTENDED fever
-    # boundary searches the earliest-Great floor (chart - 95 / held tail -190, prefix-max; the
-    # cumulative perfect_lower + great_lower_extra edge). It is pointwise <= the Perfect floor, so
-    # great_floor_end_idx >= perfect/great_end_idx -- a
-    # pure additional reachable end the kernel emits as a great-in-fever surface.
-    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(great_floor_ts.shape[0]) != int(ts.shape[0]):
-        raise ValueError("great_floor_timestamps length must match timestamps")
-    ts64 = np.asarray(ts, dtype=np.float64)
-    perfect_ts64 = np.asarray(perfect_ts, dtype=np.float64)
-    great_ts64 = np.asarray(great_ts, dtype=np.float64)
-    # Hit-time reachability of the PERFECT activation clock: a held-tail Perfect activation (+80)
-    # whose narrower later-indexed sibling (+40) is hit first over-extends the drain window. Cap the
-    # perfect-activation clock to the reachable value; the Perfect fever-end table below searches this
-    # capped clock. Off overlap it equals perfect_ts64 exactly -> bit-identical. (The GREAT clock is
-    # handled by the forbid clamp; each note's own uncapped hit stays in perfect_ts64 for reach checks.)
-    # The legacy global perfect cap was lane-blind. Input-engine-aware production keeps each note's
-    # own latest Perfect hit and lets reconstruction/persistence enforce the lane-aware owner.
-    reachable_perfect_ts64 = perfect_ts64
-    # Capped-hit activation clocks (rt-invariant, built once per chart): the per-activation latest
-    # reachable Perfect / late-Great hit the kernel would otherwise re-derive with a live binary
-    # search per (state, action). The four capped_* tables below memoize those searches per unique
-    # real_fever_time, CLAMPED to (activation, n] exactly like `_numba_clamped_end_idx`, so a kernel
-    # lookup `capped_*[rt_idx, a]` is bit-identical to the canonical float32 lower-bound search
-    # with `_numba_clamped_end_idx` at the prefix hit.
-    prefix_perfect64 = np.ascontiguousarray(np.asarray(prefix_perfect_hit, dtype=np.float64).reshape(-1))
-    prefix_late64 = np.ascontiguousarray(np.asarray(prefix_late_hit, dtype=np.float64).reshape(-1))
-    if int(prefix_perfect64.shape[0]) != int(ts.shape[0]) or int(prefix_late64.shape[0]) != int(ts.shape[0]):
-        raise ValueError("prefix activation-hit tables length must match timestamps")
-    # clamp lower bound per activation column a is a+1; upper bound is n (same order as
-    # `_numba_clamped_end_idx`: max(e, a+1) then min(e, n)).
-    capped_clamp_lo = np.arange(1, int(ts.shape[0]) + 1, dtype=np.int64)
-    timestamp_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0])), dtype=np.int32)
-    perfect_end_idx = np.empty_like(timestamp_end_idx)
-    great_end_idx = np.empty_like(timestamp_end_idx)
-    capped_perfect_edge_e = np.empty_like(timestamp_end_idx)
-    capped_late_edge_e = np.empty_like(timestamp_end_idx)
-    capped_eg_perfect_e = np.empty_like(timestamp_end_idx)
-    capped_eg_late_e = np.empty_like(timestamp_end_idx)
-    # The EARLIEST fever end of a Perfect activation. Hit at its earliest (the Perfect floor: after every earlier note
-    # at its earliest), its cutoff is floor + rt, and the end can be any note from which every later note can still be
-    # hit at or past that cutoff (exit_ceiling: the suffix minimum of the latest out-of-fever hits). Every note's exit
-    # ceiling lies past the floor of the note before it, so the reachable ends are exactly
-    # [min(capped_perfect_exit_e, edge_e), edge_e]. A late-Great activation's run starts from its earliest late-Great
-    # hit (late_great_floor) the same way.
-    exit_ceiling = np.ascontiguousarray(np.asarray(exit_ceiling_timestamps, dtype=np.float32).reshape(-1))
-    late_floor = np.ascontiguousarray(np.asarray(late_great_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(exit_ceiling.shape[0]) != int(ts.shape[0]) or int(late_floor.shape[0]) != int(ts.shape[0]):
-        raise ValueError("exit_ceiling_timestamps and late_great_floor_timestamps lengths must match timestamps")
-    floor64 = np.asarray(floor_ts, dtype=np.float64)
-    late_floor64 = np.asarray(late_floor, dtype=np.float64)
-    capped_perfect_exit_e = np.empty_like(timestamp_end_idx)
-    capped_late_exit_e = np.empty_like(timestamp_end_idx)
-    # [..., 0] = extended end for a Perfect activation (cutoff = perfect_candidate + rt);
-    # [..., 1] = extended end for a late-Great activation (cutoff = great_candidate + rt).
-    great_floor_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0]), 2), dtype=np.int32)
-    for idx, real_time in enumerate(unique_real_times):
-        rt = float(real_time)
-        perfect_cutoff = np.asarray(reachable_perfect_ts64 + rt, dtype=np.float32)
-        great_cutoff = np.asarray(great_ts64 + rt, dtype=np.float32)
-        timestamp_end_idx[idx] = np.searchsorted(floor_ts, np.asarray(ts64 + rt, dtype=np.float32), side="left").astype(
-            np.int32,
-            copy=False,
-        )
-        perfect_end_idx[idx] = np.searchsorted(floor_ts, perfect_cutoff, side="left").astype(np.int32, copy=False)
-        great_end_idx[idx] = np.searchsorted(floor_ts, great_cutoff, side="left").astype(np.int32, copy=False)
-        great_floor_end_idx[idx, :, 0] = np.searchsorted(great_floor_ts, perfect_cutoff, side="left").astype(
-            np.int32, copy=False
-        )
-        great_floor_end_idx[idx, :, 1] = np.searchsorted(great_floor_ts, great_cutoff, side="left").astype(
-            np.int32, copy=False
-        )
-        # Capped-hit fever ends: float64 add then float32 needle, matching the kernel's
-        # `np.float32(float(hit) + float(real_fever_time))` bit for bit; invalid activations
-        # (prefix_*_valid == 0) get the same deterministic formula -- the kernel never reads them.
-        capped_perfect_cutoff = np.asarray(prefix_perfect64 + rt, dtype=np.float32)
-        capped_late_cutoff = np.asarray(prefix_late64 + rt, dtype=np.float32)
-        capped_perfect_edge_e[idx] = np.clip(
-            np.searchsorted(floor_ts, capped_perfect_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
-        ).astype(np.int32, copy=False)
-        capped_late_edge_e[idx] = np.clip(
-            np.searchsorted(floor_ts, capped_late_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
-        ).astype(np.int32, copy=False)
-        capped_eg_perfect_e[idx] = np.clip(
-            np.searchsorted(great_floor_ts, capped_perfect_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
-        ).astype(np.int32, copy=False)
-        capped_eg_late_e[idx] = np.clip(
-            np.searchsorted(great_floor_ts, capped_late_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
-        ).astype(np.int32, copy=False)
-        earliest_cutoff = np.asarray(floor64 + rt, dtype=np.float32)
-        # Each use clamps it to the end of the edge it extends (min(perfect_exit_e, edge_e)), as the trace rebuilder
-        # does.
-        capped_perfect_exit_e[idx] = np.clip(
-            np.searchsorted(exit_ceiling, earliest_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
-        ).astype(np.int32, copy=False)
-        capped_late_exit_e[idx] = np.clip(
-            np.searchsorted(exit_ceiling, np.asarray(late_floor64 + rt, dtype=np.float32), side="left"),
-            capped_clamp_lo,
-            int(ts.shape[0]),
-        ).astype(np.int32, copy=False)
-    # Hit-time reachability (chord + notes-ahead): a late-Great activation is UNREACHABLE when an
-    # earlier-hit note (a same-timestamp sibling, or an on-time note within the ~late-Great window
-    # after it) completes the fever bar first -- delaying the activation to its late hit lets those
-    # notes register before it. Clamping great_end_idx down to perfect_end_idx at those indices makes
-    # the late-Great end `late_e <= perfect_e`, which EVERY build path already treats as "no
-    # late-Great" (the `late_e <= perfect_e -> return` / `activation_e > edge_e` guards), so the
-    # phantom late-Great is never emitted or selected -- the search falls back to the reachable
-    # Perfect crossing it already enumerates. Off overlap (no forbidden index, e.g. sparse-tail or
-    # non-chord charts) great_end_idx is UNCHANGED -> byte-identical frontier. The mask is a pure
-    # function of the per-note windows (loadout-independent), computed once here.
-    # The legacy global late-Great forbidden mask was lane-blind and loadout-independent. Do not
-    # clamp here; exact activation legality is checked by the lane-aware reconstruction owner.
-    return (
-        np.ascontiguousarray(inverse.astype(np.int32, copy=False)),
-        np.ascontiguousarray(timestamp_end_idx),
-        np.ascontiguousarray(perfect_end_idx),
-        np.ascontiguousarray(great_end_idx),
-        np.ascontiguousarray(great_floor_end_idx),
-        np.ascontiguousarray(capped_perfect_edge_e),
-        np.ascontiguousarray(capped_late_edge_e),
-        np.ascontiguousarray(capped_eg_perfect_e),
-        np.ascontiguousarray(capped_eg_late_e),
-        np.ascontiguousarray(capped_perfect_exit_e),
-        np.ascontiguousarray(capped_late_exit_e),
-    )
+        sources[kept] = [kept]
+        group = group_of_table.get(table)
+        if group is None:
+            region_class = (ceil(2.0 * table.raw_fever_fill), table.non_fever_base, table.action_k.tobytes())
+            group = group_of_table[table] = groups.setdefault(region_class, [])
+        group.append(geometry)
+    return list(groups.values()), sources

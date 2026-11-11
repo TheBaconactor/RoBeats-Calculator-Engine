@@ -17,8 +17,8 @@ def fg_song_inputs(
 ) -> FGSongInputs:
     return FGSongInputs(
         timestamps=timestamps,
-        perfect_candidates=perfect_candidates,
-        great_candidates=great_candidates,
+        perfect_candidates=timestamps if perfect_candidates is None else perfect_candidates,
+        great_candidates=timestamps if great_candidates is None else great_candidates,
         perfect_floor=perfect_floor,
         great_floor=great_floor,
         late_great_floor=None,

@@ -1,9 +1,8 @@
-"""Engine-physical Base fever frontier construction.
+"""The Base (Perfect-only) frontier of every (Fever Time, Fever Fill Rate) cell of a song, as one grid payload.
 
-Base and force-Great scoring share one lane-aware response producer. Base invokes that producer
-with no Great actions, so chart order, lane matching, simultaneous press/release dispatch, fever
-activation, and Pareto reduction are decided by the same canonical engine model before any surface
-is uploaded or persisted.
+Base and Force Great scoring share one lane-aware response producer. Base runs it with no Great action, so chart order,
+lane matching, simultaneous press and release, fever activation and the Pareto reduction are decided by the same model
+before a surface is uploaded or persisted.
 """
 
 from __future__ import annotations
@@ -12,29 +11,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
-
 from gear_optimizer.rules import MAX_STAT
 
 GRID_SIZE = MAX_STAT + 1
 MAX_TIMELINE_FRONTIER_SURFACES = 262144  # the song's frontier pool: the GPU field-size cap (VRAM bound 1,048,576)
 _MAX_HEAD = 100
+_WORD = 0xFFFFFFFF
 
 
 def configure_timeline_pair_build_threads(max_threads: int) -> int:
-    """Size the shared exact lane-aware frontier reducer used by Base and FG."""
-    from .producer_reducer import (
-        configure_force_greats_response_first_frontier_threads,
-    )
+    """Set how many threads a song's frontier build may use, Base and FG alike; returns the previous setting."""
+    from .producer_reducer import configure_frontier_build_threads
 
-    return int(configure_force_greats_response_first_frontier_threads(int(max_threads)))
-
-
-@dataclass(frozen=True, slots=True)
-class TimelineExactSignature:
-    head_len: int
-    head_bits: tuple[int, int, int, int]
-    body_fever: int
-    body_normal: int
+    return configure_frontier_build_threads(max_threads)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,165 +43,112 @@ class TimelineFrontierGridPayload:
     frontier_pool_used: int
 
 
-def _surface_sort_key(surface: TimelineExactSignature) -> tuple[int, int, int, int, int]:
-    return (
-        int(surface.body_fever),
-        int(surface.head_bits[3]) & 0xFFFFFFFF,
-        int(surface.head_bits[2]) & 0xFFFFFFFF,
-        int(surface.head_bits[1]) & 0xFFFFFFFF,
-        int(surface.head_bits[0]) & 0xFFFFFFFF,
-    )
-
-
-def _head_mask_coefficients_py(
-    m0: int,
-    m1: int,
-    m2: int,
-    m3: int,
-    head_len: int,
-) -> tuple[int, int, int, int]:
-    n_hn = 0
-    n_hf = 0
-    sigma_hn = 0
-    sigma_hf = 0
-    words = (int(m0), int(m1), int(m2), int(m3))
-    for note_index in range(max(0, int(head_len))):
-        position = note_index + 1
-        fever = (words[note_index // 32] >> (note_index % 32)) & 1
-        if fever:
+def _head_mask_coefficients_py(m0: int, m1: int, m2: int, m3: int, head_len: int) -> tuple[int, int, int, int]:
+    """Of the first `head_len` notes, by the fever mask's four 32-bit words: how many are normal and how many fever
+    notes, then the sums of their 1-based positions."""
+    words = (m0, m1, m2, m3)
+    n_hn = n_hf = sigma_hn = sigma_hf = 0
+    for note_index in range(head_len):
+        if (words[note_index // 32] >> (note_index % 32)) & 1:
             n_hf += 1
-            sigma_hf += position
+            sigma_hf += note_index + 1
         else:
             n_hn += 1
-            sigma_hn += position
+            sigma_hn += note_index + 1
     return n_hn, n_hf, sigma_hn, sigma_hf
 
 
 def build_timeline_frontier_grid_payload(
     *,
-    total_notes: int,
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,
+    exit_ceiling_timestamps: np.ndarray,
     lanes: np.ndarray,
     fever_times: np.ndarray,
     fever_fills: np.ndarray,
-    exit_ceiling_timestamps: np.ndarray | None = None,
 ) -> TimelineFrontierGridPayload:
-    """Build every FT/FF Base cell from exact lane-aware all-Perfect producer surfaces.
+    """Every FT/FF cell's Base frontier, from the shared producer's exact lane-aware all-Perfect surfaces.
 
-    `fever_times` holds each Fever Time row's fever duration and `fever_fills` each Fever Fill Rate row's fill threshold
-    in Perfects (timing_envelope.fever_axes)."""
-    real_times = np.asarray(fever_times, dtype=np.float64).reshape(-1)
-    fills = np.asarray(fever_fills, dtype=np.float64).reshape(-1)
-    if int(real_times.shape[0]) != GRID_SIZE:
-        raise ValueError(f"Fever Time axis must be shape ({GRID_SIZE},), got {real_times.shape}")
-    if int(fills.shape[0]) != GRID_SIZE:
-        raise ValueError(f"Fever Fill Rate axis must be shape ({GRID_SIZE},), got {fills.shape}")
+    `fever_times` holds each Fever Time value's fever duration and `fever_fills` each Fever Fill Rate value's fill
+    threshold in Perfects (timing_envelope.fever_axes). Cells with the same duration and the same whole fill count share
+    a geometry, and geometries with the same surfaces share one range of the pool."""
+    from .producer_batch import build_frontiers, song_arrays
 
-    n = int(total_notes)
-    timestamps, perfect_candidates, perfect_floor = (
-        np.ascontiguousarray(np.asarray(values, dtype=np.float32).reshape(-1))
-        for values in (timestamps, perfect_candidate_timestamps, perfect_floor_timestamps)
-    )
-    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
-    if any(int(values.shape[0]) != n for values in (timestamps, perfect_candidates, perfect_floor, lane_arr)):
-        raise ValueError("timeline frontier physical producer arrays must match total_notes")
-    if bool(np.any(timestamps[1:] < timestamps[:-1])):
-        raise ValueError("timeline frontier timestamps must be sorted in chart order")
-
-    fill_counts = np.maximum(np.ceil(fills).astype(np.int32), np.int32(1))
+    fill_counts = np.maximum(np.ceil(fever_fills).astype(np.int32), np.int32(1))
     unique_fill_counts, fill_inverse = np.unique(fill_counts, return_inverse=True)
-    unique_real_times, time_inverse = np.unique(real_times, return_inverse=True)
-
-    from .producer_batch import (
-        build_first_frontiers,
+    unique_fever_times, time_inverse = np.unique(fever_times, return_inverse=True)
+    # Base has no Great judgment: with both Great envelopes on the Perfect ones the producer emits no Great edge.
+    song = song_arrays(
+        timestamps, perfect_candidate_timestamps, perfect_candidate_timestamps, perfect_floor_timestamps,
+        perfect_floor_timestamps, None, exit_ceiling_timestamps, lanes,
     )
-
-    geometries = tuple(
-        (float(fill_count), 0, float(real_time))
-        for real_time in unique_real_times.tolist()
-        for fill_count in unique_fill_counts.tolist()
-    )
-    physical_frontiers = build_first_frontiers(
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidates,
-        # Base has no Great judgments. Collapsing both Great envelopes onto Perfect prevents the
-        # shared producer from emitting Great-only edges while preserving its lane-aware scheduler.
-        great_candidate_timestamps=perfect_candidates,
-        perfect_floor_timestamps=perfect_floor,
-        great_floor_timestamps=perfect_floor,
-        lanes=lane_arr,
-        geometries=geometries,
+    frontiers = build_frontiers(
+        song,
+        tuple(
+            (float(fill_count), 0, fever_time)
+            for fever_time in unique_fever_times.tolist()
+            for fill_count in unique_fill_counts.tolist()
+        ),
         use_forced_great_timing=False,
-        exit_ceiling_timestamps=exit_ceiling_timestamps,
     )
-    if len(physical_frontiers) != len(geometries):
-        raise ValueError("timeline physical producer returned the wrong number of geometries")
 
-    head_len = min(n, _MAX_HEAD)
-    total_body = max(0, n - _MAX_HEAD)
-    # Identical surface lists share one pool range; dense cells are indexed (unique time, unique fill).
-    pool: list[TimelineExactSignature] = []
-    pool_offset_by_surfaces: dict[tuple[TimelineExactSignature, ...], int] = {}
-    # Per (unique time, unique fill) cell: canonical body fever, body normal, head length, head words, surface count,
-    # pool offset; the grids index these by every FT/FF stat value.
-    dense = np.zeros((int(unique_real_times.size), int(unique_fill_counts.size), 9), dtype=np.int64)
-    for geometry_idx, frontier in enumerate(physical_frontiers):
-        surfaces: list[TimelineExactSignature] = []
-        for row in frontier.first_frontier:
-            if any(int(value) for value in (*row[4:8], row.body_great, row.body_fever_great)):
-                raise ValueError("timeline all-Perfect producer emitted a Great response surface")
-            if int(row.body_fever) < 0 or int(row.body_fever) > total_body:
-                raise ValueError("timeline physical producer emitted invalid body fever count")
-            surfaces.append(
-                TimelineExactSignature(
-                    head_len=head_len,
-                    head_bits=(int(row.fever0), int(row.fever1), int(row.fever2), int(row.fever3)),
-                    body_fever=int(row.body_fever),
-                    body_normal=total_body - int(row.body_fever),
-                )
-            )
-        if not surfaces:
+    n = song.timestamps.shape[0]
+    head_len, total_body = min(n, _MAX_HEAD), max(0, n - _MAX_HEAD)
+    # A pool surface is (body fever notes, the head's fever mask in two 64-bit words). A geometry's cell holds its
+    # top surface (most body fever notes, then the highest mask): body fever and normal notes, head length, the
+    # mask's four 32-bit words, and its surface count and pool offset.
+    pool: list[tuple[int, int, int]] = []
+    offset_of: dict[tuple[tuple[int, int, int], ...], int] = {}
+    cells = []
+    for frontier in frontiers:
+        rows = frontier.first_frontier.numba_rows().tolist()
+        if not rows:
             raise ValueError("timeline physical producer emitted an empty frontier")
-        ordered = tuple(surfaces)
-        offset = pool_offset_by_surfaces.get(ordered)
+        if any(any(row[2:4]) or any(row[5:7]) for row in rows):
+            raise ValueError("timeline all-Perfect producer emitted a Great response surface")
+        surfaces = tuple((body_fever, fever_lo, fever_hi) for fever_lo, fever_hi, _, _, body_fever, _, _ in rows)
+        if any(body_fever > total_body for body_fever, _, _ in surfaces):
+            raise ValueError("timeline physical producer emitted invalid body fever count")
+        offset = offset_of.get(surfaces)
         if offset is None:
-            if len(pool) + len(ordered) > int(MAX_TIMELINE_FRONTIER_SURFACES):
+            if len(pool) + len(surfaces) > MAX_TIMELINE_FRONTIER_SURFACES:
                 raise RuntimeError(
-                    "timeline frontier pool overflow: "
-                    f"need {len(pool) + len(ordered)}, cap {MAX_TIMELINE_FRONTIER_SURFACES}"
+                    f"timeline frontier pool overflow: need {len(pool) + len(surfaces)}, "
+                    f"cap {MAX_TIMELINE_FRONTIER_SURFACES}"
                 )
-            offset = pool_offset_by_surfaces[ordered] = len(pool)
-            pool.extend(ordered)
-        canonical = max(ordered, key=_surface_sort_key)
-        dense[divmod(geometry_idx, int(unique_fill_counts.size))] = (
-            canonical.body_fever, canonical.body_normal, canonical.head_len, *canonical.head_bits, len(ordered), offset
-        )
+            offset = offset_of[surfaces] = len(pool)
+            pool.extend(surfaces)
+        body_fever, fever_lo, fever_hi = max(surfaces, key=lambda surface: (surface[0], surface[2], surface[1]))
+        cells.append((
+            body_fever, total_body - body_fever, head_len, fever_lo & _WORD, fever_lo >> 32, fever_hi & _WORD,
+            fever_hi >> 32, len(surfaces), offset,
+        ))
+    dense = np.asarray(cells, dtype=np.int64).reshape(unique_fever_times.size, unique_fill_counts.size, 9)
+    grid = dense[time_inverse.reshape(GRID_SIZE, 1), fill_inverse.reshape(1, GRID_SIZE)][None]
 
-    cells = dense[time_inverse.reshape(GRID_SIZE, 1), fill_inverse.reshape(1, GRID_SIZE)][None]
     pool_shape = (1, MAX_TIMELINE_FRONTIER_SURFACES)
     body_fever_pool = np.zeros(pool_shape, dtype=np.int32)
     body_normal_pool = np.zeros(pool_shape, dtype=np.int32)
     masks_pool = np.zeros((*pool_shape, 4), dtype=np.uint32)
     coeffs_pool = np.zeros((*pool_shape, 4), dtype=np.int16)
-    head_coeffs: dict[tuple[int, ...], tuple[int, int, int, int]] = {}
-    for pool_idx, surface in enumerate(pool):
-        key = (*surface.head_bits, int(surface.head_len))
-        if key not in head_coeffs:
-            head_coeffs[key] = _head_mask_coefficients_py(*surface.head_bits, head_len=surface.head_len)
-        body_fever_pool[0, pool_idx] = int(surface.body_fever)
-        body_normal_pool[0, pool_idx] = int(surface.body_normal)
-        masks_pool[0, pool_idx, :] = np.asarray(surface.head_bits, dtype=np.uint32)
-        coeffs_pool[0, pool_idx, :] = np.asarray(head_coeffs[key], dtype=np.int16)
+    head_coeffs: dict[tuple[int, int, int, int], tuple[int, int, int, int]] = {}
+    for pool_idx, (body_fever, fever_lo, fever_hi) in enumerate(pool):
+        words = (fever_lo & _WORD, fever_lo >> 32, fever_hi & _WORD, fever_hi >> 32)
+        if words not in head_coeffs:
+            head_coeffs[words] = _head_mask_coefficients_py(*words, head_len=head_len)
+        body_fever_pool[0, pool_idx] = body_fever
+        body_normal_pool[0, pool_idx] = total_body - body_fever
+        masks_pool[0, pool_idx] = words
+        coeffs_pool[0, pool_idx] = head_coeffs[words]
 
     return TimelineFrontierGridPayload(
-        grid_count_body_fever=cells[..., 0].astype(np.int32),
-        grid_count_body_normal=cells[..., 1].astype(np.int32),
-        grid_head_len=cells[..., 2].astype(np.int8),
-        grid_fever_masks_bits=cells[..., 3:7].astype(np.uint32),
-        grid_frontier_count=cells[..., 7].astype(np.int32),
-        grid_frontier_offset=cells[..., 8].astype(np.int32),
+        grid_count_body_fever=grid[..., 0].astype(np.int32),
+        grid_count_body_normal=grid[..., 1].astype(np.int32),
+        grid_head_len=grid[..., 2].astype(np.int8),
+        grid_fever_masks_bits=grid[..., 3:7].astype(np.uint32),
+        grid_frontier_count=grid[..., 7].astype(np.int32),
+        grid_frontier_offset=grid[..., 8].astype(np.int32),
         grid_frontier_body_fever_pool=body_fever_pool,
         grid_frontier_body_normal_pool=body_normal_pool,
         grid_frontier_masks_bits_pool=masks_pool,

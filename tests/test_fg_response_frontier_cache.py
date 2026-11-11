@@ -92,11 +92,11 @@ def _extend_fg_bundle_worker(cache_dir: str, stat_key: tuple[int, int], start_ev
 
         reset_fg_response_frontier_payload_cache()
 
-        def _delayed_build(*, geometries, **_kwargs):
+        def _delayed_build(_song_arrays, geometries, _use_forced_great_timing):
             time.sleep(0.2)
             return _fake_response_frontiers(geometries)
 
-        fg_cache.build_first_frontiers = _delayed_build
+        fg_cache.build_frontiers = _delayed_build
         if not start_event.wait(timeout=10.0):
             raise TimeoutError("bundle extension start was not released")
         build_or_load_payload(
@@ -144,8 +144,8 @@ def _publish_fg_bundle_worker(cache_dir: str, ready_event, published_event, resu
         from gear_optimizer.frontier import fg_cache
 
         reset_fg_response_frontier_payload_cache()
-        fg_cache.build_first_frontiers = (
-            lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries)
+        fg_cache.build_frontiers = (
+            lambda _song_arrays, geometries, _use_forced_great_timing: _fake_response_frontiers(geometries)
         )
         if not ready_event.wait(timeout=10.0):
             raise TimeoutError("reader did not load the previous generation")
@@ -279,7 +279,7 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
         raise AssertionError("warm sparse bundle should load without rebuilding frontiers")
 
     reset_fg_response_frontier_payload_cache()
-    monkeypatch.setattr(fg_cache, "build_first_frontiers", _raise_build)
+    monkeypatch.setattr(fg_cache, "build_frontiers", _raise_build)
     second = build_or_load_payload(_song(), _curves(), stat_keys=keys)
     assert second.cache_source == "disk"
     assert set(second.payload.frontier_by_key) == set(keys)
@@ -576,13 +576,13 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
 
     reset_fg_response_frontier_payload_cache()
     build_calls: list[int] = []
-    real_build = fg_cache.build_first_frontiers
+    real_build = fg_cache.build_frontiers
 
-    def _record_build(*args, **kwargs):
-        build_calls.append(len(tuple(kwargs.get("geometries") or ())))
-        return real_build(*args, **kwargs)
+    def _record_build(song_arrays, geometries, use_forced_great_timing):
+        build_calls.append(len(geometries))
+        return real_build(song_arrays, geometries, use_forced_great_timing)
 
-    monkeypatch.setattr(fg_cache, "build_first_frontiers", _record_build)
+    monkeypatch.setattr(fg_cache, "build_frontiers", _record_build)
     monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-sparse-bundle-v2-test")
     current = build_or_load_payload(_song(), _varying_ref_arrays(), stat_keys=keys)
 
@@ -630,7 +630,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
 
     monkeypatch.setattr(
         fg_cache,
-        "build_first_frontiers",
+        "build_frontiers",
         _build_must_not_run,
     )
     reused = build_or_load_payload(
@@ -710,7 +710,7 @@ def test_fg_response_frontier_disk_bundle_reuses_overlapping_stat_keys(tmp_path:
     reset_fg_response_frontier_payload_cache()
     calls: list[tuple[tuple[float, int, float], ...]] = []
 
-    def _fake_build(*, geometries, **_kwargs):
+    def _fake_build(_song_arrays, geometries, _use_forced_great_timing):
         rows = tuple((float(row[0]), int(row[1]), float(row[2])) for row in geometries)
         calls.append(rows)
         return tuple(
@@ -727,7 +727,7 @@ def test_fg_response_frontier_disk_bundle_reuses_overlapping_stat_keys(tmp_path:
             for idx, _row in enumerate(rows, start=1)
         )
 
-    monkeypatch.setattr(fg_cache, "build_first_frontiers", _fake_build)
+    monkeypatch.setattr(fg_cache, "build_frontiers", _fake_build)
     curves = _varying_ref_arrays()
 
     first = build_or_load_payload(
@@ -757,8 +757,8 @@ def test_fg_response_frontier_bundle_extensions_union_across_processes(tmp_path:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(
         fg_cache,
-        "build_first_frontiers",
-        lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries),
+        "build_frontiers",
+        lambda _song_arrays, geometries, _use_forced_great_timing: _fake_response_frontiers(geometries),
     )
     reset_fg_response_frontier_payload_cache()
     build_or_load_payload(
@@ -797,8 +797,8 @@ def test_fg_response_frontier_reader_keeps_one_generation_during_publish(tmp_pat
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(
         fg_cache,
-        "build_first_frontiers",
-        lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries),
+        "build_frontiers",
+        lambda _song_arrays, geometries, _use_forced_great_timing: _fake_response_frontiers(geometries),
     )
     reset_fg_response_frontier_payload_cache()
     build_or_load_payload(
@@ -836,8 +836,8 @@ def test_fg_response_frontier_failed_publish_keeps_previous_bundle_readable(tmp_
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(
         fg_cache,
-        "build_first_frontiers",
-        lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries),
+        "build_frontiers",
+        lambda _song_arrays, geometries, _use_forced_great_timing: _fake_response_frontiers(geometries),
     )
     reset_fg_response_frontier_payload_cache()
     build_or_load_payload(
@@ -880,7 +880,7 @@ def test_fg_response_frontier_bundle_builds_are_single_owner(tmp_path: Path, mon
     max_active = 0
     lock = threading.Lock()
 
-    def _fake_build(*, geometries, **_kwargs):
+    def _fake_build(_song_arrays, geometries, _use_forced_great_timing):
         nonlocal active, max_active
         rows = tuple(geometries or ())
         with lock:
@@ -905,7 +905,7 @@ def test_fg_response_frontier_bundle_builds_are_single_owner(tmp_path: Path, mon
             with lock:
                 active -= 1
 
-    monkeypatch.setattr(fg_cache, "build_first_frontiers", _fake_build)
+    monkeypatch.setattr(fg_cache, "build_frontiers", _fake_build)
     curves = _varying_ref_arrays()
 
     def _build(name: str) -> None:
@@ -958,7 +958,7 @@ def test_fg_response_frontier_cache_rejects_incomplete_frontiers(tmp_path: Path,
     reset_fg_response_frontier_payload_cache()
     calls: list[int] = []
 
-    def _fake_build(*, geometries, **_kwargs):
+    def _fake_build(_song_arrays, geometries, _use_forced_great_timing):
         rows = tuple(geometries)
         calls.append(len(rows))
         out = []
@@ -978,7 +978,7 @@ def test_fg_response_frontier_cache_rejects_incomplete_frontiers(tmp_path: Path,
             )
         return tuple(out)
 
-    monkeypatch.setattr(fg_cache, "build_first_frontiers", _fake_build)
+    monkeypatch.setattr(fg_cache, "build_frontiers", _fake_build)
     keys = ((0, 0), (1, 0))
     curves = _varying_ref_arrays()
 

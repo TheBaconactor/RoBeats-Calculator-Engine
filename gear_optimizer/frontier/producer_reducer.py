@@ -1,92 +1,64 @@
+"""The reductions of a song's frontier build: its threads, their stamp workspaces, and the kernel run of a range of
+geometries."""
+
 from __future__ import annotations
 
-import concurrent.futures
 import os
 import threading
+from dataclasses import dataclass
+from math import ceil
 
 import numpy as np
+import psutil
 
-from . import producer_kernels as _rb_numba
 from .producer_kernels import _first_frontiers_of_fever_times
+from .producer_precompute import FeverEnds, Geometry, SongArrays
 from .producer_surfaces import SurfaceRowsFirstFrontier
 from .types import FgResponseFrontierResult
 
-_FIRST_ONLY_REDUCER_THREADS = max(1, int(os.cpu_count() or 1))
-
-# Reset a stamp workspace once its epoch counter passes this bound. The stamps live in int32
-# arrays; one kernel call advances an epoch by at most n + 101, so resetting above 2**30 leaves
-# > 2**30 headroom to INT32_MAX -- overflow is impossible for any real chart. Deterministic:
-# depends only on the per-thread call sequence (and bit-exactness never depends on the epoch
-# values themselves, only on their monotone carry).
+_build_threads = os.cpu_count() or 1
+# A stamp is an int32 and one kernel call advances an epoch by at most n + 101: a counter reset once it passes this
+# bound never comes near INT32_MAX. Results never depend on the epoch values, only on their growing.
 _STAMP_EPOCH_RESET_LIMIT = 1 << 30
-_FRONTIER_SYSTEM_RESERVE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_SYSTEM_RESERVE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_WORKSPACE_TLS = threading.local()
 
 
-def _first_frontier_available_memory_bytes() -> int | None:
-    try:
-        import psutil
+def configure_frontier_build_threads(max_threads: int) -> int:
+    """Set how many threads a song's build may use (1 .. the CPU count); returns the previous setting."""
+    global _build_threads
+    previous = _build_threads
+    _build_threads = max(1, min(max_threads, os.cpu_count() or 1))
+    return previous
 
-        return max(0, int(psutil.virtual_memory().available))
-    except (ImportError, OSError, RuntimeError):
-        return None
+
+def threads_for(work_items: int) -> int:
+    """The build threads `work_items` independent pieces of work can use."""
+    return max(1, min(work_items, _build_threads))
 
 
-class _FirstFrontierStampWorkspace:
-    """Per-thread reusable stamp-radix scratch for the first-frontier kernel.
+@dataclass(slots=True)
+class StampWorkspace:
+    """A thread's reusable scratch for the frontier kernel.
 
-    The kernel validates a scratch cell by comparing its stamp to the current epoch, so reuse
-    across calls is bit-exact as long as epochs only grow: stale cells keep older epochs and are
-    invisible, exactly like stale cells between consecutive states within one call. Stamp arrays
-    are zeroed on (re)creation and deterministic epoch rollover (a fresh np.empty could contain
-    garbage colliding with a live epoch); value/touched arrays are only ever read under a matching
-    stamp or a write-first touched count, so their initial contents are irrelevant. Capacities come
-    from the song's workspace plan (pair arrays: a provable upper bound on every geometry's pair radix, see
-    ``_FirstFrontierWorkspacePlan``; Fenwick arrays: n + 2), so one workspace serves every geometry of a song build;
-    a song needing more capacity forces recreation. The kernel fail-loud-guards the capacities
-    against its true per-geometry radix, so an undersized plan can never corrupt memory.
-    """
+    The kernel takes a scratch cell as written when its stamp equals the current epoch, and epochs only grow, so the
+    cells of earlier calls stay invisible, as the cells of earlier states do within one call: reuse is bit-exact. Stamp
+    arrays start zeroed (no epoch is 0) and are zeroed again when their counter is reset; value arrays are read only
+    under a matching stamp. One workspace serves every geometry of a song build (WorkspacePlan), and the kernel raises
+    on a workspace smaller than a geometry's own radix."""
 
-    __slots__ = (
-        "pair_capacity",
-        "bit_capacity",
-        "successor_capacity",
-        "pair_values",
-        "pair_stamps",
-        "pair_touched",
-        "bit_values",
-        "bit_stamps",
-        "perfect_successor",
-        "perfect_successor_stamps",
-        "late_successor",
-        "late_successor_stamps",
-        "pair_epoch",
-        "bit_epoch",
-        "successor_epoch",
-    )
-
-    def __init__(
-        self,
-        pair_capacity: int,
-        bit_capacity: int,
-        successor_capacity: int,
-    ) -> None:
-        self.pair_capacity = int(pair_capacity)
-        self.bit_capacity = int(bit_capacity)
-        self.successor_capacity = int(successor_capacity)
-        if int(self.successor_capacity) < 1:
-            raise ValueError("FG successor workspace capacity must be positive")
-        self.pair_values = np.zeros(self.pair_capacity, dtype=np.int32)
-        self.pair_stamps = np.zeros(self.pair_capacity, dtype=np.int32)
-        self.pair_touched = np.zeros(self.pair_capacity, dtype=np.int32)
-        self.bit_values = np.zeros(self.bit_capacity, dtype=np.int32)
-        self.bit_stamps = np.zeros(self.bit_capacity, dtype=np.int32)
-        self.perfect_successor = np.empty(self.successor_capacity, dtype=np.int32)
-        self.perfect_successor_stamps = np.zeros(self.successor_capacity, dtype=np.int32)
-        self.late_successor = np.empty(self.successor_capacity, dtype=np.int32)
-        self.late_successor_stamps = np.zeros(self.successor_capacity, dtype=np.int32)
-        self.pair_epoch = 0
-        self.bit_epoch = 0
-        self.successor_epoch = 0
+    pair_values: np.ndarray
+    pair_stamps: np.ndarray
+    pair_touched: np.ndarray
+    bit_values: np.ndarray
+    bit_stamps: np.ndarray
+    perfect_successor: np.ndarray
+    perfect_successor_stamps: np.ndarray
+    late_successor: np.ndarray
+    late_successor_stamps: np.ndarray
+    pair_epoch: int = 0
+    bit_epoch: int = 0
+    successor_epoch: int = 0
 
     def reserve_successor_epochs(self, count: int) -> int:
         """The first of `count` fresh epochs."""
@@ -99,256 +71,148 @@ class _FirstFrontierStampWorkspace:
         return first
 
     def store_epochs(self, pair_epoch: int, bit_epoch: int) -> None:
-        """Persist the kernel's final epochs, resetting any counter that passed the int32
-        headroom bound (zero its stamps so epoch 0 is fresh again, like a new workspace)."""
-        self.pair_epoch = int(pair_epoch)
-        self.bit_epoch = int(bit_epoch)
-        if self.pair_epoch > _STAMP_EPOCH_RESET_LIMIT:
+        """Keep the kernel's final epochs; a counter past the reset limit starts over on zeroed stamps."""
+        self.pair_epoch, self.bit_epoch = pair_epoch, bit_epoch
+        if pair_epoch > _STAMP_EPOCH_RESET_LIMIT:
             self.pair_stamps[:] = 0
             self.pair_epoch = 0
-        if self.bit_epoch > _STAMP_EPOCH_RESET_LIMIT:
+        if bit_epoch > _STAMP_EPOCH_RESET_LIMIT:
             self.bit_stamps[:] = 0
             self.bit_epoch = 0
 
 
-_WORKSPACE_TLS = threading.local()
+def early_great_gap_bound(perfect_floor: np.ndarray, great_floor: np.ndarray) -> int:
+    """An upper bound of the kernel prepass's `max_eg_width` over every geometry of a song.
+
+    Each width the prepass measures is the end a cutoff reaches on the Great floor less the end it reaches on the
+    Perfect floor, both clamped alike (FeverEnds: `eg_perfect_e` - `perfect_e`, `eg_late_e` - `late_e`, and the two
+    token tables at one hit). The clamp is monotone and 1-Lipschitz, so a width is at most the number of notes whose
+    Great floor lies below the cutoff and whose Perfect floor does not. That count only rises just past a value of
+    either floor, so its maximum over those values bounds it at every cutoff, for every fill and fever time."""
+    cutoffs = np.concatenate((perfect_floor, great_floor))
+    gaps = np.searchsorted(great_floor, cutoffs, side="right") - np.searchsorted(perfect_floor, cutoffs, side="right")
+    return int(gaps.max(initial=0))
 
 
-def _early_great_extension_gap_bound(
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-) -> int:
-    """Provable song-level upper bound on the kernel prepass's ``max_eg_width``.
+def pair_mod_bound(n: int, smallest_later_fill: int, eg_gap_bound: int) -> int:
+    """An upper bound of the kernel's pair radix over a song's geometries.
 
-    Every ``max_eg_width`` contribution in ``_first_frontier_from_precomputed_end_indices_numba``
-    is ``clamp(lb(great_floor, c)) - clamp(lb(perfect_floor, c))`` at ONE shared float32 cutoff
-    ``c = f32(hit + real_fever_time)`` with identical ``_numba_clamped_end_idx`` clamps:
-
-    - prefix Perfect / late-Great edges read the ``capped_eg_*`` vs ``capped_*_edge_e`` table
-      pair, both built by ``_precompute_end_indices`` from the SAME cutoff array;
-    - region-run entries read the perfect-floor and Great-floor endpoint tables at the same
-      canonical core-hit ID (``_numba_region_run_edge_from_core`` plus the early-Great marker).
-
-    ``clamp`` is monotone and 1-Lipschitz, so each width is at most
-    ``lb(great_floor, c) - lb(perfect_floor, c) = #{i: great_floor[i] < c <= perfect_floor[i]}``.
-    That step function over real ``c`` only increases just past an array value, so evaluating
-    ``searchsorted(side='right')`` at every value of both floors covers every supremum; the sup
-    over real ``c`` dominates the sup over the float32 cutoffs the kernel can form. The bound is
-    geometry- and fever-time-independent: it holds for every (raw_fill, non_fever_base,
-    real_fever_time) of the song. NEVER an under-estimate; the kernel's capacity guard is the
-    fail-loud backstop should this derivation ever rot.
-    """
-    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
-    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
-    if int(floor_ts.shape[0]) == 0:
-        return 0
-    cutoffs = np.concatenate((floor_ts, great_floor_ts))
-    gap = np.searchsorted(great_floor_ts, cutoffs, side="right").astype(np.int64) - np.searchsorted(
-        floor_ts, cutoffs, side="right"
-    ).astype(np.int64)
-    return max(0, int(gap.max()))
+    The kernel sizes `pair_mod = min(n + 1, section_bound * (1 + max_eg_width) + 1)` with `section_bound = n //
+    max(1, later_fill[0]) + 4`. It grows with `max_eg_width`, known only after the kernel's prepass and bounded by
+    `eg_gap_bound` (early_great_gap_bound), and falls with `later_fill[0]`, smallest at `smallest_later_fill`."""
+    return min(n + 1, (n // max(1, smallest_later_fill) + 4) * (1 + eg_gap_bound) + 1)
 
 
-def _exact_action_fill_runs(
-    fills: np.ndarray,
-    activation_forced: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build inclusive runs for one producer-owned action-fill set.
+@dataclass(frozen=True, slots=True)
+class WorkspacePlan:
+    """The sizes of a song build's stamp workspaces: pair arrays of (n + 1) * `pair_mod_bound` cells, Fenwick arrays
+    of n + 2 and successor arrays of n + 1. A thread takes its workspace through the plan and keeps it, with its
+    epochs, for every later range and build that fits in it."""
 
-    Duplicate and unsorted offsets are legal inputs; exact integer membership defines the runs.
-    When ``activation_forced`` is supplied, only late-Great-eligible rows (value >= 0) contribute,
-    while every fill offset is still validated. The result is shared across all fever-time variants
-    of the same action table instead of being rebuilt inside each geometry kernel.
-    """
-    fill_arr = np.ascontiguousarray(np.asarray(fills, dtype=np.int32).reshape(-1))
-    if bool(np.any(fill_arr < 0)):
-        raise ValueError("FG action fill offsets must be nonnegative")
-    if activation_forced is None:
-        selected = fill_arr
-    else:
-        eligible = np.ascontiguousarray(np.asarray(activation_forced, dtype=np.int32).reshape(-1))
-        if int(eligible.shape[0]) != int(fill_arr.shape[0]):
-            raise ValueError("FG fill and activation-forced arrays must align")
-        selected = fill_arr[eligible >= 0]
-    if int(selected.shape[0]) == 0:
-        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
-
-    values = np.unique(selected).astype(np.int32, copy=False)
-    breaks = np.flatnonzero(np.diff(values.astype(np.int64, copy=False)) > 1)
-    starts = np.concatenate((values[:1], values[breaks + 1])).astype(np.int32, copy=False)
-    ends = np.concatenate((values[breaks], values[-1:])).astype(np.int32, copy=False)
-    return np.ascontiguousarray(starts), np.ascontiguousarray(ends)
-
-
-def _song_first_frontier_pair_mod_bound(
-    *,
-    n: int,
-    prepared: list[tuple],
-    eg_gap_bound: int,
-) -> int:
-    """Host mirror of the kernel's pair radix sizing, maximized over the song's geometries.
-
-    The kernel computes ``pair_mod = min(n + 1, section_bound * (1 + max_eg_width) + 1)`` with
-    ``section_bound = n // max(1, later_fill[0]) + 4``. ``later_fill[0]`` is known per prepared
-    item up front; ``max_eg_width`` is only discovered inside the kernel's reachability prepass,
-    so it is replaced by the provable song-level ``eg_gap_bound``
-    (``_early_great_extension_gap_bound``). Monotonicity of the formula in ``max_eg_width``
-    makes the result an upper bound on every geometry's true ``pair_mod`` — never an
-    under-estimate — while staying far below the old hard ``n + 1`` reservation on charts whose
-    early-Great band is narrow.
-    """
-    bound = 1
-    for item in prepared:
-        later_fill_arr = item[5]
-        min_later_fill = max(1, int(later_fill_arr[0])) if int(later_fill_arr.shape[0]) > 0 else 1
-        section_bound = int(n) // int(min_later_fill) + 4
-        bound = max(bound, min(int(n) + 1, int(section_bound) * (1 + int(eg_gap_bound)) + 1))
-    return int(bound)
-
-
-class _FirstFrontierWorkspacePlan:
-    """Song-build-scoped sizing of the per-thread stamp workspaces.
-
-    Built ONCE per song build from the provable pair_mod bound; every thread that reduces geometries acquires its TLS
-    workspace through the plan, so capacities are uniform and an already-sufficient workspace from an earlier song is
-    reused. Threads of the song's reducer executor live for the whole build, so their workspaces (and carried stamp
-    epochs) persist across every region-table group.
-    """
-
-    __slots__ = ("n", "pair_capacity", "bit_capacity")
-
-    def __init__(self, *, n: int, pair_mod_bound: int) -> None:
-        if int(pair_mod_bound) < 1 or int(pair_mod_bound) > int(n) + 1:
-            raise ValueError("FG first-frontier workspace plan pair_mod bound must be in [1, n + 1]")
-        self.n = int(n)
-        self.pair_capacity = (int(n) + 1) * int(pair_mod_bound)
-        self.bit_capacity = int(n) + 2
+    n: int
+    pair_mod_bound: int
 
     @property
     def bytes_per_thread(self) -> int:
-        itemsize = np.dtype(np.int32).itemsize
-        return int(
-            itemsize
-            * (
-                3 * int(self.pair_capacity)
-                + 2 * int(self.bit_capacity)
-                + 4 * (int(self.n) + 1)
-            )
-        )
+        cells = 3 * (self.n + 1) * self.pair_mod_bound + 2 * (self.n + 2) + 4 * (self.n + 1)
+        return cells * np.dtype(np.int32).itemsize
 
-    def thread_workspace(self) -> _FirstFrontierStampWorkspace:
+    def thread_workspace(self) -> StampWorkspace:
+        n, pairs = self.n, (self.n + 1) * self.pair_mod_bound
         workspace = getattr(_WORKSPACE_TLS, "workspace", None)
-        if (
-            workspace is None
-            or int(workspace.pair_capacity) < int(self.pair_capacity)
-            or int(workspace.bit_capacity) < int(self.bit_capacity)
-            or int(workspace.successor_capacity) < int(self.n) + 1
-        ):
-            workspace = _FirstFrontierStampWorkspace(
-                int(self.pair_capacity),
-                int(self.bit_capacity),
-                int(self.n) + 1,
+        if workspace is None or workspace.pair_values.shape[0] < pairs or workspace.bit_values.shape[0] < n + 2:
+            workspace = _WORKSPACE_TLS.workspace = StampWorkspace(
+                pair_values=np.zeros(pairs, dtype=np.int32),
+                pair_stamps=np.zeros(pairs, dtype=np.int32),
+                pair_touched=np.zeros(pairs, dtype=np.int32),
+                bit_values=np.zeros(n + 2, dtype=np.int32),
+                bit_stamps=np.zeros(n + 2, dtype=np.int32),
+                perfect_successor=np.empty(n + 1, dtype=np.int32),
+                perfect_successor_stamps=np.zeros(n + 1, dtype=np.int32),
+                late_successor=np.empty(n + 1, dtype=np.int32),
+                late_successor_stamps=np.zeros(n + 1, dtype=np.int32),
             )
-            _WORKSPACE_TLS.workspace = workspace
         return workspace
 
 
-def _admit_first_frontier_workspace(plan: _FirstFrontierWorkspacePlan, *, worker_count: int) -> int:
-    """Fail before allocation when exact reducer scratch cannot fit current physical memory."""
-    workers = max(1, int(worker_count))
-    required = int(plan.bytes_per_thread) * workers
-    available = _first_frontier_available_memory_bytes()
-    if available is None:
-        return required
-    # Preserve 25% of currently available memory for region tables, payloads, GPU/runtime state,
-    # and the OS, capped at 2 GiB on large hosts. The workspace component itself is exact.
-    reserve = min(int(_FRONTIER_SYSTEM_RESERVE_MAX_BYTES), int(available) // 4)
-    budget = max(0, int(available) - int(reserve))
+def admit_workspaces(plan: WorkspacePlan, workers: int) -> None:
+    """Fail before allocating when the workspaces of `workers` threads do not fit the memory available now, less the
+    quarter of it (2 GiB at most) left to the region tables, the frontiers and the rest of the system."""
+    required = plan.bytes_per_thread * workers
+    available = psutil.virtual_memory().available
+    budget = available - min(_SYSTEM_RESERVE_MAX_BYTES, available // 4)
     if required > budget:
         raise MemoryError(
-            "FG first-frontier workspace rejected before allocation: "
-            f"requires {required} bytes for {workers} worker(s), budget {budget} bytes "
-            f"from {available} currently available bytes"
+            f"frontier build workspaces rejected before allocation: {required} bytes for {workers} worker(s), "
+            f"budget {budget} of {available} available bytes"
         )
-    return required
 
 
-def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
-    global _FIRST_ONLY_REDUCER_THREADS
-    previous = int(_FIRST_ONLY_REDUCER_THREADS)
-    _FIRST_ONLY_REDUCER_THREADS = max(1, min(int(max_threads), int(os.cpu_count() or 1)))
-    return previous
+@dataclass(frozen=True, slots=True)
+class SongBuild:
+    """What every kernel run of one song's build reads: the song, each activation's latest reachable Perfect and
+    late-Great hit with its validity (the kernels' prefix tables), the fever-end tables, and the build's settings. A
+    fill below `early_exit_min_fill` plans no early fever exit (producer_batch.early_exit_min_fill)."""
+
+    song: SongArrays
+    activation_hits: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ends: FeverEnds
+    use_forced_great_timing: bool
+    early_exit_min_fill: int
+    workspace_plan: WorkspacePlan
 
 
-def _resolve_first_only_reducer_threads(work_items: int) -> int:
-    return max(1, min(int(work_items), int(_FIRST_ONLY_REDUCER_THREADS)))
+def fill_runs(fills: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The inclusive runs of consecutive integers among `fills` (any order, repeats allowed), as (starts, ends)."""
+    values = np.unique(fills)
+    breaks = np.flatnonzero(np.diff(values) > 1)
+    return np.concatenate((values[:1], values[breaks + 1])), np.concatenate((values[breaks], values[-1:]))
 
 
-def _first_frontier_reducer_executor(max_workers: int) -> concurrent.futures.ThreadPoolExecutor:
-    return concurrent.futures.ThreadPoolExecutor(
-        max_workers=max(1, int(max_workers)),
-        thread_name_prefix="FGFirstFrontier",
-    )
-
-
-def _first_frontier_results_for_precomputed_range(
-    *,
-    context,
-    chunk: list[tuple],
-    start: int,
-    stop: int,
-    real_time_index: np.ndarray,
-    fill_runs: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-    region_table: tuple,
+def reduce_geometries(
+    build: SongBuild, geometries: list[Geometry], runs: tuple[np.ndarray, ...], region_table: tuple[np.ndarray, ...]
 ) -> list[tuple[int, FgResponseFrontierResult]]:
-    """The geometries chunk[start:stop] of one group: `item` = (source index, non-Fever base, raw fill, fever time, then
-    the shared action arrays); `context` is the song's _FirstFrontierGroupContext; `fill_runs` = the Perfect and
-    late-Great fill runs of the group's action table."""
-    workspace = context.workspace_plan.thread_workspace()
-    items = chunk[start:stop]
-    item = items[0]
-    action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
-        np.ascontiguousarray(values, dtype=np.int32) for values in item[4:11]
+    """The frontiers of `geometries`, per source, from one kernel call on the calling thread's workspace. They share
+    one region table and the action table of the first of them; `runs` holds the fill runs of that table's later
+    offsets, then of the offsets a late Great can activate at."""
+    song, ends, table = build.song, build.ends, geometries[0].table
+    workspace = build.workspace_plan.thread_workspace()
+    exit_e = (
+        (ends.perfect_exit_e, ends.late_exit_e)
+        if max(1, ceil(table.raw_fever_fill)) >= build.early_exit_min_fill
+        else (ends.no_exit_e, ends.no_exit_e)
     )
-    canonical = context.canonical
-    early_exits = max(1, int(np.ceil(float(item[2])))) >= int(context.early_exit_min_fill)
+    fever_rows = np.asarray([geometry.fever_row for geometry in geometries], dtype=np.int32)
     rows, offsets, stats, pair_epoch, bit_epoch = _first_frontiers_of_fever_times(
-        (context.n, later_fill.shape[0], action_k.shape[0]),
-        (action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced,
-         first_activation_forced),
-        fill_runs,
-        (context.timestamps, context.perfect_candidate_timestamps, context.great_candidate_timestamps,
-         context.perfect_floor_timestamps, context.great_floor_timestamps, context.late_great_floor_timestamps,
-         context.lanes),
-        (context.prefix_perfect_hit, context.prefix_perfect_valid, context.prefix_late_hit,
-         context.prefix_late_valid, canonical.capped_perfect_edge_e, canonical.capped_late_edge_e,
-         canonical.capped_eg_perfect_e, canonical.capped_eg_late_e,
-         canonical.capped_perfect_exit_e if early_exits else context.no_early_exit_e,
-         canonical.capped_late_exit_e if early_exits else context.no_early_exit_e),
-        (float(item[2]), np.asarray([float(row[3]) for row in items], dtype=np.float64), real_time_index[start:stop],
-         1 if context.use_forced_great_timing else 0),
-        (*region_table[:8], canonical.hit_ends[0], canonical.hit_ends[1]),
+        (song.timestamps.shape[0], table.later_fill.shape[0], table.action_k.shape[0]),
+        table.arrays,
+        runs,
+        (song.timestamps, song.perfect_candidates, song.great_candidates, song.perfect_floor, song.great_floor,
+         song.late_great_floor, song.lanes),
+        (*build.activation_hits, ends.perfect_e, ends.late_e, ends.eg_perfect_e, ends.eg_late_e, *exit_e),
+        (table.raw_fever_fill, ends.fever_times[fever_rows], fever_rows, 1 if build.use_forced_great_timing else 0),
+        (*region_table, ends.perfect_floor_by_hit, ends.great_floor_by_hit),
         (workspace.pair_values, workspace.pair_stamps, workspace.pair_touched, workspace.bit_values,
          workspace.bit_stamps, workspace.perfect_successor, workspace.perfect_successor_stamps,
-         workspace.late_successor, workspace.late_successor_stamps, workspace.reserve_successor_epochs(len(items)),
-         workspace.pair_epoch, workspace.bit_epoch),
+         workspace.late_successor, workspace.late_successor_stamps,
+         workspace.reserve_successor_epochs(len(geometries)), workspace.pair_epoch, workspace.bit_epoch),
     )
-    workspace.store_epochs(int(pair_epoch), int(bit_epoch))
+    workspace.store_epochs(pair_epoch, bit_epoch)
     return [
         (
-            int(row[0]),
+            geometry.source,
             FgResponseFrontierResult(
                 first_frontier=SurfaceRowsFirstFrontier(rows[first:end]),
                 states_evaluated=states,
-                actions=int(later_fill.shape[0]),
+                actions=table.later_fill.shape[0],
                 transitions_evaluated=0,
                 generated_surfaces=generated,
                 retained_surfaces_total=retained,
                 max_state_frontier=largest,
-                non_fever_base=int(row[1]),
+                non_fever_base=geometry.table.non_fever_base,
             ),
         )
-        for row, first, end, (states, generated, retained, largest) in zip(
-            items, offsets[:-1].tolist(), offsets[1:].tolist(), stats.tolist(), strict=True
+        for geometry, first, end, (states, generated, retained, largest) in zip(
+            geometries, offsets[:-1].tolist(), offsets[1:].tolist(), stats.tolist(), strict=True
         )
     ]

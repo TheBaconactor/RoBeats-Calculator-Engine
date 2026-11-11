@@ -39,7 +39,7 @@ if __name__ == "__main__":
     )
     from gear_optimizer.frontier.cache import init_prebuild_worker
     from gear_optimizer.frontier.producer_reducer import (
-        configure_force_greats_response_first_frontier_threads,
+        configure_frontier_build_threads,
     )
 
     w = frontier_prebuild_worker_count()
@@ -50,7 +50,7 @@ if __name__ == "__main__":
     with cf.ProcessPoolExecutor(
         max_workers=w,
         initializer=init_prebuild_worker,
-        initargs=({}, configure_force_greats_response_first_frontier_threads, 1),
+        initargs=({}, configure_frontier_build_threads, 1),
     ) as ex:
         results = list(ex.map(_report_affinity, range(w * 4)))
 

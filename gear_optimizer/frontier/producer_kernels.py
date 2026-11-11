@@ -2933,7 +2933,7 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
     pair_mod = min(n + 1, section_bound * (1 + int(max_eg_width)) + 1)
     pair_size = (n + 1) * pair_mod
     # Workspace capacity guard (fail loud, never resize): the host sizes the per-thread pair
-    # workspaces to a provable song-level pair_mod bound (_song_first_frontier_pair_mod_bound) and the
+    # workspaces to a provable song-level pair_mod bound (producer_reducer.pair_mod_bound) and the
     # Fenwick workspace to n + 2 (the head states' fever-Great counts reach n).
     # If this geometry's true radix ever escaped that bound, numpy's silent slice truncation
     # below would hand the stamp loops short arrays -> out-of-bounds writes under njit. Raise
