@@ -539,11 +539,10 @@ def search_targets(space, tables, fixed, points, vertices, query, found):
 
 
 @jit(nopython=True, cache=True)
-def _plain_score(stats, line_shape, multipliers, points):
+def _plain_score(stats, line_shape, combo, fever, points):
     """About a stat row's all-Perfect score at chart time: its base value x the bound shape of its cell's timeline."""
-    fever_time, fever_fill = min(max(stats[3], 0), MAX_STAT), min(max(stats[4], 0), MAX_STAT)
-    a, e, f, g = line_shape[fever_time * (MAX_STAT + 1) + fever_fill]
-    combo, fever = multipliers
+    cell = min(max(stats[3], 0), MAX_STAT) * (MAX_STAT + 1) + min(max(stats[4], 0), MAX_STAT)
+    a, e, f, g = line_shape[cell, 0], line_shape[cell, 1], line_shape[cell, 2], line_shape[cell, 3]
     cm, fm = min(max(stats[1], 0), MAX_STAT), min(max(stats[2], 0), MAX_STAT)
     base = float(2 * stats[5] + stats[6]) + points[min(max(stats[0], 0), MAX_STAT)]
     return base * (combo[cm] * (a * fever[fm] + e) + f * fever[fm] + g)
@@ -571,15 +570,16 @@ def gem_gaps(found, space, fixed, tables, gaps, greats):
         for kind in range(kinds):
             stats += counts[kind] * gems[kind][:7]
         greats[r] = 2 * stats[5] + 150 if single_color else (4 * stats[5]) // 3 + (2 * stats[6]) // 3 + 150
-        plain = _plain_score(stats, line_shape, (combo, fever), points)
+        plain = _plain_score(stats, line_shape, combo, fever, points)
         best = plain
         for kind in range(kinds):
             if counts[kind] == 0:
                 continue
             for other in range(kinds):
                 if other != kind and (other < 5 or other == row[15]):
-                    trial[:] = stats - gems[kind][:7] + gems[other][:7]
-                    best = max(best, _plain_score(trial, line_shape, (combo, fever), points))
+                    for d in range(7):
+                        trial[d] = stats[d] - gems[kind, d] + gems[other, d]
+                    best = max(best, _plain_score(trial, line_shape, combo, fever, points))
         gaps[r] = (best - plain) / plain
 
 
@@ -600,13 +600,14 @@ def line_gaps(lines, gems, tables, gaps):
             continue
         stats[0], stats[1], stats[2], stats[3], stats[4] = row[7], row[1], row[2], row[3], row[4]
         stats[5], stats[6] = 0, row[5] - int(points[row[7]])
-        plain = _plain_score(stats, line_shape, (combo, fever), points)
+        plain = _plain_score(stats, line_shape, combo, fever, points)
         best = plain
         for kind in range(2, kinds):
             for other in range(kinds):
                 if other != kind:
-                    trial[:] = stats - gems[kind][:7] + gems[other][:7]
-                    best = max(best, _plain_score(trial, line_shape, (combo, fever), points))
+                    for d in range(7):
+                        trial[d] = stats[d] - gems[kind, d] + gems[other, d]
+                    best = max(best, _plain_score(trial, line_shape, combo, fever, points))
         gaps[r] = (best - plain) / plain
 
 
