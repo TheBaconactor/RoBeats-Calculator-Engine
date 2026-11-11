@@ -380,13 +380,13 @@ def shortfalls(items, starts, prices):
 
 @jit(nopython=True, cache=True)
 def _walk_exact(space, arrays, query, scratch, found, budget):
-    """The loadouts of one opening, into found (rows: 9 item indices, 7 gem values); returns (rows, items tried), budget + 1
-    tried when it stopped early. query: (final stats, fixed row, value left, shortfalls and their item order, the bound's
-    slack). A walk never enters a sum the layers do not hold, gives up at most the slack, and keeps every stat within
-    what the slots left and the gems can still add."""
+    """The loadouts of one opening whose items give up more than `least` and at most `most`, into found (rows: 9 item
+    indices, 7 gem values); returns (rows, items tried, whether the walk reached its end: found full or the budget spent ends
+    it early). query: (final stats, fixed row, value left, shortfalls and their item order, least, most). A walk never enters a
+    sum the layers do not hold and keeps every stat within what the slots left and the gems can still add."""
     items, starts, gems = space
     values, removed, add, layers, lows, highs, element_row = arrays
-    target, fixed, value, short, order, slack = query
+    target, fixed, value, short, order, least, most = query
     positions, partial, left, mods, given, chosen = scratch
     levels = layers.shape[0] - 1
     mini_level = starts.shape[0] - 2
@@ -398,30 +398,31 @@ def _walk_exact(space, arrays, query, scratch, found, budget):
     tried = written = depth = 0
     while True:
         if depth == levels:
-            if written == found.shape[0]:
-                return written, budget + 1
-            row = found[written]
-            row[:levels] = chosen
-            spent = 0
-            for d in range(5):
-                row[levels + d] = (target[d] - partial[depth, d]) // gems[d, d]
-                spent += row[levels + d]
-            row[levels + 5] = GEM_BUDGET - spent
-            row[levels + 6] = element_row
-            written += 1
+            if given[depth] > least:
+                if written == found.shape[0]:
+                    return written, tried, False
+                row = found[written]
+                row[:levels] = chosen
+                spent = 0
+                for d in range(5):
+                    row[levels + d] = (target[d] - partial[depth, d]) // gems[d, d]
+                    spent += row[levels + d]
+                row[levels + 5] = GEM_BUDGET - spent
+                row[levels + 6] = element_row
+                written += 1
             depth -= 1
             continue
         at = positions[depth]
         i = order[at] if at < starts[min(depth, mini_level) + 1] else -1
-        if i < 0 or given[depth] + short[i] > slack:
+        if i < 0 or given[depth] + short[i] > most:
             if depth == 0:
-                return written, tried
+                return written, tried, True
             depth -= 1
             continue
         positions[depth] = at + 1
         tried += 1
         if tried > budget:
-            return written, tried
+            return written, tried, False
         rest = left[depth] - values[i]
         residue_left = add[mods[depth], removed[i]]
         if rest < 0 or not (layers[depth + 1, residue_left, rest >> 6] >> np.uint64(rest & 63)) & np.uint64(1):
@@ -470,72 +471,118 @@ def lowest_at(space, fixed, points, stats, prices, steps):
 
 
 @jit(nopython=True, cache=True)
-def search_targets(space, tables, fixed, points, vertices, query, found):
-    """The loadouts of target rows (surface, CM, FM, FT, FF, base, vertex, Perfect Points stat or negative) in order, into
-    found (rows: 9 item indices, 7 gem values, target, fixed row), until `limit` targets hold loadouts or the work budget
-    ends; returns (rows, targets reached, whether every target was searched to its end). The vertex prices the target's walks.
-    A target no subset sum holds costs its openings alone. query: (targets, Gear Power or negative, limit, budget, items a target may
-    try, work per target with openings, rows per target)."""
+def _search_scratch(levels, stats):
+    """What a target's walks work in: its final stats, its openings, and _walk_exact's rows."""
+    return (
+        np.zeros(5, dtype=np.int64), np.empty((stats, 2), dtype=np.int64),
+        (
+            np.empty(levels + 1, dtype=np.int64), np.empty((levels + 1, 7), dtype=np.int64), np.empty(levels + 1, dtype=np.int64),
+            np.empty(levels + 1, dtype=np.int64), np.empty(levels + 1), np.empty(levels, dtype=np.int64),
+        ),
+    )
+
+
+@jit(nopython=True, cache=True)
+def _target_loadouts(space, tables, fixed, points, vertices, query, scratch, found):
+    """The loadouts of one target row (surface, CM, FM, FT, FF, base, vertex, Perfect Points stat or negative) whose items give
+    up more than `least` and at most `most` at the vertex's prices, on every element row and TeamBuff, into found (rows: 9 item
+    indices, 7 gem values, a free place, fixed row). Returns (rows, items tried, whether every walk reached its end, whether a
+    walk started, the most any of its openings may give up). A walk cut short, by found or by the items the target may try, ends
+    the target and counts for all of those items. The vertex prices the walks; a target no subset sum holds costs its openings
+    alone. query: (target, Gear Power or negative, least, most, items it may try)."""
     items, starts, gems = space
     element_rows, values, floors, layers, table_prices, removed, add, lows, highs = tables
     vertex_values, vertex_prices = vertices
+    target, power, least, most, allowed = query
+    final, openings, walk = scratch
+    base = target[5]
+    prices = vertex_prices[target[6]]
+    bound = vertex_values[target[6]]
+    for d in range(1, 5):
+        final[d] = target[d]
+        bound -= prices[d] * target[d]
+    first_stat, last_stat = (0, points.shape[0] - 1) if target[7] < 0 else (target[7], target[7])
+    gift = _gift(fixed, prices[0])
+    best_points = points_conjugate(points, prices[0])[0]
+    short = np.empty(0)
+    order = np.empty(0, dtype=np.int64)
+    ranked = False
+    tried = written = 0
+    whole = True
+    reach = -1.0
+    for e in range(element_rows.shape[0]):
+        arrays = (floors[e], layers[e, 0], table_prices[e], element_rows[e])
+        walk_arrays = (values[e], removed, add, layers[e], lows, highs, element_rows[e])
+        for f in range(fixed.shape[0]):
+            slack = bound - gift + 2.0 * fixed[f, 5] + fixed[f, 6] + prices[0] * fixed[f, 0] - base
+            if slack < 0.0:
+                continue
+            count = _openings(arrays, gems, points, (final, base, power, fixed[f], first_stat, last_stat), openings)
+            for k in range(count):
+                stat, value = openings[k, 0], openings[k, 1]
+                room = slack - best_points + points[stat] - prices[0] * stat
+                if room < 0.0:
+                    continue
+                reach = max(reach, room)
+                if room <= least:
+                    continue
+                if tried > allowed:
+                    whole = False
+                    continue
+                if not ranked:
+                    short, order = shortfalls(items, starts, prices)
+                    ranked = True
+                final[0] = stat
+                rows, used, done = _walk_exact(space, walk_arrays, (final, fixed[f], value, short, order, least, min(room, most)), walk, found[written:], allowed - tried)
+                whole = whole and done
+                found[written : written + rows, 17] = f
+                written += rows
+                tried = tried + used if done else allowed + 1
+    return written, tried, whole, ranked, reach
+
+
+@jit(nopython=True, cache=True)
+def search_targets(space, tables, fixed, points, vertices, query, found):
+    """The loadouts of target rows (surface, CM, FM, FT, FF, base, vertex, Perfect Points stat or negative) in order, into
+    found (rows: 9 item indices, 7 gem values, target, fixed row), until `limit` targets hold loadouts or the work budget
+    ends; returns (rows, targets reached, whether every target was searched to its end). query: (targets, Gear Power or
+    negative, limit, budget, items a target may try, work per target with openings, rows per target)."""
     targets, power, limit, budget, per_target, setup, rows_per_target = query
-    levels = layers.shape[1] - 1
-    scratch = (
-        np.empty(levels + 1, dtype=np.int64), np.empty((levels + 1, 7), dtype=np.int64), np.empty(levels + 1, dtype=np.int64),
-        np.empty(levels + 1, dtype=np.int64), np.empty(levels + 1), np.empty(levels, dtype=np.int64),
-    )
-    final = np.zeros(5, dtype=np.int64)
-    openings = np.empty((points.shape[0], 2), dtype=np.int64)
-    short = np.empty(items.shape[0])
-    order = np.empty(items.shape[0], dtype=np.int64)
+    scratch = _search_scratch(tables[3].shape[1] - 1, points.shape[0])
     work = written = held = 0
     complete = True
     for t in range(targets.shape[0]):
         if held >= limit or work > budget:
             return written, t, False
-        base = targets[t, 5]
-        prices = vertex_prices[targets[t, 6]]
-        bound = vertex_values[targets[t, 6]]
-        for d in range(1, 5):
-            final[d] = targets[t, d]
-            bound -= prices[d] * targets[t, d]
-        first_stat, last_stat = (0, points.shape[0] - 1) if targets[t, 7] < 0 else (targets[t, 7], targets[t, 7])
-        gift = _gift(fixed, prices[0])
-        best_points = points_conjugate(points, prices[0])[0]
-        ranked = False
-        walked = 0
-        before = written
-        for e in range(element_rows.shape[0]):
-            arrays = (floors[e], layers[e, 0], table_prices[e], element_rows[e])
-            walk_arrays = (values[e], removed, add, layers[e], lows, highs, element_rows[e])
-            for f in range(fixed.shape[0]):
-                slack = bound - gift + 2.0 * fixed[f, 5] + fixed[f, 6] + prices[0] * fixed[f, 0] - base
-                if slack < 0.0:
-                    continue
-                count = _openings(arrays, gems, points, (final, base, power, fixed[f], first_stat, last_stat), openings)
-                for k in range(count):
-                    stat, value = openings[k, 0], openings[k, 1]
-                    room = slack - best_points + points[stat] - prices[0] * stat
-                    allowed = per_target - walked
-                    if room < 0.0 or allowed < 0:
-                        complete = complete and room < 0.0
-                        continue
-                    if not ranked:
-                        short, order = shortfalls(items, starts, prices)
-                        ranked = True
-                        work += setup
-                    final[0] = stat
-                    rows_left = min(rows_per_target - (written - before), found.shape[0] - written)
-                    rows, used = _walk_exact(space, walk_arrays, (final, fixed[f], value, short, order, room), scratch, found[written : written + rows_left], allowed)
-                    complete = complete and used <= allowed
-                    found[written : written + rows, 16] = t
-                    found[written : written + rows, 17] = f
-                    written += rows
-                    walked += used
-        work += walked
-        held += written > before
+        room = min(rows_per_target, found.shape[0] - written)
+        rows, tried, whole, opened, _reach = _target_loadouts(space, tables, fixed, points, vertices, (targets[t], power, -1.0, np.inf, per_target), scratch, found[written : written + room])
+        found[written : written + rows, 16] = t
+        written += rows
+        complete = complete and whole
+        work += setup * opened + tried
+        held += rows > 0
     return written, targets.shape[0], complete
+
+
+@jit(nopython=True, cache=True)
+def likeliest_loadouts(space, tables, fixed, points, vertices, query, found):
+    """The loadouts of one target row whose items give up least at its vertex prices: band after band of doubling shortfall
+    from `step`, into found (search_targets' rows, the band in the target's place), until found is full, a band passes what
+    the target's openings may give up, or the work budget ends; returns the rows. query: (target, Gear Power or negative,
+    the first band's width, items it may try)."""
+    target, power, step, allowed = query
+    scratch = _search_scratch(tables[3].shape[1] - 1, points.shape[0])
+    least, most = -1.0, step
+    written = tried = band = 0
+    while written < found.shape[0] and tried <= allowed:
+        rows, used, _whole, _opened, reach = _target_loadouts(space, tables, fixed, points, vertices, (target, power, least, most, allowed - tried), scratch, found[written:])
+        found[written : written + rows, 16] = band
+        written += rows
+        tried += used
+        if most >= reach:
+            break
+        least, most, band = most, most * 2.0, band + 1
+    return written
 
 
 @jit(nopython=True, cache=True)
