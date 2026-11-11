@@ -13,8 +13,10 @@ Cost: O(E log n) per (Fever Time, Fever Fill) cell for E reachable ends, ~12 on 
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+import numba
 import numpy as np
 
 from gear_optimizer.chart import Chart
@@ -36,6 +38,12 @@ _STATE_ROWS = 1 << 15
 _GREAT_STATE_ROWS = 1 << 11
 # The sets a body state's fevers keep apart: a window that may or may not fit before the song's end parts them by its notes.
 _BODY_SETS = 8
+# A cell's walk reads nothing of another cell's and the kernel holds no GIL, so the grid is walked _WALK_ROWS Fever Times a
+# turn on threads: as many as numba may use (NUMBA_NUM_THREADS, by default the machine's cores) up to the M4's four
+# performance cores. Past them the wall time barely falls and the CPU time grows: five charts' walks at 8 Greats, wall / CPU
+# ms, on 1 thread 1,460 / 1,460, on 2 865 / 1,516, on 4 560 / 1,582, on 6 517 / 1,913, on 10 511 / 2,192.
+_WALK_ROWS = 8
+_WALKERS = ThreadPoolExecutor(max_workers=min(4, numba.config.NUMBA_NUM_THREADS), thread_name_prefix="fever-walk")
 
 
 def event_times(chart: Chart, perfect_time: int, greats: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -369,15 +377,15 @@ def fever_span(times, fills, duration):
 
 
 @jit(nopython=True, cache=True)
-def _walk_grid(times, greats, fills, durations, budget):
-    """walk_cell over every (Fever Time, Fever Fill) cell: rows (mask low, mask high, body fever, cell). With Greats a cell
-    whose head states overflow their table is left out (none on the dev charts at 8 Greats)."""
+def _walk_grid(times, greats, fills, durations, budget, span):
+    """walk_cell over the (Fever Time, Fever Fill) cells of Fever Times span[0] to span[1] - 1: rows (mask low, mask high, body
+    fever, cell). With Greats a cell whose head states overflow their table is left out (none on the dev charts at 8 Greats)."""
     out = np.empty((1 << 12, 5), dtype=np.int64)
     scratch = walk_scratch(times[0].shape[0], budget, _STATE_ROWS if budget == 0 else _GREAT_STATE_ROWS)
-    expanded = np.empty((1 << 18, 4), dtype=np.int64)
+    expanded = np.empty((1 << 14, 4), dtype=np.int64)
     ends = np.empty((times[0].shape[0], 6), dtype=np.int64)
     used = 0
-    for ft in range(durations.shape[0]):
+    for ft in range(span[0], span[1]):
         ends[:] = -1
         for ff in range(fills.shape[0]):
             cell = ft * fills.shape[0] + ff
@@ -441,8 +449,11 @@ def pattern_words(low: np.ndarray, high: np.ndarray) -> np.ndarray:
 def fever_surfaces(chart: Chart, curves: StatCurves, perfect_time: int, greats: int = 0) -> FeverSurfaces:
     """The timelines of every cell of `chart` of a play at this Perfect Time with at most `greats` Greats."""
     durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
-    times = event_times(chart, perfect_time), great_times(chart, perfect_time)
-    rows = _walk_grid(*times, thresholds.astype(np.float64), durations * 1000.0, greats)
+    walk = event_times(chart, perfect_time), great_times(chart, perfect_time), thresholds.astype(np.float64), durations * 1000.0, greats
+    # The first Fever Time is walked alone: numba resolves a kernel's argument types once per process, and two threads at that
+    # at once abort it. The turns' rows in Fever Time order are the rows of one walk of the grid.
+    spans = [(ft, min(ft + _WALK_ROWS, durations.shape[0])) for ft in range(1, durations.shape[0], _WALK_ROWS)]
+    rows = np.concatenate((_walk_grid(*walk, (0, 1)), *_WALKERS.map(lambda span: _walk_grid(*walk, span), spans)))
     first, ids, order = _distinct((rows[:, 0], rows[:, 1], rows[:, 2]))
     patterns, pattern_ids, _order = _distinct((rows[first, 0], rows[first, 1]))
     words = pattern_words(rows[first[patterns], 0], rows[first[patterns], 1])
