@@ -5,7 +5,7 @@ running, never for a turn on the solve worker's executor, and it runs at normal 
 background. Its main thread is its GPU owner, as macOS asks. Prepared songs stay warm, the most recently used first.
 
 A request with "prepare" readies its song, and with an accuracy the walk a lookup at that accuracy starts with: the website
-sends it while the player types the row. The process compiles its GPU kernels on one lookup before it reads a request.
+sends it while the player types the row. The process compiles its kernels on lookups of its own before it reads a request.
 """
 
 from __future__ import annotations
@@ -15,17 +15,26 @@ import json
 import os
 import sys
 from collections import OrderedDict
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
+
+import numpy as np
 
 from gear_optimizer.chart import load_chart
 from gear_optimizer.data.game_export import Catalog, load_catalog
+from gear_optimizer.frontier.types import FgResponseSurface
 from gear_optimizer.gamedata import StatCurves, stat_curves
+from gear_optimizer.score import factors, fg_surface_score
 from gear_optimizer.settings import paths
 
+from .loadouts import PRICED
 from .lookup import PlayInfo, ReverseSong, prepare_song, reverse_score, warm_song
+from .partial_sets import guess_set
 
 _SONGS_KEPT = 8
+# The share of a song's top the start-up lookup asks about: a bare score there was some released set's on 24 of 24 charts
+# spread over the catalog's sizes (21 at 0.97, 12 at 0.98, 1 at 0.99).
+_WARM_HEIGHT = 0.95
 
 
 def _song(path: str, songs: OrderedDict[str, ReverseSong], catalog: Catalog, curves: StatCurves) -> ReverseSong:
@@ -47,11 +56,21 @@ def answer(request: dict[str, Any], songs: OrderedDict[str, ReverseSong], catalo
 
 
 def _compile_kernels(catalog: Catalog, curves: StatCurves) -> None:
-    """One lookup at the top of the shortest Easy chart: the first lookup of a process compiles every GPU kernel, ~1 s."""
-    charts = sorted(paths().chart_dir("Easy").glob("*.txt"), key=lambda path: path.stat().st_size)
-    if charts:
-        song = prepare_song(load_chart(str(charts[0])), catalog, curves)
-        reverse_score(PlayInfo(int(song.top)), song)
+    """Lookups on the first Easy chart that reach the lookup's kernels, so no player's lookup compiles one (the GPU's take ~1 s,
+    numba's of the files a deploy changed half a minute): a bare score a little under the chart's top, where released sets
+    play; the first set it names played with Greats on its first four head notes, placed by its Casual score and then by its
+    Gear Multiplier, which leaves the hundreds of places the narrow rows pass takes; and a guess below max level. Left for a
+    player's lookup: the hit order of a Force Great plan (trace.hit_schedule.input_order), which no made-up play reaches."""
+    chart = load_chart(min(paths().chart_dir("Easy").glob("*.txt")))
+    song = prepare_song(chart, catalog, curves)
+    for found in reverse_score(PlayInfo(int(_WARM_HEIGHT * song.top)), song).sets[:1]:
+        power = 5 * sum(found.stats[stat] for stat in PRICED) + 4 * found.stats[chart.primary] + 2 * found.stats[chart.secondary]
+        score = fg_surface_score(factors(found.stats, curves, chart.primary, chart.secondary), found.surface._replace(great0=15), chart.total_notes)
+        casual = fg_surface_score(song.naked, FgResponseSurface(*song.chart_head[0].tolist(), 15, 0, 0, 0, int(song.chart_fever[0]), 0), chart.total_notes)
+        played = PlayInfo(score, 100.0 - 100.0 / chart.total_notes, casual, None, power)
+        reverse_score(played, song)
+        reverse_score(replace(played, casual_score=None, gear_multiplier=round(score / casual, 2)), song)
+    guess_set(song.partial, np.zeros(6, dtype=np.int64), 1)
 
 
 def main() -> int:

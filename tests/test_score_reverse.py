@@ -271,6 +271,59 @@ def test_the_lookup_worker_answers_each_line_and_outlives_a_bad_request(song):
         worker.wait(timeout=30)
 
 
+_WORKER_PROBE = """
+import json, sys
+import numba
+from gear_optimizer.reverse import gpu_lines, worker
+
+
+def compiled():
+    counts = {f"{name}.{key}": len(value.signatures) for name, module in sys.modules.items() if name.startswith("gear_optimizer.reverse.")
+              for key, value in vars(module).items() if isinstance(value, numba.core.dispatcher.Dispatcher)}
+    counts.update({key: len(value._primal.compiled_kernels) for key, value in vars(gpu_lines).items() if hasattr(value, "_primal")})
+    return counts
+
+
+class Requests:
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __iter__(self):
+        self.before = compiled()
+        return iter(self.lines)
+
+
+sys.stdin = requests = Requests(sys.stdin.read().splitlines())
+worker.main()
+after = compiled()
+print(json.dumps({"idle": sorted(key for key, count in requests.before.items() if "." not in key and not count), "late": sorted(key for key in after if after[key] != requests.before[key])}))
+"""
+
+
+def test_the_lookup_worker_compiles_its_kernels_before_it_reads_a_request(song):
+    """When the worker starts to read requests every GPU kernel of the lookup has run, and a stored build's score, a play with
+    Greats and a row below max level then compile no kernel of the lookup: after a deploy no player waits for a compiler."""
+    chart = song.chart
+    offsets = np.zeros(chart.total_notes)
+    offsets[0], offsets[19] = 60.0, 140.0
+    great = _simulated(song, STORED, Plan(offsets))
+    player = fake_player(random.Random(1), song, dict(load_catalog(paths().game_export).minis), "casual", "machine")
+    below = play(chart, player.stats, player.perfect_time, Plan(np.zeros(chart.total_notes)), np.arange(-1000.0, float(chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0))
+    path = str(paths().chart_dir("Easy") / CHART)
+    requests = [{"chartPath": path, "score": 4_666_274}] + [
+        {"chartPath": path, "score": played.score, "accuracy": round(played.accuracy * 100.0, 2), "casualScore": played.casual, "gearPower": gear_power(stats, chart)}
+        for played, stats in ((great, STORED), (below, player.stats))
+    ]
+    done = subprocess.run(
+        [sys.executable, "-c", _WORKER_PROBE], input="".join(json.dumps(request) + "\n" for request in requests), capture_output=True, text=True,
+        env={**os.environ, "EVOLUTION_DB_PATH": "/nonexistent"}, timeout=900,
+    )
+    *answers, probe = map(json.loads, done.stdout.splitlines())
+    assert [answer["reverse"]["verdict"] for answer in answers] == ["sets", "sets", "sets"]
+    assert any(row["mini_states"] for row in answers[2]["reverse"]["sets"])
+    assert probe == {"idle": [], "late": []}
+
+
 def test_warming_a_song_changes_no_answer(song):
     """warm_song walks ahead every timeline a lookup at that accuracy may read, near chart time and wide, since only the score
     tells which: the lookup after it walks nothing more and answers byte for byte the same."""
