@@ -76,7 +76,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
-    from gear_optimizer.frontier.fill_crossing import server_fill_crossing_run
+    from tests.parity.force_greats.fill_crossing_walk import server_fill_crossing_run
     from tests.fg_response_frontier_oracles import (
         _combine_surfaces,
         _reduce_surfaces,

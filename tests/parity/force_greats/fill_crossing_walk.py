@@ -4,13 +4,14 @@
 Great half of it) and activates on the first note whose own fill takes the bar to full; ``server_fill_crossing_fast``
 is the same answer by prefix sum + searchsorted; ``server_fever_end`` is the canonical drain; and
 ``canonical_fever_sections`` steps a whole timeline with them. Production never calls these: its O(1) closed forms
-(``server_fill_crossing_run``, ``late_great_prefix_is_legal``, ``action_table``'s ``ceil(raw + 0.5k)``) are proven
-bit-exact against them in tests/test_fg_fill_crossing.py. The module docstring of fill_crossing.py explains the
-model.
+(the ``_numba_fill_crossing_run`` kernel, ``late_great_prefix_is_legal``, ``action_table``'s ``ceil(raw + 0.5k)``) are
+proven bit-exact against them in tests/test_fg_fill_crossing.py. ``server_fill_crossing_run`` is that kernel's reference
+in plain Python. The module docstring of fill_crossing.py explains the model.
 """
 
 from __future__ import annotations
 
+from math import ceil
 from typing import Sequence
 
 import numpy as np
@@ -204,3 +205,67 @@ def canonical_fever_sections(
         sections.append((int(activation), int(fever_end)))
         state = int(fever_end) + 1  # skip the wasted note at fever_end; the bar resets after it
     return sections
+
+
+def server_fill_crossing_run(
+    start: int,
+    great_run_start: int,
+    k: int,
+    fever_fill_denom: float,
+    n: int,
+) -> tuple[int | None, bool]:
+    """O(1) crossing for the PRODUCTION placement — Perfects + one contiguous forced-Great run.
+
+    This is the search hot-path form. The FG search forces ``k`` Greats **contiguously** from
+    ``great_run_start`` (body Greats beyond the crossing don't affect it); BASE is ``k == 0``. So the
+    whole placement the crossing depends on is "all Perfect except a run ``[g0, g0+k)`` of Greats",
+    and the crossing is **O(1)** — no per-candidate ``O(n)`` prefix, no ``O(log n)`` search. It costs
+    the same as the old ``state_i + ceil(raw + 0.5*k)`` it replaces, but it is *correct*: the bar (in
+    perfect-units from ``start``) reaches ``denom`` in exactly one of three places relative to the run,
+    each a single ``ceil``:
+
+        region 1  i = start + ceil(D) - 1                        if that i < g0   -> a Perfect
+        region 2  i = g0 - 1 + ceil(2*(D - (g0 - start)))        if i < g0 + k    -> a GREAT
+        region 3  i = (g0 + k) - 1 + ceil(D - (g0 - start) - 0.5*k)   otherwise   -> a Perfect
+
+    Returns ``(crossing_index, is_great_at_crossing)`` or ``(None, False)`` if the bar never fills
+    before note ``n``. **Proven bit-exact** against the ``server_fill_crossing`` walk (ground truth)
+    AND ``server_fill_crossing_fast`` on 60k randomized runs across all three regions + base + the clip
+    edges (run before ``start`` / past ``n``). Same off-knife-edge caveat as the searchsorted form
+    (both compare perfect-units to ``denom``; the ScoreEngine's accumulated bar agrees except at
+    measure-zero float boundaries). Pure ints + ``math.ceil`` — numba/Taichi-portable, so this is the
+    form to wire into the kernel (NOT the searchsorted).
+    """
+    s = int(start)
+    g0 = int(great_run_start)
+    k = int(k)
+    D = float(fever_fill_denom)
+    N = int(n)
+    if D <= 0.0:
+        raise ValueError("fever_fill_denom must be > 0 (a real fill denominator)")
+    # Clip the Great run to the accumulating region [s, N): Greats before the section start or past
+    # the chart do not accumulate.
+    run_lo = g0 if g0 > s else s
+    run_hi = g0 + k if g0 + k < N else N
+    if run_hi <= run_lo:  # no Greats accumulate (base, or the run lies outside [s, N))
+        i = s + ceil(D) - 1
+        return (i, False) if i < N else (None, False)
+    g0 = run_lo
+    k = run_hi - run_lo
+    perfects_before = g0 - s  # notes [s, g0-1], all Perfect
+
+    # region 1 -- crossing is a Perfect before the run
+    i = s + ceil(D) - 1
+    if i < g0:
+        return (i, False) if i < N else (None, False)
+
+    # region 2 -- crossing lands ON a Great inside the run
+    i = g0 - 1 + ceil(2.0 * (D - perfects_before))
+    if i < g0 + k:
+        if i < g0:
+            i = g0
+        return (i, True) if i < N else (None, False)
+
+    # region 3 -- crossing is a Perfect after the run
+    i = (g0 + k) - 1 + ceil(D - perfects_before - 0.5 * k)
+    return (i, False) if i < N else (None, False)
