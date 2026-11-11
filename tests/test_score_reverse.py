@@ -348,25 +348,34 @@ def test_a_named_sets_hits_replay_the_rows_score(song):
     assert (replayed.score, replayed.casual) == (played.score, played.casual)
 
 
+def _row_with_greats(song, catalog, rng, greats):
+    """The Play Info of a simulated player's full combo with this many Greats, on taps past the head."""
+    player = fake_player(rng, song, dict(catalog.minis), "any", "average")
+    taps = np.flatnonzero(song.chart.note_types == 1)
+    offsets = np.zeros(song.chart.total_notes)
+    offsets[rng.sample(sorted(taps[taps >= 100].tolist()), greats)] = float(np.floor(judgment_edges(player.perfect_time)[2])) + 1.0
+    clock = frame_clock(np.random.default_rng(0), float(song.chart.timestamps[-1]) * 1000.0, 240.0, 0.0)
+    played = play(song.chart, player.stats, player.perfect_time, Plan(offsets), clock)
+    assert played.great == greats
+    return play_info(played, gear_power(player.stats, song.chart), "Compete")
+
+
 def test_near_timelines_walked_for_eight_greats_do_not_serve_more(song):
     """The near timelines of up to _GREATS_WALKED Greats share a cell's head with its chart-time timeline; more need not.
     Both used to sit in one cache slot keyed by the walk alone, so whichever Great count looked up first served the other
     and a row's answer turned on which rows the song had already seen."""
     catalog = load_catalog(paths().game_export)
-
-    def row(rng, greats):
-        player = fake_player(rng, song, dict(catalog.minis), "any", "average")
-        taps = np.flatnonzero(song.chart.note_types == 1)
-        offsets = np.zeros(song.chart.total_notes)
-        offsets[rng.sample(sorted(taps[taps >= 100].tolist()), greats)] = float(np.floor(judgment_edges(player.perfect_time)[2])) + 1.0
-        clock = frame_clock(np.random.default_rng(0), float(song.chart.timestamps[-1]) * 1000.0, 240.0, 0.0)
-        played = play(song.chart, player.stats, player.perfect_time, Plan(offsets), clock)
-        assert played.great == greats
-        return play_info(played, gear_power(player.stats, song.chart), "Compete")
-
-    eight, more = row(random.Random(75), 8), row(random.Random(3), 14)
+    eight, more = _row_with_greats(song, catalog, random.Random(75), 8), _row_with_greats(song, catalog, random.Random(3), 14)
     answers = []
     for pair in ((("eight", eight), ("more", more)), (("more", more), ("eight", eight))):
         fresh = prepare_song(song.chart, catalog, song.curves)
         answers.append({name: asdict(reverse_score(r, fresh)) for name, r in pair})
     assert answers[0] == answers[1]
+
+
+def test_a_row_that_lost_more_than_sixteen_quarters_gets_no_line_and_no_set(song):
+    """With 20 Greats a row has too many exact lines for its own to be told (none was listed on the dev benchmark's 220 rows
+    past 16 lost quarters, and 118 of them showed lines or sets): the lookup does not search it, and says only that an honest
+    play reaches the score."""
+    reply = reverse_score(_row_with_greats(song, load_catalog(paths().game_export), random.Random(5), 20), song)
+    assert (reply.verdict, reply.sets, reply.stat_lines, reply.lines) == ("unresolved", (), (), 0)

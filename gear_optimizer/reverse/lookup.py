@@ -98,9 +98,11 @@ _FIRST_BAND = 0.005
 _SHORTFALL_COST = 0.5
 _SCRATCH_ROWS = 1 << 15
 _PREFERRED_TIER = "T5"
-# The most Greats a lookup searches, the most whose timelines it walks, and past those how far from a walked timeline it looks:
-# a dev run's most, 4 notes up to 64 Greats, doubled.
-_GREATS_SEARCHED = 64
+# The most Greats a lookup searches: a row that lost more quarters of accuracy has too many lines to tell its own (of 220 such
+# dev rows up to 64 quarters none had its true line listed, 79 showed sets and 39 lines, for a third of all lookup time). The
+# most whose timelines it walks, and past those how far from a walked timeline it looks: a dev run's most, 4 notes up to 64
+# Greats, doubled.
+_GREATS_SEARCHED = 16
 _GREATS_WALKED = 8
 # The gear combinations partial_sets may visit per Great count of a lookup and per line, ~1 us each: most guesses that fit take
 # under 30,000, and a line no guess fits takes all of its share.
