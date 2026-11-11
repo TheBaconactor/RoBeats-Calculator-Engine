@@ -269,7 +269,9 @@ def test_run_form_is_oracle_approved_against_walk_and_fast():
         assert (run[0] if run[0] is not None else -1) == (fast if fast is not None else -1)
 
 
-def test_zero_denominator_fails_loud():
+def test_run_form_zero_denominator_fails_loud():
+    with pytest.raises(ValueError):
+        server_fill_crossing_run(0, 2, 1, 0.0, 20)
     # The crossing kernel itself takes any denominator; what feeds it one rejects a zero.
     with pytest.raises(ValueError):
         _numba_region2_offset_for_count(0, 1, 0.0, 20)
