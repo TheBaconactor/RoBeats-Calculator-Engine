@@ -206,8 +206,8 @@ class ReverseSong:
 
     @cached_property
     def widest(self) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], np.ndarray, list[float]]:
-        """What the widest Perfect window needs, built when a lookup first does: its walk as score_ceiling reads it, its surfaces'
-        relief, and the ceiling of a build with each count of _TIME_GEM_COUNTS Perfect Time gems."""
+        """What the widest Perfect window needs, built when a prepare or a lookup first asks: its walk as score_ceiling reads
+        it, its surfaces' relief, and the ceiling of a build with each count of _TIME_GEM_COUNTS Perfect Time gems."""
         surfaces = _walked(self, _WIDEST_PERFECT_TIME)
         arrays = surfaces.coeffs, surfaces.pattern, surfaces.body_fever
         relief = _cell_relief(surfaces.cell_start, surfaces.cells, self.vertex_prices)
