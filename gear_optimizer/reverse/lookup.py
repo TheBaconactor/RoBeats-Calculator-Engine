@@ -27,7 +27,7 @@ from gear_optimizer.core.team_buff import TEAM_BUFF_TIER_ORDER, team_buff_effect
 from gear_optimizer.data.game_export import Catalog
 from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
 from gear_optimizer.frontier.types import FgResponseSurface
-from gear_optimizer.gamedata import ELEMENTS, Mini, SongMini, StatCurves, empty_stats, song_minis, worn_mini_stats
+from gear_optimizer.gamedata import ELEMENTS, Mini, SongMini, StatCurves, empty_stats, perfect_time_of, song_minis, worn_mini_stats
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT
 from gear_optimizer.score import HEAD_NOTES, Factors, factors, fg_surface_score
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
@@ -875,7 +875,12 @@ def reverse_score(play: PlayInfo, song: ReverseSong, *, limit: int = 8) -> Rever
         more, stat_lines, lines, done = _sets_of(play, song, greats, limit)
         found, listed, count, finished = found + more, listed + stat_lines, count + lines, finished and done
     found.sort(key=lambda row: row.cost)
-    found = [replace(row, hits=play_offsets(song.chart, song.curves, song.gears, row.gear, row.stats, row.surface)) for row in found]
+    plays: dict[tuple, dict[int, float] | None] = {}  # sets of one line share their play
+    for at, row in enumerate(found):
+        play_key = row.surface, row.stats["Fever Time"], row.stats["Fever Fill Rate"], perfect_time_of(row.gear, song.gears)
+        if play_key not in plays:
+            plays[play_key] = play_offsets(song.chart, song.curves, *play_key)
+        found[at] = replace(row, hits=plays[play_key])
     listed = sorted(listed, key=lambda line: line.cost)[:limit]
     evidence = _casual_evidence(play, song, lost)
     if evidence is None and not found and lost[1] == 0 and count == 0 and finished and play.gear_power is not None and play.accuracy is not None and play.match_mode == "Compete":
