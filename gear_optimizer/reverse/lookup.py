@@ -337,9 +337,10 @@ def _timelines_of(song: ReverseSong, greats: int, near: bool, perfect_time: int 
 
 
 def warm_song(song: ReverseSong, accuracy: float | None) -> None:
-    """Ahead of a lookup, the walk it may need at this accuracy: each Great count's timelines near chart time and on every
-    timeline (_sets_of), so the lookup itself only searches. It changes no answer: lookups walk the same timelines, once per
-    song."""
+    """Ahead of a lookup, the walks it may need at this accuracy: the widest Perfect window's, which its verdict reads, and
+    each Great count's timelines near chart time and on every timeline (_sets_of), so the lookup itself only searches. It
+    changes no answer: lookups walk the same timelines, once per song."""
+    song.widest  # cached: built here, the first time
     lost = lost_quarters(PlayInfo(1, accuracy), song.chart.total_notes)
     for greats in range(lost[0], min(lost[1], _GREATS_SEARCHED) + 1):
         for near in (True, False) if greats else (False,):
