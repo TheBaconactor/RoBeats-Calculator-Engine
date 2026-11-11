@@ -567,21 +567,20 @@ def search_targets(space, tables, fixed, points, vertices, query, found):
 @jit(nopython=True, cache=True)
 def likeliest_loadouts(space, tables, fixed, points, vertices, query, found):
     """The loadouts of one target row whose items give up least at its vertex prices: band after band of doubling shortfall
-    from `step`, into found (search_targets' rows, the band in the target's place), until found is full, a band passes what
+    from `step`, into found (search_targets' rows, the target's place left free), until found is full, a band passes what
     the target's openings may give up, or the work budget ends; returns the rows. query: (target, Gear Power or negative,
     the first band's width, items it may try)."""
     target, power, step, allowed = query
     scratch = _search_scratch(tables[3].shape[1] - 1, points.shape[0])
     least, most = -1.0, step
-    written = tried = band = 0
+    written = tried = 0
     while written < found.shape[0] and tried <= allowed:
         rows, used, _whole, _opened, reach = _target_loadouts(space, tables, fixed, points, vertices, (target, power, least, most, allowed - tried), scratch, found[written:])
-        found[written : written + rows, 16] = band
         written += rows
         tried += used
         if most >= reach:
             break
-        least, most, band = most, most * 2.0, band + 1
+        least, most = most, most * 2.0
     return written
 
 
