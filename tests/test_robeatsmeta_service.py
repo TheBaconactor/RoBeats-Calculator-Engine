@@ -219,13 +219,15 @@ def test_a_self_update_hands_the_listening_socket_to_the_next_image(monkeypatch)
     monkeypatch.setattr(service, "ThreadingHTTPServer", _Server)
     monkeypatch.setattr(service.threading, "Thread", _Thread)
     monkeypatch.setattr(service, "ServiceUpdater", _Updater)
+    monkeypatch.setattr(service, "warm_lookups", lambda: calls.append("lookups"))
     monkeypatch.setattr(service._warm_worker, "stop", lambda: calls.append("worker"))
     monkeypatch.setattr(
         service.os, "execv", lambda _exe, args: executed.update(args=args, fd=os.environ[service._LISTENER_FD_ENV])
     )
     try:
         service.main(["--host", "127.0.0.1", "--port", "0"])
-        assert calls == ["shutdown", "worker", "stop"]  # the listening socket stays open across the exec
+        # The lookup worker warms up as the service starts; the listening socket stays open across the exec.
+        assert calls == ["lookups", "shutdown", "worker", "stop"]
         assert executed["fd"] == str(listener.fileno()) and listener.get_inheritable()
         assert executed["args"][1:3] == ["-m", "gear_optimizer.robeatsmeta_service"]
     finally:
@@ -678,6 +680,34 @@ def test_a_prepare_readies_the_song_in_the_lookup_queue(data_root, monkeypatch):
         handler, answers = _lookup_handler(monkeypatch, body, "/reverse/prepare")
         handler.do_POST()
         assert answers[0][0] == service.HTTPStatus.BAD_REQUEST
+
+
+def test_the_lookup_worker_warms_up_on_the_first_official_chart(data_root, monkeypatch, capsys):
+    _write_chart(data_root, "Normal", "B by Artist", "b.txt")
+    _write_chart(data_root, "Hard", "A (Hard) by Artist", "a.txt")
+    taken: list[dict] = []
+    monkeypatch.setattr(service._LookupWorker, "request", lambda _self, payload: taken.append(payload) or {"prepared": True})
+
+    service.warm_lookups()
+
+    assert [(payload["prepare"], Path(payload["chartPath"]).name) for payload in taken] == [(True, "a.txt")]
+    assert "lookup worker warm (A (Hard) by Artist)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("charts", (0, 1))
+def test_a_lookup_worker_that_does_not_warm_up_leaves_the_service_running(data_root, monkeypatch, capsys, caplog, charts):
+    if charts:
+        _write_chart(data_root, "Hard", "A (Hard) by Artist")
+
+    def request(_self, _payload):
+        raise RuntimeError("the solve worker disconnected")
+
+    monkeypatch.setattr(service._LookupWorker, "request", request)
+
+    service.warm_lookups()
+
+    assert "lookup worker warm" not in capsys.readouterr().out
+    assert "the lookup worker did not warm up" in caplog.text
 
 
 @pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}))

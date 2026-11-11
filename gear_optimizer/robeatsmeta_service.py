@@ -14,7 +14,7 @@ worker of its own with throwaway frontier caches. A clean official solve merges 
 solves the official charts evolution.db has no build for, so a published song reaches the catalog on its own.
 
 Score lookups queue for a worker of their own (gear_optimizer.reverse.worker), with its own GPU context: they never wait for a
-solve slot.
+solve slot. It starts with the service (warm_lookups), so the first lookup does not wait for it.
 
 ThreadingHTTPServer handles requests in parallel; a semaphore and a free-memory gate admit the solves.
 """
@@ -625,6 +625,18 @@ def parse_prepare(raw: dict[str, Any]) -> dict[str, Any]:
     return {"chartPath": _song_chart(raw), "prepare": True, **_shown_numbers(raw, ("accuracy",))}
 
 
+def warm_lookups() -> None:
+    """Start the lookup worker, on one official chart, so no player's lookup waits for its start: a second or two, and after
+    a deploy the half minute its changed kernels take to compile. A worker that does not start costs the first lookup that."""
+    try:
+        song = min(_official_charts().paths_by_song_id)
+        _lookups.lookup(parse_prepare({"targetSongId": song}))
+    except Exception:  # noqa: BLE001 - the service runs without it
+        logger.exception("the lookup worker did not warm up; the first score lookup starts it")
+        return
+    print(f"[robeatsmeta-service] lookup worker warm ({song})", flush=True)
+
+
 # --- catalog builds ----------------------------------------------------------
 #
 # evolution.db is the website's song catalog, a chart only enters it through a promoted official solve, and the website
@@ -815,6 +827,7 @@ def main(argv: list[str] | None = None) -> int:
     updater = ServiceUpdater(REPO_ROOT, drain=_drain_solves, resume=_resume_solves, restart=restart, refresh=refresh_data)
     server.updater = updater  # type: ignore[attr-defined]
     threading.Thread(target=updater.serve_forever, name="service-updater", daemon=True).start()
+    threading.Thread(target=warm_lookups, name="lookup-warmup", daemon=True).start()
     print(f"[robeatsmeta-service] listening on http://{args.host}:{args.port}", flush=True)
     try:
         serving.set()
