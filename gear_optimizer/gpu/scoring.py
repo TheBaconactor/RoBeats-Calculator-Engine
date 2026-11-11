@@ -8,6 +8,8 @@ and exact scores cost the head's notes only where the exact body and that sum ov
 
 from collections.abc import Mapping
 
+import numpy as np
+
 from gear_optimizer.core.color_flags import COLOR_FLAG_KEYS
 from gear_optimizer.gamedata import COMBO_RAMP_NOTES
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL
@@ -19,7 +21,7 @@ from .runtime import ti
 _FM_RUN = 8
 _BOUND_MARGIN = 1024.0
 _HEAD_MARGIN = 128.0  # Over the head's sum: float32 shapes hold it in sums with the body's notes.
-_FLOAT32_ERROR = 3.0e-7  # Relative: four float32 rounding steps of 2**-24, the multipliers' and the products'.
+FLOAT32_ERROR = 3.0e-7  # Relative: four float32 rounding steps of 2**-24, the multipliers' and the products'.
 
 # The song's color flags as one kernel argument (core.color_flags).
 GpuColorFlags = ti.types.struct(**dict.fromkeys(COLOR_FLAG_KEYS, ti.i32))
@@ -49,20 +51,25 @@ def lookup_ref_fm(value: ti.i32) -> ti.f32:
     return fields.ref_fm_field[_stat_index(value)]
 
 
+def float64_words(values: np.ndarray) -> np.ndarray:
+    """float64 values as pairs of 32-bit words, low word first: what float64_bits reads from a field."""
+    return np.ascontiguousarray(values, dtype=np.float64).view(np.uint32).reshape(*values.shape, 2)
+
+
 @ti.func
-def _float64_bits(words: ti.types.vector(2, ti.u32)) -> ti.u64:
+def float64_bits(words: ti.types.vector(2, ti.u32)) -> ti.u64:
     return ti.cast(words[0], ti.u64) | (ti.cast(words[1], ti.u64) << ti.u64(32))
 
 
 @ti.func
-def _float64_of(value: ti.i32) -> ti.u64:
+def float64_of(value: ti.i32) -> ti.u64:
     """The float64 bits of a positive integer below 2**24, which float32 holds exactly."""
     bits = ti.cast(ti.bit_cast(ti.cast(value, ti.f32), ti.u32), ti.u64)
     return ((bits >> ti.u64(23)) + ti.u64(1023 - 127)) << ti.u64(52) | (bits & ti.u64(0x7FFFFF)) << ti.u64(29)
 
 
 @ti.func
-def _float64_product(a: ti.u64, b: ti.u64) -> ti.u64:
+def float64_product(a: ti.u64, b: ti.u64) -> ti.u64:
     """a x b in IEEE float64, the game's arithmetic, on GPUs without it: bits of positive normal numbers, in 64-bit
     integers, rounded to nearest, ties to even."""
     hidden = ti.u64(1) << ti.u64(52)
@@ -87,7 +94,7 @@ def _float64_product(a: ti.u64, b: ti.u64) -> ti.u64:
 
 
 @ti.func
-def _float64_floor(x: ti.u64) -> ti.i32:
+def float64_floor(x: ti.u64) -> ti.i32:
     """The floor of a float64 at least 1 and below 2**31, from its bits."""
     hidden = ti.u64(1) << ti.u64(52)
     return ti.cast(((x & (hidden - ti.u64(1))) | hidden) >> (ti.u64(1023 + 52) - (x >> ti.u64(52))), ti.i32)
@@ -174,11 +181,11 @@ def _note_score(base: ti.i32, combo_stat: ti.i32, note: ti.i32, fever_stat: ti.i
         rough *= fields.ref_fm_field[fever_stat]
     whole: ti.f32 = ti.floor(rough)
     score = ti.cast(whole, ti.i32)
-    if ti.abs(rough - whole - 0.5) >= 0.5 - (rough * _FLOAT32_ERROR):
-        exact = _float64_product(_float64_of(base), _float64_bits(fields.note_combo_bits[combo_stat, note]))
+    if ti.abs(rough - whole - 0.5) >= 0.5 - (rough * FLOAT32_ERROR):
+        exact = float64_product(float64_of(base), float64_bits(fields.note_combo_bits[combo_stat, note]))
         if in_fever != ti.u32(0):
-            exact = _float64_product(exact, _float64_bits(fields.fever_bits[fever_stat]))
-        score = _float64_floor(exact)
+            exact = float64_product(exact, float64_bits(fields.fever_bits[fever_stat]))
+        score = float64_floor(exact)
     return score
 
 

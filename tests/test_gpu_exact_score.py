@@ -9,9 +9,9 @@ from gear_optimizer.gamedata import COMBO_RAMP_NOTES, stat_curves
 from gear_optimizer.gpu import device, fields, ga
 from gear_optimizer.gpu.scoring import (
     GpuColorFlags,
-    _float64_floor,
-    _float64_of,
-    _float64_product,
+    float64_floor,
+    float64_of,
+    float64_product,
     _note_score,
     _surface_score,
     gpu_color_flags,
@@ -33,7 +33,7 @@ _U64 = ti.types.ndarray(dtype=ti.u64, ndim=1)
 @ti.kernel
 def _products(a: _U64, b: _U64, out: _U64):
     for i in range(a.shape[0]):
-        out[i] = _float64_product(a[i], b[i])
+        out[i] = float64_product(a[i], b[i])
 
 
 def _run_products(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -58,9 +58,9 @@ def test_a_product_rounds_as_ieee_float64():
 @ti.kernel
 def _integers(values: _I32, out: _U64, floors: _I32):
     for i in range(values.shape[0]):
-        bits = _float64_of(values[i])
+        bits = float64_of(values[i])
         out[i] = bits
-        floors[i] = _float64_floor(bits)
+        floors[i] = float64_floor(bits)
 
 
 def test_an_integer_converts_and_floors_back():

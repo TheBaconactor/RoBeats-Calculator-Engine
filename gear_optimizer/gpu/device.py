@@ -11,6 +11,7 @@ from gear_optimizer.solver.ftff_combos import FtffShortlist, ftff_combo_arrays
 
 from . import fields, kernels
 from .runtime import init_taichi, reset_taichi, ti
+from .scoring import float64_words
 
 _ready = False
 _timeline_key: tuple | None = None
@@ -35,10 +36,6 @@ def _pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
     return best_idx
 
 
-def _float64_words(values: np.ndarray) -> np.ndarray:
-    return values.astype(np.float64).view(np.uint32).reshape(*values.shape, 2)
-
-
 def ensure_ready() -> None:
     global _ready
     if _ready:
@@ -53,8 +50,8 @@ def ensure_ready() -> None:
     fields.exact_pp_best_gems_prefix.from_numpy(_pp_best_gems_prefix(curves["Perfect Points"]))
     note_combo = np.column_stack((all_curves.combo_ramp, all_curves.f64["Combo Multiplier"]))
     fields.note_combo.from_numpy(note_combo.astype(np.float32))
-    fields.note_combo_bits.from_numpy(_float64_words(note_combo))
-    fields.fever_bits.from_numpy(_float64_words(all_curves.f64["Fever Multiplier"]))
+    fields.note_combo_bits.from_numpy(float64_words(note_combo))
+    fields.fever_bits.from_numpy(float64_words(all_curves.f64["Fever Multiplier"]))
     ft, ff, _budget_left = ftff_combo_arrays(GEM_BUDGET)
     fields.ftff_combo_ft.from_numpy(ft.astype(np.int32))
     fields.ftff_combo_ff.from_numpy(ff.astype(np.int32))

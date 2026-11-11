@@ -26,7 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from gear_optimizer.gpu.runtime import init_taichi, ti
-from gear_optimizer.gpu.scoring import _FLOAT32_ERROR, _float64_bits, _float64_floor, _float64_of, _float64_product, shape_value
+from gear_optimizer.gpu.scoring import FLOAT32_ERROR, float64_bits, float64_floor, float64_of, float64_product, float64_words, shape_value
 from gear_optimizer.rules import MAX_STAT
 
 from .greats import CLASS_COLUMNS
@@ -48,7 +48,7 @@ _ENTRY_BASES = 1 << _BASE_BITS
 _CLASSES_PER_BASE = 16  # classes of a play that cost as much as its base value's other tests
 MAX_ROWS = 1 << 22
 _MARGIN = 2.0e-6  # Relative, over float32's order of a bound; rows past the ceiling by this much have no loadout.
-_FLOOR_LOW, _FLOOR_HIGH = 1.0 - _FLOAT32_ERROR, 1.0 + _FLOAT32_ERROR
+_FLOOR_LOW, _FLOOR_HIGH = 1.0 - FLOAT32_ERROR, 1.0 + FLOAT32_ERROR
 # Over any line, base - Great is under base / 3 + this: Great points are 2/3 of the elements + 150, and Perfect Points at
 # most 485.
 _GREAT_GAP = 185.0
@@ -142,9 +142,9 @@ def _floored(base: ti.i32, value: ti.f32, bits: _Vec2u, more: ti.f32, more_bits:
     rough: ti.f32 = ti.cast(base, ti.f32) * value * more
     whole: ti.f32 = ti.floor(rough)
     out = ti.cast(whole, ti.i32)
-    if ti.abs(rough - whole - 0.5) >= 0.5 - (rough * _FLOAT32_ERROR):
-        exact = _float64_product(_float64_of(base), _float64_bits(bits))
-        out = _float64_floor(_float64_product(exact, _float64_bits(more_bits)))
+    if ti.abs(rough - whole - 0.5) >= 0.5 - (rough * FLOAT32_ERROR):
+        exact = float64_product(float64_of(base), float64_bits(bits))
+        out = float64_floor(float64_product(exact, float64_bits(more_bits)))
     return out
 
 
@@ -587,10 +587,6 @@ def _load_surfaces(first: ti.i32, count: ti.i32, vertices: ti.i32, terms: ti.typ
             tables.relief[i, j] = relief[i, j]
 
 
-def _float64_words(values: np.ndarray) -> np.ndarray:
-    return np.ascontiguousarray(values, dtype=np.float64).view(np.uint32).reshape(*values.shape, 2)
-
-
 @dataclass(frozen=True, slots=True, eq=False)
 class SongTables:
     """What a song's searches read: its multipliers and vertices."""
@@ -671,10 +667,10 @@ def _load_song(song: SongTables) -> None:
     values[:vertices], prices[:vertices] = song.vertex_values, song.vertex_prices
     tables.combo.from_numpy(song.combo.astype(np.float32))
     tables.fever.from_numpy(song.fever.astype(np.float32))
-    tables.combo_bits.from_numpy(_float64_words(song.combo))
-    tables.fever_bits.from_numpy(_float64_words(song.fever))
+    tables.combo_bits.from_numpy(float64_words(song.combo))
+    tables.fever_bits.from_numpy(float64_words(song.fever))
     tables.ramp.from_numpy(song.ramp.astype(np.float32))
-    tables.ramp_bits.from_numpy(_float64_words(song.ramp))
+    tables.ramp_bits.from_numpy(float64_words(song.ramp))
     tables.vertex_values.from_numpy(values)
     tables.vertex_prices.from_numpy(prices)
     tables.points.from_numpy(song.points.astype(np.int32))
