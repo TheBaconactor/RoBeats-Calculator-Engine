@@ -8,6 +8,7 @@ from math import ceil
 from typing import NamedTuple
 
 import numpy as np
+from numba import njit
 
 
 class SongArrays(NamedTuple):
@@ -81,36 +82,65 @@ class FeverEnds(NamedTuple):
     great_floor_by_hit: np.ndarray
 
 
+@njit(cache=True, nogil=True)
+def _ends_at_cutoffs(floor, hits, fever_times, first_end):
+    """Per fever time (a row) and hit, the first index whose `floor` is at or past float32(hit + fever time), raised to
+    first_end[hit index] where `first_end` is given (empty: as found).
+
+    The fever times ascend, so a hit's cutoff and its end only grow from one row to the next: each search starts at the
+    end of the row before and gallops, a few probes where a search of the whole floor takes log n."""
+    rows, count, n = fever_times.shape[0], hits.shape[0], floor.shape[0]
+    clamped = first_end.shape[0] != 0
+    ends = np.empty((rows, count), dtype=np.int32)
+    found = np.zeros(count, dtype=np.int64)
+    for row in range(rows):
+        fever_time = fever_times[row]
+        for index in range(count):
+            needle = np.float32(hits[index] + fever_time)
+            lo = found[index]
+            hi = lo
+            step = 1
+            while hi < n and floor[hi] < needle:
+                lo = hi + 1
+                hi += step
+                step += step
+            if hi > n:
+                hi = n
+            while lo < hi:
+                mid = (lo + hi) >> 1
+                if floor[mid] < needle:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            found[index] = lo
+            ends[row, index] = max(lo, first_end[index]) if clamped else lo
+    return ends
+
+
 def fever_ends(song: SongArrays, perfect_hit: np.ndarray, late_hit: np.ndarray, fever_times: np.ndarray) -> FeverEnds:
-    """The fever-end tables of the distinct `fever_times`; `perfect_hit` / `late_hit` hold each activation's latest
-    reachable Perfect / late-Great hit. A cutoff is the float32 of the float64 sum, as the kernels form it."""
+    """The fever-end tables of the distinct, ascending `fever_times`; `perfect_hit` / `late_hit` hold each activation's
+    latest reachable Perfect / late-Great hit. A cutoff is the float32 of the float64 sum, as the kernels form it."""
     n = song.timestamps.shape[0]
     first_end = np.arange(1, n + 1, dtype=np.int64)
-
-    def cutoffs(hits: np.ndarray) -> np.ndarray:
-        return (hits + fever_times[:, None]).astype(np.float32)
-
-    def activation_ends(floor: np.ndarray, cutoff: np.ndarray) -> np.ndarray:
-        return np.clip(np.searchsorted(floor, cutoff), first_end, n).astype(np.int32)
-
-    perfect_cutoffs, late_cutoffs = cutoffs(perfect_hit), cutoffs(late_hit)
-    perfect_exit_e = activation_ends(song.exit_ceiling, cutoffs(song.perfect_floor))
+    as_found = np.empty(0, dtype=np.int64)
+    perfect_floor, late_great_floor = song.perfect_floor.astype(np.float64), song.late_great_floor.astype(np.float64)
     # Every hit an activation can be capped to: a chart time, a latest Perfect or Great, or 1 us before one.
-    token_cutoffs = cutoffs(np.concatenate((
+    tokens = np.concatenate((
         song.timestamps, song.perfect_candidates, song.great_candidates,
         song.perfect_candidates.astype(np.float64) - 0.000001, song.great_candidates.astype(np.float64) - 0.000001,
-    )))
+    ))
+    perfect_exit_e = _ends_at_cutoffs(song.exit_ceiling, perfect_floor, fever_times, first_end)
     return FeverEnds(
         fever_times=fever_times,
-        perfect_e=activation_ends(song.perfect_floor, perfect_cutoffs),
-        late_e=activation_ends(song.perfect_floor, late_cutoffs),
-        eg_perfect_e=activation_ends(song.great_floor, perfect_cutoffs),
-        eg_late_e=activation_ends(song.great_floor, late_cutoffs),
+        perfect_e=_ends_at_cutoffs(song.perfect_floor, perfect_hit, fever_times, first_end),
+        late_e=_ends_at_cutoffs(song.perfect_floor, late_hit, fever_times, first_end),
+        eg_perfect_e=_ends_at_cutoffs(song.great_floor, perfect_hit, fever_times, first_end),
+        eg_late_e=_ends_at_cutoffs(song.great_floor, late_hit, fever_times, first_end),
         perfect_exit_e=perfect_exit_e,
-        late_exit_e=activation_ends(song.exit_ceiling, cutoffs(song.late_great_floor)),
+        late_exit_e=_ends_at_cutoffs(song.exit_ceiling, late_great_floor, fever_times, first_end),
         no_exit_e=np.full_like(perfect_exit_e, n),
-        perfect_floor_by_hit=np.searchsorted(song.perfect_floor, token_cutoffs).astype(np.int32),
-        great_floor_by_hit=np.searchsorted(song.great_floor, token_cutoffs).astype(np.int32),
+        perfect_floor_by_hit=_ends_at_cutoffs(song.perfect_floor, tokens, fever_times, as_found),
+        great_floor_by_hit=_ends_at_cutoffs(song.great_floor, tokens, fever_times, as_found),
     )
 
 

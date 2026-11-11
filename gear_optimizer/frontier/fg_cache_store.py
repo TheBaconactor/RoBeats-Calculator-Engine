@@ -54,7 +54,7 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # Giving the producer's host layer records and one precompute changed no frontier: the gate (16 charts), the 40-chart
     # sample (2,160 arrays) and the whole catalog (2,287 charts, both timing modes) are identical to the 74ca016777d4
     # producer's. Evidence in workspace/_engine_round3_2026-11-10.
-    "fg-response-frontier-visible-first-v32+logic-5ea9d0f832ca": (
+    "fg-response-frontier-visible-first-v32+logic-980404610015": (
         "fg-response-frontier-visible-first-v32+logic-74ca016777d4",
     ),
 }
