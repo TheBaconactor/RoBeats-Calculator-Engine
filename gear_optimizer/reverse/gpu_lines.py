@@ -3,6 +3,7 @@ every class, Great points and body Greats in fever that give it.
 
 A lookup hands surfaces over in fixed chunks, so a search cut short keeps the same sample on every run, whatever order the
 GPU's threads wrote their rows in. Each chunk runs three packed stages, each thread of a stage one item of the stage before:
+tiles and pairs in one launch (_find_pairs), whose base values the host weighs against the search's budget before the rows.
 
   tiles  8 x 8 (CM, FM) blocks whose best corner reaches the score under the ceiling, at an FT + FF the surface has
   pairs  the (CM, FM) of those likewise, as entries of up to 16 base values
@@ -193,11 +194,25 @@ def _highest_base(q: _Search, bound: ti.f32, shape: ti.f32, combo: ti.f32, fever
 
 
 @ti.kernel
-def _find_tiles(surfaces: ti.i32, q: _Search):
-    """A chunk's live tiles; its lists start anew, and the rows of the chunks before it stay."""
+def _find_pairs(offset: ti.i32, surfaces: ti.i32, q: _Search, terms: ti.types.ndarray(), bits: ti.types.ndarray(), counts: ti.types.ndarray(), relief: ti.types.ndarray()) -> _Vec2i:
+    """A chunk of `surfaces` surfaces from surface `offset` on, in one launch: its tables, its live tiles, and their pairs as
+    entries of base values; returns how many entries and base values. Its lists start anew, and the rows of the chunks before
+    it stay. Per surface: terms (shape, head), bits (head mask, FT + FF sums), counts (body fever, lowest and highest FT + FF)
+    and relief at each vertex."""
     tables.counters[_LIVE] = 0
     tables.counters[_PAIRS] = 0
     tables.counters[_BASES] = 0
+    for i in range(surfaces):
+        tables.surface_id[i] = offset + i
+        tables.body_fever[i] = counts[i, 0]
+        tables.sum_span[i] = ti.Vector([counts[i, 1], counts[i, 2]])
+        tables.shape_terms[i] = ti.Vector([terms[i, 0], terms[i, 1], terms[i, 2], terms[i, 3]])
+        tables.head_terms[i] = ti.Vector([terms[i, 4], terms[i, 5], terms[i, 6], terms[i, 7]])
+        tables.head_words[i] = ti.Vector([bits[i, 0], bits[i, 1], bits[i, 2], bits[i, 3]])
+        for j in range(_SUM_WORDS):
+            tables.sum_bits[i, j] = bits[i, _MASK_WORDS + j]
+        for j in range(q.vertices):
+            tables.relief[i, j] = relief[i, j]
     for i in range(surfaces * _TILES):
         u = i // _TILES
         tile = i % _TILES
@@ -216,10 +231,6 @@ def _find_tiles(surfaces: ti.i32, q: _Search):
         if keep:
             slot = ti.atomic_add(tables.counters[_LIVE], 1)
             tables.live[slot] = i
-
-
-@ti.kernel
-def _find_pairs(q: _Search):
     for i in range(tables.counters[_LIVE] * _TILE * _TILE):
         at = tables.live[i >> 6]
         u = at // _TILES
@@ -251,6 +262,7 @@ def _find_pairs(q: _Search):
                         for entry in range(entries):
                             start = first + (entry << _BASE_BITS)
                             tables.pairs[slot + entry] = ti.Vector([packed, start, ti.min(start + _ENTRY_BASES - 1, last)])
+    return ti.Vector([tables.counters[_PAIRS], tables.counters[_BASES]])
 
 
 @ti.func
@@ -523,7 +535,8 @@ def _thread(q: _Search, i: ti.i32) -> _Vec7i:
 
 
 @ti.kernel
-def _find_rows(q: _Search):
+def _find_rows(q: _Search) -> ti.i32:
+    """The rows of a chunk's pairs, a thread per base value of their entries; returns the rows of the search so far."""
     for i in range(ti.min(tables.counters[_PAIRS], _MAX_PAIRS) * _ENTRY_BASES):
         t = _thread(q, i)
         if t[0] != 0:
@@ -533,26 +546,23 @@ def _find_rows(q: _Search):
                     _row(pair, t[4], 0, 0, -1)
             else:
                 _stat_rows(q, pair, t[4], ti.Vector([t[5], t[6]]), ti.Vector([tables.combo[t[2]], tables.fever[t[3]]]))
+    return tables.counters[_ROWS]
 
 
 @ti.kernel
-def _find_narrow_rows(q: _Search):
-    """_find_rows for a play's classes with few body Greats, a kernel of its own so that the common one keeps its registers."""
+def _find_narrow_rows(q: _Search) -> ti.i32:
+    """_find_rows for a play's classes with few body Greats, a kernel of its own so that the common one keeps its registers
+    (the two as loops of one kernel do not compile for Vulkan: Taichi 1.7.4, 'Value does not yet exist')."""
     for i in range(ti.min(tables.counters[_PAIRS], _MAX_PAIRS) * _ENTRY_BASES):
         t = _thread(q, i)
         if t[0] != 0 and q.power >= 0:
             _narrow_rows(q, ti.Vector([t[1], t[2], t[3]]), t[4], ti.Vector([t[5], t[6]]), ti.Vector([tables.combo[t[2]], tables.fever[t[3]]]))
+    return tables.counters[_ROWS]
 
 
 @ti.kernel
 def _forget_rows():
     tables.counters[_ROWS] = 0
-
-
-@ti.kernel
-def _read_counters(out: _I32_ARRAY):
-    for slot in range(_COUNTERS):
-        out[slot] = tables.counters[slot]
 
 
 @ti.kernel
@@ -568,23 +578,6 @@ def _load_classes(count: ti.i32, values: _I32_ARRAY):
     for i in range(count):
         for j in ti.static(range(CLASS_COLUMNS)):
             tables.classes[i][j] = values[i, j]
-
-
-@ti.kernel
-def _load_surfaces(first: ti.i32, count: ti.i32, vertices: ti.i32, terms: ti.types.ndarray(), bits: ti.types.ndarray(), counts: ti.types.ndarray(), relief: ti.types.ndarray()):
-    """A chunk of `count` surfaces from surface `first` on: per surface its terms (shape, head), bits (head mask, FT + FF sums),
-    counts (body fever, lowest and highest FT + FF) and relief at each vertex."""
-    for i in range(count):
-        tables.surface_id[i] = first + i
-        tables.body_fever[i] = counts[i, 0]
-        tables.sum_span[i] = ti.Vector([counts[i, 1], counts[i, 2]])
-        tables.shape_terms[i] = ti.Vector([terms[i, 0], terms[i, 1], terms[i, 2], terms[i, 3]])
-        tables.head_terms[i] = ti.Vector([terms[i, 4], terms[i, 5], terms[i, 6], terms[i, 7]])
-        tables.head_words[i] = ti.Vector([bits[i, 0], bits[i, 1], bits[i, 2], bits[i, 3]])
-        for j in range(_SUM_WORDS):
-            tables.sum_bits[i, j] = bits[i, _MASK_WORDS + j]
-        for j in range(vertices):
-            tables.relief[i, j] = relief[i, j]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -680,12 +673,14 @@ def _load_song(song: SongTables) -> None:
     _loaded_song = song
 
 
-def _load_chunk(surfaces: SurfaceTables, first: int, last: int, vertices: int) -> None:
+def _chunk_pairs(surfaces: SurfaceTables, first: int, last: int, search) -> tuple[int, int]:
+    """_find_pairs on surfaces first..last: the chunk's pair entries and base values."""
     span = slice(first, last)
     terms = np.hstack((surfaces.shape_terms[span], surfaces.head_terms[span]))
     bits = np.hstack((surfaces.words[span], surfaces.sums[span]))
     counts = np.column_stack((surfaces.body_fever[span], _sum_spans(surfaces.sums[span])))
-    _load_surfaces(first, last - first, vertices, terms, bits, counts, surfaces.relief[span])
+    found = _find_pairs(first, last - first, search, terms, bits, counts, surfaces.relief[span])
+    return int(found[0]), int(found[1])
 
 
 @dataclass(frozen=True, slots=True)
@@ -732,7 +727,6 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
         body_total=song.body_total, single_color=int(song.single_color), class_count=query.classes.shape[0],
         narrow_from=narrow_from, term_low=float(terms.min()), term_high=float(terms.max()),
     )
-    counters = np.zeros(_COUNTERS, dtype=np.int32)
     _forget_rows()
     walked = kept = first = 0
     size = CHUNK_SURFACES
@@ -740,28 +734,24 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
     per_base = 1 + query.classes.shape[0] // _CLASSES_PER_BASE
     while first < surfaces.body_fever.shape[0]:
         last = min(first + size, surfaces.body_fever.shape[0])
-        _load_chunk(surfaces, first, last, vertices)
-        _find_tiles(last - first, search)
-        _find_pairs(search)
-        _read_counters(counters)
-        work = int(counters[_BASES]) * per_base
-        if counters[_PAIRS] > _MAX_PAIRS or walked + work > query.bases:
+        pairs, bases = _chunk_pairs(surfaces, first, last, search)
+        work = bases * per_base
+        if pairs > _MAX_PAIRS or walked + work > query.bases:
             # Past the budget the search keeps what it has: a chunk that passes it alone gives way to a part of itself.
             complete = False
             if kept or size == 1:
                 break
             size = max(size >> 2, 1)
             continue
-        _find_rows(search)
+        rows_so_far = int(_find_rows(search))
         if narrow_from < query.classes.shape[0]:
-            _find_narrow_rows(search)
-        _read_counters(counters)
+            rows_so_far = int(_find_narrow_rows(search))
         # A list that overflowed holds what the threads' race left: the chunk goes, so a run repeats.
-        if counters[_ROWS] > MAX_ROWS:
+        if rows_so_far > MAX_ROWS:
             complete = False
             break
         walked += work
-        kept = int(counters[_ROWS])
+        kept = rows_so_far
         first = last
     rows = np.empty((kept, READ_COLUMNS), dtype=np.int32)
     if kept:
