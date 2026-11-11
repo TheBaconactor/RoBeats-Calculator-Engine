@@ -549,16 +549,32 @@ def _plain_score(stats, line_shape, combo, fever, points):
 
 
 @jit(nopython=True, cache=True)
-def gem_gaps(found, space, fixed, tables, gaps, greats):
-    """Into gaps, per found loadout, the share of its score the best move of one gem would add: players place their gems, so
-    the set behind a play is one that move barely helps; and into greats its Great points. tables: (per cell the (A, E, F, G)
-    of its chart-time timeline, combo, fever, points per Perfect Points stat, one color)."""
+def _gem_gap(stats, gems, held, element_row, trial, tables):
+    """The share of a stat row's plain score the best move of one gem would add: a gem of a kind it holds (held[kind] > 0) to
+    any stat or to its element row. tables: (per cell the (A, E, F, G) of its chart-time timeline, combo, fever, points per
+    Perfect Points stat); trial: a row to work in."""
+    line_shape, combo, fever, points = tables
+    plain = _plain_score(stats, line_shape, combo, fever, points)
+    best = plain
+    for kind in range(gems.shape[0]):
+        if held[kind] == 0:
+            continue
+        for other in range(gems.shape[0]):
+            if other != kind and (other < 5 or other == element_row):
+                for d in range(7):
+                    trial[d] = stats[d] - gems[kind, d] + gems[other, d]
+                best = max(best, _plain_score(trial, line_shape, combo, fever, points))
+    return (best - plain) / plain
+
+
+@jit(nopython=True, cache=True)
+def gem_gaps(found, space, fixed, tables, single_color, gaps, greats):
+    """Into gaps, per found loadout, _gem_gap at its own gems: players place their gems, so the set behind a play is one a
+    move barely helps; and into greats its Great points. tables: _gem_gap's."""
     items, gems = space
-    line_shape, combo, fever, points, single_color = tables
     stats = np.empty(7, dtype=np.int64)
     trial = np.empty(7, dtype=np.int64)
-    kinds = gems.shape[0]
-    counts = np.empty(kinds, dtype=np.int64)
+    counts = np.empty(gems.shape[0], dtype=np.int64)
     for r in range(found.shape[0]):
         row = found[r]
         stats[:] = fixed[row[17]][:7]
@@ -567,48 +583,29 @@ def gem_gaps(found, space, fixed, tables, gaps, greats):
         counts[:] = 0
         counts[:5] = row[9:14]
         counts[row[15]] = row[14]
-        for kind in range(kinds):
+        for kind in range(gems.shape[0]):
             stats += counts[kind] * gems[kind][:7]
         greats[r] = 2 * stats[5] + 150 if single_color else (4 * stats[5]) // 3 + (2 * stats[6]) // 3 + 150
-        plain = _plain_score(stats, line_shape, combo, fever, points)
-        best = plain
-        for kind in range(kinds):
-            if counts[kind] == 0:
-                continue
-            for other in range(kinds):
-                if other != kind and (other < 5 or other == row[15]):
-                    for d in range(7):
-                        trial[d] = stats[d] - gems[kind, d] + gems[other, d]
-                    best = max(best, _plain_score(trial, line_shape, combo, fever, points))
-        gaps[r] = (best - plain) / plain
+        gaps[r] = _gem_gap(stats, gems, counts, row[15], trial, tables)
 
 
 @jit(nopython=True, cache=True)
 def line_gaps(lines, gems, tables, gaps):
-    """Into gaps, per line (surface, CM, FM, FT, FF, base, vertex, Perfect Points stat), the share of its score the best move of
-    one gem from a fever stat or the element to any stat would add at the line: what gem_gaps comes to when a set holds those
-    gems, with no loadout to find first. Most sets hold no Perfect Points or Combo gems. tables: as gem_gaps. A line with no
-    stat has no such move: _UNKNOWN_GAP, about what a dev line's gap comes to."""
-    line_shape, combo, fever, points = tables
+    """Into gaps, per line (surface, CM, FM, FT, FF, base, vertex, Perfect Points stat), _gem_gap of a set that holds fever
+    stat gems and the primary's element gems, with no loadout to find first: most sets hold no Perfect Points or Combo gems.
+    A line with no stat has no such move: _UNKNOWN_GAP, about what a dev line's gap comes to."""
     stats = np.empty(7, dtype=np.int64)
     trial = np.empty(7, dtype=np.int64)
-    kinds = 6
+    held = np.zeros(gems.shape[0], dtype=np.int64)
+    held[2 : PRIMARY + 1] = 1
+    points = tables[3]
     for r in range(lines.shape[0]):
         row = lines[r]
         gaps[r] = _UNKNOWN_GAP
-        if row[7] < 0:
-            continue
-        stats[0], stats[1], stats[2], stats[3], stats[4] = row[7], row[1], row[2], row[3], row[4]
-        stats[5], stats[6] = 0, row[5] - int(points[row[7]])
-        plain = _plain_score(stats, line_shape, combo, fever, points)
-        best = plain
-        for kind in range(2, kinds):
-            for other in range(kinds):
-                if other != kind:
-                    for d in range(7):
-                        trial[d] = stats[d] - gems[kind, d] + gems[other, d]
-                    best = max(best, _plain_score(trial, line_shape, combo, fever, points))
-        gaps[r] = (best - plain) / plain
+        if row[7] >= 0:
+            stats[0], stats[1], stats[2], stats[3], stats[4] = row[7], row[1], row[2], row[3], row[4]
+            stats[5], stats[6] = 0, row[5] - int(points[row[7]])
+            gaps[r] = _gem_gap(stats, gems, held, PRIMARY, trial, tables)
 
 
 def time_gem_losses(space: LoadoutSpace, prices: np.ndarray) -> np.ndarray:

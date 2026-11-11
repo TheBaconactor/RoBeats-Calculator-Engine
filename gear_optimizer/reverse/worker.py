@@ -43,7 +43,7 @@ def answer(request: dict[str, Any], songs: OrderedDict[str, ReverseSong], catalo
         warm_song(song, request.get("accuracy"))
         return {"prepared": True}
     play = PlayInfo(request["score"], request.get("accuracy"), request.get("casualScore"), request.get("gearMultiplier"), request.get("gearPower"), request.get("matchMode", "Compete"))
-    return asdict(reverse_score(play, song, limit=request.get("limit", 8)))
+    return asdict(reverse_score(play, song))
 
 
 def _compile_kernels(catalog: Catalog, curves: StatCurves) -> None:

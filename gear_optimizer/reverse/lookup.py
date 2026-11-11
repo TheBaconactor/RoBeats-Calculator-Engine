@@ -651,8 +651,8 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
     done, reached, complete = search_targets(space, song.tables.arrays, song.fixed_rows, points, (song.vertex_values, song.vertex_prices), search, found)
     found = found[:done]
     gaps, great_points = np.empty(done), np.empty(done, dtype=np.int64)
-    shapes = song.line_shape, song.multipliers[0], song.multipliers[2], points, song.chart.primary == song.chart.secondary
-    gem_gaps(found, (song.space.items, song.space.gems), song.fixed_rows, shapes, gaps, great_points)
+    shapes = song.line_shape, song.multipliers[0], song.multipliers[2], points
+    gem_gaps(found, (song.space.items, song.space.gems), song.fixed_rows, shapes, song.chart.primary == song.chart.secondary, gaps, great_points)
     if greats:
         fits = np.empty(found.shape[0], dtype=bool)
         great_points_fit(found, great_points, lines.held, lines.rows, lines.spans, fits)

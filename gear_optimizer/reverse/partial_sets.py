@@ -140,6 +140,8 @@ def _guess(space, target, widths, budget, out):
     position = np.empty(6, dtype=np.int64)
     sums = np.zeros((7, 6), dtype=np.int64)  # per depth: Perfect Points, CM, FM, FT, FF, elements of the gear so far
     trial = np.zeros_like(out)
+    # Built once: a tuple of arrays made per gear combination costs more than testing the combination.
+    gems_of, minis_of = (gains, gem_value), (minis, ranks, caps, levels, bits, mini_elements)
     best = -1.0
     work = fits = 0
     for i in range(mini_count):
@@ -168,7 +170,7 @@ def _guess(space, target, widths, budget, out):
                             work += 1
                             if work > budget:
                                 return best >= 0.0, work
-                            progress = _settled(target, sums[6], room, (gains, gem_value), fixed, mini_ascension, (minis, ranks, caps, levels, bits, mini_elements), trial)
+                            progress = _settled(target, sums, room, gems_of, fixed, mini_ascension, minis_of, trial)
                             if progress >= 0.0:
                                 fits += 1
                                 if progress > best:
@@ -205,18 +207,18 @@ def _guess(space, target, widths, budget, out):
 
 
 @jit(nopython=True, cache=True)
-def _settled(target, worn, room, gems_of, fixed, mini_ascension, minis_of, out):
+def _settled(target, sums, room, gems_of, fixed, mini_ascension, minis_of, out):
     """Gems, ascension, levels and TeamBuff for a choice of gear and minis: of those that fit, the one furthest along into out's
-    _LEVEL.. columns, and its progress, -1 when none fits. worn: the gear's sums (Perfect Points, CM, FM, FT, FF, elements); room:
-    what the gear and gems may add to CM, FM, FT, FF past the minis; gems_of: (each stat gem's gain, each gem row's 2 x primary
-    + secondary)."""
+    _LEVEL.. columns, and its progress, -1 when none fits. sums[6]: the gear's sums (Perfect Points, CM, FM, FT, FF, elements);
+    room: what the gear and gems may add to CM, FM, FT, FF past the minis; gems_of: (each stat gem's gain, each gem row's
+    2 x primary + secondary)."""
     gains, gem_value = gems_of
     minis, ranks, caps, levels, bits, mini_elements = minis_of
     best = -1.0
     stat_gems = 0
-    elements = worn[5]
+    elements = sums[6, 5]
     for d in range(4):
-        deficit = room[d] - worn[1 + d]
+        deficit = room[d] - sums[6, 1 + d]
         if deficit % gains[1 + d]:
             return best
         out[_GEMS + 1 + d] = deficit // gains[1 + d]
@@ -225,7 +227,7 @@ def _settled(target, worn, room, gems_of, fixed, mini_ascension, minis_of, out):
     if stat_gems > GEM_BUDGET:
         return best
     for f in range(fixed.shape[0]):
-        points = target[0] - fixed[f, 0] - worn[0]
+        points = target[0] - fixed[f, 0] - sums[6, 0]
         if points < 0 or points % _ASCENSION_POINTS:
             continue
         ascended = min(points // _ASCENSION_POINTS, 3 * (_ASCENSIONS - 1))

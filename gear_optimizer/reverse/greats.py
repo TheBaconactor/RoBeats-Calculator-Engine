@@ -36,29 +36,12 @@ def _listed_head(losses, count, target, out):
     low, high = target
     head = losses.shape[0]
     found = 0
-    if count == 0:
-        if low <= 0 <= high:
-            out[0, 0], out[0, 1], out[0, 2] = -1, -1, -1
-            return 1
-        return 0
-    for a in range(head):
-        if count == 1:
-            if low <= losses[a] <= high:
-                if found == out.shape[0]:
-                    return found + 1
-                out[found, 0], out[found, 1], out[found, 2] = a, -1, -1
-                found += 1
-            continue
-        for b in range(a + 1, head):
-            if count == 2:
-                if low <= losses[a] + losses[b] <= high:
-                    if found == out.shape[0]:
-                        return found + 1
-                    out[found, 0], out[found, 1], out[found, 2] = a, b, -1
-                    found += 1
-                continue
-            for c in range(b + 1, head):
-                if low <= losses[a] + losses[b] + losses[c] <= high:
+    # Notes a < b < c; a place a set does not use is -1 and loses nothing.
+    for a in range(0 if count > 0 else -1, head if count > 0 else 0):
+        for b in range(a + 1 if count > 1 else -1, head if count > 1 else 0):
+            for c in range(b + 1 if count > 2 else -1, head if count > 2 else 0):
+                total = (losses[a] if a >= 0 else 0) + (losses[b] if b >= 0 else 0) + (losses[c] if c >= 0 else 0)
+                if low <= total <= high:
                     if found == out.shape[0]:
                         return found + 1
                     out[found, 0], out[found, 1], out[found, 2] = a, b, c
@@ -95,7 +78,7 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
     wider: dict[tuple[int, int], list[int]] = {}
     for clean, losses in timelines:
         lost_low, lost_high = int(np.ceil(clean - casual[1])), int(np.floor(clean - casual[0]))
-        key = losses.tobytes()
+        key = None
         for head in range(min(greats, _HEAD_SPANNED) + 1):
             body = greats - head
             for inside in range(body + 1):
@@ -111,6 +94,7 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
                             total = sum(note + 1 for note in row if note >= 0)
                             rows.add((head, body, total, total, *row, low, high))
                         continue
+                key = key or losses.tobytes()
                 if key not in spans:
                     spans[key] = _position_spans(losses, _HEAD_SPANNED, int(_HEAD_SPANNED * losses.max()))
                 fewest, most = spans[key][0][head], spans[key][1][head]
