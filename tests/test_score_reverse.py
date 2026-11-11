@@ -38,7 +38,7 @@ def song():
 
 def test_chart_time_timelines_are_among_the_reachable(song):
     """Every cell's timeline at chart time (solver.fever_timeline) is one the walk reaches."""
-    chart, surfaces = song.chart, song.surfaces
+    chart, surfaces = song.chart, fever_surfaces(song.chart, song.curves, 0)
     durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, song.curves)
     fills = np.ceil(thresholds).astype(np.int64)
     fever, normal = np.zeros((161, 161), np.int32), np.zeros((161, 161), np.int32)
@@ -55,7 +55,7 @@ def test_chart_time_timelines_are_among_the_reachable(song):
 
 def test_wider_windows_reach_every_timeline_of_narrower_ones(song):
     wider = fever_surfaces(song.chart, song.curves, 13)
-    assert wider.body_fever.shape[0] >= song.surfaces.body_fever.shape[0]
+    assert wider.body_fever.shape[0] >= fever_surfaces(song.chart, song.curves, 0).body_fever.shape[0]
 
 
 def test_a_stored_meta_build_is_found_from_its_score_alone(song):
