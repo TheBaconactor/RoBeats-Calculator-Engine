@@ -63,6 +63,7 @@ from .loadouts import (
     ValueTables,
     fixed_stats,
     gem_gaps,
+    likeliest_loadouts,
     line_gaps,
     loadout_space,
     lowest_at,
@@ -70,6 +71,7 @@ from .loadouts import (
     prices_at_gems,
     relaxed_best,
     search_targets,
+    shortfalls,
     time_gem_losses,
     value_tables,
 )
@@ -85,6 +87,15 @@ _LINE_BASES = 5_000_000
 _TOP_LINE_BASES = 30_000_000
 _SHARED_BASES = 100_000_000
 _SETS_PER_LINE = 16
+# A listed line's sets come likeliest first: of the _SETS_WEIGHED whose items give up least at the line's prices, found band by
+# band of shortfall from _FIRST_BAND of the base, by gem gap + _SHORTFALL_COST x that shortfall over the base. A player wears
+# their best items, and a lower TeamBuff needs better ones for the same line, so this needs no guess at the tier. Dev split:
+# a true line holds a median of 520 max-level sets, and the true gear is among its first 16 on 42 of 119 top players' rows in
+# walk order, 49 by gem gap, 65 by shortfall, 72 by both at 0.5 (0.5, 1, 2 and 4 tried); the benchmark names 60 sets at 64
+# weighed against 39 in walk order, 2 more at 256 for 3% more CPU.
+_SETS_WEIGHED = 64
+_FIRST_BAND = 0.005
+_SHORTFALL_COST = 0.5
 _SCRATCH_ROWS = 1 << 15
 _PREFERRED_TIER = "T5"
 # The most Greats a lookup searches, the most whose timelines it walks, and past those how far from a walked timeline it looks:
@@ -609,6 +620,29 @@ def _guessed_set(song: ReverseSong, lines: FoundLines, t: int, budget: int) -> t
     return _played_set(song, guess, lines, t), used
 
 
+def _likeliest_sets(song: ReverseSong, lines: FoundLines, t: int) -> list[FoundSet]:
+    """The sets of line t a player is likeliest to wear, likeliest first, each with the play that gives the score."""
+    target = lines.targets[t]
+    found = np.empty((_SETS_WEIGHED, 18), dtype=np.int64)
+    space = song.space.items, song.space.starts, song.space.gems
+    points = song.curves.f64["Perfect Points"]
+    query = target, lines.query.power, _FIRST_BAND * float(target[5]), _ITEMS_PER_TARGET
+    found = found[: likeliest_loadouts(space, song.tables.arrays, song.fixed_rows, points, (song.vertex_values, song.vertex_prices), query, found)]
+    found[:, 16] = t
+    gaps, great_points = np.empty(found.shape[0]), np.empty(found.shape[0], dtype=np.int64)
+    shapes = song.line_shape, song.multipliers[0], song.multipliers[2], points
+    gem_gaps(found, (song.space.items, song.space.gems), song.fixed_rows, shapes, song.chart.primary == song.chart.secondary, gaps, great_points)
+    given = shortfalls(song.space.items, song.space.starts, song.vertex_prices[target[6]])[0][found[:, :9]].sum(axis=1)
+    sets: list[FoundSet] = []
+    for r in np.argsort(gaps + _SHORTFALL_COST * given / float(target[5]), kind="stable").tolist():
+        made = _named_set(song, found[r], lines, float(gaps[r]))
+        if made is not None:
+            sets.append(made)
+            if len(sets) == _SETS_PER_LINE:
+                break
+    return sets
+
+
 def _named_costs(lines: FoundLines, found: np.ndarray, gaps: np.ndarray, reached: int, unnamed: float) -> np.ndarray:
     """What lines cost once the search has walked `reached` of them: a loadout's own gem gap, less what it tells that a released
     set reaches a line, the rarer among the lines walked the more. A line no set reaches costs `unnamed` more."""
@@ -664,11 +698,13 @@ def _sets_of(play: PlayInfo, song: ReverseSong, greats: int, limit: int) -> tupl
     last = np.searchsorted(found[tries, 16], np.arange(lines.targets.shape[0]), side="right")
     listed: list[int] = []
     for t in np.argsort(final, kind="stable")[:_SETS_TRIED].tolist():
-        made = (_named_set(song, found[r], lines, float(gaps[r])) for r in tries[first[t] : last[t]].tolist())
-        sets = [replace(row, cost=float(final[t])) for row in made if row is not None]
-        if sets:
-            named[t] = sets
-        if sets or last[t] == first[t]:
+        # A line the search found loadouts for is listed when one of them plays the score; its sets are then its likeliest, or
+        # the search's own where that walk's budget found none.
+        searched = (row for row in (_named_set(song, found[r], lines, float(gaps[r])) for r in tries[first[t] : last[t]].tolist()) if row is not None)
+        played = next(searched, None)
+        if played is not None:
+            named[t] = [replace(row, cost=float(final[t])) for row in _likeliest_sets(song, lines, t) or (played, *searched)]
+        if played is not None or last[t] == first[t]:
             listed.append(t)
         if len(listed) >= limit:
             break

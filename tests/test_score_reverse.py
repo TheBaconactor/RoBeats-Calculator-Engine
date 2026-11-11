@@ -318,6 +318,18 @@ def test_a_partly_upgraded_players_row_names_a_partly_upgraded_set(song):
     assert replayed.score == played.score
 
 
+def test_a_lines_sets_come_likeliest_first(song):
+    """Hundreds of max-level sets share a top player's stat line. A line's sets come by gem gap and by what their items give up
+    against each slot's best, so a set of best items with its gems placed leads its line: this player's own gear is the first
+    set named (in walk order it was not among the 100 listed)."""
+    player = fake_player(random.Random(20), song, dict(load_catalog(paths().game_export).minis), "top", "machine")
+    clock = np.arange(-1000.0, float(song.chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)
+    played = play(song.chart, player.stats, player.perfect_time, Plan(np.zeros(song.chart.total_notes)), clock)
+    reply = reverse_score(play_info(played, gear_power(player.stats, song.chart), "Compete"), song)
+    assert set(reply.sets[0].gear) == set(player.gear)
+    assert tuple(reply.sets[0].stats[stat] for stat in STATS[:5]) == tuple(player.stats[stat] for stat in STATS[:5])
+
+
 def test_a_named_sets_hits_replay_the_rows_score(song):
     """The hit offsets a named set carries replay, frame by frame in the game's port, to the row's exact score and Casual
     score: the play behind the score, Greats and fever where they were."""
