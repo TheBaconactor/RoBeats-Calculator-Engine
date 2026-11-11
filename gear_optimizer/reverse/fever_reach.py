@@ -52,8 +52,7 @@ def event_times(chart: Chart, perfect_time: int, greats: int = 0) -> tuple[np.nd
     if greats == 0:
         return earliest, latest
     positions = np.arange(hit.shape[0])
-    great_early = np.sort(hit + np.where(is_tail, tail.early_great.earliest, tap.early_great.earliest) - 1)
-    great_late = np.sort(hit + np.where(is_tail, tail.late_great.latest, tap.late_great.latest))
+    great_early, great_late = great_times(chart, perfect_time)
     return (
         np.maximum(great_early, earliest[np.maximum(positions - greats, 0)]),
         np.minimum(great_late, latest[np.minimum(positions + greats, hit.shape[0] - 1)]),
@@ -200,10 +199,10 @@ def _add_set(sets, count, added):
 
 @jit(nopython=True, cache=True)
 def _body_fevers(times, greats, fill, duration, ends, body, start):
-    """Whether the body fevers a state at activation start[0] >= HEAD_NOTES and code start[1] gains to the song's end are worked
-    out into body: walk_cell's windows past the head, where no mask changes, so each (activation, code) is worked out once per
-    walk, children first (an activation only moves on), as up to _BODY_SETS exact sets. body: (moves, sets, how many, the walk
-    that wrote them, a stack, the walk's number); False when the stack is full."""
+    """How many sets hold the body fevers a state at activation start[0] >= HEAD_NOTES and code start[1] gains to the song's
+    end, worked out into body: walk_cell's windows past the head, where no mask changes, so each (activation, code) is worked
+    out once per walk, children first (an activation only moves on), as up to _BODY_SETS exact sets. body: (moves, sets, how
+    many, the walk that wrote them, a stack, the walk's number); -1 when the stack is full."""
     moves, sets, counts, seen, stack, walk = body
     n = times[0].shape[0]
     stack[0, 0], stack[0, 1] = start
@@ -222,7 +221,7 @@ def _body_fevers(times, greats, fill, duration, ends, body, start):
                     held = _add_set(sets[a, code], held, (end - a, end - a, 1))
             elif seen[activation, child] != walk:
                 if top == stack.shape[0]:
-                    return False
+                    return -1
                 stack[top, 0], stack[top, 1] = activation, child
                 top += 1
                 waiting = True
@@ -234,18 +233,17 @@ def _body_fevers(times, greats, fill, duration, ends, body, start):
             counts[a, code] = held
             seen[a, code] = walk
             top -= 1
-    return True
+    return counts[start[0], start[1]]
 
 
 @jit(nopython=True, cache=True)
-def _finished(out, written, mask, counts, times, greats, fill, duration, ends, body, start):
-    """A head state with mask (low, high) and body fever counts that reaches the body at activation and code `start`: its
-    timelines into out's rows, each count with each set the body adds (_keep_timeline); -1 when a table is full. Counts that
-    are every count between their lowest and highest stay so."""
-    if not _body_fevers(times, greats, fill, duration, ends, body, start):
+def _finished(out, written, mask, counts, sets, held):
+    """A head state with mask (low, high) and body fever counts that reaches the body, where it gains the `held` sets of
+    _body_fevers: its timelines into out's rows, each count with each set (_keep_timeline); -1 when a table is full, or held
+    is. Counts that are every count between their lowest and highest stay so."""
+    if held < 0:
         return -1
-    sets = body[1][start[0], start[1]]
-    for k in range(body[2][start[0], start[1]]):
+    for k in range(held):
         if counts[2] == _ALL_COUNTS:
             written = _keep_timeline(out, written, mask[0], mask[1], (counts[0] + sets[k, 0], counts[1] + sets[k, 1], _ALL_COUNTS))
         else:
@@ -281,7 +279,8 @@ def walk_cell(times, greats, fill, duration, scratch, out, ends):
     while notes - 1 + delay < n and _fill_delay_cost(raw_fill, delay) <= budget:
         code = 2 * _fill_delay_cost(raw_fill, delay) + (delay > 0)
         if notes - 1 + delay >= HEAD_NOTES:
-            written = _finished(out, written, (0, 0), (0, 0, 1), times, greats, fill, duration, ends, body, (notes - 1 + delay, code))
+            held = _body_fevers(times, greats, fill, duration, ends, body, (notes - 1 + delay, code))
+            written = _finished(out, written, (0, 0), (0, 0, 1), body[1][notes - 1 + delay, code], held)
             if written < 0:
                 return -1
         else:
@@ -325,7 +324,8 @@ def walk_cell(times, greats, fill, duration, scratch, out, ends):
                     if activation == n:
                         written = _keep_timeline(out, written, next_low, next_high, gained)
                     elif activation >= HEAD_NOTES:
-                        written = _finished(out, written, (next_low, next_high), gained, times, greats, fill, duration, ends, body, (activation, code))
+                        held = _body_fevers(times, greats, fill, duration, ends, body, (activation, code))
+                        written = _finished(out, written, (next_low, next_high), gained, body[1][activation, code], held)
                     elif pushed >= following.shape[0]:
                         return -1
                     else:
