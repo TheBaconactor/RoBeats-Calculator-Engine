@@ -90,15 +90,11 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's payloads only when it
 # lists that version here, after a byte gate proved the persisted payloads identical. The version history is in git.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Taking the session prune and the trace counters out changed no frontier: the gate (16 charts) and the 40-chart
-    # sample (2,160 arrays) are identical to the 2fe49a9a0fdf producer's, which ratified the versions listed after it.
-    # Evidence in workspace/_rewrite_state_2026-11-05.
-    "exact-frontier-v12+logic-5e5df3a9a81d": (
-        "exact-frontier-v12+logic-2fe49a9a0fdf",
-        "exact-frontier-v12+logic-adffed7e46af",
-        "exact-frontier-v12+logic-db3c419e0279",
-        "exact-frontier-v12+logic-3879362bd129",
-        "exact-frontier-v12+logic-35c21d69e3b1",
+    # Giving the producer's host layer records and one precompute changed no frontier: the gate (16 charts), the 40-chart
+    # sample (2,160 arrays) and the whole catalog (2,287 charts, both timing modes) are identical to the 5f4d8f2f18e7
+    # producer's. Evidence in workspace/_engine_round3_2026-11-10.
+    "exact-frontier-v12+logic-35263f0e6516": (
+        "exact-frontier-v12+logic-5f4d8f2f18e7",
     ),
 }
 

@@ -51,15 +51,11 @@ _UNREADABLE = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZ
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's bundles only when it lists
 # that version here, after a byte gate proved the persisted bundles identical. The version history is in git.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Taking the session prune and the trace counters out changed no frontier: the gate (16 charts) and the 40-chart
-    # sample (2,160 arrays) are identical to the 142d750c3e01 producer's, which ratified the versions listed after it.
-    # Evidence in workspace/_rewrite_state_2026-11-05.
-    "fg-response-frontier-visible-first-v32+logic-6541a5ca2637": (
-        "fg-response-frontier-visible-first-v32+logic-142d750c3e01",
-        "fg-response-frontier-visible-first-v32+logic-ca3f853d4e52",
-        "fg-response-frontier-visible-first-v32+logic-ef40896fb48b",
-        "fg-response-frontier-visible-first-v32+logic-2653d51a312d",
-        "fg-response-frontier-visible-first-v32+logic-38e82e26a8ec",
+    # Giving the producer's host layer records and one precompute changed no frontier: the gate (16 charts), the 40-chart
+    # sample (2,160 arrays) and the whole catalog (2,287 charts, both timing modes) are identical to the 74ca016777d4
+    # producer's. Evidence in workspace/_engine_round3_2026-11-10.
+    "fg-response-frontier-visible-first-v32+logic-5ea9d0f832ca": (
+        "fg-response-frontier-visible-first-v32+logic-74ca016777d4",
     ),
 }
 
