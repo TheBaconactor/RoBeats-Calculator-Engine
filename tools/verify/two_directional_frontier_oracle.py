@@ -421,9 +421,7 @@ def production_surfaces(
     rt: float,
     note_types: list[int] | None = None,
 ) -> set[tuple[int, int]]:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
+    from gear_optimizer.frontier.producer_batch import build_frontiers, song_arrays
     from gear_optimizer.solver.timing_envelope import precise_envelopes
 
     ts = np.asarray([t / 1000.0 for t in timestamps_ms], dtype=np.float32)
@@ -432,14 +430,12 @@ def production_surfaces(
     # The exact production envelopes (per-note, held-tail-aware, despawn-capped) -- the same
     # builder time_song uses for the real FG build.
     env = precise_envelopes(ts, nt)
-    frontier = build_first_frontiers(
-        timestamps=ts,
-        perfect_candidate_timestamps=env.perfect_candidates,
-        great_candidate_timestamps=env.great_candidates,
-        perfect_floor_timestamps=env.perfect_floor,
-        great_floor_timestamps=env.great_floor,
-        lanes=np.asarray(lanes, dtype=np.int32),
-        geometries=((float(denom), int(n), float(rt)),),
+    frontier = build_frontiers(
+        song_arrays(
+            ts, env.perfect_candidates, env.great_candidates, env.perfect_floor, env.great_floor, None, None,
+            np.asarray(lanes, dtype=np.int32),
+        ),
+        ((float(denom), int(n), float(rt)),),
         use_forced_great_timing=True,
     )[0]
     out: set[tuple[int, int]] = set()

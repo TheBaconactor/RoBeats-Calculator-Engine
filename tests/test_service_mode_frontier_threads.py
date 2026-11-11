@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import os
 
-# `configure_timeline_pair_build_threads` now delegates to the shared lane-aware reducer, so the
-# effective count lives in `producer_reducer._FIRST_ONLY_REDUCER_THREADS`; the old
-# `timeline_producer._TIMELINE_PAIR_BUILD_THREADS` global went away with that move. The setter
+# `configure_timeline_pair_build_threads` sets the threads of the shared frontier build, Base and FG alike. The setter
 # clamps to os.cpu_count(), so assert the clamped value rather than a bare literal.
 
 
 def _effective_threads() -> int:
+    """The threads a build with any number of independent pieces of work uses."""
     from gear_optimizer.frontier import producer_reducer
 
-    return int(producer_reducer._FIRST_ONLY_REDUCER_THREADS)
+    return producer_reducer.threads_for(1 << 20)
 
 
 def test_service_mode_configures_timeline_pair_build_threads(monkeypatch) -> None:

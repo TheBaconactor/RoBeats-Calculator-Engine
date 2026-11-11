@@ -26,9 +26,7 @@ from gear_optimizer.frontier.cache import (
     init_prebuild_worker,
     prebuild_worker_curves,
 )
-from gear_optimizer.frontier.producer_reducer import (
-    configure_force_greats_response_first_frontier_threads,
-)
+from gear_optimizer.frontier.producer_reducer import configure_frontier_build_threads
 from gear_optimizer.frontier.fg_cache import ensure_response_frontier_cache_for_song
 from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key
 from gear_optimizer.frontier.fg_cache_store import (
@@ -215,7 +213,7 @@ def _dedupe_paths_by_response_bundle_key(
 
 def _build_fg_chart(chart_path: str, reducer_threads: int, timing_mode: str) -> FrontierCacheBuildResult:
     # Per-task width from the admission scheduler: sized to this song's memory weight class.
-    configure_force_greats_response_first_frontier_threads(int(reducer_threads))
+    configure_frontier_build_threads(int(reducer_threads))
     return build_frontier_cache_for_chart(
         chart_path, prebuild_worker_curves(), timing_mode, ensure_response_frontier_cache_for_song
     )
@@ -340,7 +338,7 @@ def _build_admitted_by_weight(
         with BoundedRecyclingProcessPool(
             max_workers=max_workers,
             initializer=init_prebuild_worker,
-            initargs=(curves, configure_force_greats_response_first_frontier_threads, 1),
+            initargs=(curves, configure_frontier_build_threads, 1),
             max_tasks_per_worker=_MAX_TASKS_PER_WORKER,
         ) as executor:
             _admit_ready(executor)

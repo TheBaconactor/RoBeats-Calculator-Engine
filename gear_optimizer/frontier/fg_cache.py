@@ -27,7 +27,7 @@ from .fg_cache_types import (
     FgResponseFrontierScoringBundle,
     all_response_stat_keys,
 )
-from .producer_batch import build_first_frontiers
+from .producer_batch import build_frontiers, song_arrays
 from .producer_kernels import _HEAD_DOM_B, _HEAD_DOM_C, _HEAD_DOM_F
 from .types import SurfacePool
 
@@ -79,17 +79,14 @@ def _build_response_frontier_cache_payload(
         for ft_stat, ff_stat in stat_keys.tolist()
     }
     geometries = tuple(dict.fromkeys(geometry_of.values()))
-    built = build_first_frontiers(
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        late_great_floor_timestamps=song_inputs.late_great_floor,
-        exit_ceiling_timestamps=song_inputs.exit_ceiling,
-        lanes=song_inputs.lanes,
-        geometries=geometries,
-        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+    built = build_frontiers(
+        song_arrays(
+            song_inputs.timestamps, song_inputs.perfect_candidates, song_inputs.great_candidates,
+            song_inputs.perfect_floor, song_inputs.great_floor, song_inputs.late_great_floor,
+            song_inputs.exit_ceiling, song_inputs.lanes,
+        ),
+        geometries,
+        bool(song_inputs.use_forced_great_timing),
     )
     if not all(frontier.first_frontier for frontier in built):
         raise ValueError("FG response frontier cache requires first-frontier surfaces")

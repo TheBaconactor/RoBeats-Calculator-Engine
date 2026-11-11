@@ -21,6 +21,36 @@ def _lanes_for(timestamps):
     return np.arange(int(np.asarray(timestamps).reshape(-1).shape[0]), dtype=np.int32)
 
 
+def _build_frontiers(
+    *,
+    timestamps,
+    perfect_floor_timestamps,
+    great_floor_timestamps,
+    lanes,
+    geometries,
+    use_forced_great_timing,
+    perfect_candidate_timestamps=None,
+    great_candidate_timestamps=None,
+):
+    """The producer's frontiers of a synthetic song; a candidate envelope not given is the chart time."""
+    from gear_optimizer.frontier.producer_batch import build_frontiers, song_arrays
+
+    return build_frontiers(
+        song_arrays(
+            timestamps,
+            timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps,
+            timestamps if great_candidate_timestamps is None else great_candidate_timestamps,
+            perfect_floor_timestamps,
+            great_floor_timestamps,
+            None,
+            None,
+            lanes,
+        ),
+        geometries,
+        use_forced_great_timing,
+    )
+
+
 def _engine_envelopes(timestamps, note_types=None):
     from gear_optimizer.solver.timing_envelope import precise_envelopes
 
@@ -46,7 +76,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         LabelHitIntervals,
         activation_schedule_witnesses,
     )
-    from gear_optimizer.frontier.fill_crossing import server_fill_crossing_run
+    from tests.parity.force_greats.fill_crossing_walk import server_fill_crossing_run
     from tests.fg_response_frontier_oracles import (
         _combine_surfaces,
         _reduce_surfaces,
@@ -291,47 +321,43 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     return _frontier(0, True)
 
 
-def test_fg_response_first_frontier_region_groups_partition_in_canonical_order() -> None:
-    from gear_optimizer.frontier import producer_precompute
+def test_fg_response_region_groups_partition_in_canonical_order() -> None:
+    from gear_optimizer.frontier.producer_batch import compact_action_table
+    from gear_optimizer.frontier.producer_precompute import Geometry, canonical_groups
 
-    action_row = np.asarray([1, 2, 3, 4], dtype=np.int32)
+    def _groups(keys: list[tuple[float, int]]) -> list[list[tuple[int, float, int]]]:
+        """The region groups of geometries with these (raw fill, non-Fever base), every one in an end class of its own
+        (none stands for another): per group its geometries' (source, raw fill, non-Fever base)."""
+        tables = {key: compact_action_table(*key, True) for key in dict.fromkeys(keys)}
+        geometries = [Geometry(source, tables[key], source) for source, key in enumerate(keys)]
+        groups, sources = canonical_groups(geometries, list(range(len(keys))))
+        assert sources == {source: [source] for source in range(len(keys))}
+        return [[(g.source, g.table.raw_fever_fill, g.table.non_fever_base) for g in group] for group in groups]
 
-    def _item(idx: int, non_fever_base: int, raw_fill: float) -> tuple:
-        return (idx, non_fever_base, raw_fill, 1.0, action_row, action_row, action_row)
-
-    items = [_item(0, 3, 2.5), _item(1, 3, 2.5), _item(2, 4, 2.5), _item(3, 3, 2.5), _item(4, 4, 7.0)]
-
-    groups = producer_precompute._first_only_region_groups(items)
-
-    # Keys keep first-appearance order and items keep canonical order within each independent
+    # Groups keep first-appearance order and geometries keep request order within each independent
     # table group; concurrent completion therefore cannot change returned geometry order.
-    assert list(groups.keys()) == [(2.5, 3), (2.5, 4), (7.0, 4)]
-    assert groups[(2.5, 3)] == [items[0], items[1], items[3]]
-    assert groups[(2.5, 4)] == [items[2]]
-    assert groups[(7.0, 4)] == [items[4]]
-    # Fills with the same half-unit count share a table, keyed by the first one's fill.
-    shared = producer_precompute._first_only_region_groups([_item(5, 3, 2.2), _item(6, 3, 2.4), _item(7, 3, 2.6)])
-    assert list(shared.keys()) == [(2.2, 3), (2.6, 3)]
-    assert [item[0] for item in shared[(2.2, 3)]] == [5, 6]
-    # The pre-song-context chunk machinery is gone: one canonical grouped route only.
-    assert not hasattr(producer_precompute, "_first_only_chunks")
-    assert not hasattr(producer_precompute, "_batch_chunk_size")
-    assert not hasattr(producer_precompute, "_FIRST_ONLY_REDUCER_BATCH_MAX_BYTES")
+    assert _groups([(2.5, 3), (2.5, 3), (2.5, 4), (2.5, 3), (7.0, 4)]) == [
+        [(0, 2.5, 3), (1, 2.5, 3), (3, 2.5, 3)],
+        [(2, 2.5, 4)],
+        [(4, 7.0, 4)],
+    ]
+    # Fills with the same half-unit count share a table, the first one's.
+    assert _groups([(2.2, 3), (2.4, 3), (2.6, 3)]) == [[(0, 2.2, 3), (1, 2.4, 3)], [(2, 2.6, 3)]]
 
 
-def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
+def test_fg_response_frontier_build_thread_count_is_capped() -> None:
     from gear_optimizer.frontier import producer_reducer
 
-    previous = producer_reducer.configure_force_greats_response_first_frontier_threads(9999)
+    previous = producer_reducer.configure_frontier_build_threads(9999)
     try:
         cpu_count = max(1, int(os.cpu_count() or 1))
-        assert 1 <= producer_reducer._resolve_first_only_reducer_threads(9999) <= cpu_count
-        producer_reducer.configure_force_greats_response_first_frontier_threads(0)
-        assert producer_reducer._resolve_first_only_reducer_threads(9999) == 1
-        producer_reducer.configure_force_greats_response_first_frontier_threads(4)
-        assert producer_reducer._resolve_first_only_reducer_threads(2) == 2
+        assert 1 <= producer_reducer.threads_for(9999) <= cpu_count
+        producer_reducer.configure_frontier_build_threads(0)
+        assert producer_reducer.threads_for(9999) == 1
+        producer_reducer.configure_frontier_build_threads(4)
+        assert producer_reducer.threads_for(2) == 2
     finally:
-        producer_reducer.configure_force_greats_response_first_frontier_threads(previous)
+        producer_reducer.configure_frontier_build_threads(previous)
 
 
 def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
@@ -445,6 +471,8 @@ def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
 def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -> None:
     from gear_optimizer.frontier import producer_kernels
     from gear_optimizer.frontier import producer_scheduler
+    from gear_optimizer.frontier.producer_batch import compact_action_table
+    from gear_optimizer.frontier.producer_precompute import Geometry
 
     n = 12
     action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
@@ -455,15 +483,17 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
         4.0,
     )
     expected = (n + 2) * np.dtype(np.int64).itemsize + 2 * int(capacity) * 28
-    group = ((4.0, 3), [(0, 3, 4.0, 1.0, action_k)])
-    assert producer_scheduler._region_table_bounds(n, group) == (
+    table = compact_action_table(4.0, 3, True)
+    assert table.action_k.tolist() == action_k.tolist()
+    assert producer_scheduler._table_bounds(n, table) == (
         expected, (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 28
     )
-    assert producer_scheduler._single_table_byte_budget(n, (group,)) == (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 28
+    assert producer_scheduler._single_table_byte_budget(n, [[Geometry(0, table, 0)]]) == (
+        (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 28
+    )
 
 
-def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatch) -> None:
-    from gear_optimizer.frontier import producer_batch
+def test_fg_response_frontier_build_runs_admitted_groups_concurrently(monkeypatch) -> None:
     from gear_optimizer.frontier import producer_reducer
     from gear_optimizer.frontier import producer_scheduler
     from gear_optimizer.frontier.types import (
@@ -503,18 +533,18 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         build_barrier.wait()
         return empty_table
 
-    def _fake_reduce(**kwargs):
+    def _fake_reduce(_build, group, _region_table, _executor, _threads):
         worker_ids.append(threading.get_ident())
         reduce_barrier.wait()
-        return [(int(item[0]), result) for item in kwargs["group_items"]]
+        return [(geometry.source, result) for geometry in group]
 
-    monkeypatch.setattr(producer_scheduler, "_region_table_bounds", lambda *_args: (200, 100))
+    monkeypatch.setattr(producer_scheduler, "_table_bounds", lambda *_args: (200, 100))
     monkeypatch.setattr(producer_scheduler, "_single_table_byte_budget", lambda *_args: 400)
-    monkeypatch.setattr(producer_scheduler._rb_numba, "_numba_build_region_core_table", _fake_build)
-    monkeypatch.setattr(producer_scheduler, "_reduce_first_frontier_group", _fake_reduce)
-    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(2)
+    monkeypatch.setattr(producer_scheduler.kernels, "_numba_build_region_core_table", _fake_build)
+    monkeypatch.setattr(producer_scheduler, "_reduce_group", _fake_reduce)
+    previous_threads = producer_reducer.configure_frontier_build_threads(2)
     try:
-        frontiers = producer_batch.build_first_frontiers(
+        frontiers = _build_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -523,7 +553,7 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
             use_forced_great_timing=True,
         )
     finally:
-        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_frontier_build_threads(previous_threads)
 
     assert frontiers == (result, result)
     assert caller_id not in builder_ids
@@ -532,7 +562,6 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
 
 
 def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> None:
-    from gear_optimizer.frontier import producer_batch
     from gear_optimizer.frontier import producer_reducer
     from gear_optimizer.frontier import producer_scheduler
     from gear_optimizer.frontier.types import (
@@ -550,18 +579,16 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
         1,
         3,
     )
-    calls: list[tuple[int, int]] = []
+    calls: list[list[int]] = []
 
-    def _fake_range(**kwargs):
-        start = int(kwargs["start"])
-        stop = int(kwargs["stop"])
-        calls.append((start, stop))
-        return [(int(kwargs["chunk"][idx][0]), result) for idx in range(start, stop)]
+    def _fake_range(_build, geometries, _runs, _region_table):
+        calls.append([geometry.source for geometry in geometries])
+        return [(geometry.source, result) for geometry in geometries]
 
-    monkeypatch.setattr(producer_scheduler, "_first_frontier_results_for_precomputed_range", _fake_range)
-    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(2)
+    monkeypatch.setattr(producer_scheduler, "reduce_geometries", _fake_range)
+    previous_threads = producer_reducer.configure_frontier_build_threads(2)
     try:
-        frontiers = producer_batch.build_first_frontiers(
+        frontiers = _build_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -570,14 +597,14 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
             use_forced_great_timing=False,
         )
     finally:
-        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_frontier_build_threads(previous_threads)
 
     assert frontiers == (result, result)
-    assert sorted(calls) == [(0, 1), (1, 2)]
+    assert sorted(calls) == [[0], [1]]
 
 
-def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:
-    from gear_optimizer.frontier import producer_reducer
+def test_fg_response_frontier_build_executor_uses_normal_worker_priority(monkeypatch) -> None:
+    from gear_optimizer.frontier import producer_scheduler
 
     calls: list[int] = []
 
@@ -588,24 +615,18 @@ def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority
 
         def __enter__(self):
             assert "initializer" not in self.kwargs
-            assert self.kwargs.get("thread_name_prefix") == "FGFirstFrontier"
+            assert self.kwargs.get("thread_name_prefix") == "FrontierBuild"
             return self
 
         def __exit__(self, *_args):
             return False
 
-    monkeypatch.setattr(producer_reducer.concurrent.futures, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(producer_scheduler.concurrent.futures, "ThreadPoolExecutor", FakeExecutor)
 
-    with producer_reducer._first_frontier_reducer_executor(3):
+    with producer_scheduler._executor(3):
         pass
 
     assert calls == [3]
-
-
-def test_fg_response_first_frontier_reducer_has_no_public_warmup_route() -> None:
-    from gear_optimizer.frontier import producer_reducer
-
-    assert not hasattr(producer_reducer, "warm_force_greats_response_first_frontier_reducer")
 
 
 def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
@@ -684,7 +705,6 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
 
 def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
     from gear_optimizer.frontier import producer_kernels as rb
-    from gear_optimizer.frontier import producer_precompute
     from gear_optimizer.frontier.producer_batch import action_table
 
     timestamps = np.asarray([idx * 0.071 for idx in range(180)], dtype=np.float32)
@@ -765,8 +785,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
     assert checked > 0
 
 
-def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypatch) -> None:
-    from gear_optimizer.frontier import producer_batch
+def test_fg_response_frontier_build_canonicalizes_equivalent_geometries(monkeypatch) -> None:
     from gear_optimizer.frontier import producer_reducer
     from gear_optimizer.frontier import producer_scheduler
     from gear_optimizer.frontier.types import (
@@ -776,16 +795,16 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
 
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     result = FgResponseFrontierResult(surface_frontier(surface), 1, 4, 0, 1, 1, 1, 3)
-    calls: list[dict] = []
-    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(1)
+    calls: list = []
+    previous_threads = producer_reducer.configure_frontier_build_threads(1)
 
-    def _fake_first_frontier(*, chunk, start, stop, **_kwargs):
-        calls.extend(chunk[start:stop])
-        return [(int(item[0]), result) for item in chunk[start:stop]]
+    def _fake_reduce(_build, geometries, _runs, _region_table):
+        calls.extend(geometries)
+        return [(geometry.source, result) for geometry in geometries]
 
-    monkeypatch.setattr(producer_scheduler, "_first_frontier_results_for_precomputed_range", _fake_first_frontier)
+    monkeypatch.setattr(producer_scheduler, "reduce_geometries", _fake_reduce)
     try:
-        frontiers = producer_batch.build_first_frontiers(
+        frontiers = _build_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -795,16 +814,15 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
             use_forced_great_timing=True,
         )
     finally:
-        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_frontier_build_threads(previous_threads)
 
     assert len(calls) == 1
     assert len(frontiers) == 2
     assert frontiers[0] is frontiers[1]
 
 
-def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) -> None:
+def test_fg_response_frontier_build_computes_fever_ends_once(monkeypatch) -> None:
     from gear_optimizer.frontier import producer_batch
-    from gear_optimizer.frontier import producer_precompute
     from gear_optimizer.frontier import producer_reducer
     from gear_optimizer.frontier import producer_scheduler
     from gear_optimizer.frontier.types import (
@@ -815,21 +833,21 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     result = FgResponseFrontierResult(surface_frontier(surface), 1, 4, 0, 1, 1, 1, 3)
     calls = 0
-    real_precompute = producer_precompute._precompute_end_indices
-    previous_threads = producer_reducer.configure_force_greats_response_first_frontier_threads(1)
+    real_fever_ends = producer_batch.fever_ends
+    previous_threads = producer_reducer.configure_frontier_build_threads(1)
 
-    def _record_precompute(**kwargs):
+    def _record_fever_ends(*args):
         nonlocal calls
         calls += 1
-        return real_precompute(**kwargs)
+        return real_fever_ends(*args)
 
-    def _fake_first_frontier(*, chunk, start, stop, **_kwargs):
-        return [(int(item[0]), result) for item in chunk[start:stop]]
+    def _fake_reduce(_build, geometries, _runs, _region_table):
+        return [(geometry.source, result) for geometry in geometries]
 
-    monkeypatch.setattr(producer_precompute, "_precompute_end_indices", _record_precompute)
-    monkeypatch.setattr(producer_scheduler, "_first_frontier_results_for_precomputed_range", _fake_first_frontier)
+    monkeypatch.setattr(producer_batch, "fever_ends", _record_fever_ends)
+    monkeypatch.setattr(producer_scheduler, "reduce_geometries", _fake_reduce)
     try:
-        frontiers = producer_batch.build_first_frontiers(
+        frontiers = _build_frontiers(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
@@ -839,21 +857,18 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
             use_forced_great_timing=True,
         )
     finally:
-        producer_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+        producer_reducer.configure_frontier_build_threads(previous_threads)
 
     assert calls == 1
     assert len(frontiers) == 2
 
 
 def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     great_candidates = np.asarray([0.0, 1.0, 2.5, 3.0, 4.0], dtype=np.float32)
 
-    frontier = build_first_frontiers(
+    frontier = _build_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
@@ -867,9 +882,6 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
 
 
 def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
@@ -877,7 +889,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
 
-    frontier = build_first_frontiers(
+    frontier = _build_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1003,9 +1015,6 @@ def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> 
 
 
 def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_same_end() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 3.4, 4.0], dtype=np.float32)
     perfect_candidates = timestamps.copy()
@@ -1013,7 +1022,7 @@ def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_sam
     great_candidates = timestamps.copy()
     great_candidates[2] = np.float32(2.5)
 
-    frontier = build_first_frontiers(
+    frontier = _build_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1032,9 +1041,6 @@ def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_sam
 
 
 def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfect() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
@@ -1042,7 +1048,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 3.1, 3.4], dtype=np.float32)
     perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
 
-    frontier = build_first_frontiers(
+    frontier = _build_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1083,15 +1089,12 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
 
 
 def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
 
     timestamps = np.asarray([float(idx) for idx in range(110)], dtype=np.float32)
     great_candidates = timestamps.copy()
     great_candidates[102] = np.float32(102.5)
 
-    frontier = build_first_frontiers(
+    frontier = _build_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
@@ -1128,12 +1131,13 @@ def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation
     assert carry_idx == -1
 
 
-def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_boundaries() -> None:
+def test_fg_response_fever_ends_match_exact_edge_end_at_float32_boundaries() -> None:
     from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
     from tests.fg_response_frontier_oracles import edge_end_oracle
-    from gear_optimizer.frontier.producer_precompute import _precompute_end_indices
+    from gear_optimizer.frontier.producer_batch import song_arrays
+    from gear_optimizer.frontier.producer_precompute import fever_ends
     from gear_optimizer.frontier.fg_cache_keys import _response_axes
 
     song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
@@ -1151,32 +1155,22 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             song_inputs.late_great_floor,
         )
     )
-    (
-        real_time_index,
-        timestamp_end_idx,
-        perfect_end_idx,
-        great_end_idx,
-        _great_floor_end_idx,
-        _capped_perfect_edge_e,
-        _capped_late_edge_e,
-        _capped_eg_perfect_e,
-        _capped_eg_late_e,
-        _capped_perfect_exit_e,
-        _capped_late_exit_e,
-    ) = _precompute_end_indices(
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        prefix_perfect_hit=prefix_perfect_hit,
-        prefix_late_hit=prefix_late_hit,
-        exit_ceiling_timestamps=song_inputs.exit_ceiling,
-        late_great_floor_timestamps=song_inputs.late_great_floor,
-        lanes=song_inputs.lanes,
-        real_times=np.asarray([real_fever_time], dtype=np.float64),
+    song_notes = int(song_inputs.timestamps.shape[0])
+    ends = fever_ends(
+        song_arrays(
+            song_inputs.timestamps, song_inputs.perfect_candidates, song_inputs.great_candidates,
+            song_inputs.perfect_floor, song_inputs.great_floor, song_inputs.late_great_floor,
+            song_inputs.exit_ceiling, song_inputs.lanes,
+        ),
+        prefix_perfect_hit,
+        prefix_late_hit,
+        np.asarray([real_fever_time], dtype=np.float64),
     )
-    rt_idx = int(real_time_index[0])
+    # Per hit token on the Perfect floor: each note's chart time, then its latest Perfect, then its latest Great.
+    timestamp_end_idx, perfect_end_idx, great_end_idx = (
+        ends.perfect_floor_by_hit[:, kind * song_notes : (kind + 1) * song_notes] for kind in range(3)
+    )
+    rt_idx = 0
     # Input-engine-aware precompute preserves the raw per-note Perfect clock. Reachability is checked
     # later by reconstruction/persistence with lane and surface context.
     reachable_pc = song_inputs.perfect_candidates
@@ -1263,9 +1257,6 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
 
 
 def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
@@ -1276,7 +1267,7 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
     real_fever_time = 0.5
     lanes = _lanes_for(timestamps)
 
-    frontier = build_first_frontiers(
+    frontier = _build_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1419,9 +1410,6 @@ def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() ->
 
 
 def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
 
     timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
     perfect_candidates = timestamps + np.float32(0.04)
@@ -1430,7 +1418,7 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
     great_floor = timestamps - np.float32(0.094)
     lanes = _lanes_for(timestamps)
 
-    numba_frontier = build_first_frontiers(
+    numba_frontier = _build_frontiers(
         timestamps=[timestamps],
         perfect_candidate_timestamps=[perfect_candidates],
         great_candidate_timestamps=[great_candidates],
@@ -1445,9 +1433,6 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
 
 
 def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
     timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
@@ -1469,7 +1454,7 @@ def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> Non
         real_fever_time=1.0,
         use_forced_great_timing=True,
     )
-    numba_frontier = build_first_frontiers(
+    numba_frontier = _build_frontiers(
         timestamps=[timestamps],
         perfect_candidate_timestamps=[perfect_candidates],
         great_candidate_timestamps=[great_candidates],
@@ -1512,27 +1497,14 @@ def test_fg_response_exact_fill_runs_preserve_arbitrary_membership(
     expected_starts: list[int],
     expected_ends: list[int],
 ) -> None:
-    from gear_optimizer.frontier.producer_reducer import (
-        _exact_action_fill_runs,
-    )
+    from gear_optimizer.frontier.producer_reducer import fill_runs
 
-    starts, ends = _exact_action_fill_runs(
-        np.asarray(fills, dtype=np.int32),
-        np.asarray(eligible, dtype=np.int32) if require_late else None,
-    )
+    offsets = np.asarray(fills, dtype=np.int32)
+    # The late-Great runs are the runs of the offsets a late Great can activate at.
+    starts, ends = fill_runs(offsets[np.asarray(eligible, dtype=np.int32) >= 0] if require_late else offsets)
     assert starts.tolist() == expected_starts
     assert ends.tolist() == expected_ends
-
-
-def test_fg_response_exact_fill_runs_reject_negative_offsets() -> None:
-    from gear_optimizer.frontier.producer_reducer import (
-        _exact_action_fill_runs,
-    )
-
-    with pytest.raises(ValueError, match="must be nonnegative"):
-        _exact_action_fill_runs(
-            np.asarray([2, -1], dtype=np.int32),
-        )
+    assert starts.dtype == ends.dtype == np.int32
 
 
 def test_fg_response_interval_successor_skips_removed_indices() -> None:
@@ -1569,12 +1541,9 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         _numba_build_prefix_activation_hit_tables,
         _numba_first_frontier_reachability_prepass,
     )
-    from gear_optimizer.frontier.producer_precompute import (
-        _precompute_end_indices,
-    )
-    from gear_optimizer.frontier.producer_reducer import (
-        _exact_action_fill_runs,
-    )
+    from gear_optimizer.frontier.producer_batch import song_arrays
+    from gear_optimizer.frontier.producer_precompute import fever_ends
+    from gear_optimizer.frontier.producer_reducer import fill_runs
     from tests.retired_fg_frontier_semantics import (
         retired_nested_action_reachability_prepass,
     )
@@ -1605,31 +1574,18 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         perfect_candidates + np.float32(0.001),
     )
     real_times = np.asarray([0.45, 1.0, 2.25], dtype=np.float32)
-    (
-        real_time_index,
-        _timestamp_end_idx,
-        _perfect_end_idx,
-        _great_end_idx,
-        _great_floor_end_idx,
-        capped_perfect_edge_e,
-        capped_late_edge_e,
-        capped_eg_perfect_e,
-        capped_eg_late_e,
-        capped_perfect_exit_e,
-        capped_late_exit_e,
-    ) = _precompute_end_indices(
-        timestamps=timestamps,
-        perfect_candidate_timestamps=perfect_candidates,
-        great_candidate_timestamps=great_candidates,
-        perfect_floor_timestamps=perfect_floor,
-        great_floor_timestamps=great_floor,
-        prefix_perfect_hit=prefix_perfect_hit,
-        prefix_late_hit=prefix_late_hit,
-        exit_ceiling_timestamps=np.minimum.accumulate(perfect_candidates[::-1])[::-1],
-        late_great_floor_timestamps=perfect_candidates + np.float32(0.001),
-        lanes=lanes,
-        real_times=real_times,
+    # The fever times are distinct and ascending, so a time's row is its index.
+    real_time_index = np.arange(3)
+    ends = fever_ends(
+        song_arrays(timestamps, perfect_candidates, great_candidates, perfect_floor, great_floor, None, None, lanes),
+        prefix_perfect_hit,
+        prefix_late_hit,
+        real_times.astype(np.float64),
     )
+    capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e = (
+        ends.perfect_e, ends.late_e, ends.eg_perfect_e, ends.eg_late_e
+    )
+    capped_perfect_exit_e, capped_late_exit_e = ends.perfect_exit_e, ends.late_exit_e
     region_starts = np.zeros(n + 2, dtype=np.int64)
     empty_i32 = np.empty(0, dtype=np.int32)
     empty_f64 = np.empty(0, dtype=np.float64)
@@ -1674,10 +1630,8 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
             "great_floor_timestamps": great_floor,
         }
         expected_reachable, expected_width = retired_nested_action_reachability_prepass(**common)
-        perfect_run_starts, perfect_run_ends = _exact_action_fill_runs(later_fill)
-        late_run_starts, late_run_ends = _exact_action_fill_runs(
-            later_fill, later_activation_forced
-        )
+        perfect_run_starts, perfect_run_ends = fill_runs(later_fill)
+        late_run_starts, late_run_ends = fill_runs(later_fill[later_activation_forced >= 0])
         perfect_successor = np.empty(n + 1, dtype=np.int32)
         perfect_successor_stamps = np.zeros(n + 1, dtype=np.int32)
         late_successor = np.empty(n + 1, dtype=np.int32)
@@ -1698,6 +1652,34 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
             ), common["great_floor_timestamps"]), (perfect_successor, perfect_successor_stamps, late_successor, late_successor_stamps, 1))
         assert np.array_equal(actual_reachable, expected_reachable), case_idx
         assert int(actual_width) == int(expected_width), case_idx
+
+    # A negative fill offset fails loud in the kernel that walks the runs.
+    with pytest.raises(ValueError, match="must be nonnegative"):
+        _numba_first_frontier_reachability_prepass(
+            n,
+            0,
+            (empty_i32, empty_i32),
+            (*fill_runs(np.asarray([2, -1], dtype=np.int32)), empty_i32, empty_i32),
+            ActivationEnds(
+                prefix_perfect_hit,
+                prefix_perfect_valid,
+                prefix_late_hit,
+                prefix_late_valid,
+                *(table[0] for table in (
+                    capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e,
+                    capped_perfect_exit_e, capped_late_exit_e,
+                )),
+            ),
+            (1.0, 0),
+            (RegionTables(region_starts, *(empty_i32 for _ in range(7)), perfect_floor, great_floor), great_floor),
+            (
+                np.empty(n + 1, dtype=np.int32),
+                np.zeros(n + 1, dtype=np.int32),
+                np.empty(n + 1, dtype=np.int32),
+                np.zeros(n + 1, dtype=np.int32),
+                1,
+            ),
+        )
 
 
 def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
@@ -1855,9 +1837,6 @@ def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
     non_fever_base: int,
     real_fever_time: float,
 ) -> None:
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
 
     perfect_candidates = timestamps + np.float32(0.04)
     great_candidates = timestamps + np.float32(0.19)
@@ -1875,7 +1854,7 @@ def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
         non_fever_base=non_fever_base,
         real_fever_time=real_fever_time,
     )
-    production = build_first_frontiers(
+    production = _build_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -1920,9 +1899,6 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
     real_fever_time: float,
 ) -> None:
     """Base mode may prune only surfaces that cannot win under any legal stat allocation."""
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
 
     perfect_candidates = timestamps + np.float32(0.04)
     perfect_floor = timestamps - np.float32(0.019)
@@ -1944,7 +1920,7 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
         and int(surface.body_great) == 0
         and int(surface.body_fever_great) == 0
     )
-    production = build_first_frontiers(
+    production = _build_frontiers(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=perfect_candidates,
@@ -1973,9 +1949,6 @@ def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
     """A body-only Base chart must not bypass capped activation ownership."""
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
     chart_path = ROOT / "Data" / "Normal" / "Sweat Around The World (Intense Mix) by Just Sweat [Just Dance].txt"
@@ -1995,7 +1968,7 @@ def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
         real_fever_time=real_fever_time,
         use_forced_great_timing=False,
     )
-    production = build_first_frontiers(
+    production = _build_frontiers(
         timestamps=[song_inputs.timestamps],
         perfect_candidate_timestamps=[song_inputs.perfect_candidates],
         great_candidate_timestamps=[song_inputs.perfect_candidates],
@@ -2168,9 +2141,6 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.gamedata import stat_curves
     from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.timing_envelope import time_song
-    from gear_optimizer.frontier.producer_batch import (
-        build_first_frontiers,
-    )
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
@@ -2184,7 +2154,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     non_fever_base = int(non_fever_base_by_ff[67])
     real_fever_time = float(real_time_by_ft[51])
 
-    frontier = build_first_frontiers(
+    frontier = _build_frontiers(
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
@@ -2224,13 +2194,11 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
 
 @pytest.mark.gpu
 def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> None:
-    from gear_optimizer.frontier import producer_batch
-
     timestamps = np.asarray([float(idx) * 0.11 for idx in range(60)], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(60)], dtype=np.float32)
     geometries = ((2.25, 7, 0.55),)
 
-    slim = producer_batch.build_first_frontiers(
+    slim = _build_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
@@ -2246,7 +2214,6 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
 
 @pytest.mark.gpu
 def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
-    from gear_optimizer.frontier import producer_batch
     from gear_optimizer.frontier.producer_batch import action_table
     from gear_optimizer.trace.reconstruct import _EMPTY_SURFACE
     from gear_optimizer.trace.reconstruct import reconstruct_force_greats_response_trace
@@ -2274,7 +2241,7 @@ def test_fg_response_trace_reconstructs_from_slim_first_frontier() -> None:
     non_fever_base = 7
     real_fever_time = 0.55
     lanes = _lanes_for(timestamps)
-    slim = producer_batch.build_first_frontiers(
+    slim = _build_frontiers(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_candidate_timestamps=perfect_candidates,

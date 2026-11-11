@@ -33,11 +33,12 @@ def _build_small_payload():
     # A fill base is never 0 in the game (its curve ends at 0.0769): a zero denominator has no fill threshold.
     fill_bases = np.linspace(0.01, 1.6, 161)
     timestamps = np.array([0.0, 0.0, 0.1, 0.1, 0.22, 0.22], dtype=np.float32)
+    perfect_candidates = timestamps + np.float32(0.04)
     payload = build_timeline_frontier_grid_payload(
-        total_notes=6,
         timestamps=timestamps,
-        perfect_candidate_timestamps=timestamps + np.float32(0.04),
+        perfect_candidate_timestamps=perfect_candidates,
         perfect_floor_timestamps=timestamps - np.float32(0.019),
+        exit_ceiling_timestamps=np.minimum.accumulate(perfect_candidates[::-1])[::-1],
         lanes=np.arange(6, dtype=np.int32),
         fever_times=fever_durations(1.8, decay_rates),
         fever_fills=fever_fill_thresholds(fever_fill_denominators(6, fill_bases)),
