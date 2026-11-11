@@ -64,8 +64,9 @@ _DROP_LOW, _DROP_HIGH = 0.999, 1.001
 _NARROW_BODIES = 4
 _NARROW_CLASSES = 512
 # Threads a GPU work group of the rows kernels: a group runs as long as its slowest thread, and their threads' work is uneven.
-# On the M4's GPU, the heaviest searches of 10 gate rows (19 searches, 124 launches): 16.5 s at 1024, 9.3 s at 256 (the
-# runtime's default), 5.2 s at 64, 4.4 s at 32, 6.2 s at 16, 15.4 s at 1.
+# On the M4's GPU, the heaviest searches of 10 gate rows (19 searches, 124 launches): 10.7 s in groups of 256 (the runtime's
+# default) with an entry's base values side by side, 4.4 s in groups of 32, and in _thread's order 2.7 s at 16, 2.0 s at 32,
+# 2.4 s at 64, 3.1 s at 128.
 _ROWS_BLOCK = 32
 _COUNTERS = 4
 _LIVE, _PAIRS, _BASES, _ROWS = range(_COUNTERS)
@@ -519,9 +520,11 @@ def _stat_rows(q: _Search, pair: _Vec3i, base: ti.i32, need: _Vec2i, multipliers
 @ti.func
 def _thread(q: _Search, i: ti.i32) -> _Vec7i:
     """A rows thread's base value and pair, and the deficit range its float32 bounds leave: (live, surface, CM, FM, base,
-    lowest, highest)."""
-    entry = tables.pairs[i >> _BASE_BITS]
-    base: ti.i32 = entry[1] + (i & (_ENTRY_BASES - 1))
+    lowest, highest). Threads take every entry's first base value, then every entry's second, and so on: the threads of a GPU
+    work group then mostly all work or all idle, where an entry's 16 places side by side left most of a group waiting."""
+    entries: ti.i32 = ti.min(tables.counters[_PAIRS], _MAX_PAIRS)
+    entry = tables.pairs[i % entries]
+    base: ti.i32 = entry[1] + i // entries
     u = entry[0] >> 16
     cm = (entry[0] >> 8) & 255
     fm = entry[0] & 255
