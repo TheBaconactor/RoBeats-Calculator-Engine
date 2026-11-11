@@ -22,7 +22,7 @@ HEAD_LISTED = 3
 _LISTED_SETS = 1 << 12
 # The most Greats a class puts in the head.
 _HEAD_SPANNED = 16
-_CLASS_COLUMNS = 9
+CLASS_COLUMNS = 9
 _SUM_WORDS = (2 * MAX_STAT + 1 + 63) // 64
 ROW_COLUMNS = 8
 NOTE_COST = 1.0
@@ -94,12 +94,15 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
     spans: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
     wider: dict[tuple[int, int], list[int]] = {}
     for clean, losses in timelines:
+        lost_low, lost_high = int(np.ceil(clean - casual[1])), int(np.floor(clean - casual[0]))
+        key = losses.tobytes()
         for head in range(min(greats, _HEAD_SPANNED) + 1):
             body = greats - head
             for inside in range(body + 1):
-                low = int(np.ceil(clean - casual[1])) - 100 * (body - inside) - 300 * inside
-                high = int(np.floor(clean - casual[0])) - 100 * (body - inside) - 300 * inside
-                if high < 0 or (head == 0 and low > 0):
+                low, high = lost_low - 100 * (body - inside) - 300 * inside, lost_high - 100 * (body - inside) - 300 * inside
+                if high < 0:
+                    break  # more of them inside leave the head less still
+                if head == 0 and low > 0:
                     continue
                 if head <= listed_up_to:
                     found = _listed_head(losses, head, (low, high), listed)
@@ -108,7 +111,6 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
                             total = sum(note + 1 for note in row if note >= 0)
                             rows.add((head, body, total, total, *row, low, high))
                         continue
-                key = losses.tobytes()
                 if key not in spans:
                     spans[key] = _position_spans(losses, _HEAD_SPANNED, int(_HEAD_SPANNED * losses.max()))
                 fewest, most = spans[key][0][head], spans[key][1][head]
@@ -119,7 +121,7 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
                     wide[2], wide[3] = min(wide[2], hits[0]), max(wide[3], hits[-1])
     for (head, body), (first, last, low, high) in wider.items():
         rows.add((head, body, first, last, -1, -1, -1, low, high))
-    return np.asarray(sorted(rows), dtype=np.int64).reshape(-1, _CLASS_COLUMNS)
+    return np.asarray(sorted(rows), dtype=np.int64).reshape(-1, CLASS_COLUMNS)
 
 
 @jit(nopython=True, cache=True)

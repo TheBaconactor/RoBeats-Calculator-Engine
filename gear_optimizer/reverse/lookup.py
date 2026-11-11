@@ -38,6 +38,7 @@ from gear_optimizer.stats import GEM_KINDS, apply_gems, named_loadout_stats, tot
 from .fever_reach import FeverSurfaces, event_times, fever_span, fever_surfaces, great_times, pattern_words, walk_cell, walk_scratch
 from .gpu_lines import MAX_CLASSES, MAX_ROWS, LineQuery, SongTables, SurfaceTables, line_rows, scan_order, surface_tables
 from .greats import (
+    CLASS_COLUMNS,
     HEAD_LISTED,
     ROW_COLUMNS,
     band_surfaces,
@@ -135,7 +136,7 @@ _PLAUSIBLE_SHARE = 0.25
 _MULTIPLIER_ROUNDING = 0.005
 # The game saves accuracy to 5 decimals and prints that to 2 (PlayerSongPlay.lua:251, SongDisplayElement.lua:656).
 _ACCURACY_ROUNDING = 0.0055
-_NO_CLASSES = np.empty((0, 9), dtype=np.int64)  # a clean play's
+_NO_CLASSES = np.empty((0, CLASS_COLUMNS), dtype=np.int64)  # a clean play's
 _LOG_FACTORIAL = np.concatenate(([0.0], np.cumsum(np.log(np.arange(1, _GREATS_SEARCHED + 2)))))
 
 

@@ -39,7 +39,6 @@ PRICED = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time"
 PRIMARY, SECONDARY = len(PRICED), len(PRICED) + 1
 _ROW = len(PRICED) + 2
 GEAR_SLOTS = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
-_ITEMS_EQUIPPED = len(GEAR_SLOTS) + 3
 # What a selected element gem adds: to the primary, to the secondary, to neither.
 _ELEMENT_ROWS = 3
 _GEM_ROWS = len(STAT_GEMS) + _ELEMENT_ROWS
@@ -331,7 +330,8 @@ def value_tables(space: LoadoutSpace) -> ValueTables:
 
 
 @jit(nopython=True, cache=True)
-def _sets_bit(words, value):
+def holds_bit(words, value):
+    """Whether a bit set (64-bit words) holds a value."""
     return value >= 0 and (value >> 6) < words.shape[0] and bool((words[value >> 6] >> np.uint64(value & 63)) & np.uint64(1))
 
 
@@ -354,7 +354,7 @@ def _openings(arrays, gems, points, query, out):
             continue
         target[0] = stat
         value = 2 * elements + priced + prices[0] * (stat - fixed[0]) - floor
-        if _sets_bit(first_layer[_residue(target - fixed[:5])], value):
+        if holds_bit(first_layer[_residue(target - fixed[:5])], value):
             out[found, 0], out[found, 1] = stat, value
             found += 1
     return found

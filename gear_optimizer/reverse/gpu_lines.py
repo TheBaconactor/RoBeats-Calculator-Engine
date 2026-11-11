@@ -26,8 +26,10 @@ from dataclasses import dataclass
 import numpy as np
 
 from gear_optimizer.gpu.runtime import init_taichi, ti
-from gear_optimizer.gpu.scoring import _FLOAT32_ERROR, _float64_bits, _float64_floor, _float64_of, _float64_product
+from gear_optimizer.gpu.scoring import _FLOAT32_ERROR, _float64_bits, _float64_floor, _float64_of, _float64_product, shape_value
 from gear_optimizer.rules import MAX_STAT
+
+from .greats import CLASS_COLUMNS
 
 _AXIS = MAX_STAT + 1
 _TILE = 8
@@ -45,7 +47,6 @@ _BASE_BITS = 4
 _ENTRY_BASES = 1 << _BASE_BITS
 _CLASSES_PER_BASE = 16  # classes of a play that cost as much as its base value's other tests
 MAX_ROWS = 1 << 22
-_CLASS_COLUMNS = 9
 _MARGIN = 2.0e-6  # Relative, over float32's order of a bound; rows past the ceiling by this much have no loadout.
 _FLOOR_LOW, _FLOOR_HIGH = 1.0 - _FLOAT32_ERROR, 1.0 + _FLOAT32_ERROR
 # Over any line, base - Great is under base / 3 + this: Great points are 2/3 of the elements + 150, and Perfect Points at
@@ -85,8 +86,7 @@ _Vec2u = ti.types.vector(2, ti.u32)
 _Vec3i = ti.types.vector(3, ti.i32)
 _Vec4i = ti.types.vector(4, ti.i32)
 _Vec7i = ti.types.vector(7, ti.i32)
-_Vec4f = ti.types.vector(4, ti.f32)
-_Vec9i = ti.types.vector(_CLASS_COLUMNS, ti.i32)
+_Vec9i = ti.types.vector(CLASS_COLUMNS, ti.i32)
 _I32_ARRAY = ti.types.ndarray(dtype=ti.i32)
 
 # Name: (type, shape), or (type, shape, vector size). Shapes are baked into the compiled kernels, as in gpu.fields.
@@ -114,7 +114,7 @@ _FIELDS = {
     "sum_span": (ti.i32, CHUNK_SURFACES, 2),
     "relief": (ti.f32, (CHUNK_SURFACES, _MAX_VERTICES)),
     # A play.
-    "classes": (ti.i32, MAX_CLASSES, _CLASS_COLUMNS),
+    "classes": (ti.i32, MAX_CLASSES, CLASS_COLUMNS),
     # The lists.
     "counters": (ti.i32, _COUNTERS),
     "live": (ti.i32, _MAX_TILES),
@@ -165,11 +165,6 @@ def _ceiling(u: ti.i32, cm: ti.i32, fm: ti.i32, floor: ti.f32, vertices: ti.i32)
 
 
 @ti.func
-def _shape_at(terms: _Vec4f, combo: ti.f32, fever: ti.f32) -> ti.f32:
-    return combo * (terms[0] * fever + terms[1]) + terms[2] * fever + terms[3]
-
-
-@ti.func
 def _sum_in_span(u: ti.i32, low: ti.f32, high: ti.f32) -> ti.i32:
     """Whether surface u has an FT + FF in low..high."""
     first: ti.i32 = ti.max(ti.cast(ti.ceil(low), ti.i32), 0)
@@ -199,6 +194,10 @@ def _highest_base(q: _Search, bound: ti.f32, shape: ti.f32, combo: ti.f32, fever
 
 @ti.kernel
 def _find_tiles(surfaces: ti.i32, q: _Search):
+    """A chunk's live tiles; its lists start anew, and the rows of the chunks before it stay."""
+    tables.counters[_LIVE] = 0
+    tables.counters[_PAIRS] = 0
+    tables.counters[_BASES] = 0
     for i in range(surfaces * _TILES):
         u = i // _TILES
         tile = i % _TILES
@@ -206,7 +205,7 @@ def _find_tiles(surfaces: ti.i32, q: _Search):
         fm_low = (tile % _BLOCKS) * _TILE
         cm_top = ti.min(cm_low + _TILE - 1, MAX_STAT)
         fm_top = ti.min(fm_low + _TILE - 1, MAX_STAT)
-        lowest: ti.f32 = q.wanted * (1.0 - _MARGIN) / _shape_at(tables.shape_terms[u], tables.combo[cm_top], tables.fever[fm_top])
+        lowest: ti.f32 = q.wanted * (1.0 - _MARGIN) / shape_value(tables.shape_terms[u], tables.combo[cm_top], tables.fever[fm_top])
         bound: ti.f32 = _ceiling(u, cm_low, fm_low, lowest, q.vertices)
         keep = bound >= lowest
         if keep and q.power >= 0:
@@ -230,7 +229,7 @@ def _find_pairs(q: _Search):
         if cm <= MAX_STAT and fm <= MAX_STAT:
             combo: ti.f32 = tables.combo[cm]
             fever: ti.f32 = tables.fever[fm]
-            shape: ti.f32 = _shape_at(tables.shape_terms[u], combo, fever)
+            shape: ti.f32 = shape_value(tables.shape_terms[u], combo, fever)
             floor: ti.f32 = q.wanted * (1.0 - _MARGIN) / shape
             bound: ti.f32 = _ceiling(u, cm, fm, floor, q.vertices)
             keep = bound >= floor
@@ -516,7 +515,7 @@ def _thread(q: _Search, i: ti.i32) -> _Vec7i:
     body_low: ti.i32 = bf * ti.cast(rough_fever * _FLOOR_LOW, ti.i32) + (q.body_total - bf) * ti.cast(rough * _FLOOR_LOW, ti.i32)
     body_high: ti.i32 = bf * ti.cast(rough_fever * _FLOOR_HIGH, ti.i32) + (q.body_total - bf) * ti.cast(rough * _FLOOR_HIGH, ti.i32)
     # A head's floors lie within head_len of base x its shape.
-    head: ti.i32 = ti.cast(ti.cast(base, ti.f32) * _shape_at(tables.head_terms[u], combo, fever), ti.i32)
+    head: ti.i32 = ti.cast(ti.cast(base, ti.f32) * shape_value(tables.head_terms[u], combo, fever), ti.i32)
     need_high: ti.i32 = body_high + head - q.score + _HEAD_FLOAT_POINTS
     need_low: ti.i32 = body_low + head - q.score - q.head_len - _HEAD_FLOAT_POINTS
     live = base <= entry[2] and tables.counters[_ROWS] <= MAX_ROWS and need_high >= 0 and (q.greats > 0 or need_low <= 0)
@@ -546,9 +545,8 @@ def _find_narrow_rows(q: _Search):
 
 
 @ti.kernel
-def _clear(counters: ti.i32):
-    for slot in range(counters):
-        tables.counters[slot] = 0
+def _forget_rows():
+    tables.counters[_ROWS] = 0
 
 
 @ti.kernel
@@ -566,31 +564,27 @@ def _read_rows(count: ti.i32, out: _I32_ARRAY):
 
 
 @ti.kernel
-def _load(field: ti.template(), count: ti.i32, values: ti.types.ndarray()):
+def _load_classes(count: ti.i32, values: _I32_ARRAY):
     for i in range(count):
-        field[i] = values[i]
+        for j in ti.static(range(CLASS_COLUMNS)):
+            tables.classes[i][j] = values[i, j]
 
 
 @ti.kernel
-def _load_vectors(field: ti.template(), count: ti.i32, values: ti.types.ndarray()):
+def _load_surfaces(first: ti.i32, count: ti.i32, vertices: ti.i32, terms: ti.types.ndarray(), bits: ti.types.ndarray(), counts: ti.types.ndarray(), relief: ti.types.ndarray()):
+    """A chunk of `count` surfaces from surface `first` on: per surface its terms (shape, head), bits (head mask, FT + FF sums),
+    counts (body fever, lowest and highest FT + FF) and relief at each vertex."""
     for i in range(count):
-        for j in ti.static(range(field.n)):
-            field[i][j] = values[i, j]
-
-
-@ti.kernel
-def _load_grid(field: ti.template(), rows: ti.i32, columns: ti.i32, values: ti.types.ndarray()):
-    for i in range(rows):
-        for j in range(columns):
-            field[i, j] = values[i, j]
-
-
-@ti.kernel
-def _load_grid_vectors(field: ti.template(), rows: ti.i32, columns: ti.i32, values: ti.types.ndarray()):
-    for i in range(rows):
-        for j in range(columns):
-            for k in ti.static(range(field.n)):
-                field[i, j][k] = values[i, j, k]
+        tables.surface_id[i] = first + i
+        tables.body_fever[i] = counts[i, 0]
+        tables.sum_span[i] = ti.Vector([counts[i, 1], counts[i, 2]])
+        tables.shape_terms[i] = ti.Vector([terms[i, 0], terms[i, 1], terms[i, 2], terms[i, 3]])
+        tables.head_terms[i] = ti.Vector([terms[i, 4], terms[i, 5], terms[i, 6], terms[i, 7]])
+        tables.head_words[i] = ti.Vector([bits[i, 0], bits[i, 1], bits[i, 2], bits[i, 3]])
+        for j in range(_SUM_WORDS):
+            tables.sum_bits[i, j] = bits[i, _MASK_WORDS + j]
+        for j in range(vertices):
+            tables.relief[i, j] = relief[i, j]
 
 
 def _float64_words(values: np.ndarray) -> np.ndarray:
@@ -669,36 +663,33 @@ def _load_song(song: SongTables) -> None:
     global _loaded_song
     if song is _loaded_song:
         return
-    if song.vertex_values.shape[0] > _MAX_VERTICES:
-        raise ValueError(f"reverse lookup: {song.vertex_values.shape[0]} vertices, the GPU tables hold {_MAX_VERTICES}")
-    points = song.points.astype(np.int32)
-    by_term, terms, starts = _stats_by_term(points.astype(np.int64))
-    _load(tables.combo, _AXIS, song.combo.astype(np.float32))
-    _load(tables.fever, _AXIS, song.fever.astype(np.float32))
-    _load_vectors(tables.combo_bits, _AXIS, _float64_words(song.combo))
-    _load_vectors(tables.fever_bits, _AXIS, _float64_words(song.fever))
-    _load_grid(tables.ramp, _AXIS, song.head_len, song.ramp[:, : song.head_len].astype(np.float32))
-    _load_grid_vectors(tables.ramp_bits, _AXIS, song.head_len, _float64_words(song.ramp[:, : song.head_len]))
-    _load(tables.vertex_values, song.vertex_values.shape[0], song.vertex_values.astype(np.float32))
-    _load_vectors(tables.vertex_prices, song.vertex_values.shape[0], song.vertex_prices.astype(np.float32))
-    _load(tables.points, _AXIS, points)
-    _load(tables.stat_terms, _AXIS, terms)
-    _load(tables.stats_by_term, _AXIS, by_term)
-    _load(tables.residue_start, 6, starts)
+    vertices = song.vertex_values.shape[0]
+    if vertices > _MAX_VERTICES:
+        raise ValueError(f"reverse lookup: {vertices} vertices, the GPU tables hold {_MAX_VERTICES}")
+    by_term, terms, starts = _stats_by_term(song.points.astype(np.int64))
+    values, prices = np.zeros(_MAX_VERTICES, dtype=np.float32), np.zeros((_MAX_VERTICES, 2), dtype=np.float32)
+    values[:vertices], prices[:vertices] = song.vertex_values, song.vertex_prices
+    tables.combo.from_numpy(song.combo.astype(np.float32))
+    tables.fever.from_numpy(song.fever.astype(np.float32))
+    tables.combo_bits.from_numpy(_float64_words(song.combo))
+    tables.fever_bits.from_numpy(_float64_words(song.fever))
+    tables.ramp.from_numpy(song.ramp.astype(np.float32))
+    tables.ramp_bits.from_numpy(_float64_words(song.ramp))
+    tables.vertex_values.from_numpy(values)
+    tables.vertex_prices.from_numpy(prices)
+    tables.points.from_numpy(song.points.astype(np.int32))
+    tables.stat_terms.from_numpy(terms)
+    tables.stats_by_term.from_numpy(by_term)
+    tables.residue_start.from_numpy(starts)
     _loaded_song = song
 
 
 def _load_chunk(surfaces: SurfaceTables, first: int, last: int, vertices: int) -> None:
     span = slice(first, last)
-    count = last - first
-    _load(tables.surface_id, count, np.arange(first, last, dtype=np.int32))
-    _load_vectors(tables.shape_terms, count, surfaces.shape_terms[span])
-    _load_vectors(tables.head_terms, count, surfaces.head_terms[span])
-    _load_vectors(tables.head_words, count, surfaces.words[span])
-    _load(tables.body_fever, count, surfaces.body_fever[span])
-    _load_grid(tables.sum_bits, count, _SUM_WORDS, surfaces.sums[span])
-    _load_vectors(tables.sum_span, count, _sum_spans(surfaces.sums[span]))
-    _load_grid(tables.relief, count, vertices, surfaces.relief[span])
+    terms = np.hstack((surfaces.shape_terms[span], surfaces.head_terms[span]))
+    bits = np.hstack((surfaces.words[span], surfaces.sums[span]))
+    counts = np.column_stack((surfaces.body_fever[span], _sum_spans(surfaces.sums[span])))
+    _load_surfaces(first, last - first, vertices, terms, bits, counts, surfaces.relief[span])
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,7 +727,7 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
     _start()
     _load_song(song)
     if query.classes.shape[0]:
-        _load_vectors(tables.classes, query.classes.shape[0], query.classes.astype(np.int32))
+        _load_classes(query.classes.shape[0], query.classes.astype(np.int32))
     terms = 5.0 * np.arange(song.points.shape[0]) - 2.0 * song.points
     vertices = song.vertex_values.shape[0]
     narrow_from = _narrow_from(query.classes)
@@ -746,7 +737,7 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
         narrow_from=narrow_from, term_low=float(terms.min()), term_high=float(terms.max()),
     )
     counters = np.zeros(_COUNTERS, dtype=np.int32)
-    _clear(_COUNTERS)
+    _forget_rows()
     walked = kept = first = 0
     size = CHUNK_SURFACES
     complete = True
@@ -754,7 +745,6 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
     while first < surfaces.body_fever.shape[0]:
         last = min(first + size, surfaces.body_fever.shape[0])
         _load_chunk(surfaces, first, last, vertices)
-        _clear(_ROWS)  # the rows stay
         _find_tiles(last - first, search)
         _find_pairs(search)
         _read_counters(counters)

@@ -23,7 +23,7 @@ from gear_optimizer.data.game_export import Catalog
 from gear_optimizer.gamedata import MINI_FIRST_CAP, MINI_LEVEL_STEP, MINI_RANKS, ascension_element_bonus, mini_level_cap
 from gear_optimizer.rules import GEM_BUDGET
 
-from .loadouts import GEAR_SLOTS, PRIMARY, SECONDARY, LoadoutSpace
+from .loadouts import GEAR_SLOTS, PRIMARY, SECONDARY, LoadoutSpace, holds_bit
 
 _LEVELS = mini_level_cap(MINI_RANKS)
 _ASCENSIONS = 11
@@ -104,11 +104,6 @@ def _level_sums(elements, minis, caps, scratch, out):
                         shifted[w + whole + 1] |= bits >> np.uint64(64 - part)
             merged |= shifted
         out[:] = merged
-
-
-@jit(nopython=True, cache=True)
-def _holds(bits, value):
-    return 0 <= value and (value >> 6) < bits.shape[0] and bool((bits[value >> 6] >> np.uint64(value & 63)) & np.uint64(1))
 
 
 @jit(nopython=True, cache=True)
@@ -249,7 +244,7 @@ def _settled(target, worn, room, gems_of, fixed, mini_ascension, minis_of, out):
                 if gem_value[row] == 0 or (count == 0 and row > 5):
                     continue
                 need = target[5] - given - count * gem_value[row]
-                if _holds(bits, need) and _levels_for(mini_elements, minis, caps, need, levels):
+                if holds_bit(bits, need) and _levels_for(mini_elements, minis, caps, need, levels):
                     progress = (stat_gems + point_gems + count) / GEM_BUDGET
                     for m in range(3):
                         progress += levels[m] / caps[m] + ranks[m] / MINI_RANKS
