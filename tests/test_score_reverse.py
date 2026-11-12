@@ -432,3 +432,17 @@ def test_a_row_that_lost_more_than_sixteen_quarters_gets_no_line_and_no_set(song
     play reaches the score."""
     reply = reverse_score(_row_with_greats(song, load_catalog(paths().game_export), random.Random(5), 20), song)
     assert (reply.verdict, reply.sets, reply.stat_lines, reply.lines) == ("unresolved", (), (), 0)
+
+
+def test_a_force_great_plan_at_the_top_keeps_its_line_and_names_its_gear():
+    """The site's precise Force Great plan on this chart, played through the simulator: 3 Greats, its fever notes off chart
+    time, so its timeline comes late in the top search's walk. The row's numbers name the plan's own gear first."""
+    other = prepare_song(load_chart(paths().chart_dir("Easy") / "Sayonara (Easy) by Wanko Ni Mero Mero [Just Dance].txt"), load_catalog(paths().game_export), stat_curves())
+    info = PlayInfo(13_954_875, 99.84, 335_921, 41.54, 6257)
+    assert info.score >= 0.95 * other.top
+    reply = reverse_score(info, other)
+    assert reply.verdict == "sets"
+    assert reply.sets[0].gear == ("Autumnal Adept's Bloom", "Adventure Scarf", "Legendary Marshall's Mask", "Legendary Marshall's Coat", "No-Scope Loadout", "Legendary Marshall's Trousers")
+    assert set(reply.sets[0].minis) == {"Adventure Starlet", "Lester", "Tokyo Machine"}
+    scored = factors(reply.sets[0].stats, other.curves, other.chart.primary, other.chart.secondary)
+    assert fg_surface_score(scored, reply.sets[0].surface, other.chart.total_notes) == info.score

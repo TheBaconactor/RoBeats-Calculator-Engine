@@ -82,9 +82,11 @@ _POINTS_PRICES = (0.6, 1.5)
 _SHARPENING_ROUNDS = 6
 _BOUND_STEPS = 100
 # The base values of (surface, CM, FM) pairs a search may walk: ~35 ns each. Past them a score has more lines than a row can tell
-# apart.
+# apart. At a song's top the search walks every timeline for Force Great plans, whose fever lies notes off chart time, so last in
+# the walk's order: of the 136 site plans on 300 songs that a search of 30,000,000 got wrong, this budget names the gear of 22
+# (300,000,000 names the same 22).
 _LINE_BASES = 5_000_000
-_TOP_LINE_BASES = 30_000_000
+_TOP_LINE_BASES = 90_000_000
 _SHARED_BASES = 100_000_000
 _SETS_PER_LINE = 16
 # A listed line's sets come likeliest first: of the _SETS_WEIGHED whose items give up least at the line's prices, found band by
