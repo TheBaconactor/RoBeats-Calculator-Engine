@@ -11,16 +11,16 @@ from pathlib import Path
 import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 from gear_optimizer.frontier.cache import (
+    FRONTIER_PRODUCER_SOURCES,
     FrontierCache,
     FrontierCacheInfo,
     FrontierCacheLoad,
     MemoryLru,
+    cache_version,
     write_atomically,
 )
 from gear_optimizer.frontier.cache_scope import scoped_frontier_cache_dir
-from gear_optimizer.frontier.fg_cache_types import _FG_SHARED_FRONTIER_PRODUCER_SOURCES, _SCORING_POLICY_SOURCE
 from gear_optimizer.frontier.timeline_producer import (
     MAX_TIMELINE_FRONTIER_SURFACES,
     TimelineFrontierGridPayload,
@@ -66,26 +66,16 @@ _frontier_payload_memory: MemoryLru[bytes] = MemoryLru(40)
 # The last payload served, as (its memory-tier bytes, payload): a solve reads one song's payload once per scored
 # loadout (~50 times), every reader only reads it, so it is decoded once.
 _last_served_payload: tuple[bytes, TimelineFrontierGridPayload] | None = None
-# The timeline cache version: a hand-kept base version plus a fingerprint (an AST digest, see logic_fingerprint.py) of
-# the Base producer sources, so a logic change there rotates it by itself. The cache key hashes the song inputs and the
-# FT/FF axes, never the producer, so bump the base version when the payload changes in a way neither sees (e.g. a
-# dependency's behavior). A new version reads an older version's files only when it lists that version below, after a
-# byte gate proved them identical. The version history is in git.
+# The timeline cache version: a hand-kept base version plus a fingerprint of the Base producer sources. The cache key
+# hashes the song inputs and the FT/FF axes, never the producer, so bump the base version when the payload changes in a
+# way neither sees (e.g. a dependency's behavior). The version history is in git.
 _FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v12"
-# Base persists timing geometry and Perfect-only recurrence output, never Great score valuation.
-# Excluding the FG scoring policy keeps a Force-Greats-only score correction from rotating every
-# Base frontier cache key. The remaining shared sources are the exact recurrence/geometry producer.
-_BASE_SHARED_FRONTIER_PRODUCER_SOURCES = tuple(
-    source for source in _FG_SHARED_FRONTIER_PRODUCER_SOURCES if source != _SCORING_POLICY_SOURCE
-)
 _TIMELINE_DP_SOURCES = (
     Path(__file__).resolve().parent / "timeline_producer.py",
     Path(__file__).resolve().parents[1] / "solver" / "fever_timeline.py",
-    *_BASE_SHARED_FRONTIER_PRODUCER_SOURCES,
+    *FRONTIER_PRODUCER_SOURCES,
 )
-_FRONTIER_DISK_CACHE_VERSION = (
-    f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_TIMELINE_DP_SOURCES)}"
-)
+_FRONTIER_DISK_CACHE_VERSION = cache_version(_FRONTIER_DISK_CACHE_BASE_VERSION, _TIMELINE_DP_SOURCES)
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's payloads only when it
 # lists that version here, after a byte gate proved the persisted payloads identical. The version history is in git.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {

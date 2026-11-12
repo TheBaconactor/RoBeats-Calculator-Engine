@@ -14,10 +14,7 @@ import pytest
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.frontier import fg_cache_store
 from tests.fg_cache_support import expand_surface_rows, surface_frontier
-from gear_optimizer.frontier.fg_cache_store import (
-    _save_payload,
-    read_compatible_bundle,
-)
+from gear_optimizer.frontier.fg_cache_store import read_compatible_bundle, save_payload
 from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierCachePayload
 from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
 from gear_optimizer.frontier.types import FgResponseFrontierResult, FgResponseSurface
@@ -99,13 +96,12 @@ def _range_sweep(row_count: int) -> tuple[tuple[tuple[int, int], ...], ...]:
 # --------------------------------------------------------------------------------------------------
 def test_saved_surfaces_expand_back_to_the_producer_rows_over_a_range_sweep(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    fg_cache_store.reset_fg_response_frontier_payload_cache()
     total_notes = 80
     row_count = 70
     pool = _synthetic_pool(row_count)
     coeffs = _coeffs_for(pool, total_notes=total_notes).astype(np.int32)
     cache_key = ("unit", "range-sweep")
-    _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
+    save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
 
     for ranges in _range_sweep(row_count):
         rows, row_coeffs = _expanded(cache_key, ranges)
@@ -117,19 +113,35 @@ def test_saved_surfaces_expand_back_to_the_producer_rows_over_a_range_sweep(tmp_
 
 def test_saved_surfaces_roundtrip_a_large_pool(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    fg_cache_store.reset_fg_response_frontier_payload_cache()
     total_notes = 60
     row_count = 32773
     pool = _synthetic_pool(row_count)
     coeffs = _coeffs_for(pool, total_notes=total_notes).astype(np.int32)
     cache_key = ("unit", "large-pool")
-    _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
+    save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
 
     for ranges in (((0, row_count),), ((32765, 6),), ((row_count - 1, 1), (0, 1))):
         rows, row_coeffs = _expanded(cache_key, ranges)
         want = np.concatenate([np.arange(start, start + count) for start, count in ranges])
         assert np.array_equal(rows, pool[want]), f"row mismatch for ranges={ranges}"
         assert np.array_equal(row_coeffs, coeffs[want]), f"coeff mismatch for ranges={ranges}"
+
+
+@pytest.mark.parametrize("row_count", [0, 1, 7, 5000])
+def test_saved_surface_tables_roundtrip_every_word_exactly(tmp_path: Path, monkeypatch, row_count: int) -> None:
+    """The byte-plane form of the two tables loses nothing, from an empty table to all-ones words."""
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    pool = _synthetic_pool(row_count)
+    if row_count:
+        pool[0, :8] = 0xFFFFFFFF
+    cache_key = ("unit", "every-word", row_count)
+    save_payload(cache_key, _build_payload(pool, total_notes=80))
+
+    rows, row_coeffs = _expanded(cache_key, ((0, row_count),))
+
+    assert rows.dtype == np.dtype("uint32") and rows.shape == (row_count, 11)
+    assert np.array_equal(rows, pool)
+    assert np.array_equal(row_coeffs, _coeffs_for(pool, total_notes=80).astype(np.int32))
 
 
 def test_surface_pattern_interning_preserves_row_order_and_repeated_patterns() -> None:
@@ -162,7 +174,6 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    fg_cache_store.reset_fg_response_frontier_payload_cache()
 
     total_notes = 80
     pool = _synthetic_pool(8)
@@ -180,7 +191,7 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
 
     monkeypatch.setattr(fg_cache_store, "surface_head_coeffs", _track_pattern_precompute)
     cache_key = ("unit", "issue116-pattern-coeff-owner")
-    _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
+    save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
 
     assert len(precompute_inputs) == 1
     assert np.array_equal(precompute_inputs[0], expected_pattern_words)

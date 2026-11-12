@@ -275,38 +275,35 @@ def _chart_text(name: str, timestamps: list[float]) -> str:
     )
 
 
-def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.frontier.fg_cache import ensure_response_frontier_cache_for_song
+def test_fg_response_prebuild_builds_a_missing_chart_and_skips_it_once_built(monkeypatch, tmp_path: Path) -> None:
+    import numpy as np
 
-    song_path = tmp_path / "Song.txt"
-    song_path.write_text(_chart_text("Cached Song", [1.0, 2.0]), encoding="utf-8")
-    def _unexpected_build(*_args, **_kwargs):
-        raise AssertionError("valid startup cache hit must not rebuild")
-
-    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._payload_file_is_complete", lambda *_args: True)
-    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._build_response_frontier_cache_payload", _unexpected_build)
-
-    result = build_frontier_cache_for_chart(str(song_path), CURVES, "precise", ensure_response_frontier_cache_for_song)
-
-    assert result.source == "disk"
-    assert result.build_ms == 0.0
-
-
-def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> None:
-    from gear_optimizer.frontier.fg_cache import ensure_response_frontier_cache_for_song
+    from gear_optimizer.frontier import fg_cache
+    from gear_optimizer.frontier.types import FgResponseFrontierResult, FgResponseSurface
+    from tests.fg_cache_support import surface_frontier
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text(_chart_text("Missing Song", [1.0, 2.0, 3.0]), encoding="utf-8")
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg"))
-    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._payload_file_is_complete", lambda *_args: False)
-    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._load_payload", lambda _key: None)
-    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._build_response_frontier_cache_payload", lambda *_args: object())
-    monkeypatch.setattr("gear_optimizer.frontier.fg_cache._save_payload", lambda *_args: None)
+    curves = synthetic_curves({
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32) * 0.15,
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32) * 0.333,
+    })
+    frontier = FgResponseFrontierResult(surface_frontier(FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)), 1, 1, 1, 1, 1, 1, 0)
+    monkeypatch.setattr(fg_cache, "build_frontiers", lambda _song, geometries, _forced: (frontier,) * len(geometries))
 
-    result = build_frontier_cache_for_chart(str(song_path), CURVES, "precise", ensure_response_frontier_cache_for_song)
+    built = build_frontier_cache_for_chart(str(song_path), curves, "precise", fg_cache.ensure_response_frontier_cache_for_song)
 
-    assert result.source == "built"
-    assert result.build_ms > 0.0
+    assert built.source == "built" and built.build_ms > 0.0
+    assert fg_cache.FG_RESPONSE_FRONTIER_CACHE.is_complete(built.cache_file)
+
+    def _unexpected_build(*_args, **_kwargs):
+        raise AssertionError("valid startup cache hit must not rebuild")
+
+    monkeypatch.setattr(fg_cache, "build_frontiers", _unexpected_build)
+    hit = build_frontier_cache_for_chart(str(song_path), curves, "precise", fg_cache.ensure_response_frontier_cache_for_song)
+
+    assert (hit.source, hit.build_ms, hit.cache_file) == ("disk", 0.0, built.cache_file)
 
 
 def test_ram_guard_force_resumes_stalled_worker_below_resume_floor(monkeypatch):

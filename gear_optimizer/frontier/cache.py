@@ -22,8 +22,6 @@ import logging
 import os
 import threading
 import time
-import zipfile
-import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +31,7 @@ from gear_optimizer.chart import load_chart
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import pin_frontier_prebuild_worker
 from gear_optimizer.core.file_lock import exclusive_file_lock
+from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.solver.timing_envelope import TimedSong, time_song
@@ -47,8 +46,31 @@ _MANIFEST_SCHEMA = 2
 # Manifest hits re-derived from their chart to catch a key change that came without a version change.
 _DRIFT_SAMPLE_SIZE = 8
 _PROGRESS_EVERY = 10  # completed builds between two progress lines
-# What reading a damaged or truncated .npz raises: a bad CRC is a BadZipFile, a broken deflate stream a zlib.error.
-UNREADABLE_NPZ = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZipFile, zlib.error)
+
+_FRONTIER = Path(__file__).resolve().parent
+# The exact frontier producer both caches run (Base with Perfect-only actions, FG with Greats too). Both versions
+# fingerprint it, so a producer edit can never leave one cache on stale bytes while the other rotates. The FG scoring
+# policy is not in it: Base persists timing geometry and the Perfect-only recurrence, never a Great's value, so a
+# Force-Greats-only correction rotates the FG cache alone.
+FRONTIER_PRODUCER_SOURCES = (
+    _FRONTIER.parent / "rules.py",
+    _FRONTIER.parent / "core" / "time_quantize.py",
+    _FRONTIER.parent / "solver" / "timing_envelope.py",
+    _FRONTIER / "fill_crossing.py",
+    _FRONTIER / "types.py",
+    _FRONTIER / "producer_batch.py",
+    _FRONTIER / "producer_scheduler.py",
+    _FRONTIER / "producer_precompute.py",
+    _FRONTIER / "producer_reducer.py",
+    _FRONTIER / "producer_kernels.py",
+    _FRONTIER / "producer_surfaces.py",
+)
+
+
+def cache_version(base_version: str, sources: Iterable[Path]) -> str:
+    """A cache version: the hand-kept base version plus a fingerprint (an AST digest, see logic_fingerprint.py) of the
+    sources whose logic determines the files, so a logic change there rotates the version by itself."""
+    return f"{base_version}+logic-{module_logic_fingerprint(sources)}"
 
 
 def write_atomically(path: Path, write: Callable[[Path], None]) -> None:

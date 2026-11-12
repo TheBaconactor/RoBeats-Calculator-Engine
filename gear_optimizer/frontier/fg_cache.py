@@ -1,6 +1,10 @@
+"""The FG response-frontier cache as the engine uses it: a song's bundle is built or extended on disk
+(fg_cache_store), and read as a scoring bundle through a small memory tier."""
+
 from __future__ import annotations
 
 import dataclasses
+import threading
 import time
 from pathlib import Path
 
@@ -11,16 +15,15 @@ from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.timing_envelope import TimedSong
 
+from .cache import MemoryLru
 from .fg_cache_keys import _response_axes, fg_response_frontier_bundle_cache_key
 from .fg_cache_patterns import surface_head_greats, unpack_surface_patterns
 from .fg_cache_store import (
     FG_RESPONSE_FRONTIER_CACHE,
-    _load_payload,
-    _payload_file_is_complete,
-    _response_bundle_build_slot,
-    _save_payload,
-    _scoring_bundle_memory,
+    bundle_file_holds,
+    load_payload,
     read_compatible_bundle,
+    save_payload,
 )
 from .fg_cache_types import (
     FgResponseFrontierCachePayload,
@@ -31,6 +34,16 @@ from .producer_batch import build_frontiers, song_arrays
 from .producer_kernels import _HEAD_DOM_B, _HEAD_DOM_C, _HEAD_DOM_F
 from .types import SurfacePool
 
+# Decoded scoring bundles, keyed like the files (a few MB each, up to ~100 MB on the longest charts).
+_scoring_bundle_memory: MemoryLru[FgResponseFrontierScoringBundle] = MemoryLru(8)
+_response_bundle_build_slot = threading.Lock()
+
+
+def release_fg_response_song_memory(bundle_key: tuple) -> None:
+    """Drop a song's decoded bundle once its FG scoring is done (the entry-count LRU alone would let them trip the memory
+    guard after a few dozen songs). Lossless: a later access reads the file again."""
+    _scoring_bundle_memory.pop(bundle_key)
+
 
 def _missing_payload_keys(payload: FgResponseFrontierCachePayload | None, keys: np.ndarray) -> np.ndarray:
     """The rows of `keys` the payload holds no surfaces for."""
@@ -39,15 +52,6 @@ def _missing_payload_keys(payload: FgResponseFrontierCachePayload | None, keys: 
     held = payload.frontier_by_key
     missing = [key for key in keys.tolist() if not (tuple(key) in held and held[tuple(key)].first_frontier)]
     return np.asarray(missing, dtype=np.int32).reshape(-1, 2)
-
-
-def _merge_payloads(
-    base: FgResponseFrontierCachePayload | None,
-    update: FgResponseFrontierCachePayload,
-) -> FgResponseFrontierCachePayload:
-    if base is None:
-        return update
-    return dataclasses.replace(update, frontier_by_key={**base.frontier_by_key, **update.frontier_by_key})
 
 
 def _assert_head_dominance_box_covers(curves: StatCurves) -> None:
@@ -102,28 +106,28 @@ def _build_response_frontier_cache_payload(
     )
 
 
-def _scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgResponseFrontierScoringBundle:
-    """A bundle file's arrays (store.read_compatible_bundle) as a scoring bundle over every stat key it holds."""
-    stat_key_rows = np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2))
+def scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgResponseFrontierScoringBundle:
+    """A bundle file's arrays (fg_cache_store.read_bundle) as a scoring bundle over every stat key it holds."""
+    stat_key_rows = arrays["stat_keys"].astype(np.int32).reshape((-1, 2))
     frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
-    frontier_idx_by_stat[stat_key_rows[:, 0], stat_key_rows[:, 1]] = np.asarray(arrays["frontier_ids"], dtype=np.int32)
-    total_notes = int(arrays["total_notes"].item())
-    if int(arrays["first_surface_head_len"].item()) != min(total_notes, 100):
+    frontier_idx_by_stat[stat_key_rows[:, 0], stat_key_rows[:, 1]] = arrays["frontier_ids"]
+    total_notes = int(arrays["total_notes"])
+    if int(arrays["first_surface_head_len"]) != min(total_notes, 100):
         raise ValueError("FG response frontier scoring bundle has invalid surface head coefficient metadata")
     rows, patterns = arrays["surface_rows"], arrays["surface_patterns"]
-    pattern_ids = np.asarray(rows[0], dtype=np.int32)
-    if pattern_ids.size and not 0 <= int(pattern_ids.min()) <= int(pattern_ids.max()) < patterns.shape[1]:
+    pattern_ids = rows[0].astype(np.int32)
+    if pattern_ids.size and not 0 <= pattern_ids.min() <= pattern_ids.max() < patterns.shape[1]:
         raise ValueError("FG response surface row references an invalid head-pattern ID")
     pattern_words, head_coeffs = unpack_surface_patterns(patterns.T)
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_stat=frontier_idx_by_stat,
-        raw_fill_by_ff=np.asarray(arrays["raw_fill_by_ff"], dtype=np.float64),
-        non_fever_base_by_ff=np.asarray(arrays["non_fever_base_by_ff"], dtype=np.int32),
-        real_time_by_ft=np.asarray(arrays["real_time_by_ft"], dtype=np.float64),
+        raw_fill_by_ff=arrays["raw_fill_by_ff"],
+        non_fever_base_by_ff=arrays["non_fever_base_by_ff"],
+        real_time_by_ft=arrays["real_time_by_ft"],
         pool=SurfacePool(
-            frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
-            frontier_lengths=np.asarray(arrays["first_counts"], dtype=np.int32),
+            frontier_offsets=arrays["first_offsets"],
+            frontier_lengths=arrays["first_counts"],
             pattern_ids=pattern_ids,
             pattern_words=pattern_words,
             counts=np.ascontiguousarray(rows[1:4].T, dtype=np.int32),
@@ -131,8 +135,8 @@ def _scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgRespon
             head_greats=surface_head_greats(pattern_words),
         ),
         total_notes=total_notes,
-        long_notes=int(arrays["long_notes"].item()),
-        use_forced_great_timing=bool(int(arrays["use_forced_great_timing"].item())),
+        long_notes=int(arrays["long_notes"]),
+        use_forced_great_timing=bool(arrays["use_forced_great_timing"]),
     )
 
 
@@ -160,16 +164,16 @@ def load_response_frontier_scoring_bundle(
             "FG response frontier scoring bundle is missing. Startup cache prebuild must build "
             "the candidate-independent all-FT/FF bundle before runtime scoring."
         )
-    scoring_bundle = _scoring_bundle(bundle_key, arrays)
-    missing = _missing_stat_keys(scoring_bundle, keys)
+    bundle = scoring_bundle(bundle_key, arrays)
+    missing = _missing_stat_keys(bundle, keys)
     if len(missing):
         raise ValueError(
             "FG response frontier scoring bundle does not cover requested stat keys. "
             "Startup cache prebuild must build the candidate-independent all-FT/FF bundle before runtime scoring: "
             f"{missing[:5].tolist()!r}"
         )
-    _scoring_bundle_memory.put(bundle_key, scoring_bundle)
-    return scoring_bundle
+    _scoring_bundle_memory.put(bundle_key, bundle)
+    return bundle
 
 
 def ensure_response_frontier_cache_for_song(
@@ -186,16 +190,20 @@ def ensure_response_frontier_cache_for_song(
     owner holds the read-merge-publish transaction (another process may have published a larger bundle meanwhile)."""
     keys = all_response_stat_keys() if stat_keys is None else stat_keys
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
-    if _payload_file_is_complete(FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key), keys):
-        return "disk", 0.0, FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)
+    serving_path = FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)
+    if bundle_file_holds(serving_path, keys):
+        return "disk", 0.0, serving_path
     started = time.perf_counter()
     source = "disk"
     bundle_path = FG_RESPONSE_FRONTIER_CACHE.file_path(bundle_key)
     with _response_bundle_build_slot, exclusive_file_lock(bundle_path.parent / ".bundle_locks" / bundle_path.stem):
-        bundle = _load_payload(bundle_key)
+        bundle = load_payload(bundle_key)
         missing = _missing_payload_keys(bundle, keys)
         if len(missing):
-            _save_payload(bundle_key, _merge_payloads(bundle, _build_response_frontier_cache_payload(song, curves, missing)))
+            update = _build_response_frontier_cache_payload(song, curves, missing)
+            if bundle is not None:  # disk is the base: what it holds stays, the new keys join
+                update = dataclasses.replace(update, frontier_by_key={**bundle.frontier_by_key, **update.frontier_by_key})
+            save_payload(bundle_key, update)
             _scoring_bundle_memory.pop(bundle_key)
             source = "built"
     return source, (time.perf_counter() - started) * 1000.0, FG_RESPONSE_FRONTIER_CACHE.serving_path(bundle_key)

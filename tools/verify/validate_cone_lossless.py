@@ -20,9 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from gear_optimizer.chart import load_chart  # noqa: E402
-from gear_optimizer.frontier.fg_cache import _scoring_bundle  # noqa: E402
+from gear_optimizer.frontier.fg_cache import scoring_bundle  # noqa: E402
 from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key  # noqa: E402
-from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE, _read_bundle  # noqa: E402
+from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE, read_bundle  # noqa: E402
 from gear_optimizer.gamedata import stat_curves  # noqa: E402
 from gear_optimizer.settings import DIFFICULTIES, paths  # noqa: E402
 from gear_optimizer.solver.gem_search import _surface_score  # noqa: E402
@@ -80,8 +80,8 @@ def main() -> int:
                 old_key for old_key in ((version, *key[1:]) for version in args.old_versions)
                 if FG_RESPONSE_FRONTIER_CACHE.file_path(old_key).exists()
             )
-            old = _scoring_bundle(old_key, _read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(old_key)))
-            new = _scoring_bundle(key, _read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(key)))
+            old = scoring_bundle(old_key, read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(old_key)))
+            new = scoring_bundle(key, read_bundle(FG_RESPONSE_FRONTIER_CACHE.file_path(key)))
             old_rows += old.pool.counts.shape[0]
             new_rows += new.pool.counts.shape[0]
             notes = (min(new.total_notes, 100), max(0, new.total_notes - 100))

@@ -55,9 +55,9 @@ def _solve_one_batch(
 
 def _prebuild_response_bundle(song, curves) -> None:
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.frontier.fg_cache_store import reset_fg_response_frontier_payload_cache
+    from tests.fg_cache_support import forget_scoring_bundles
 
-    reset_fg_response_frontier_payload_cache()
+    forget_scoring_bundles()
     full_stat_grid = tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1))
     build_or_load_payload(song, curves, stat_keys=full_stat_grid)
 

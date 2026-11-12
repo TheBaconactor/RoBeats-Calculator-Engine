@@ -30,8 +30,8 @@ from gear_optimizer.core.team_buff import (
     team_buff_effect,
 )
 from gear_optimizer.core.utils import get_selected_element
+from gear_optimizer.frontier.fg_cache import release_fg_response_song_memory
 from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key
-from gear_optimizer.frontier.fg_cache_store import release_fg_response_song_memory
 from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.gamedata import Gear, Mini, SongMini, StatCurves, song_minis
 from gear_optimizer.settings import paths
