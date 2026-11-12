@@ -164,14 +164,22 @@ class FrontierCache:
     def manifest_path(self) -> Path:
         return self.directory() / self.manifest_name
 
-    def manifest_entries(self) -> dict[str, dict]:
-        """The manifest's entries: none unless it was written for the current version."""
+    def _read_manifest(self) -> tuple[str, dict[str, dict]]:
+        """(The version the manifest was written for, its entries); ("", {}) unless that version is the current one or
+        one of its ratified predecessors."""
         try:
             payload = json.loads(self.manifest_path().read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {}
-        current = payload.get("schema") == _MANIFEST_SCHEMA and payload.get(self.manifest_version_field) == self.version()
-        return payload["entries"] if current else {}
+            return "", {}
+        written_for = payload.get(self.manifest_version_field)
+        if payload.get("schema") != _MANIFEST_SCHEMA or written_for not in self.compatible_versions():
+            return "", {}
+        return written_for, payload["entries"]
+
+    def manifest_entries(self) -> dict[str, dict]:
+        """The entries of a manifest written for the current version or a ratified predecessor (each keyed under the
+        version that verified its file, see `_manifest_key`)."""
+        return self._read_manifest()[1]
 
     def _save_manifest(self, entries: dict[str, dict]) -> None:
         # An entry stays useful while its (content-addressed) file exists, whichever directory its chart lies in.
@@ -181,18 +189,26 @@ class FrontierCache:
         with _MANIFEST_LOCK:
             write_atomically(self.manifest_path(), lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
-    def _manifest_key(self, chart_path: str, axes_signature: str, timing_mode: str) -> str | None:
-        """The chart's identity in the manifest (None when it cannot be read): the version, the FT/FF axes and stat
-        keys every file covers, the timing mode and the chart's bytes."""
-        try:
-            content = Path(chart_path).read_bytes()
-        except OSError:
-            return None
-        parts = [self.version(), timing_mode, axes_signature]
+    def _manifest_key(self, version: str, timing_mode: str, axes_signature: str, chart_digest: str) -> str:
+        """A chart's identity in the manifest under `version`: the version, the timing mode, the FT/FF axes and stat
+        keys every file covers, and the chart's bytes."""
+        parts = [version, timing_mode, axes_signature]
         if self.manifest_stat_signature is not None:
             parts.append(self.manifest_stat_signature)
-        parts.append(hashlib.blake2b(content, digest_size=16).hexdigest())
+        parts.append(chart_digest)
         return hashlib.blake2b("|".join(parts).encode("utf-8"), digest_size=16).hexdigest()
+
+    @staticmethod
+    def _verified_by_predecessor(entries: dict[str, dict], predecessor_keys: list[str], verified: dict) -> bool:
+        """Whether a ratified predecessor version recorded this very file at this size for the chart. Its files are
+        proven byte-identical to the current version's, so its verification stands; the entry is spent."""
+        for key in predecessor_keys:
+            entry = entries.get(key)
+            if (entry and entry["cache_size"] == verified["cache_size"]
+                    and os.path.abspath(entry["cache_file"]) == os.path.abspath(verified["cache_file"])):
+                del entries[key]
+                return True
+        return False
 
     def manifest_plan(
         self, song_paths: list[str], curves: StatCurves, *, timing_mode: str, persist: bool = True
@@ -201,24 +217,28 @@ class FrontierCache:
 
         A recorded entry hits on its file's size alone: the path is content-addressed and builds are deterministic, and
         a corrupt file fails loudly where it is read (a file's mtime changes with copies; comparing it cost ~100 s of
-        verifying per start). A chart without a usable entry is probed: when the file its key derives is complete, it
-        hits and its entry is recorded (and saved, with `persist`). If a sample of the hits derives other files than the
-        manifest recorded, the key derivation changed without a version change and every chart counts as missing.
+        verifying per start). A chart without a usable entry is probed: its file is derived from the chart, and it
+        hits when a ratified predecessor version recorded that very file at its present size, else when the file reads
+        as complete; its entry is recorded (and saved, with `persist`). So a start after a ratified version change
+        parses every chart once and opens no cache file. If a sample of the hits derives other files than the manifest
+        recorded, the key derivation changed without a version change and every chart counts as missing.
         """
         entries = self.manifest_entries()
+        current, *predecessors = self.compatible_versions()
         axes_signature = bytes(array_sig16(curves.f32["Fever Time"]) + array_sig16(curves.f32["Fever Fill Rate"])).hex()
         hits: list[str] = []
         misses: list[str] = []
         keys: dict[str, str] = {}
         recorded = 0
         for song_path in song_paths:
-            key = self._manifest_key(song_path, axes_signature, timing_mode)
-            if key is None:
+            try:
+                chart_digest = hashlib.blake2b(Path(song_path).read_bytes(), digest_size=16).hexdigest()
+            except OSError:
                 misses.append(song_path)
                 continue
-            keys[song_path] = key
+            key = keys[song_path] = self._manifest_key(current, timing_mode, axes_signature, chart_digest)
             entry = entries.get(key)
-            if entry and _file_size(entry["cache_file"]) == entry.get("cache_size"):
+            if entry and _file_size(entry["cache_file"]) == entry["cache_size"]:
                 hits.append(song_path)
                 continue
             try:
@@ -227,8 +247,13 @@ class FrontierCache:
                 logger.warning("%s Cannot derive the file of %s: %s", self.log_label, song_path, exc)
                 misses.append(song_path)
                 continue
-            if _file_size(cache_file) is not None and self.is_complete(cache_file):
-                entries[key] = {"cache_file": cache_file, "cache_size": _file_size(cache_file)}
+            verified = {"cache_file": cache_file, "cache_size": _file_size(cache_file)}
+            predecessor_keys = [self._manifest_key(version, timing_mode, axes_signature, chart_digest)
+                                for version in predecessors]
+            if verified["cache_size"] is not None and (
+                self._verified_by_predecessor(entries, predecessor_keys, verified) or self.is_complete(cache_file)
+            ):
+                entries[key] = verified
                 recorded += 1
                 hits.append(song_path)
             else:
@@ -407,9 +432,10 @@ def _prebuild_timing_mode(
     cache = prebuild.cache
     if not song_paths:
         return FrontierCachePrebuildSummary()
-    if not rotate and cache.manifest_entries():
+    if not rotate and cache._read_manifest()[0] == cache.version():
         # Charts the manifest records are readers, not builders: probe without the lock and without writing the
-        # manifest, so they never wait behind another process's build. Files to record go through the lock below.
+        # manifest, so they never wait behind another process's build. Files to record go through the lock below
+        # (after a version change every chart's entry is recorded again, so the probe would only run twice).
         probe = cache.manifest_plan(song_paths, curves, timing_mode=timing_mode, persist=False)
         if not probe.missing_paths and not probe.newly_recorded:
             return FrontierCachePrebuildSummary(total=probe.total_paths)
