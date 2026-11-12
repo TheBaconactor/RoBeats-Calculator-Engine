@@ -3,13 +3,15 @@ from collections import namedtuple
 import numpy as np
 from numba import njit
 
-# The tables a candidate append reads: the body-tail surface arrays and the head-state frontier arena (rows in
-# `head_pool`, addressed per state by head_state_start / head_state_count) for the first `head_limit` states.
+# What a head state's candidates read: every body state's tail frontier (rows of `body_values`, addressed per state by
+# body_starts / body_counts) and the frontiers of the head states already built (rows of `head_pool`, addressed by
+# head_state_start / head_state_count) for the first `head_limit` states.
 _HeadTables = namedtuple(
     "_HeadTables",
     ["body_values", "body_starts", "body_counts", "head_pool", "head_state_start", "head_state_count", "head_limit"],
 )
-# The first-frontier build's action-region tables (per region, and per song hit token), passed together.
+# A group's region core table (region_core_table: `region_starts` addresses the rows of each section start) and one
+# fever time's end of every hit token on the Perfect and the Great floor.
 RegionTables = namedtuple(
     "RegionTables",
     [
@@ -25,10 +27,7 @@ RegionTables = namedtuple(
         "region_great_end_by_hit",
     ],
 )
-# One packet queue's back-segment arrays (alpha, packet offsets, Great-activation bounds, lengths, arenas).
-# The Perfect / Great floor and candidate hit times of every note and its earliest planned late-Great hit (the
-# reachability and region-core checks).
-
+# Every note's earliest (floor) and latest (candidate) Perfect and Great hit, and its earliest late-Great hit.
 HitTimes = namedtuple(
     "HitTimes",
     [
@@ -59,19 +58,16 @@ ActivationEnds = namedtuple(
         "late_exit_e",
     ],
 )
-_HEAD_BASIS_FEVER_LO = 0
-_HEAD_BASIS_FEVER_HI = 1
-_HEAD_BASIS_GREAT_LO = 2
-_HEAD_BASIS_GREAT_HI = 3
-_HEAD_BASIS_BODY_FEVER = 4
-_HEAD_BASIS_BODY_NORMAL_GREAT = 5
-_HEAD_BASIS_BODY_FEVER_GREAT = 6
-_HEAD_BASIS_B_LO = 7
-_HEAD_BASIS_C_LO = 8
-_HEAD_BASIS_D_LO = 9
-_HEAD_BASIS_B_HI = 10
-_HEAD_BASIS_C_HI = 11
-_HEAD_BASIS_D_HI = 12
+# A surface's basis for the corner scores: its body counts, then its head sums at the box's low and high combo.
+_BASIS_BODY_FEVER = 0
+_BASIS_BODY_NORMAL_GREAT = 1
+_BASIS_BODY_FEVER_GREAT = 2
+_BASIS_B_LO = 3
+_BASIS_C_LO = 4
+_BASIS_D_LO = 5
+_BASIS_B_HI = 6
+_BASIS_C_HI = 7
+_BASIS_D_HI = 8
 
 # Song tokens ``kind * n + note_index`` name every value activation-hit selection can return (chart / Perfect /
 # Great / capped Perfect / capped Great); the song-wide endpoint tables are indexed by them directly.
@@ -112,24 +108,12 @@ def _body_count(start: int, end: int, n: int) -> np.uint64:
 
 
 @njit(cache=True, nogil=True)
-def _body_overlap_count(
-    first_start: int, first_end: int, second_start: int, second_end: int, n: int
-) -> np.uint64:
-    body_start = max(max(first_start, second_start), 100)
-    body_end = min(min(first_end, second_end), n)
-    if body_end <= body_start:
-        return np.uint64(0)
-    return np.uint64(body_end - body_start)
-
-
-@njit(cache=True, nogil=True)
 def _single_head_mask(idx: int, n: int):
-    idx_i = idx
-    if idx_i < 0 or idx_i >= min(n, 100):
+    if idx < 0 or idx >= min(n, 100):
         return np.uint64(0), np.uint64(0)
-    if idx_i < 64:
-        return np.uint64(1) << np.uint64(idx_i), np.uint64(0)
-    return np.uint64(0), np.uint64(1) << np.uint64(idx_i - 64)
+    if idx < 64:
+        return np.uint64(1) << np.uint64(idx), np.uint64(0)
+    return np.uint64(0), np.uint64(1) << np.uint64(idx - 64)
 
 
 @njit(cache=True, nogil=True)
@@ -143,7 +127,7 @@ def pack_edge(
         great_lo = great_lo | activation_lo
         great_hi = great_hi | activation_hi
     body_great = _body_count(great_start, great_end, n)
-    body_fever_great = _body_overlap_count(fever_start, fever_end, great_start, great_end, n)
+    body_fever_great = _body_count(max(fever_start, great_start), min(fever_end, great_end), n)
     if (
         activation_great_idx >= max(100, fever_start)
         and activation_great_idx < min(fever_end, n)
@@ -173,11 +157,10 @@ def pack_edge_eg(
     early_great_start: int,
     early_great_end: int,
 ):
-    """`pack_edge` plus the issue-#44 early-Great tail range [early_great_start,
-    early_great_end): notes pulled into fever ONLY as Greats at a section end. They are
-    in-fever-and-Great, so they OR into the Great head mask and add to BOTH body_great and
-    body_fever_great. The tail is disjoint from the forced-Great prefix [great_start,
-    great_end) (forced greats precede the activation), so there is no double count."""
+    """`pack_edge` plus the early-Great tail [early_great_start, early_great_end): notes pulled into the fever only as
+    Greats at a section end. They are in fever and Great, so they join the Great head mask and add to both body_great
+    and body_fever_great. The tail is disjoint from the forced-Great run [great_start, great_end) (forced Greats
+    precede the activation), so nothing is counted twice."""
     fever_lo, fever_hi, great_lo, great_hi, body_fever, body_great, body_fever_great = pack_edge(
         n, fever_start, fever_end, great_start, great_end, activation_great_idx
     )
@@ -189,8 +172,8 @@ def pack_edge_eg(
         body_great = body_great + eg_body
         # The early-Great tail lies inside [fever_start, fever_end) by construction, so every
         # tail note is also a fever note -> the overlap equals the tail's body count.
-        body_fever_great = body_fever_great + _body_overlap_count(
-            fever_start, fever_end, early_great_start, early_great_end, n
+        body_fever_great = body_fever_great + _body_count(
+            max(fever_start, early_great_start), min(fever_end, early_great_end), n
         )
     return (fever_lo, fever_hi, great_lo, great_hi, body_fever, body_great, body_fever_great)
 
@@ -1388,21 +1371,21 @@ def _corner_score(basis, v, c, f, g, use_hi_c: int) -> float:
     pen_f = c * f * gv
     if use_hi_c == 0:
         head = (
-            gv * basis[_HEAD_BASIS_C_LO]
-            + v * (f - 1.0) * basis[_HEAD_BASIS_B_LO]
-            + gv * (f - 1.0) * basis[_HEAD_BASIS_D_LO]
+            gv * basis[_BASIS_C_LO]
+            + v * (f - 1.0) * basis[_BASIS_B_LO]
+            + gv * (f - 1.0) * basis[_BASIS_D_LO]
         )
     else:
         head = (
-            gv * basis[_HEAD_BASIS_C_HI]
-            + v * (f - 1.0) * basis[_HEAD_BASIS_B_HI]
-            + gv * (f - 1.0) * basis[_HEAD_BASIS_D_HI]
+            gv * basis[_BASIS_C_HI]
+            + v * (f - 1.0) * basis[_BASIS_B_HI]
+            + gv * (f - 1.0) * basis[_BASIS_D_HI]
         )
     return (
         head
-        + float(basis[_HEAD_BASIS_BODY_FEVER]) * body_dn
-        + float(basis[_HEAD_BASIS_BODY_NORMAL_GREAT]) * pen_n
-        + float(basis[_HEAD_BASIS_BODY_FEVER_GREAT]) * pen_f
+        + float(basis[_BASIS_BODY_FEVER]) * body_dn
+        + float(basis[_BASIS_BODY_NORMAL_GREAT]) * pen_n
+        + float(basis[_BASIS_BODY_FEVER_GREAT]) * pen_f
     )
 
 
@@ -1415,10 +1398,6 @@ def _corner_scores(rows, terms, term_of):
     for i in range(m):
         head = terms[term_of[i]]
         basis = (
-            rows[i, 0],
-            rows[i, 1],
-            rows[i, 2],
-            rows[i, 3],
             np.int64(rows[i, 4]),
             np.int64(rows[i, 5]) - np.int64(rows[i, 6]),
             np.int64(rows[i, 6]),
@@ -1636,7 +1615,7 @@ def reduce_touched_body_pairs(
     if touched_count <= 0:
         return stack, 0
     touched_pair[:touched_count].sort()
-    stack = _i64_rows_ensure(stack, 0, touched_count)
+    stack = _rows_ensure(stack, 0, touched_count)
     max_fever_great = 0
     for idx in range(touched_count):
         max_fever_great = max(max_fever_great, int(touched_pair[idx]) % pair_mod)
@@ -1848,7 +1827,7 @@ def _activation_packet(
         total_points += int(body_counts[end_e])
     if total_points <= 0:
         return pk_buf, 0
-    pk_buf = _i64_rows_ensure(pk_buf, 0, total_points)
+    pk_buf = _rows_ensure(pk_buf, 0, total_points)
     write = 0
     for end_e in range(lo_e, eg_e + 1):
         tail_count = int(body_counts[end_e])
@@ -1968,7 +1947,7 @@ def region2_activation_packet(where, body_values, body_starts, body_counts, char
         total_points += int(body_counts[end_e])
     if total_points <= 0:
         return pk_buf, 0
-    pk_buf = _i64_rows_ensure(pk_buf, 0, total_points)
+    pk_buf = _rows_ensure(pk_buf, 0, total_points)
     write = 0
     for end_e in range(lo_e, int(eg_e) + 1):
         tail_count = int(body_counts[end_e])
@@ -2032,29 +2011,12 @@ def _store_empty_body_tail(body_starts, body_counts, state: int) -> None:
     body_counts[state] = 1
 
 
-@njit(cache=True, nogil=True)
-def _u64_rows_ensure(values, used: int, extra: int):
-    """Grow-doubling reservation on a flat (cap, w) uint64 row store (body-tail values, the fused
-    reduce+hull output buffer, the flat head-state pool). Rows [0, used) are live and preserved
-    verbatim; stored offsets stay valid."""
-    need = used + extra
-    cap = values.shape[0]
-    if need <= cap:
-        return values
-    new_cap = cap
-    while new_cap < need:
-        new_cap *= 2
-    grown = np.empty((new_cap, values.shape[1]), dtype=np.uint64)
-    grown[:used] = values[:used]
-    return grown
-
-
 @njit(cache=True, nogil=True, inline="always")
 def _store_body_tail(
     body_values, body_starts, body_counts, state: int, cursor: int, frontier_values, frontier_count: int
 ):
     count = frontier_count
-    grown = _u64_rows_ensure(body_values, cursor, count)
+    grown = _rows_ensure(body_values, cursor, count)
     body_starts[state] = cursor
     body_counts[state] = count
     for idx in range(count):
@@ -2266,15 +2228,16 @@ def _body_tails(
 
 
 @njit(cache=True, nogil=True)
-def _i64_rows_ensure(values, used: int, extra: int):
-    """Grow-doubling reservation on a flat (cap, w) int64 row store; rows [0, used) are kept."""
+def _rows_ensure(values, used: int, extra: int):
+    """Room for `extra` more rows in a (cap, w) row store, which doubles until they fit; rows [0, used) are kept, so
+    offsets into them stay valid."""
     need = used + extra
     cap = values.shape[0]
     if need <= cap:
         return values
     while cap < need:
         cap *= 2
-    grown = np.empty((cap, values.shape[1]), dtype=np.int64)
+    grown = np.empty((cap, values.shape[1]), dtype=values.dtype)
     grown[:used] = values[:used]
     return grown
 
@@ -2304,7 +2267,7 @@ def _section_entries(
     the Perfect activation and, when it carries more than that edge (see late_edge_extends), the late-Great
     one."""
     n, action_count, state, section_start = section
-    entries = _i64_rows_ensure(entries, int(count), 2 * action_count)
+    entries = _rows_ensure(entries, int(count), 2 * action_count)
     prev_fill = -1
     prev_edge_e = -1
     prev_activation_fill = -1
@@ -2385,7 +2348,7 @@ def _region2_entries(
         region_perfect_end_by_hit,
         region_great_end_by_hit,
     ) = region
-    entries = _i64_rows_ensure(
+    entries = _rows_ensure(
         entries, int(count), int(region_starts[section_start + 1]) - int(region_starts[section_start])
     )
     for entry_idx in range(int(region_starts[section_start]), int(region_starts[section_start + 1])):
@@ -2428,10 +2391,29 @@ def mask_hash(w0, w1, w2, w3):
     return h ^ (h >> np.uint64(32))
 
 
+@njit(cache=True, nogil=True, inline="always")
+def _intern_reserved(slots, masks, patterns: int, w0, w1, w2, w3):
+    """Id of the head-mask pattern (w0..w3) in an open-addressing table with room for one more pattern; a new pattern
+    gets the next id. Returns (id, patterns)."""
+    cap = slots.shape[0]
+    slot = np.int64(mask_hash(w0, w1, w2, w3) & np.uint64(cap - 1))
+    while True:
+        pid = int(slots[slot])
+        if pid < 0:
+            slots[slot] = patterns
+            masks[patterns, 0] = w0
+            masks[patterns, 1] = w1
+            masks[patterns, 2] = w2
+            masks[patterns, 3] = w3
+            return patterns, patterns + 1
+        if masks[pid, 0] == w0 and masks[pid, 1] == w1 and masks[pid, 2] == w2 and masks[pid, 3] == w3:
+            return pid, patterns
+        slot = (slot + 1) & (cap - 1)
+
+
 @njit(cache=True, nogil=True)
 def _pattern_id(slots, masks, patterns: int, w0, w1, w2, w3):
-    """Id of the head-mask pattern (w0..w3) in an open-addressing table; a new pattern gets the next id (the table
-    and the mask rows grow as needed). Returns (slots, masks, id, patterns)."""
+    """`_intern_reserved` on tables that grow as needed. Returns (slots, masks, id, patterns)."""
     if 2 * (patterns + 1) > slots.shape[0]:
         cap = 2 * slots.shape[0]
         slots = np.full(cap, -1, dtype=np.int64)
@@ -2446,20 +2428,8 @@ def _pattern_id(slots, masks, patterns: int, w0, w1, w2, w3):
         grown = np.empty((2 * masks.shape[0], 4), dtype=np.uint64)
         grown[:patterns] = masks[:patterns]
         masks = grown
-    cap = slots.shape[0]
-    slot = np.int64(mask_hash(w0, w1, w2, w3) & np.uint64(cap - 1))
-    while True:
-        pid = slots[slot]
-        if pid < 0:
-            slots[slot] = patterns
-            masks[patterns, 0] = w0
-            masks[patterns, 1] = w1
-            masks[patterns, 2] = w2
-            masks[patterns, 3] = w3
-            return slots, masks, patterns, patterns + 1
-        if masks[pid, 0] == w0 and masks[pid, 1] == w1 and masks[pid, 2] == w2 and masks[pid, 3] == w3:
-            return slots, masks, pid, patterns
-        slot = (slot + 1) & (cap - 1)
+    pid, patterns = _intern_reserved(slots, masks, patterns, w0, w1, w2, w3)
+    return slots, masks, pid, patterns
 
 
 @njit(cache=True, nogil=True)
@@ -2475,7 +2445,7 @@ def _entry_end_points(points, m: int, slots, masks, patterns: int, edge, end_e: 
         if end_e >= 100:
             tails = int(body_counts[end_e])
             start = int(body_starts[end_e])
-            points = _i64_rows_ensure(points, m, tails)
+            points = _rows_ensure(points, m, tails)
             for idx in range(tails):
                 points[m, 0] = bf0 + np.int64(body_values[start + idx, 0])
                 points[m, 1] = ng0 + np.int64(body_values[start + idx, 1]) - np.int64(body_values[start + idx, 2])
@@ -2483,7 +2453,7 @@ def _entry_end_points(points, m: int, slots, masks, patterns: int, edge, end_e: 
                 points[m, 3] = pid
                 m += 1
         else:
-            points = _i64_rows_ensure(points, m, 1)
+            points = _rows_ensure(points, m, 1)
             points[m, 0] = bf0
             points[m, 1] = ng0
             points[m, 2] = fg0
@@ -2492,7 +2462,7 @@ def _entry_end_points(points, m: int, slots, masks, patterns: int, edge, end_e: 
         return points, m, slots, masks, int(patterns)
     start = int(head_state_start[end_e])
     rows = int(head_state_count[end_e])
-    points = _i64_rows_ensure(points, m, rows)
+    points = _rows_ensure(points, m, rows)
     for idx in range(rows):
         row = start + idx
         slots, masks, pid, patterns = _pattern_id(
@@ -2538,25 +2508,6 @@ def _int_slot(slot_key, key: int, cap: int) -> int:
     return slot
 
 
-@njit(cache=True, nogil=True, inline="always")
-def _intern_reserved(slots, masks, patterns: int, w0, w1, w2, w3):
-    """_pattern_id on tables with room reserved for every new pattern: returns (id, patterns)."""
-    cap = slots.shape[0]
-    slot = np.int64(mask_hash(w0, w1, w2, w3) & np.uint64(cap - 1))
-    while True:
-        pid = int(slots[slot])
-        if pid < 0:
-            slots[slot] = patterns
-            masks[patterns, 0] = w0
-            masks[patterns, 1] = w1
-            masks[patterns, 2] = w2
-            masks[patterns, 3] = w3
-            return patterns, patterns + 1
-        if masks[pid, 0] == w0 and masks[pid, 1] == w1 and masks[pid, 2] == w2 and masks[pid, 3] == w3:
-            return pid, patterns
-        slot = (slot + 1) & (cap - 1)
-
-
 @njit(cache=True, nogil=True)
 def _state_points(entries, count: int, n: int, head, points, slots, masks, arena):
     """All candidate points (body fever, normal Greats, fever Greats, pattern id) of one state's activation sections.
@@ -2566,7 +2517,7 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
     them), is a shift (-activation, normal Greats, fever Greats) of its windows' skylines. Such sections are grouped
     by their window pair: each group's skylines are computed once, and a section whose shift a section of a dominating
     pattern (or its own) dominates adds nothing. Any other section is joined end by end.
-    Returns (points, m, slots, masks, patterns, arena)."""
+    Returns (points, m, slots, masks, arena)."""
     width = n + 2
     rows = max(1, count)
     # Room for every section's pattern, so interning below never reallocates.
@@ -2662,7 +2613,7 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
                 start = int(body_starts[end_e])
                 tails = int(body_counts[end_e])
                 if all_rows + tails > arena.shape[0]:
-                    arena = _i64_rows_ensure(arena, all_rows, tails)
+                    arena = _rows_ensure(arena, all_rows, tails)
                 for t in range(tails):
                     bf = end_e + np.int64(body_values[start + t, 0])
                     ng = np.int64(body_values[start + t, 1]) - np.int64(body_values[start + t, 2])
@@ -2676,7 +2627,7 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
                 activation, base_e = entries[idx, 0], entries[idx, 1]
                 pid, ng, fg = info[idx, 0], info[idx, 1], info[idx, 2]
                 if m + all_rows > points.shape[0]:
-                    points = _i64_rows_ensure(points, m, all_rows)
+                    points = _rows_ensure(points, m, all_rows)
                 for row in range(all_rows):
                     points[m, 0] = arena[row, 0] - activation
                     points[m, 1] = arena[row, 1] + ng
@@ -2711,7 +2662,7 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
             points, m, slots, masks, patterns = _entry_end_points(
                 points, m, slots, masks, patterns, edge, end_e, head
             )
-    return points, int(m), slots, masks, int(patterns), arena
+    return points, int(m), slots, masks, arena
 
 
 @njit(cache=True, nogil=True)
@@ -2732,7 +2683,7 @@ def _points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_sta
        transitive, so this keeps exactly the non-dominated rows.
     No points gives the zero surface (the play that never activates) when `empty_is_zero`, else nothing. Returns
     (frontier, Fenwick stamp)."""
-    m, patterns, n = sizes
+    m, n = sizes
     lo_pos, hi_pos, empty_is_zero = head
     if m == 0:
         return np.zeros((1 if empty_is_zero else 0, 7), dtype=np.uint64), fen_stamp
@@ -3059,15 +3010,13 @@ def _frontier_of_fever_time(sizes, actions, runs, chart, hits, fever, regions, w
             ends.late_exit_e,
             use_forced_great_timing_i,
         )
-        points, m, slots, masks, patterns, arena = _state_points(
-            entries, count, n, head, points, slots, masks, arena
-        )
+        points, m, slots, masks, arena = _state_points(entries, count, n, head, points, slots, masks, arena)
         generated_surfaces += m
         # A first section whose activations all lie in the body keeps no surface when none reaches it.
         frontier, bit_stamp_value = _points_frontier(
             points,
             masks,
-            (m, patterns, n),
+            (m, n),
             (state, head_limit, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
             ws_bit_values,
             ws_bit_stamps,
@@ -3079,7 +3028,7 @@ def _frontier_of_fever_time(sizes, actions, runs, chart, hits, fever, regions, w
         if first:
             first_frontier = frontier
             break
-        head_pool = _u64_rows_ensure(head_pool, int(head_pool_cursor), len(frontier))
+        head_pool = _rows_ensure(head_pool, int(head_pool_cursor), len(frontier))
         head = _HeadTables(
             body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit
         )  # the arena may have regrown
