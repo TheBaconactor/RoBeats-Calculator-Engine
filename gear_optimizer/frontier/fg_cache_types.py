@@ -28,8 +28,7 @@ _FG_DP_SOURCES = (
     _HERE / "fg_cache_patterns.py",
     _HERE / "fg_cache_serde.py",
 )
-_FG_RESPONSE_CACHE_VERSION = cache_version(_FG_RESPONSE_CACHE_BASE_VERSION, _FG_DP_SOURCES)
-_BUNDLE_KEY_MARKER = "all-stat-keys"
+FG_RESPONSE_CACHE_VERSION = cache_version(_FG_RESPONSE_CACHE_BASE_VERSION, _FG_DP_SOURCES)
 
 
 @lru_cache(maxsize=1)

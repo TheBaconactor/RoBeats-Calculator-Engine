@@ -8,7 +8,7 @@ represents the producing CODE: if the DP logic changes but nobody bumps the stri
 built by the old logic keep validating against the new code -- a silent correctness bug. That is
 exactly what shipped the Bopeebo base under-report (a floor-aware DP change with no version bump left
 v7 nominal grids in service). See ``timeline._FRONTIER_DISK_CACHE_VERSION`` /
-``fg_cache_types._FG_RESPONSE_CACHE_VERSION``.
+``fg_cache_types.FG_RESPONSE_CACHE_VERSION``.
 
 WHAT
 ----

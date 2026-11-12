@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -13,66 +12,49 @@ from gear_optimizer.frontier.cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.settings import paths
 
 from . import fg_cache_types
-from .fg_cache_types import _BUNDLE_KEY_MARKER
+
+_BUNDLE_KEY_MARKER = "all-stat-keys"
 
 
-def _fg_response_cache_version() -> str:
-    return str(fg_cache_types._FG_RESPONSE_CACHE_VERSION)
+def fg_response_cache_version() -> str:
+    return fg_cache_types.FG_RESPONSE_CACHE_VERSION
 
 
 def fg_response_frontier_song_cache_key(song: TimedSong) -> tuple:
+    """The song's part of its bundle key: the chart's counts and the FG inputs' float32 timelines and int32 lanes (the
+    early-Great floor among them)."""
     song_inputs = song.fg_inputs
-    timestamps = np.asarray(song_inputs.timestamps, dtype=np.float32).reshape(-1)
-    perfect_candidates = np.asarray(song_inputs.perfect_candidates, dtype=np.float32).reshape(-1)
-    great_candidates = np.asarray(song_inputs.great_candidates, dtype=np.float32).reshape(-1)
-    perfect_floor = np.asarray(song_inputs.perfect_floor, dtype=np.float32).reshape(-1)
-    # Issue #44: the early-Great floor is part of the frontier inputs, so it joins the cache key.
-    # Pre-#44 bundles (built without the early-Great surfaces) thus cannot be silently reused.
-    great_floor = np.asarray(song_inputs.great_floor, dtype=np.float32).reshape(-1)
-    lanes = np.asarray(song_inputs.lanes, dtype=np.int32).reshape(-1)
-    if int(lanes.shape[0]) != int(timestamps.shape[0]):
-        raise ValueError("FG response lanes length must match timestamps")
     return (
-        int(song_inputs.total_notes),
-        int(song_inputs.long_notes),
-        float(song_inputs.last_note_time),
-        bool(song_inputs.use_forced_great_timing),
-        bytes(array_sig16(timestamps)),
-        bytes(array_sig16(perfect_candidates)),
-        bytes(array_sig16(great_candidates)),
-        bytes(array_sig16(perfect_floor)),
-        bytes(array_sig16(great_floor)),
-        bytes(array_sig16(lanes)),
+        song_inputs.total_notes,
+        song_inputs.long_notes,
+        song_inputs.last_note_time,
+        song_inputs.use_forced_great_timing,
+        array_sig16(song_inputs.timestamps),
+        array_sig16(song_inputs.perfect_candidates),
+        array_sig16(song_inputs.great_candidates),
+        array_sig16(song_inputs.perfect_floor),
+        array_sig16(song_inputs.great_floor),
+        array_sig16(song_inputs.lanes),
         song.mode,
     )
 
 
-def _ref_axes_cache_key(curves: StatCurves) -> tuple[bytes, bytes]:
-    ref_ft = curves.f32["Fever Time"]
-    ref_ff = curves.f32["Fever Fill Rate"]
-    return bytes(array_sig16(ref_ft)), bytes(array_sig16(ref_ff))
-
-
 def fg_response_frontier_bundle_cache_key(song: TimedSong, curves: StatCurves) -> tuple:
     return (
-        _fg_response_cache_version(),
+        fg_response_cache_version(),
         fg_response_frontier_song_cache_key(song),
-        *_ref_axes_cache_key(curves),
+        array_sig16(curves.f32["Fever Time"]),
+        array_sig16(curves.f32["Fever Fill Rate"]),
         _BUNDLE_KEY_MARKER,
     )
 
 
-def _fg_response_disk_cache_dir() -> Path:
+def fg_response_disk_cache_dir() -> Path:
     scoped = scoped_frontier_cache_dir("fg_response")
     return scoped if scoped is not None else paths().fg_cache
 
 
-def _fg_response_disk_cache_path(cache_key: tuple) -> Path:
-    digest = hashlib.blake2b(repr(cache_key).encode("utf-8"), digest_size=16).hexdigest()
-    return _fg_response_disk_cache_dir() / f"{digest}.npz"
-
-
-def _response_axes(song: TimedSong, curves: StatCurves) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
+def response_axes(song: TimedSong, curves: StatCurves) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
     """The song's FG inputs and its fever axes: per Fever Fill Rate value the fill threshold and the Perfects that
     fill the bar (its ceiling), per Fever Time value the fever duration."""
     song_inputs = song.fg_inputs

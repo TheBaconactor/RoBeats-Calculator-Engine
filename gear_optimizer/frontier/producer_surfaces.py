@@ -9,7 +9,7 @@ _LOW_WORD = np.uint64(0xFFFFFFFF)
 _WORD_BITS = np.uint64(32)
 
 
-def _surface_rows_from_numba_rows(rows: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
+def surface_rows_from_numba_rows(rows: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
     """The rows as (n, 11) uint32 surface rows, FgResponseSurface's fields (into `out` when given): each mask word as
     two 32-bit words, low first, then the three body counts."""
     if out is None:
@@ -35,7 +35,7 @@ class SurfaceRowsFirstFrontier:
     def _as_tuple(self) -> tuple[FgResponseSurface, ...]:
         if self._surfaces is None:
             self._surfaces = tuple(
-                FgResponseSurface(*row) for row in _surface_rows_from_numba_rows(self._numba_rows).tolist()
+                FgResponseSurface(*row) for row in surface_rows_from_numba_rows(self._numba_rows).tolist()
             )
         return self._surfaces
 

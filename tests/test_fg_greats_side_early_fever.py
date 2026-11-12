@@ -366,8 +366,8 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
 
     from gear_optimizer.frontier.producer_kernels import (
         head_envelope_filter,
-        _HEAD_DOM_C,
-        _HEAD_DOM_F,
+        HEAD_DOM_C,
+        HEAD_DOM_F,
     )
 
     head_len = 24
@@ -392,10 +392,10 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
     assert len(kept) < len(family) // 2                 # (b) prunes hard
 
     # Cells spanning the REALIZABLE stat box (element sum E, Perfect Points bonus b, combo/fever-mul within
-    # _HEAD_DOM_C/_HEAD_DOM_F; v = E + b, g = 2E/3 + 150): the cone-dominance is lossless for EVERY such cell by the
+    # HEAD_DOM_C/HEAD_DOM_F; v = E + b, g = 2E/3 + 150): the cone-dominance is lossless for EVERY such cell by the
     # 16-corner argument, so the max is preserved EXACTLY. (Cells outside the box carry no guarantee and are not reachable.)
-    cs = (_HEAD_DOM_C[0], 0.5 * (_HEAD_DOM_C[0] + _HEAD_DOM_C[1]), _HEAD_DOM_C[1])
-    fs = (_HEAD_DOM_F[0], 0.5 * (_HEAD_DOM_F[0] + _HEAD_DOM_F[1]), _HEAD_DOM_F[1])
+    cs = (HEAD_DOM_C[0], 0.5 * (HEAD_DOM_C[0] + HEAD_DOM_C[1]), HEAD_DOM_C[1])
+    fs = (HEAD_DOM_F[0], 0.5 * (HEAD_DOM_F[0] + HEAD_DOM_F[1]), HEAD_DOM_F[1])
     grid = [(e + b, c, f, e * 2.0 / 3.0 + 150.0)
             for e in (0.0, 700.0, 1400.0, 2600.0, 7000.0)
             for c in cs

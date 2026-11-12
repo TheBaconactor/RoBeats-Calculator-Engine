@@ -17,20 +17,17 @@ import zlib
 from pathlib import Path
 
 import numpy as np
-from numpy.lib import format as np_format
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.frontier.cache import FrontierCache, write_atomically
 from gear_optimizer.rules import MAX_STAT
 
-from .fg_cache_keys import _fg_response_disk_cache_dir, _fg_response_cache_version, fg_response_frontier_bundle_cache_key
-from .fg_cache_patterns import intern_surface_row_words, pack_surface_patterns, surface_head_coeffs
-from .fg_cache_serde import _pack_frontiers, _unpack_frontiers
+from .fg_cache_keys import fg_response_cache_version, fg_response_disk_cache_dir, fg_response_frontier_bundle_cache_key
+from .fg_cache_serde import bundle_arrays, byte_plane_columns, unpack_frontiers, write_bundle_npz
 from .fg_cache_types import FgResponseFrontierCachePayload, all_response_stat_keys
 
 logger = logging.getLogger(__name__)
 
-_NPZ_FAST_COMPRESS_LEVEL = 1
 # What reading a damaged or truncated bundle file raises: mostly a BadZipFile (a bad CRC is one); a broken deflate
 # stream is a zlib.error, a broken member header a ValueError, a TokenError or a NotImplementedError.
 _UNREADABLE = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZipFile, zlib.error, tokenize.TokenError,
@@ -53,19 +50,6 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "fg-response-frontier-visible-first-v32+logic-74ca016777d4",
     ),
 }
-
-
-def _byte_planes(table: np.ndarray) -> np.ndarray:
-    """(n, k) uint32 -> (4k, n) uint8: plane 4j + b holds byte b of column j."""
-    n, k = table.shape
-    columns = np.ascontiguousarray(table.T, dtype="<u4")
-    return np.ascontiguousarray(columns.view(np.uint8).reshape(k, n, 4).transpose(0, 2, 1)).reshape(4 * k, n)
-
-
-def _columns(planes: np.ndarray) -> np.ndarray:
-    """(4k, n) uint8 byte planes -> the table's (k, n) uint32 columns."""
-    k4, n = planes.shape
-    return np.ascontiguousarray(planes.reshape(k4 // 4, 4, n).transpose(0, 2, 1)).view("<u4").reshape(k4 // 4, n)
 
 
 _PURGED_VERSION_MARKER = ".purged_version"
@@ -125,53 +109,10 @@ def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
     return removed
 
 
-def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
-    if values.size and not (0 <= values.min() and values.max() <= np.iinfo(np.uint8).max):
-        raise ValueError(f"{name} exceeds persisted uint8 bounds: {values.min()}..{values.max()}")
-    return values.astype(np.uint8)
-
-
 def save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
     """Write the payload as the key's bundle file (atomically: readers see the old file or the whole new one)."""
-    frontiers = payload.frontiers
-    frontier_id_by_object = {id(frontier): idx for idx, frontier in enumerate(frontiers)}
-    sorted_items = sorted(payload.frontier_by_key.items())
-    packed_frontiers = _pack_frontiers(frontiers)
-    head_len = min(payload.total_notes, 100)
-    # Pattern identity is established from every exact mask word before coefficient work: head coefficients depend
-    # only on those words and head_len, so they are computed once per pattern instead of once per row.
-    rows, pattern_words = intern_surface_row_words(packed_frontiers["first_surface_pool"])
-    patterns = pack_surface_patterns(pattern_words, surface_head_coeffs(pattern_words, head_len=head_len))
-    stat_keys = np.asarray([key for key, _frontier in sorted_items], dtype=np.int32)
-    arrays = {
-        "version": np.asarray(FG_RESPONSE_FRONTIER_CACHE.version()),
-        "stat_keys": np.asfortranarray(_as_uint8_exact("FG response stat keys", stat_keys)),
-        "frontier_ids": np.asarray(
-            [frontier_id_by_object[id(frontier)] for _key, frontier in sorted_items], dtype=np.int32
-        ),
-        "raw_fill_by_ff": np.asarray(payload.raw_fill_by_ff, dtype=np.float64),
-        "non_fever_base_by_ff": np.asarray(payload.non_fever_base_by_ff, dtype=np.int32),
-        "real_time_by_ft": np.asarray(payload.real_time_by_ft, dtype=np.float64),
-        "total_notes": np.asarray(payload.total_notes, dtype=np.int32),
-        "long_notes": np.asarray(payload.long_notes, dtype=np.int32),
-        "use_forced_great_timing": np.asarray(payload.use_forced_great_timing, dtype=np.int8),
-        "first_surface_head_len": np.asarray(head_len, dtype=np.uint8),
-        "frontier_meta": np.asfortranarray(packed_frontiers["frontier_meta"]),
-        "first_offsets": packed_frontiers["first_offsets"],
-        "first_counts": packed_frontiers["first_counts"],
-        "surface_rows": _byte_planes(rows),
-        "surface_patterns": _byte_planes(patterns),
-    }
-    write_atomically(FG_RESPONSE_FRONTIER_CACHE.file_path(cache_key), lambda tmp: _save_npz_fast_compressed(tmp, arrays))
-
-
-def _save_npz_fast_compressed(path: Path, arrays: dict[str, np.ndarray]) -> None:
-    with zipfile.ZipFile(
-        path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=_NPZ_FAST_COMPRESS_LEVEL, allowZip64=True
-    ) as archive:
-        for name, array in arrays.items():
-            with archive.open(f"{name}.npy", mode="w", force_zip64=True) as handle:
-                np_format.write_array(handle, array, allow_pickle=False)
+    arrays = bundle_arrays(payload, FG_RESPONSE_FRONTIER_CACHE.version())
+    write_atomically(FG_RESPONSE_FRONTIER_CACHE.file_path(cache_key), lambda tmp: write_bundle_npz(tmp, arrays))
 
 
 def read_bundle(path: Path) -> dict[str, np.ndarray]:
@@ -179,7 +120,7 @@ def read_bundle(path: Path) -> dict[str, np.ndarray]:
     with np.load(path, allow_pickle=False) as data:
         arrays = {name: data[name] for name in data.files}
     for name in _SURFACE_TABLES:
-        arrays[name] = _columns(arrays[name])
+        arrays[name] = byte_plane_columns(arrays[name])
     return arrays
 
 
@@ -206,7 +147,7 @@ def load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
         arrays = read_compatible_bundle(cache_key)
         if arrays is None:
             return None
-        frontiers = _unpack_frontiers(arrays)
+        frontiers = unpack_frontiers(arrays)
         frontier_by_key = {
             tuple(key): frontiers[frontier_idx]
             for key, frontier_idx in zip(arrays["stat_keys"].tolist(), arrays["frontier_ids"].tolist(), strict=True)
@@ -253,8 +194,8 @@ def fg_response_cache_file_is_complete(cache_file: str | Path) -> bool:
 FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
     name="fg_response",
     log_label="[FGResponseCache]",
-    directory=_fg_response_disk_cache_dir,
-    version=_fg_response_cache_version,
+    directory=fg_response_disk_cache_dir,
+    version=fg_response_cache_version,
     predecessors=_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS,
     is_complete=fg_response_cache_file_is_complete,
     song_key=fg_response_frontier_bundle_cache_key,

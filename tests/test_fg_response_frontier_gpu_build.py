@@ -417,6 +417,16 @@ def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
     }
 
 
+def test_fg_response_bundle_writer_is_part_of_logic_fingerprint() -> None:
+    import inspect
+
+    from gear_optimizer.frontier import fg_cache_serde, fg_cache_types
+
+    sources = {source.resolve() for source in fg_cache_types._FG_DP_SOURCES}
+    for writer in (fg_cache_serde.bundle_arrays, fg_cache_serde.byte_planes, fg_cache_serde.write_bundle_npz):
+        assert Path(inspect.getsourcefile(writer)).resolve() in sources
+
+
 def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
     import gear_optimizer
     from gear_optimizer.frontier import fg_cache_types
@@ -1124,11 +1134,11 @@ def test_fg_response_fever_ends_match_exact_edge_end_at_float32_boundaries() -> 
     from tests.fg_response_frontier_oracles import edge_end_oracle
     from gear_optimizer.frontier.producer_batch import song_arrays
     from gear_optimizer.frontier.producer_precompute import fever_ends
-    from gear_optimizer.frontier.fg_cache_keys import _response_axes
+    from gear_optimizer.frontier.fg_cache_keys import response_axes
 
     song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
     curves = stat_curves()
-    song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
+    song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = response_axes(song, curves)
     real_fever_time = float(real_time_by_ft[51])
     from gear_optimizer.frontier import producer_kernels as rb
 
@@ -2180,12 +2190,12 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.trace.reconstruct import (
         reconstruct_force_greats_response_trace,
     )
-    from gear_optimizer.frontier.fg_cache_keys import _response_axes
+    from gear_optimizer.frontier.fg_cache_keys import response_axes
     from gear_optimizer.frontier.types import FgResponseSurface
 
     song = time_song(load_chart(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt")), "precise")
     curves = stat_curves()
-    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
+    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = response_axes(song, curves)
     raw_fever_fill = float(raw_fill_by_ff[67])
     non_fever_base = int(non_fever_base_by_ff[67])
     real_fever_time = float(real_time_by_ft[51])

@@ -11,7 +11,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
+from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
+from gear_optimizer.solver.timing_envelope import TimedSong, fever_axes
 
 GRID_SIZE = MAX_STAT + 1
 MAX_TIMELINE_FRONTIER_SURFACES = 262144  # the song's frontier pool: the GPU field-size cap (VRAM bound 1,048,576)
@@ -156,4 +159,54 @@ def build_timeline_frontier_grid_payload(
         grid_gap=np.zeros((1, GRID_SIZE, GRID_SIZE), dtype=np.int32),
         grid_fever_activations=np.zeros((1, GRID_SIZE, GRID_SIZE), dtype=np.int32),
         frontier_pool_used=len(pool),
+    )
+
+
+def build_fixed_timing_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierGridPayload:
+    """The payload of a fixed-timing song. Every hit lands at its hit time, so each (Fever Time, Fever Fill) cell has
+    exactly one fever surface and no Perfect-window frontier is searched; the per-cell fever kernel is the one the
+    fixed-timing Base scorer runs, so the payload scores bit-identically to it. Cells with equal surfaces share one
+    pool row, and the rows are in the order their first cells come (Fever Time major)."""
+    timestamps = song.hit_timestamps
+    total_notes = int(timestamps.shape[0])
+    head_len = min(total_notes, 100)
+    fever_durations, fill_thresholds = fever_axes(total_notes, song.chart.long_notes, song.chart.last_note_time, curves)
+    grid = (MAX_STAT + 1, MAX_STAT + 1)
+    body_fever, body_normal, activations, last_fever_end = (np.zeros(grid, dtype=np.int32) for _ in range(4))
+    masks = np.zeros((*grid, 4), dtype=np.uint32)
+    calculate_fever_timeline_surface_grid(
+        timestamps, total_notes, fever_durations, np.ceil(fill_thresholds).astype(np.int64),
+        (body_fever, body_normal, masks, activations, last_fever_end),
+    )
+    gap = (total_notes - last_fever_end).astype(np.int32)
+
+    # One row per cell: body fever, body normal, the four mask words, activations, gap (int64 holds them all exactly).
+    cells = np.column_stack(
+        (body_fever.ravel(), body_normal.ravel(), masks.reshape(-1, 4), activations.ravel(), gap.ravel())
+    ).astype(np.int64)
+    surfaces, first_cell, surface_of_cell = np.unique(cells, axis=0, return_index=True, return_inverse=True)
+    if surfaces.shape[0] > MAX_TIMELINE_FRONTIER_SURFACES:
+        raise RuntimeError(f"non-precise timeline surface pool overflow: cap={MAX_TIMELINE_FRONTIER_SURFACES}")
+    order = np.argsort(first_cell)  # np.unique sorts the surfaces: back to the order their first cells come
+    pool_row = np.empty_like(order)
+    pool_row[order] = np.arange(order.size)
+    surfaces = surfaces[order]
+    head_coeffs = np.asarray(
+        [_head_mask_coefficients_py(*words, head_len=head_len) for words in surfaces[:, 2:6].tolist()], dtype=np.int16
+    ).reshape(-1, 4)
+    shape = (1, *grid)
+    return TimelineFrontierGridPayload(
+        grid_count_body_fever=body_fever[np.newaxis],
+        grid_count_body_normal=body_normal[np.newaxis],
+        grid_head_len=np.full(shape, head_len, dtype=np.int8),
+        grid_fever_masks_bits=masks[np.newaxis],
+        grid_frontier_count=np.ones(shape, dtype=np.int32),
+        grid_frontier_offset=pool_row[surface_of_cell].astype(np.int32).reshape(shape),
+        grid_frontier_body_fever_pool=surfaces[:, 0].astype(np.int32)[np.newaxis],
+        grid_frontier_body_normal_pool=surfaces[:, 1].astype(np.int32)[np.newaxis],
+        grid_frontier_masks_bits_pool=surfaces[:, 2:6].astype(np.uint32)[np.newaxis],
+        grid_frontier_head_coeffs_pool=head_coeffs[np.newaxis],
+        grid_gap=gap[np.newaxis],
+        grid_fever_activations=activations[np.newaxis],
+        frontier_pool_used=int(surfaces.shape[0]),
     )

@@ -16,7 +16,7 @@ from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.timing_envelope import TimedSong
 
 from .cache import MemoryLru
-from .fg_cache_keys import _response_axes, fg_response_frontier_bundle_cache_key
+from .fg_cache_keys import fg_response_frontier_bundle_cache_key, response_axes
 from .fg_cache_patterns import surface_head_greats, unpack_surface_patterns
 from .fg_cache_store import (
     FG_RESPONSE_FRONTIER_CACHE,
@@ -31,7 +31,7 @@ from .fg_cache_types import (
     all_response_stat_keys,
 )
 from .producer_batch import build_frontiers, song_arrays
-from .producer_kernels import _HEAD_DOM_B, _HEAD_DOM_C, _HEAD_DOM_F
+from .producer_kernels import HEAD_DOM_B, HEAD_DOM_C, HEAD_DOM_F
 from .types import SurfacePool
 
 # Decoded scoring bundles, keyed like the files (a few MB each, up to ~100 MB on the longest charts).
@@ -55,17 +55,17 @@ def _missing_payload_keys(payload: FgResponseFrontierCachePayload | None, keys: 
 
 
 def _assert_head_dominance_box_covers(curves: StatCurves) -> None:
-    """Fail loud if a gear rebalance pushes a curve outside the lossless cone filters' box (_HEAD_DOM_B/C/F): their proof
+    """Fail loud if a gear rebalance pushes a curve outside the lossless cone filters' box (HEAD_DOM_B/C/F): their proof
     holds ONLY while the box is a superset of the realizable values, so a stale box must never silently under-cover. Reads
     the float32 curves the solve uses."""
     for name, (low, high) in (
-        ("Perfect Points", _HEAD_DOM_B), ("Combo Multiplier", _HEAD_DOM_C), ("Fever Multiplier", _HEAD_DOM_F),
+        ("Perfect Points", HEAD_DOM_B), ("Combo Multiplier", HEAD_DOM_C), ("Fever Multiplier", HEAD_DOM_F),
     ):
         curve = np.asarray(curves.f32[name], dtype=np.float64)
         if not (low <= float(curve.min()) and float(curve.max()) <= high):
             raise ValueError(
                 f"FG cone-filter box {name} ({low}, {high}) no longer covers the gear's [{float(curve.min()):.4f}, "
-                f"{float(curve.max()):.4f}]: update _HEAD_DOM_* in producer_kernels.py"
+                f"{float(curve.max()):.4f}]: update HEAD_DOM_* in producer_kernels.py"
             )
 
 
@@ -77,7 +77,7 @@ def _build_response_frontier_cache_payload(
     """The frontiers of `stat_keys` (sorted), one per distinct fever geometry, in ONE batch call: the batch entry owns
     region-core-table admission and reduction, and every song-invariant input is built exactly once per song."""
     _assert_head_dominance_box_covers(curves)
-    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
+    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = response_axes(song, curves)
     geometry_of = {
         (ft_stat, ff_stat): (float(raw_fill_by_ff[ff_stat]), int(non_fever_base_by_ff[ff_stat]), float(real_time_by_ft[ft_stat]))
         for ft_stat, ff_stat in stat_keys.tolist()

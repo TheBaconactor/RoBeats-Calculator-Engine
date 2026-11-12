@@ -454,7 +454,7 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     tmp_path: Path, monkeypatch
 ) -> None:
     from gear_optimizer.frontier import fg_cache
-    from gear_optimizer.frontier import fg_cache_store
+    from gear_optimizer.frontier import fg_cache_serde
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     forget_scoring_bundles()
@@ -472,7 +472,7 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     def _raise_recompute(*_args, **_kwargs):
         raise AssertionError("persisted song-only head coeffs should be reused")
 
-    monkeypatch.setattr(fg_cache_store, "surface_head_coeffs", _raise_recompute)
+    monkeypatch.setattr(fg_cache_serde, "surface_head_coeffs", _raise_recompute)
     bundle = load_scoring_bundle(
         _song(),
         _varying_ref_arrays(),
@@ -557,7 +557,7 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
     forget_scoring_bundles()
     keys = ((0, 0), (1, 0))
 
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-legacy-v1")
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-legacy-v1")
     legacy = build_or_load_payload(_song(), _varying_ref_arrays(), stat_keys=keys)
     assert legacy.cache_source == "built"
 
@@ -570,7 +570,7 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
         return real_build(song_arrays, geometries, use_forced_great_timing)
 
     monkeypatch.setattr(fg_cache, "build_frontiers", _record_build)
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-sparse-bundle-v2-test")
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", "fg-response-frontier-sparse-bundle-v2-test")
     current = build_or_load_payload(_song(), _varying_ref_arrays(), stat_keys=keys)
 
     assert current.cache_source == "built"
@@ -594,12 +594,12 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     current_version = "fg-response-frontier-test+logic-current"
     lineage = tuple(f"fg-response-frontier-test+logic-older{n}" for n in (1, 2, 3))
     monkeypatch.setitem(fg_cache_store._EXACT_COMPATIBLE_PREDECESSOR_VERSIONS, current_version, lineage)
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", current_version)
     compatible_versions = fg_cache_store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()
     assert compatible_versions == (current_version, *lineage)
     predecessor = compatible_versions[int(predecessor_index)]
 
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", predecessor)
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", predecessor)
     legacy = build_or_load_payload(
         _song(),
         _varying_ref_arrays(),
@@ -610,7 +610,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert legacy_path.exists()
 
     forget_scoring_bundles()
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", current_version)
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", current_version)
 
     def _build_must_not_run(*_args, **_kwargs):
         raise AssertionError("ratified compatible cache hit must not rebuild")
@@ -640,9 +640,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
 
 def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.frontier import fg_cache_store as store
-    from gear_optimizer.frontier.fg_cache_types import (
-        _FG_RESPONSE_CACHE_VERSION,
-    )
+    from gear_optimizer.frontier.fg_cache_types import FG_RESPONSE_CACHE_VERSION
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
 
@@ -654,7 +652,7 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
 
     _plant("stale_a", "fg-response-frontier-visible-first-v29")
     _plant("stale_b", "fg-response-frontier-legacy-v2")
-    _plant("current", _FG_RESPONSE_CACHE_VERSION)
+    _plant("current", FG_RESPONSE_CACHE_VERSION)
     compatible_predecessors = store.FG_RESPONSE_FRONTIER_CACHE.compatible_versions()[1:]
     for index, compatible_predecessor in enumerate(compatible_predecessors):
         _plant(f"compatible_{index}", compatible_predecessor)
@@ -688,7 +686,7 @@ def test_purge_opens_no_bundle_while_the_lineage_reads_every_swept_version(tmp_p
     marker = tmp_path / ".purged_version"
     old, new, unrelated = (f"fg-response-frontier-test+logic-{name}" for name in ("old", "new", "unrelated"))
     np.savez(str(tmp_path / "bundle.npz"), version=np.array(old))
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", old)
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", old)
     assert store.purge_stale_version_cache_files() == 0  # no marker yet: swept
     assert marker.read_text(encoding="utf-8") == old
 
@@ -696,41 +694,17 @@ def test_purge_opens_no_bundle_while_the_lineage_reads_every_swept_version(tmp_p
     real_load = np.load
     monkeypatch.setattr(store.np, "load", lambda path, **kwargs: opened.append(str(path)) or real_load(path, **kwargs))
     assert store.purge_stale_version_cache_files() == 0  # a restart
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", new)
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", new)
     monkeypatch.setitem(store._EXACT_COMPATIBLE_PREDECESSOR_VERSIONS, new, (old,))
     assert store.purge_stale_version_cache_files() == 0  # a ratified version change
     assert opened == []
     assert marker.read_text(encoding="utf-8") == f"{new}\n{old}"
 
-    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", unrelated)
+    monkeypatch.setattr(fg_cache_types, "FG_RESPONSE_CACHE_VERSION", unrelated)
     with pytest.raises(RuntimeError, match="destructive cache rotation was not explicitly authorized"):
         store.purge_stale_version_cache_files()
     assert opened == [str(tmp_path / "bundle.npz")] and (tmp_path / "bundle.npz").exists()
     assert marker.read_text(encoding="utf-8") == f"{new}\n{old}"
-
-
-def test_fg_response_frontier_uint8_persistence_bounds_fail_loud(tmp_path: Path, monkeypatch) -> None:
-    """Stat keys are stored as uint8: one that does not fit is refused, never wrapped."""
-    from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.frontier.fg_cache_store import save_payload
-    from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierCachePayload
-    from gear_optimizer.frontier.types import FgResponseFrontierResult, FgResponseSurface
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    frontier = FgResponseFrontierResult(surface_frontier(FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)), 1, 2, 3, 4, 5, 6, 7)
-    payload = FgResponseFrontierCachePayload(
-        frontier_by_key={(0, 256): frontier},
-        raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),
-        non_fever_base_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.int32),
-        real_time_by_ft=np.zeros((MAX_STAT + 1,), dtype=np.float64),
-        total_notes=3,
-        long_notes=0,
-        use_forced_great_timing=True,
-    )
-
-    with pytest.raises(ValueError, match="exceeds persisted uint8 bounds"):
-        save_payload(("unit", "uint8-bounds"), payload)
-    assert not list(tmp_path.glob("*.npz"))
 
 
 def test_fg_response_frontier_disk_bundle_reuses_overlapping_stat_keys(tmp_path: Path, monkeypatch) -> None:

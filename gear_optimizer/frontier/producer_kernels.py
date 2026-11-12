@@ -1165,9 +1165,9 @@ def touch_body_rows(queue, heads, tails, state: int, key, pair_stamp, best_fever
 # by a per-pair margin. No probe sampling. `b`, `c` and `f` span the gear's curves (gamedata.stat_curves), E every stat
 # line. fg_cache._assert_head_dominance_box_covers fails loud if a gear rebalance leaves the box.
 _HEAD_DOM_E = (0.0, 7600.0)
-_HEAD_DOM_B = (200.0, 485.0)
-_HEAD_DOM_C = (1.95, 2.72)
-_HEAD_DOM_F = (2.95, 5.48)
+HEAD_DOM_B = (200.0, 485.0)
+HEAD_DOM_C = (1.95, 2.72)
+HEAD_DOM_F = (2.95, 5.48)
 # Body floors hit combo_val/fever_val plus the two great penalties; 2x per body-count delta is a
 # safe (over-)estimate of how far they can perturb a pairwise score difference.
 _HEAD_DOM_BODY_FLOOR_W = 2
@@ -1252,9 +1252,9 @@ def _corner_scores(rows, terms, term_of):
         for e in _HEAD_DOM_E:
             g = e * 2.0 / 3.0 + 150.0
             for ic in range(2):
-                for f in _HEAD_DOM_F:
-                    for b in _HEAD_DOM_B:
-                        scores[i, col] = _corner_score(basis, e + b, _HEAD_DOM_C[ic], f, g, ic)
+                for f in HEAD_DOM_F:
+                    for b in HEAD_DOM_B:
+                        scores[i, col] = _corner_score(basis, e + b, HEAD_DOM_C[ic], f, g, ic)
                         col += 1
     return scores
 
@@ -1363,8 +1363,8 @@ def _head_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int):
     hi = hi_pos
     hlen = hi - lo
     one = np.uint64(1)
-    k_lo = (_HEAD_DOM_C[0] - 1.0) / 100.0
-    k_hi = (_HEAD_DOM_C[1] - 1.0) / 100.0
+    k_lo = (HEAD_DOM_C[0] - 1.0) / 100.0
+    k_hi = (HEAD_DOM_C[1] - 1.0) / 100.0
     b_lo = 0.0
     c_lo_arr = 0.0
     d_lo = 0.0

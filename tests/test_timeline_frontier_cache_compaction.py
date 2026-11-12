@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.curves_support import synthetic_curves
+import inspect
 import os
 import time
 from pathlib import Path
@@ -26,6 +27,15 @@ def test_timeline_cache_fingerprint_covers_shared_frontier_producer() -> None:
     }.issubset(sources)
     # Neither the FG scoring policy nor the trace reconstruction determines a cached payload.
     assert not {"fg_policy.py", "reconstruct.py", "activation_witness.py"} & sources
+
+
+def test_timeline_cache_fingerprint_covers_the_code_that_writes_a_file() -> None:
+    from gear_optimizer.frontier.timeline_cache_serde import encode_payload_npz
+    from gear_optimizer.frontier.timeline_producer import build_fixed_timing_payload
+
+    sources = {path.resolve() for path in timeline_api._TIMELINE_DP_SOURCES}
+    for writer in (build_fixed_timing_payload, encode_payload_npz):
+        assert Path(inspect.getsourcefile(writer)).resolve() in sources
 
 
 def _build_small_payload():

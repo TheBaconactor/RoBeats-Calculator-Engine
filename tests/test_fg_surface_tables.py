@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.rules import MAX_STAT
-from gear_optimizer.frontier import fg_cache_store
+from gear_optimizer.frontier import fg_cache_serde
 from tests.fg_cache_support import expand_surface_rows, surface_frontier
 from gear_optimizer.frontier.fg_cache_store import read_compatible_bundle, save_payload
 from gear_optimizer.frontier.fg_cache_types import FgResponseFrontierCachePayload
@@ -182,14 +182,14 @@ def test_issue116_writer_derives_head_coefficients_after_exact_pattern_interning
     pool[7, :8] = pool[1, :8]
     expected_pattern_words = np.unique(pool[:, :8], axis=0)
     expected_coeffs = _coeffs_for(pool, total_notes=total_notes).astype(np.int32)
-    real_precompute = fg_cache_store.surface_head_coeffs
+    real_precompute = fg_cache_serde.surface_head_coeffs
     precompute_inputs: list[np.ndarray] = []
 
     def _track_pattern_precompute(surface_words: np.ndarray, *, head_len: int) -> np.ndarray:
         precompute_inputs.append(np.asarray(surface_words).copy())
         return real_precompute(surface_words, head_len=int(head_len))
 
-    monkeypatch.setattr(fg_cache_store, "surface_head_coeffs", _track_pattern_precompute)
+    monkeypatch.setattr(fg_cache_serde, "surface_head_coeffs", _track_pattern_precompute)
     cache_key = ("unit", "issue116-pattern-coeff-owner")
     save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
 
