@@ -13,11 +13,11 @@ from typing import Any
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
 from gear_optimizer.gamedata import Gear, Mini, ascended_mini_stats
+from gear_optimizer.rules import GEM_BUDGET
 
 ELEMENT_ORDER: tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 _ELEMENT_RANK = {name: idx for idx, name in enumerate(ELEMENT_ORDER)}
 _GEM_KEYS = ("PP", "CM", "FM", "FT", "FF", "Element")  # the order of stats.GEM_KINDS: a row's stored gems
-_GEM_BUDGET = 90  # gems a full allocation spends; averaged gems are rounded to sum to it
 _SLOT_ORDER = {"Hat": 0, "Neck": 1, "Face": 2, "Shirt": 3, "Back": 4, "Pants": 5, "Pant": 5}
 
 
@@ -202,7 +202,7 @@ def _round_mean_gems(gem_sums: dict[str, int], denom: int) -> dict[str, int]:
     means = {k: gem_sums[k] / denom for k in keys}
     floors = {k: math.floor(means[k]) for k in keys}
 
-    remaining = _GEM_BUDGET - sum(floors.values())
+    remaining = GEM_BUDGET - sum(floors.values())
     if remaining == 0:
         return floors
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import math
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -232,24 +232,22 @@ def stat_curves() -> StatCurves:
     return StatCurves._of(f64, gains)
 
 
-_FILE_CACHE: dict[tuple[str, Path], tuple[tuple[int, int], object]] = {}
-_FILE_CACHE_LOCK = threading.Lock()
+_LOAD_LOCK = threading.Lock()
 
 
-def load_cached(path: Path, read):
-    """read(path), cached per file until the file changes (a new Data revision reloads it). Callers share the cached
-    value and must not mutate it."""
+def load_cached(path: Path, read, cache: MutableMapping[Path, tuple[tuple[int, int], object]]):
+    """read(path), kept in `cache` (the reader's own) until the file changes (a new Data revision reloads it).
+    Callers share the cached value and must not mutate it."""
     resolved = Path(path).resolve()
     stat = resolved.stat()
     stamp = (stat.st_mtime_ns, stat.st_size)
-    key = (read.__name__, resolved)
-    with _FILE_CACHE_LOCK:
-        cached = _FILE_CACHE.get(key)
+    with _LOAD_LOCK:
+        cached = cache.get(resolved)
         if cached is not None and cached[0] == stamp:
             return cached[1]
     value = read(resolved)
-    with _FILE_CACHE_LOCK:
-        _FILE_CACHE[key] = (stamp, value)
+    with _LOAD_LOCK:
+        cache[resolved] = (stamp, value)
     return value
 
 

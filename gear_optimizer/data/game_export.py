@@ -110,9 +110,12 @@ def read_catalog(path: Path) -> Catalog:
     return Catalog({gear.name: gear for gear in gears}, {mini.name: mini for mini in minis})
 
 
+_CATALOG_CACHE: dict[Path, tuple[tuple[int, int], Catalog]] = {}
+
+
 def load_catalog(path: Path) -> Catalog:
     """The export's catalog, cached until the file changes. Callers share it and must not mutate it."""
-    return load_cached(path, read_catalog)
+    return load_cached(path, read_catalog, _CATALOG_CACHE)
 
 
 def game_song_names(path: Path) -> set[str]:
