@@ -17,8 +17,8 @@ from .producer_surfaces import SurfaceRowsFirstFrontier
 from .types import FgResponseFrontierResult
 
 _build_threads = os.cpu_count() or 1
-# A stamp is an int32 and one kernel call advances an epoch by at most n + 101: a counter reset once it passes this
-# bound never comes near INT32_MAX. Results never depend on the epoch values, only on their growing.
+# A stamp is an int32 and one geometry advances an epoch by at most n + 101: a counter reset once it passes this bound
+# never comes near INT32_MAX. Results never depend on the epoch values, only on their growing.
 _STAMP_EPOCH_RESET_LIMIT = 1 << 30
 _SYSTEM_RESERVE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 _WORKSPACE_TLS = threading.local()
@@ -52,23 +52,8 @@ class StampWorkspace:
     pair_touched: np.ndarray
     bit_values: np.ndarray
     bit_stamps: np.ndarray
-    perfect_successor: np.ndarray
-    perfect_successor_stamps: np.ndarray
-    late_successor: np.ndarray
-    late_successor_stamps: np.ndarray
     pair_epoch: int = 0
     bit_epoch: int = 0
-    successor_epoch: int = 0
-
-    def reserve_successor_epochs(self, count: int) -> int:
-        """The first of `count` fresh epochs."""
-        if self.successor_epoch + count > _STAMP_EPOCH_RESET_LIMIT:
-            self.perfect_successor_stamps[:] = 0
-            self.late_successor_stamps[:] = 0
-            self.successor_epoch = 0
-        first = self.successor_epoch + 1
-        self.successor_epoch += count
-        return first
 
     def store_epochs(self, pair_epoch: int, bit_epoch: int) -> None:
         """Keep the kernel's final epochs; a counter past the reset limit starts over on zeroed stamps."""
@@ -105,16 +90,16 @@ def pair_mod_bound(n: int, smallest_later_fill: int, eg_gap_bound: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class WorkspacePlan:
-    """The sizes of a song build's stamp workspaces: pair arrays of (n + 1) * `pair_mod_bound` cells, Fenwick arrays
-    of n + 2 and successor arrays of n + 1. A thread takes its workspace through the plan and keeps it, with its
-    epochs, for every later range and build that fits in it."""
+    """The sizes of a song build's stamp workspaces: pair arrays of (n + 1) * `pair_mod_bound` cells and Fenwick arrays
+    of n + 2. A thread takes its workspace through the plan and keeps it, with its epochs, for every later range and
+    build that fits in it."""
 
     n: int
     pair_mod_bound: int
 
     @property
     def bytes_per_thread(self) -> int:
-        cells = 3 * (self.n + 1) * self.pair_mod_bound + 2 * (self.n + 2) + 4 * (self.n + 1)
+        cells = 3 * (self.n + 1) * self.pair_mod_bound + 2 * (self.n + 2)
         return cells * np.dtype(np.int32).itemsize
 
     def thread_workspace(self) -> StampWorkspace:
@@ -127,10 +112,6 @@ class WorkspacePlan:
                 pair_touched=np.zeros(pairs, dtype=np.int32),
                 bit_values=np.zeros(n + 2, dtype=np.int32),
                 bit_stamps=np.zeros(n + 2, dtype=np.int32),
-                perfect_successor=np.empty(n + 1, dtype=np.int32),
-                perfect_successor_stamps=np.zeros(n + 1, dtype=np.int32),
-                late_successor=np.empty(n + 1, dtype=np.int32),
-                late_successor_stamps=np.zeros(n + 1, dtype=np.int32),
             )
         return workspace
 
@@ -150,12 +131,12 @@ def admit_workspaces(plan: WorkspacePlan, workers: int) -> None:
 
 @dataclass(frozen=True, slots=True)
 class SongBuild:
-    """What every kernel run of one song's build reads: the song, each activation's latest reachable Perfect and
-    late-Great hit with its validity (the kernels' prefix tables), the fever-end tables, and the build's settings. A
-    fill below `early_exit_min_fill` plans no early fever exit (producer_batch.early_exit_min_fill)."""
+    """What every kernel run of one song's build reads: the song, whether each note has a reachable Perfect and
+    late-Great activation hit, the fever-end tables, and the build's settings. A fill below `early_exit_min_fill`
+    plans no early fever exit (producer_batch.early_exit_min_fill)."""
 
     song: SongArrays
-    activation_hits: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    activation_valid: tuple[np.ndarray, np.ndarray]
     ends: FeverEnds
     use_forced_great_timing: bool
     early_exit_min_fill: int
@@ -175,7 +156,7 @@ def reduce_geometries(
     """The frontiers of `geometries`, per source, from one kernel call on the calling thread's workspace. They share
     one region table and the action table of the first of them; `runs` holds the fill runs of that table's later
     offsets, then of the offsets a late Great can activate at."""
-    song, ends, table = build.song, build.ends, geometries[0].table
+    ends, table = build.ends, geometries[0].table
     workspace = build.workspace_plan.thread_workspace()
     exit_e = (
         (ends.perfect_exit_e, ends.late_exit_e)
@@ -184,18 +165,14 @@ def reduce_geometries(
     )
     fever_rows = np.asarray([geometry.fever_row for geometry in geometries], dtype=np.int32)
     rows, offsets, stats, pair_epoch, bit_epoch = frontiers_of_fever_times(
-        (song.timestamps.shape[0], table.later_fill.shape[0], table.action_k.shape[0]),
+        (build.song.timestamps.shape[0], table.later_fill.shape[0], table.action_k.shape[0]),
         table.arrays,
         runs,
-        (song.timestamps, song.perfect_candidates, song.great_candidates, song.perfect_floor, song.great_floor,
-         song.late_great_floor, song.lanes),
-        (*build.activation_hits, ends.perfect_e, ends.late_e, ends.eg_perfect_e, ends.eg_late_e, *exit_e),
-        (table.raw_fever_fill, ends.fever_times[fever_rows], fever_rows, 1 if build.use_forced_great_timing else 0),
+        (*build.activation_valid, ends.perfect_e, ends.late_e, ends.eg_perfect_e, ends.eg_late_e, *exit_e),
+        (table.raw_fever_fill, fever_rows, 1 if build.use_forced_great_timing else 0),
         (*region_table, ends.perfect_floor_by_hit, ends.great_floor_by_hit),
         (workspace.pair_values, workspace.pair_stamps, workspace.pair_touched, workspace.bit_values,
-         workspace.bit_stamps, workspace.perfect_successor, workspace.perfect_successor_stamps,
-         workspace.late_successor, workspace.late_successor_stamps,
-         workspace.reserve_successor_epochs(len(geometries)), workspace.pair_epoch, workspace.bit_epoch),
+         workspace.bit_stamps, workspace.pair_epoch, workspace.bit_epoch),
     )
     workspace.store_epochs(pair_epoch, bit_epoch)
     return [

@@ -10,22 +10,10 @@ _HeadTables = namedtuple(
     "_HeadTables",
     ["body_values", "body_starts", "body_counts", "head_pool", "head_state_start", "head_state_count", "head_limit"],
 )
-# A group's region core table (region_core_table: `region_starts` addresses the rows of each section start) and one
-# fever time's end of every hit token on the Perfect and the Great floor.
+# A group's region table (region_core_table) and one fever time's end of every hit token on the Perfect and the Great
+# floor.
 RegionTables = namedtuple(
-    "RegionTables",
-    [
-        "region_starts",
-        "region_offsets",
-        "region_activations",
-        "region_great_ends",
-        "region_is_greats",
-        "region_act_hit_ids",
-        "region_perfect_hit_ids",
-        "region_perfect_valids",
-        "region_perfect_end_by_hit",
-        "region_great_end_by_hit",
-    ],
+    "RegionTables", ["head_starts", "head_rows", "key_starts", "key_rows", "perfect_end_by_hit", "great_end_by_hit"]
 )
 # Every note's earliest (floor) and latest (candidate) Perfect and Great hit, and its earliest late-Great hit.
 HitTimes = namedtuple(
@@ -38,17 +26,15 @@ HitTimes = namedtuple(
         "late_great_floor_timestamps",
     ],
 )
-# One fever time's per-activation tables: each note's latest reachable Perfect / late-Great activation hit (valid where
-# `*_valid` != 0), the window ends those hits reach on the Perfect floor (`perfect_e`, `late_e`) and on the
-# early-Great floor (`eg_perfect_e`, `eg_late_e`), clamped to (activation, n], and the earliest ends a Perfect /
-# late-Great activation can exit at (`perfect_exit_e`, `late_exit_e`; its ends are every e from there to `perfect_e` /
-# `late_e`).
+# One fever time's per-activation tables: whether a note has a reachable Perfect / late-Great activation hit
+# (`*_valid` != 0), the ends its latest such hit reaches on the Perfect floor (`perfect_e`, `late_e`) and on the Great
+# floor (`eg_perfect_e`, `eg_late_e`: its early-Great reach), clamped to (activation, n], and the earliest end a
+# Perfect / late-Great activation can exit at (`perfect_exit_e`, `late_exit_e`; its ends are every e from there to
+# its early-Great reach).
 ActivationEnds = namedtuple(
     "ActivationEnds",
     [
-        "perfect_hit",
         "perfect_valid",
-        "late_hit",
         "late_valid",
         "perfect_e",
         "late_e",
@@ -81,6 +67,16 @@ _EXACT_LANE_SIGNATURE_MAX_WORD_CELLS = 16_777_216
 _PERFECT_FAMILY = 0
 _LATE_FAMILY = 1
 _REGION_FAMILY = 2
+# Columns of a region table's rows (region_core_table). A head row holds a run's offset and activation, a key row the
+# section starts a run of its activation holds at; both end with the run's Great end and the song tokens of its
+# late-Great and Perfect activation hits (-1: it has none).
+_HEAD_OFFSET = 0
+_HEAD_ACTIVATION = 1
+_KEY_FIRST_SECTION = 0
+_KEY_LAST_SECTION = 1
+_ROW_GREAT_END = 2
+_ROW_LATE_HIT = 3
+_ROW_PERFECT_HIT = 4
 
 
 @njit(cache=True, nogil=True)
@@ -183,20 +179,6 @@ def pack_edge_eg(
 
 
 @njit(cache=True, nogil=True)
-def lower_bound(timestamps, value: float) -> int:
-    lo = 0
-    hi = timestamps.shape[0]
-    needle = np.float32(value)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if timestamps[mid] < needle:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
-
-
-@njit(cache=True, nogil=True)
 def _latest_activation_hit(
     activation_idx: int,
     window,
@@ -234,14 +216,6 @@ def _latest_activation_hit(
         if cap < lo:
             return 0.0, 0, -1
     return cap, 1, int(cap_token)
-
-
-@njit(cache=True, nogil=True)
-def great_floor_extended_end_at_hit(
-    n: int, activation_idx: int, hit: float, real_fever_time: float, great_floor_timestamps
-) -> int:
-    e = lower_bound(great_floor_timestamps, hit + real_fever_time)
-    return _clamped_end(n, activation_idx, int(e))
 
 
 @njit(cache=True, nogil=True)
@@ -581,6 +555,32 @@ def _lane_prefix_signature_reachable(
 
 
 @njit(cache=True, nogil=True)
+def _fill_window_holds(denom: float, preactivation_count: int, great_before: int, activation_is_great: bool) -> bool:
+    """Whether the bar fills on the activation: `preactivation_count` notes of the section precede it, `great_before`
+    of them Greats (half a fill unit each), and the activation adds a unit as a Perfect and half as a Great."""
+    preactivation_half = 2 * preactivation_count - great_before
+    activation_half = 1 if activation_is_great else 2
+    fill_before = 0.5 * float(preactivation_half)
+    return fill_before < denom and denom <= fill_before + 0.5 * float(activation_half)
+
+
+@njit(cache=True, nogil=True)
+def _later_notes_allow(a: int, h_a, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, run) -> bool:
+    """Whether every note after activation `a` can stay at or after its hit `h_a`. Candidate highs are per note (aware
+    of held tails), so only the later notes whose chart time is still before the hit are read: once a chart time is
+    at or past it, the judgment windows put that note's high there too. run = (Great run start, Great run end, the
+    section's end)."""
+    g0, g1, end = run
+    for j in range(a + 1, end):
+        if timestamps[j] >= h_a:
+            break
+        label_high = great_candidate_timestamps[j] if g0 <= j and j < g1 else perfect_candidate_timestamps[j]
+        if label_high < h_a:
+            return False
+    return True
+
+
+@njit(cache=True, nogil=True)
 def activation_reachable_contiguous_run(
     activation_index: int,
     activation_hit_timestamp: float,
@@ -646,10 +646,7 @@ def activation_reachable_contiguous_run(
     # position-exact and body event/Great counts remain identical to the cached surface.
     preactivation_count = a - start
     great_before = max(0, min(a, g1) - max(start, g0))
-    preactivation_half = 2 * preactivation_count - great_before
-    activation_half = 1 if activation_is_great else 2
-    fill_before = 0.5 * float(preactivation_half)
-    if not (fill_before < denom and denom <= fill_before + 0.5 * float(activation_half)):
+    if not _fill_window_holds(denom, preactivation_count, great_before, activation_is_great):
         return False
 
     # Both floor streams are monotone prefix maxima.  Check the last row of each constant-label
@@ -667,18 +664,9 @@ def activation_reachable_contiguous_run(
     if a > perfect_after_run_start and perfect_floor_timestamps[a - 1] > h_a:
         chart_prefix_legal = False
 
-    # Every remaining chart-order event must stay at/after the activation.  Candidate highs are
-    # per-note (held-tail aware), so inspect only later notes whose chart timestamp is still before
-    # h_a; once chart >= h_a, the canonical judgment windows guarantee high >= chart >= h_a.
-    for j in range(a + 1, end):
-        if timestamps[j] >= h_a:
-            break
-        is_great = g0 <= j and j < g1
-        label_high = great_candidate_timestamps[j] if is_great else perfect_candidate_timestamps[j]
-        if label_high < h_a:
-            chart_prefix_legal = False
-            break
-    if bool(chart_prefix_legal):
+    if chart_prefix_legal and _later_notes_allow(
+        a, h_a, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, (g0, g1, end)
+    ):
         return True
 
     return bool(
@@ -781,65 +769,45 @@ def region_core_candidate_capacity(n: int, region_action_count: int, action_k, r
     return candidate_count
 
 
-@njit(cache=True, nogil=True, inline="always")
-def _region_run_core(
-    n: int, section_start: int, offset: int, k: int, raw_fever_fill: float, timestamps, hit_times, lanes
-):
-    """The rt-independent core of a region-run candidate: fill crossing, minimal reachable region
-    Great end, capped activation/perfect hits, and the weighted lane-aware reachability check.
-    Depends on the geometry only through the fever-fill denom (never real_fever_time), so results
-    are shareable across every geometry of one (raw_fever_fill, non_fever_base) group.
-
-    Returns ``(activation, great_end, is_great, perfect_valid, activation_token,
-    perfect_token, valid)``, the hits as song tokens."""
+@njit(cache=True, nogil=True)
+def _region_run_core(n: int, section_start: int, offset: int, k: int, raw_fever_fill: float, timestamps, hit_times, lanes):
+    """The core of the run of `k` forced Greats from `section_start` + `offset`, by the general route: its fill
+    crossing, its minimal reachable Great end, its capped activation hits and the lane-aware reachability of its
+    activation. Returns (activation, Great end, late-Great hit token, Perfect hit token), a token -1 where the run has
+    no such hit, or activation -1 when the run is not valid."""
     run_start = section_start + offset
     activation, is_great = fill_crossing_run(section_start, run_start, k, raw_fever_fill, n)
-    if int(activation) < 0:
-        return -1, -1, 0, 0, -1, -1, 0
-
-    if int(is_great) != 0:
-        great_end, activation_token = minimal_reachable_region_great_end(
-            int(activation), section_start, run_start, raw_fever_fill, timestamps, hit_times, lanes, n
+    if activation < 0:
+        return -1, -1, -1, -1
+    perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
+    if is_great != 0:
+        great_end, late_token = minimal_reachable_region_great_end(
+            activation, section_start, run_start, raw_fever_fill, timestamps, hit_times, lanes, n
         )
-        if int(great_end) < 0:
-            return -1, -1, 0, 0, -1, -1, 0
-        perfect_hit, perfect_valid, perfect_token = perfect_activation_hit_for_run(
-            int(activation),
-            timestamps,
-            hit_times.perfect_candidate_timestamps,
-            hit_times.great_candidate_timestamps,
-            run_start,
-            int(great_end) - run_start,
-            n,
+        if great_end < 0:
+            return -1, -1, -1, -1
+        _hit, _valid, perfect_token = perfect_activation_hit_for_run(
+            activation, timestamps, perfect_candidates, great_candidates, run_start, great_end - run_start, n
         )
-        return (int(activation), int(great_end), 1, int(perfect_valid), int(activation_token), int(perfect_token), 1)
-
+        return activation, great_end, late_token, perfect_token
     great_end = min(n, run_start + k)
-    if int(great_end) <= run_start:
-        return -1, -1, 0, 0, -1, -1, 0
+    if great_end <= run_start:
+        return -1, -1, -1, -1
     perfect_hit, perfect_valid, perfect_token = perfect_activation_hit_for_run(
-        int(activation),
-        timestamps,
-        hit_times.perfect_candidate_timestamps,
-        hit_times.great_candidate_timestamps,
-        run_start,
-        int(great_end) - run_start,
-        n,
+        activation, timestamps, perfect_candidates, great_candidates, run_start, great_end - run_start, n
     )
-    if int(perfect_valid) == 0:
-        return -1, -1, 0, 0, -1, -1, 0
-    if not activation_reachable_contiguous_run(
-        int(activation),
+    if perfect_valid == 0 or not activation_reachable_contiguous_run(
+        activation,
         float(perfect_hit),
         timestamps,
         hit_times,
         lanes,
         raw_fever_fill,
-        (section_start, n, run_start, int(great_end) - run_start),
+        (section_start, n, run_start, great_end - run_start),
         0,
     ):
-        return -1, -1, 0, 0, -1, -1, 0
-    return (int(activation), int(great_end), 0, 1, -1, int(perfect_token), 1)
+        return -1, -1, -1, -1
+    return activation, great_end, -1, perfect_token
 
 
 @njit(cache=True, nogil=True)
@@ -862,346 +830,296 @@ def region_edge(n: int, activation: int, late_hit_id: int, perfect_hit_id: int, 
 
 
 @njit(cache=True, nogil=True)
-def mark_early_great_reachable_from_hit(
-    reachable,
-    n: int,
-    activation: int,
-    base_e: int,
-    activation_hit: float,
-    great_floor_timestamps,
-    real_fever_time: float,
-) -> int:
-    if base_e < 0 or activation < 0 or activation >= n:
-        return 0
-    eg_e = great_floor_extended_end_at_hit(
-        n, activation, activation_hit, real_fever_time, great_floor_timestamps
-    )
-    for e in range(base_e + 1, int(eg_e) + 1):
-        reachable[e] = True
-    return max(0, int(eg_e) - base_e)
+def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, lanes):
+    """The region runs of one (fill, non-Fever base) group: at a section start, an action's k forced Greats from its
+    region-2 offset (where the k-th Great of the run crosses the fill, so the run's last Great activates) and, at the
+    first 99 section starts, from the shifted-head offset 1. A run's core (_region_run_core) reads the fill only,
+    never a fever time, so every fever time of the group shares the table.
 
+    No fever ends before note ceil(fill), because an activation needs that many notes of its section: the section
+    starts 1 .. ceil(fill) are never enumerated, and the table holds no head row and no shifted-head run for them.
 
-@njit(cache=True, nogil=True)
-def region_core_table(
-    n: int, region_action_count: int, action_k, raw_fever_fill: float, timestamps, hit_times, lanes
-):
-    """Per-denom CSR table of VALID region-run cores.
+    Returns four arrays:
+    - head_starts, head_rows: per section start up to note 100 (those the head states and the first section list) its
+      valid runs in enumeration order, action ascending and the region-2 offset before the shifted-head one, as rows
+      (offset, activation, Great end, late-Great hit, Perfect hit);
+    - key_starts, key_rows: per activation its distinct runs as rows (first section start, last section start, Great
+      end, late-Great hit, Perfect hit), every section start of a row's interval holding that run. A fever time
+      finishes a run from these alone, so the reachability prepass and the body states find a run by its activation
+      instead of walking the rows of every (section start, action).
 
-    The region-run core (fill crossing, minimal reachable region Great end, capped hits, weighted
-    lane-aware reachability) depends on the geometry only through the fever-fill denom, never
-    real_fever_time — so it is computed ONCE per (raw_fever_fill, non_fever_base) action-key group
-    and shared read-only across every rt variant of that group (~115x reuse on a full stat grid).
-
-    Entries for each ``section_start`` row are stored in EXACTLY the enumeration order of the
-    per-geometry loops they replace — ``(action_idx asc, offset_kind asc)`` with the same
-    region-2 / shifted-head gating — so the rt consumers (reachability prepass marking and the
-    order-sensitive same-end head-edge bucket prune) see an identical candidate stream.
-
-    Returns ``(starts, offsets, activations, great_ends, is_greats, act_hit_ids,
-    perfect_hit_ids, perfect_valids)`` (hit IDs are song tokens) with ``starts`` of length ``n + 2``."""
+    A region-2 run of activation `a` with k Greats starts at a - k + 1 in the section starting at a - offset - k + 1.
+    Its late-Great hit and the notes after it do not depend on k, so per activation they are found once, for the
+    first Great end with a valid hit, and a run is valid at once when its chart prefix is legal there (the test of
+    activation_reachable_contiguous_run, whose pieces this shares); any other run takes the general route."""
+    n = timestamps.shape[0]
+    actions = action_k.shape[0]
     if lanes.shape[0] != n:
         raise ValueError("FG region-core lane rows must match n")
-    denom = raw_fever_fill
-    if denom <= 0.0 or not np.isfinite(denom):
+    if raw_fever_fill <= 0.0 or not np.isfinite(raw_fever_fill):
         raise ValueError("raw_fever_fill must be finite and > 0")
-    if denom > float(n):
-        return (
-            np.zeros(n + 2, dtype=np.int64),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-        )
-    cap = region_core_candidate_capacity(n, region_action_count, action_k, raw_fever_fill)
-    starts = np.zeros(n + 2, dtype=np.int64)
-    e_offset = np.empty(int(cap), dtype=np.int32)
-    e_activation = np.empty(int(cap), dtype=np.int32)
-    e_great_end = np.empty(int(cap), dtype=np.int32)
-    e_is_great = np.empty(int(cap), dtype=np.int32)
-    e_act_hit_id = np.empty(int(cap), dtype=np.int32)
-    e_perfect_hit_id = np.empty(int(cap), dtype=np.int32)
-    e_perfect_valid = np.empty(int(cap), dtype=np.int32)
-    region_k_stop = region2_k_scan_stop(region_action_count, raw_fever_fill)
-    cursor = 0
-    for section_start in range(0, n + 1):
-        starts[section_start] = cursor
-        shifted_head_offset = 1 if has_shifted_head_region(section_start, raw_fever_fill) else -1
-        for action_idx in range(region_action_count):
-            k = int(action_k[action_idx])
-            region_offset = -1
-            if action_idx < int(region_k_stop):
-                region_offset = region2_offset_for_count(section_start, k, raw_fever_fill, n)
-            for offset_idx in range(2):
-                if offset_idx == 0:
-                    offset = int(region_offset)
-                else:
-                    offset = shifted_head_offset
-                    if offset == int(region_offset):
-                        continue
-                if offset < 1:
-                    continue
-                (activation, great_end, is_great, perfect_valid, act_hit_id, perfect_hit_id, valid) = (
-                    _region_run_core(
-                        n, section_start, offset, k, raw_fever_fill, timestamps, hit_times, lanes
-                    )
-                )
-                if int(valid) == 0:
-                    continue
-                if cursor >= int(cap):
-                    raise ValueError("FG region-core rows exceed the producer-owned candidate capacity")
-                e_offset[cursor] = offset
-                e_activation[cursor] = int(activation)
-                e_great_end[cursor] = int(great_end)
-                e_is_great[cursor] = int(is_great)
-                e_act_hit_id[cursor] = int(act_hit_id) if int(is_great) != 0 else -1
-                e_perfect_hit_id[cursor] = int(perfect_hit_id) if int(perfect_valid) != 0 else -1
-                e_perfect_valid[cursor] = int(perfect_valid)
-                cursor += 1
-    starts[n + 1] = cursor
-    return (
-        starts,
-        e_offset[:cursor].copy(),
-        e_activation[:cursor].copy(),
-        e_great_end[:cursor].copy(),
-        e_is_great[:cursor].copy(),
-        e_act_hit_id[:cursor].copy(),
-        e_perfect_hit_id[:cursor].copy(),
-        e_perfect_valid[:cursor].copy(),
-    )
+    head_limit = min(n, 100)
+    head_starts = np.zeros(head_limit + 2, dtype=np.int64)
+    key_starts = np.zeros(n + 1, dtype=np.int64)
+    if raw_fever_fill > float(n):
+        return head_starts, np.empty((0, 5), dtype=np.int32), key_starts, np.empty((0, 5), dtype=np.int32)
+    perfect_floor, great_floor = hit_times.perfect_floor_timestamps, hit_times.great_floor_timestamps
+    perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
+    late_great_floor = hit_times.late_great_floor_timestamps
+    first_later_section = int(np.ceil(raw_fever_fill)) + 1
 
-
-@njit(cache=True, nogil=True)
-def _mark_region_entries(reachable, n: int, section_start: int, region, perfect_exit_e, late_exit_e) -> int:
-    """Mark the fever ends of every region run of one section start at this fever time. Returns the largest
-    early-Great width among them."""
-    region_starts, region_activations = region.region_starts, region.region_activations
-    region_act_hit_ids, region_perfect_hit_ids = region.region_act_hit_ids, region.region_perfect_hit_ids
-    max_width = 0
-    for row in range(region_starts[section_start], region_starts[section_start + 1]):
-        activation = int(region_activations[row])
-        late_hit_id = int(region_act_hit_ids[row])
-        edge_e, eg_e = region_edge(
-            n, activation, late_hit_id, int(region_perfect_hit_ids[row]), region.region_perfect_end_by_hit,
-            region.region_great_end_by_hit,
-        )
-        if edge_e < 0:
+    # The actions with a region-2 run: k, the activation's distance from the section start, and its fill window.
+    run_action = np.empty(actions, dtype=np.int64)
+    run_k = np.empty(actions, dtype=np.int64)
+    run_reach = np.empty(actions, dtype=np.int64)
+    run_fills = np.empty(actions, dtype=np.bool_)
+    runs = 0
+    for action in range(region2_k_scan_stop(actions, raw_fever_fill)):
+        k = int(action_k[action])
+        offset = region2_offset_for_count(0, k, raw_fever_fill, n + k + 2)
+        if offset < 1:
             continue
-        exit_e = perfect_exit_e if late_hit_id < 0 else late_exit_e
-        for end_e in range(min(int(exit_e[activation]), edge_e), eg_e + 1):
-            reachable[end_e] = True
-        max_width = max(max_width, eg_e - edge_e)
-    return max_width
+        run_action[runs] = action
+        run_k[runs] = k
+        run_reach[runs] = offset + k - 1
+        run_fills[runs] = _fill_window_holds(raw_fever_fill, offset + k - 1, k - 1, True)
+        runs += 1
 
+    # Region-2 runs, activation by activation. keys: rows (activation, first section start, last section start,
+    # Great end, late-Great hit, Perfect hit); head_runs: the runs of the head section starts, for the head rows.
+    keys = np.empty((n + 64, 6), dtype=np.int32)
+    key_count = 0
+    head_runs = np.full(((head_limit + 1) * max(1, runs), 3), -1, dtype=np.int32)
+    for activation in range(n):
+        # The first Great end with a valid late-Great hit: the hit does not depend on where the run starts.
+        hit_high = great_candidates[activation]
+        last_great_end = activation + 1
+        while last_great_end < n and perfect_candidates[last_great_end] < hit_high:
+            last_great_end += 1
+        great_end = -1
+        hit, late_token = 0.0, -1
+        for candidate in range(activation + 1, last_great_end + 1):
+            hit, valid, late_token = late_great_activation_hit_for_run(
+                activation, timestamps, perfect_candidates, great_candidates, late_great_floor, activation,
+                candidate - activation, n,
+            )
+            if valid != 0:
+                great_end = candidate
+                break
+        if great_end < 0:
+            continue
+        h_a = np.float32(hit)
+        legal = not (h_a < great_floor[activation] or h_a > great_candidates[activation]) and _later_notes_allow(
+            activation, h_a, timestamps, perfect_candidates, great_candidates, (activation, great_end, n)
+        )
+        greats_before_legal = activation == 0 or not (great_floor[activation - 1] > h_a)
+        _hit, _valid, perfect_token = perfect_activation_hit_for_run(
+            activation, timestamps, perfect_candidates, great_candidates, activation, great_end - activation, n
+        )
+        open_key = -1
+        for run in range(runs):
+            section_start = activation - run_reach[run]
+            if section_start < 0:
+                continue
+            k = run_k[run]
+            run_start = activation - k + 1
+            if (
+                legal
+                and run_fills[run]
+                and not (raw_fever_fill > float(n - section_start))
+                and not (perfect_floor[run_start - 1] > h_a)
+                and (k < 2 or greats_before_legal)
+            ):
+                run_great_end, run_late, run_perfect = great_end, late_token, perfect_token
+            else:
+                run_great_end, run_late = minimal_reachable_region_great_end(
+                    activation, section_start, run_start, raw_fever_fill, timestamps, hit_times, lanes, n
+                )
+                if run_great_end < 0:
+                    continue
+                _hit, _valid, run_perfect = perfect_activation_hit_for_run(
+                    activation, timestamps, perfect_candidates, great_candidates, run_start, run_great_end - run_start, n
+                )
+            if section_start <= head_limit and (section_start == 0 or section_start >= first_later_section):
+                head_runs[section_start * runs + run, 0] = run_great_end
+                head_runs[section_start * runs + run, 1] = run_late
+                head_runs[section_start * runs + run, 2] = run_perfect
+            if (
+                open_key >= 0
+                and keys[open_key, 3] == run_great_end
+                and keys[open_key, 4] == run_late
+                and keys[open_key, 5] == run_perfect
+                and keys[open_key, 1] - 1 <= section_start <= keys[open_key, 2] + 1
+            ):
+                keys[open_key, 1] = min(keys[open_key, 1], section_start)
+                keys[open_key, 2] = max(keys[open_key, 2], section_start)
+                continue
+            if key_count == keys.shape[0]:
+                keys = _rows_ensure(keys, key_count, 1)
+            keys[key_count, 0] = activation
+            keys[key_count, 1] = section_start
+            keys[key_count, 2] = section_start
+            keys[key_count, 3] = run_great_end
+            keys[key_count, 4] = run_late
+            keys[key_count, 5] = run_perfect
+            open_key = key_count
+            key_count += 1
 
-@njit(cache=True, nogil=True, inline="always")
-def successor_find(successor, successor_stamps, successor_epoch: int, index: int) -> int:
-    """Return the first live index at/after ``index`` in one stamped successor epoch."""
-    root = index
-    while int(successor_stamps[root]) == successor_epoch:
-        root = int(successor[root])
-    cursor = index
-    while int(successor_stamps[cursor]) == successor_epoch:
-        next_cursor = int(successor[cursor])
-        successor[cursor] = root
-        cursor = next_cursor
-    return root
+    # The head rows, section start by section start, and the keys of the shifted-head runs (a run of the same
+    # activation at the next section start extends the key its activation made last).
+    head = np.empty((256, 5), dtype=np.int32)
+    head_count = 0
+    last_shifted_key = np.full(n, -1, dtype=np.int32)
+    for section_start in range(head_limit + 1):
+        head_starts[section_start] = head_count
+        if 0 < section_start < first_later_section:
+            continue
+        run = 0
+        for action in range(actions):
+            k = int(action_k[action])
+            region_offset = -1
+            if run < runs and run_action[run] == action:
+                if section_start + run_reach[run] < n:
+                    region_offset = run_reach[run] - k + 1
+                    if head_runs[section_start * runs + run, 0] >= 0:
+                        if head_count == head.shape[0]:
+                            head = _rows_ensure(head, head_count, 1)
+                        head[head_count, _HEAD_OFFSET] = region_offset
+                        head[head_count, _HEAD_ACTIVATION] = section_start + run_reach[run]
+                        head[head_count, _ROW_GREAT_END] = head_runs[section_start * runs + run, 0]
+                        head[head_count, _ROW_LATE_HIT] = head_runs[section_start * runs + run, 1]
+                        head[head_count, _ROW_PERFECT_HIT] = head_runs[section_start * runs + run, 2]
+                        head_count += 1
+                run += 1
+            if has_shifted_head_region(section_start, raw_fever_fill) == 0 or region_offset == 1:
+                continue
+            activation, great_end, late_token, perfect_token = _region_run_core(
+                n, section_start, 1, k, raw_fever_fill, timestamps, hit_times, lanes
+            )
+            if activation < 0:
+                continue
+            if head_count == head.shape[0]:
+                head = _rows_ensure(head, head_count, 1)
+            head[head_count, _HEAD_OFFSET] = 1
+            head[head_count, _HEAD_ACTIVATION] = activation
+            head[head_count, _ROW_GREAT_END] = great_end
+            head[head_count, _ROW_LATE_HIT] = late_token
+            head[head_count, _ROW_PERFECT_HIT] = perfect_token
+            head_count += 1
+            key = last_shifted_key[activation]
+            if (
+                key >= 0
+                and keys[key, 3] == great_end
+                and keys[key, 4] == late_token
+                and keys[key, 5] == perfect_token
+                and section_start <= keys[key, 2] + 1
+            ):
+                keys[key, 2] = section_start
+                continue
+            if key_count == keys.shape[0]:
+                keys = _rows_ensure(keys, key_count, 1)
+            keys[key_count, 0] = activation
+            keys[key_count, 1] = section_start
+            keys[key_count, 2] = section_start
+            keys[key_count, 3] = great_end
+            keys[key_count, 4] = late_token
+            keys[key_count, 5] = perfect_token
+            last_shifted_key[activation] = key_count
+            key_count += 1
+    head_starts[head_limit + 1] = head_count
 
-
-@njit(cache=True, nogil=True, inline="always")
-def successor_remove(successor, successor_stamps, successor_epoch: int, index: int) -> int:
-    """Remove one live index and return its next live successor."""
-    next_index = successor_find(successor, successor_stamps, successor_epoch, index + 1)
-    successor[index] = int(next_index)
-    successor_stamps[index] = successor_epoch
-    return int(next_index)
-
-
-@njit(cache=True, nogil=True, inline="always")
-def _mark_perfect_activation(
-    reachable, n: int, activation: int, ends, great_floor_timestamps, real_fever_time: float
-) -> int:
-    if int(ends.perfect_valid[activation]) == 0:
-        return 0
-    edge_e = int(ends.perfect_e[activation])
-    if edge_e < 0:
-        return 0
-    # The activation can also end its fever early (an earlier hit, the boundary notes late): every end in
-    # [perfect_exit_e, edge_e] is a state.
-    for end_e in range(min(int(ends.perfect_exit_e[activation]), edge_e), edge_e + 1):
-        reachable[end_e] = True
-    return mark_early_great_reachable_from_hit(
-        reachable, n, activation, edge_e, float(ends.perfect_hit[activation]), great_floor_timestamps, real_fever_time
-    )
-
-
-@njit(cache=True, nogil=True, inline="always")
-def _mark_late_activation(
-    reachable, n: int, activation: int, ends, great_floor_timestamps, real_fever_time: float
-) -> int:
-    edge_e = -1
-    edge_eg_e = 0
-    if int(ends.perfect_valid[activation]) != 0:
-        edge_e = int(ends.perfect_e[activation])
-        edge_eg_e = int(ends.eg_perfect_e[activation])
-    activation_e = -1
-    activation_eg_e = 0
-    if int(ends.late_valid[activation]) != 0:
-        activation_e = int(ends.late_e[activation])
-        activation_eg_e = int(ends.eg_late_e[activation])
-    if not late_edge_extends(edge_e, activation_e, activation_eg_e, edge_eg_e):
-        return 0
-    # The activation can also end its fever early: every end in [late_exit_e, activation_e] is a state.
-    for end_e in range(min(int(ends.late_exit_e[activation]), activation_e), activation_e + 1):
-        reachable[end_e] = True
-    return mark_early_great_reachable_from_hit(
-        reachable,
-        n,
-        activation,
-        activation_e,
-        float(ends.late_hit[activation]),
-        great_floor_timestamps,
-        real_fever_time,
-    )
+    # The keys by activation.
+    for key in range(key_count):
+        key_starts[keys[key, 0] + 1] += 1
+    for activation in range(n):
+        key_starts[activation + 1] += key_starts[activation]
+    key_rows = np.empty((key_count, 5), dtype=np.int32)
+    next_row = key_starts[:n].copy()
+    for key in range(key_count):
+        row = next_row[keys[key, 0]]
+        next_row[keys[key, 0]] = row + 1
+        for column in range(5):
+            key_rows[row, column] = keys[key, column + 1]
+    return head_starts, head[:head_count].copy(), key_starts, key_rows
 
 
 @njit(cache=True, nogil=True)
-def reachability_prepass(
-    n: int, action_count: int, plan, runs, ends, fever, region_floor, successors
-):
-    """Build the exact reachable-state closure with interval successor traversal.
+def reachability_prepass(n: int, first_activations, runs, ends, forced_timing: int, region):
+    """The states a play can reach at one fever time, as a mask over the fever ends 0 .. n (n is always reached), and
+    the largest early-Great width of an activation that reaches one.
 
-    The former nested scan probed every action for every reachable state even after an absolute
-    activation had already been evaluated. Exact fill runs turn each state's action set into
-    activation intervals; disjoint-set successors skip globally processed activations. Perfect and
-    late-Great closures remain separate because only some action routes permit a late activation.
-    """
-    first_fill, first_activation_forced = plan
+    A fever ends past its activation, so when the notes are taken in ascending order every state before a note is
+    final by the time the note is tried as an activation. Its Perfect activation is live when the first section
+    activates there (`first_activations` bit 1) or a reached state has it at one of its fill offsets (`runs`: the
+    inclusive runs of the later-section offsets); its late-Great activation likewise (bit 2, the late-Great runs);
+    a region run of it is live when a section start it holds at is enumerated: the song start, or the note after a
+    reached state. A live activation marks every end from its exit end to its early-Great reach. Reached states are
+    counted in a prefix sum, so a note costs a few lookups however many states and actions reach it.
+    Returns (reachable, width)."""
     perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends = runs
-    real_fever_time, use_forced_great_timing_i = fever
-    region, great_floor_timestamps = region_floor
-    perfect_successor, perfect_successor_stamps, late_successor, late_successor_stamps, successor_epoch = successors
-    if n < 0 or action_count < 0:
-        raise ValueError("FG reachability dimensions must be nonnegative")
-    if first_fill.shape[0] < action_count:
-        raise ValueError("FG first-fill offsets are shorter than action_count")
-    if first_activation_forced.shape[0] < action_count:
-        raise ValueError("FG first activation-forced rows are shorter than action_count")
-    if perfect_run_starts.shape[0] != perfect_run_ends.shape[0]:
-        raise ValueError("FG Perfect fill-run arrays must align")
-    if late_run_starts.shape[0] != late_run_ends.shape[0]:
-        raise ValueError("FG late-Great fill-run arrays must align")
-    previous_end = -2
-    for run_idx in range(perfect_run_starts.shape[0]):
-        run_start = int(perfect_run_starts[run_idx])
-        run_end = int(perfect_run_ends[run_idx])
-        if run_start < 0 or run_end < run_start or run_start <= previous_end:
-            raise ValueError("FG Perfect fill runs must be nonnegative, ordered, and disjoint")
-        previous_end = run_end
-    previous_end = -2
-    for run_idx in range(late_run_starts.shape[0]):
-        run_start = int(late_run_starts[run_idx])
-        run_end = int(late_run_ends[run_idx])
-        if run_start < 0 or run_end < run_start or run_start <= previous_end:
-            raise ValueError("FG late-Great fill runs must be nonnegative, ordered, and disjoint")
-        previous_end = run_end
-    if successor_epoch < 1:
-        raise ValueError("FG successor epoch must be positive")
-    if (
-        perfect_successor.shape[0] < n + 1
-        or perfect_successor_stamps.shape[0] < n + 1
-        or late_successor.shape[0] < n + 1
-        or late_successor_stamps.shape[0] < n + 1
-    ):
-        raise ValueError("FG successor workspace is shorter than n + 1")
+    for run in range(perfect_run_starts.shape[0]):
+        if perfect_run_starts[run] < 0:
+            raise ValueError("FG Perfect fill runs must be nonnegative")
+    for run in range(late_run_starts.shape[0]):
+        if late_run_starts[run] < 0:
+            raise ValueError("FG late-Great fill runs must be nonnegative")
+    perfect_valid, late_valid = ends.perfect_valid, ends.late_valid
+    perfect_e, late_e = ends.perfect_e, ends.late_e
+    eg_perfect_e, eg_late_e = ends.eg_perfect_e, ends.eg_late_e
+    perfect_exit_e, late_exit_e = ends.perfect_exit_e, ends.late_exit_e
+    key_starts, key_rows = region.key_starts, region.key_rows
+    perfect_end_by_hit, great_end_by_hit = region.perfect_end_by_hit, region.great_end_by_hit
 
     reachable = np.zeros(n + 1, dtype=np.bool_)
     reachable[n] = True
-
-    # First-section actions retain their original producer order. Removing an activation from its
-    # successor set is exactly the former processed-bit write, with the same Perfect/late split.
-    max_eg_width = 0
-    for action_idx in range(action_count):
-        fill = int(first_fill[action_idx])
-        if fill < 0:
-            raise ValueError("FG first-fill offsets must be nonnegative")
-        if fill >= n:
+    reached = np.zeros(n + 2, dtype=np.int64)
+    width = 0
+    for activation in range(n):
+        reached[activation + 1] = reached[activation] + reachable[activation]
+        live = first_activations[activation] & 1
+        for run in range(perfect_run_starts.shape[0]):
+            if live != 0:
+                break
+            newest = activation - perfect_run_starts[run]
+            if newest >= 0 and reached[newest + 1] > reached[max(0, activation - perfect_run_ends[run])]:
+                live = 1
+        if live != 0 and perfect_valid[activation] != 0:
+            edge_e, eg_e = perfect_e[activation], eg_perfect_e[activation]
+            for end in range(min(perfect_exit_e[activation], edge_e), max(edge_e, eg_e) + 1):
+                reachable[end] = True
+            width = max(width, eg_e - edge_e)
+        if forced_timing == 0:
             continue
-        if int(successor_find(perfect_successor, perfect_successor_stamps, successor_epoch, fill)) == fill:
-            width = _mark_perfect_activation(
-                reachable, n, fill, ends, great_floor_timestamps, real_fever_time
-            )
-            successor_remove(perfect_successor, perfect_successor_stamps, successor_epoch, fill)
-            if int(width) > int(max_eg_width):
-                max_eg_width = int(width)
-        if (
-            use_forced_great_timing_i != 0
-            and int(first_activation_forced[action_idx]) >= 0
-            and int(successor_find(late_successor, late_successor_stamps, successor_epoch, fill)) == fill
-        ):
-            width = _mark_late_activation(
-                reachable, n, fill, ends, great_floor_timestamps, real_fever_time
-            )
-            successor_remove(late_successor, late_successor_stamps, successor_epoch, fill)
-            if int(width) > int(max_eg_width):
-                max_eg_width = int(width)
-
-    if use_forced_great_timing_i != 0:
-        max_eg_width = max(
-            int(max_eg_width),
-            _mark_region_entries(reachable, n, 0, region, ends.perfect_exit_e, ends.late_exit_e),
-        )
-
-    for state_i in range(n):
-        if not reachable[state_i]:
-            continue
-
-        for run_idx in range(perfect_run_starts.shape[0]):
-            interval_start = state_i + int(perfect_run_starts[run_idx])
-            if interval_start >= n:
+        live = first_activations[activation] & 2
+        for run in range(late_run_starts.shape[0]):
+            if live != 0:
+                break
+            newest = activation - late_run_starts[run]
+            if newest >= 0 and reached[newest + 1] > reached[max(0, activation - late_run_ends[run])]:
+                live = 1
+        if live != 0 and late_valid[activation] != 0:
+            edge_e, eg_e = late_e[activation], eg_late_e[activation]
+            if perfect_valid[activation] == 0 or late_edge_extends(
+                perfect_e[activation], edge_e, eg_e, eg_perfect_e[activation]
+            ):
+                for end in range(min(late_exit_e[activation], edge_e), max(edge_e, eg_e) + 1):
+                    reachable[end] = True
+                width = max(width, eg_e - edge_e)
+        for key in range(key_starts[activation], key_starts[activation + 1]):
+            first_section = key_rows[key, _KEY_FIRST_SECTION]
+            if first_section > 0 and reached[key_rows[key, _KEY_LAST_SECTION]] == reached[first_section - 1]:
                 continue
-            interval_end = min(n - 1, state_i + int(perfect_run_ends[run_idx]))
-            activation = successor_find(
-                perfect_successor, perfect_successor_stamps, successor_epoch, interval_start
+            late_hit = key_rows[key, _ROW_LATE_HIT]
+            edge_e, eg_e = region_edge(
+                n, activation, late_hit, key_rows[key, _ROW_PERFECT_HIT], perfect_end_by_hit, great_end_by_hit
             )
-            while int(activation) <= interval_end:
-                width = _mark_perfect_activation(
-                    reachable, n, int(activation), ends, great_floor_timestamps, real_fever_time
-                )
-                activation = successor_remove(
-                    perfect_successor, perfect_successor_stamps, successor_epoch, int(activation)
-                )
-                if int(width) > int(max_eg_width):
-                    max_eg_width = int(width)
-
-        if use_forced_great_timing_i != 0:
-            for run_idx in range(late_run_starts.shape[0]):
-                interval_start = state_i + int(late_run_starts[run_idx])
-                if interval_start >= n:
-                    continue
-                interval_end = min(n - 1, state_i + int(late_run_ends[run_idx]))
-                activation = successor_find(
-                    late_successor, late_successor_stamps, successor_epoch, interval_start
-                )
-                while int(activation) <= interval_end:
-                    width = _mark_late_activation(
-                        reachable, n, int(activation), ends, great_floor_timestamps, real_fever_time
-                    )
-                    activation = successor_remove(
-                        late_successor, late_successor_stamps, successor_epoch, int(activation)
-                    )
-                    if int(width) > int(max_eg_width):
-                        max_eg_width = int(width)
-
-            max_eg_width = max(
-                int(max_eg_width),
-                _mark_region_entries(
-                    reachable, n, state_i + 1, region, ends.perfect_exit_e, ends.late_exit_e
-                ),
-            )
-    return reachable, int(max_eg_width)
+            if edge_e < 0:
+                continue
+            exit_e = perfect_exit_e[activation] if late_hit < 0 else late_exit_e[activation]
+            for end in range(min(exit_e, edge_e), eg_e + 1):
+                reachable[end] = True
+            width = max(width, eg_e - edge_e)
+    return reachable, width
 
 
 @njit(cache=True, nogil=True)
@@ -1687,8 +1605,8 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
 
     An activation's ends are its base end, every earlier end from its exit end (the fever can end early) and every
     later end up to its early-Great reach (the notes from the base end on join the fever as Greats). A region-2
-    activation takes its run from the region table's row for the family's first offset; a run with no row there has no
-    valid core.
+    activation takes its run from the region table: the late-Great run of the activation at the section start its
+    family's first offset puts it at. Where the table holds none, the run has no valid core.
 
     The per-activation and per-row loops are written out in this function: a helper that takes arrays costs the
     kernel several times its own work on every call.
@@ -1700,10 +1618,8 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
     perfect_e, late_e = ends.perfect_e, ends.late_e
     eg_perfect_e, eg_late_e = ends.eg_perfect_e, ends.eg_late_e
     perfect_exit_e, late_exit_e = ends.perfect_exit_e, ends.late_exit_e
-    region_starts, region_offsets = region.region_starts, region.region_offsets
-    region_activations, region_great_ends = region.region_activations, region.region_great_ends
-    region_act_hit_ids, region_perfect_hit_ids = region.region_act_hit_ids, region.region_perfect_hit_ids
-    perfect_end_by_hit, great_end_by_hit = region.region_perfect_end_by_hit, region.region_great_end_by_hit
+    key_starts, key_rows = region.key_starts, region.key_rows
+    perfect_end_by_hit, great_end_by_hit = region.perfect_end_by_hit, region.great_end_by_hit
 
     body_values = np.empty((1024, 3), dtype=np.uint64)
     body_values[0, 0] = 0
@@ -1745,24 +1661,24 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
                     k = 2 * first_offset + defect + 1
                     run_start = activation - k + 1
                     section_start = activation - first_offset + 1
-                    row = -1
-                    for candidate in range(region_starts[section_start], region_starts[section_start + 1]):
+                    key = -1
+                    for candidate in range(key_starts[activation], key_starts[activation + 1]):
                         if (
-                            region_activations[candidate] == activation
-                            and region_offsets[candidate] == first_offset - k
-                            and region_act_hit_ids[candidate] >= 0
+                            key_rows[candidate, _ROW_LATE_HIT] >= 0
+                            and key_rows[candidate, _KEY_FIRST_SECTION] <= section_start
+                            and section_start <= key_rows[candidate, _KEY_LAST_SECTION]
                         ):
-                            row = candidate
+                            key = candidate
                             break
-                    if row < 0:
+                    if key < 0:
                         continue
                     edge_e, eg_e = region_edge(
-                        n, activation, region_act_hit_ids[row], region_perfect_hit_ids[row], perfect_end_by_hit,
+                        n, activation, key_rows[key, _ROW_LATE_HIT], key_rows[key, _ROW_PERFECT_HIT], perfect_end_by_hit,
                         great_end_by_hit,
                     )
                     if edge_e < 0:
                         continue
-                    great_end = region_great_ends[row]
+                    great_end = key_rows[key, _ROW_GREAT_END]
                     lo_e = min(late_exit_e[activation], edge_e)
                 elif perfect_valid[activation] == 0:
                     continue
@@ -1976,29 +1892,28 @@ def _section_entries(
 
 @njit(cache=True, nogil=True)
 def _region2_entries(entries, count: int, n: int, section_start: int, region, perfect_exit_e, late_exit_e):
-    """The region-run activation sections of one section start (a forced-Great run moves the activation): the region
-    core table's rows for `section_start`, each finished for this fever time (its ends and early-Great reach)."""
-    region_starts, region_offsets = region.region_starts, region.region_offsets
-    region_activations, region_great_ends = region.region_activations, region.region_great_ends
-    region_act_hit_ids, region_perfect_hit_ids = region.region_act_hit_ids, region.region_perfect_hit_ids
-    entries = _rows_ensure(entries, count, region_starts[section_start + 1] - region_starts[section_start])
-    for row in range(region_starts[section_start], region_starts[section_start + 1]):
-        activation = int(region_activations[row])
-        late_hit_id = int(region_act_hit_ids[row])
+    """The region-run activation sections of one head section start (a forced-Great run moves the activation): the
+    region table's head rows for `section_start`, each finished for this fever time (its ends and early-Great
+    reach)."""
+    head_starts, head_rows = region.head_starts, region.head_rows
+    entries = _rows_ensure(entries, count, head_starts[section_start + 1] - head_starts[section_start])
+    for row in range(head_starts[section_start], head_starts[section_start + 1]):
+        activation = int(head_rows[row, _HEAD_ACTIVATION])
+        late_hit = int(head_rows[row, _ROW_LATE_HIT])
         edge_e, eg_e = region_edge(
-            n, activation, late_hit_id, int(region_perfect_hit_ids[row]), region.region_perfect_end_by_hit,
-            region.region_great_end_by_hit,
+            n, activation, late_hit, int(head_rows[row, _ROW_PERFECT_HIT]), region.perfect_end_by_hit,
+            region.great_end_by_hit,
         )
         if edge_e < 0:
             continue
-        exit_e = perfect_exit_e if late_hit_id < 0 else late_exit_e
+        exit_e = perfect_exit_e if late_hit < 0 else late_exit_e
         count = _add_entry(
             entries,
             count,
             activation,
             (edge_e, int(exit_e[activation]), eg_e),
-            (section_start + int(region_offsets[row]), int(region_great_ends[row])),
-            activation if late_hit_id >= 0 else -1,
+            (section_start + int(head_rows[row, _HEAD_OFFSET]), int(head_rows[row, _ROW_GREAT_END])),
+            activation if late_hit >= 0 else -1,
         )
     return entries, count
 
@@ -2378,39 +2293,18 @@ def _points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_sta
 
 
 @njit(cache=True, nogil=True)
-def _frontier_of_fever_time(sizes, actions, runs, families, ends, fever, region, workspace):
+def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: int, region, workspace):
     """One fever time's frontier: its reachable states (reachability_prepass), the body states' tail frontiers
     (_body_tails), then the head states from 99 down and last the first section from the song start, each from its
-    activation sections (_state_points, _points_frontier).
+    activation sections (_state_points, _points_frontier). group = what the group's fever times share: (the packet
+    families, the first section's activations).
     Returns (frontier rows, states evaluated, surfaces generated, surfaces retained, the largest state frontier, the
     pair epoch, the bit epoch)."""
     n, action_count = sizes
     later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = actions
-    real_fever_time, forced_timing, great_floor_timestamps = fever
-    (
-        pair_values,
-        pair_stamps,
-        pair_touched,
-        bit_values,
-        bit_stamps,
-        perfect_successor,
-        perfect_successor_stamps,
-        late_successor,
-        late_successor_stamps,
-        successor_epoch,
-        pair_epoch,
-        bit_epoch,
-    ) = workspace
-    reachable, max_eg_width = reachability_prepass(
-        n,
-        action_count,
-        (first_fill, first_activation_forced),
-        runs,
-        ends,
-        (real_fever_time, forced_timing),
-        (region, great_floor_timestamps),
-        (perfect_successor, perfect_successor_stamps, late_successor, late_successor_stamps, successor_epoch),
-    )
+    families, first_activations = group
+    pair_values, pair_stamps, pair_touched, bit_values, bit_stamps, pair_epoch, bit_epoch = workspace
+    reachable, max_eg_width = reachability_prepass(n, first_activations, runs, ends, forced_timing, region)
     # The pair radix: a pair packs (normal Greats, fever Greats) as normal Greats x pair_mod + fever Greats, injective
     # while fever Greats < pair_mod. A play's body fever Greats are at most one boundary Great and max_eg_width early
     # Greats per section, over at most section_bound sections, and never more than n.
@@ -2541,40 +2435,36 @@ def _frontier_of_fever_time(sizes, actions, runs, families, ends, fever, region,
 
 
 @njit(cache=True, nogil=True)
-def frontiers_of_fever_times(sizes, actions, runs, chart, hits, fever, regions, workspace):
+def frontiers_of_fever_times(sizes, actions, runs, ends, fever, regions, workspace):
     """The frontier of each fever time of one (fill, non-Fever base) group, with no call back into Python between them.
     sizes: (notes, action rows, actions); actions: the action table's seven arrays; runs: the fill runs of its later
-    offsets, then of those a late Great can activate at; chart: the song's per-note arrays; hits: each activation's
-    latest Perfect and late-Great hit with their validity, then the six fever-end tables per fever-time row; fever:
-    (raw fill, fever times, their rows, forced-Great timing); regions: the region table's eight arrays, then each hit
-    token's end on the Perfect and the Great floor per fever-time row; workspace: a thread's nine stamp arrays, then
-    its first successor epoch (one per fever time) and its pair and bit epochs.
+    offsets, then of those a late Great can activate at; ends: each note's Perfect and late-Great activation validity,
+    then the six fever-end tables per fever-time row (ActivationEnds); fever: (raw fill, the fever times' rows,
+    forced-Great timing); regions: the group's region table (region_core_table), then each hit token's end on the
+    Perfect and the Great floor per fever-time row; workspace: a thread's five stamp arrays, then its pair and bit
+    epochs.
     Returns the frontiers' rows, each one's first row (with the end), per fever time (states, generated surfaces,
     retained surfaces, largest state frontier), and the pair and bit epochs."""
     n, action_count, _region_action_count = sizes
     action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
         actions
     )
-    (
-        perfect_hit,
-        perfect_valid,
-        late_hit,
-        late_valid,
-        perfect_e,
-        late_e,
-        eg_perfect_e,
-        eg_late_e,
-        perfect_exit_e,
-        late_exit_e,
-    ) = hits
-    raw_fever_fill, real_fever_times, fever_rows, forced_timing = fever
-    r0, r1, r2, r3, r4, r5, r6, r7, perfect_ends, great_ends = regions
-    w0, w1, w2, w3, w4, w5, w6, w7, w8, successor_epoch, pair_epoch, bit_epoch = workspace
-    great_floor_timestamps = chart[4]
+    perfect_valid, late_valid, perfect_e, late_e, eg_perfect_e, eg_late_e, perfect_exit_e, late_exit_e = ends
+    raw_fever_fill, fever_rows, forced_timing = fever
+    head_starts, head_rows, key_starts, key_rows, perfect_ends, great_ends = regions
+    w0, w1, w2, w3, w4, pair_epoch, bit_epoch = workspace
     families = packet_families(
         sizes, raw_fever_fill, (action_k, later_fill, later_forced, later_activation_forced), forced_timing
     )
-    count = real_fever_times.shape[0]
+    # The first section's activations: bit 1 where a Perfect activates, bit 2 where a late Great may.
+    first_activations = np.zeros(n, dtype=np.int8)
+    for action in range(action_count):
+        fill = first_fill[action]
+        if fill < 0:
+            raise ValueError("FG first-fill offsets must be nonnegative")
+        if fill < n:
+            first_activations[fill] |= 1 if first_activation_forced[action] < 0 else 3
+    count = fever_rows.shape[0]
     offsets = np.zeros(count + 1, dtype=np.int64)
     stats = np.empty((count, 4), dtype=np.int64)
     frontiers = []
@@ -2584,11 +2474,9 @@ def frontiers_of_fever_times(sizes, actions, runs, chart, hits, fever, regions, 
             (n, action_count),
             (later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced),
             runs,
-            families,
+            (families, first_activations),
             ActivationEnds(
-                perfect_hit,
                 perfect_valid,
-                late_hit,
                 late_valid,
                 perfect_e[row],
                 late_e[row],
@@ -2597,9 +2485,9 @@ def frontiers_of_fever_times(sizes, actions, runs, chart, hits, fever, regions, 
                 perfect_exit_e[row],
                 late_exit_e[row],
             ),
-            (real_fever_times[index], forced_timing, great_floor_timestamps),
-            RegionTables(r0, r1, r2, r3, r4, r5, r6, r7, perfect_ends[row], great_ends[row]),
-            (w0, w1, w2, w3, w4, w5, w6, w7, w8, successor_epoch + index, pair_epoch, bit_epoch),
+            forced_timing,
+            RegionTables(head_starts, head_rows, key_starts, key_rows, perfect_ends[row], great_ends[row]),
+            (w0, w1, w2, w3, w4, pair_epoch, bit_epoch),
         )
         frontiers.append(frontier)
         offsets[index + 1] = offsets[index] + frontier.shape[0]

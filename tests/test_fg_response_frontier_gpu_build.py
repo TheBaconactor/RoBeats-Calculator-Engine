@@ -386,9 +386,7 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
             brute_capacity += int(region >= 1)
             brute_capacity += int(shifted >= 1 and shifted != region)
     assert capacity == brute_capacity
-    table = producer_kernels.region_core_table(
-        12,
-        4,
+    head_starts, head_rows, key_starts, key_rows = producer_kernels.region_core_table(
         action_k,
         4.0,
         timestamps,
@@ -399,22 +397,16 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
         np.arange(12, dtype=np.int32),
     )
 
-    starts, *columns = table
-    retained = int(starts[-1])
-    assert retained > 0
-    assert retained <= capacity < (13 * 4 * 2)
-    assert np.all(starts[1:] >= starts[:-1])
-    assert all(column.shape == (retained,) for column in columns)
-    assert all(column.flags.c_contiguous for column in columns)
-    assert [column.dtype for column in columns] == [
-        np.dtype(np.int32),
-        np.dtype(np.int32),
-        np.dtype(np.int32),
-        np.dtype(np.int32),
-        np.dtype(np.int32),
-        np.dtype(np.int32),
-        np.dtype(np.int32),
-    ]
+    # Every candidate gives at most one head row and opens at most one key row.
+    assert capacity < (13 * 4 * 2)
+    assert 0 < int(head_starts[-1]) == head_rows.shape[0] <= capacity
+    assert 0 < int(key_starts[-1]) == key_rows.shape[0] <= capacity
+    assert head_starts.shape == (12 + 2,) and key_starts.shape == (12 + 1,)
+    for starts, rows in ((head_starts, head_rows), (key_starts, key_rows)):
+        assert np.all(starts[1:] >= starts[:-1])
+        assert rows.shape[1] == 5 and rows.dtype == np.int32 and rows.flags.c_contiguous
+    # No fever ends before note ceil(fill) = 4: the section starts 1 .. 4 hold no head row.
+    assert int(head_starts[1]) == int(head_starts[5]) > 0
 
 
 def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
@@ -456,15 +448,32 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
         action_k,
         4.0,
     )
-    expected = (n + 2) * np.dtype(np.int64).itemsize + 2 * int(capacity) * 28
     table = compact_action_table(4.0, 3, True)
     assert table.action_k.tolist() == action_k.tolist()
-    assert producer_scheduler._table_bounds(n, table) == (
-        expected, (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 28
+    # 13 head section starts, two start arrays, five int32 a row; a key row per candidate and a head row per
+    # candidate of a head section start.
+    starts = (13 + n + 2) * 8
+    working = 25 * 4 + 12 * 13 * 4 + 36 * n + 6656
+    rows = int(capacity) + min(int(capacity), 2 * 13 * 4)
+    build_bound, table_bound = producer_scheduler._table_bounds(n, table)
+    assert (build_bound, table_bound) == (starts + working + 5 * rows * 20, starts + rows * 20)
+    exhaustive = (n + 1) * 4 * 2
+    budget = producer_scheduler._single_table_byte_budget(n, [[Geometry(0, table, 0)]])
+    assert budget == starts + working + 5 * (exhaustive + min(exhaustive, 2 * 13 * 4)) * 20
+    # A built table fits its bound, and the budget admits its build.
+    timestamps = np.arange(n, dtype=np.float32) * np.float32(0.1)
+    built = producer_kernels.region_core_table(
+        table.action_k,
+        4.0,
+        timestamps,
+        producer_kernels.HitTimes(
+            timestamps - np.float32(0.04), timestamps + np.float32(0.04), timestamps - np.float32(0.09),
+            timestamps + np.float32(0.09), timestamps + np.float32(0.041),
+        ),
+        np.arange(n, dtype=np.int32),
     )
-    assert producer_scheduler._single_table_byte_budget(n, [[Geometry(0, table, 0)]]) == (
-        (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 28
-    )
+    assert built[1].shape[0] + built[3].shape[0] > 0
+    assert producer_scheduler._table_bytes(built) <= table_bound <= build_bound <= budget
 
 
 def test_fg_response_frontier_build_runs_admitted_groups_concurrently(monkeypatch) -> None:
@@ -493,13 +502,9 @@ def test_fg_response_frontier_build_runs_admitted_groups_concurrently(monkeypatc
 
     empty_table = (
         np.zeros(5, dtype=np.int64),
-        np.empty(0, dtype=np.int32),
-        np.empty(0, dtype=np.int32),
-        np.empty(0, dtype=np.int32),
-        np.empty(0, dtype=np.int32),
-        np.empty(0, dtype=np.float64),
-        np.empty(0, dtype=np.float64),
-        np.empty(0, dtype=np.int32),
+        np.empty((0, 5), dtype=np.int32),
+        np.zeros(4, dtype=np.int64),
+        np.empty((0, 5), dtype=np.int32),
     )
 
     def _fake_build(*_args):
@@ -704,12 +709,10 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
     family_defect, family_start, family_end = families[:, 1], families[:, 2], families[:, 3]
     family_count = len(families)
     assert any(int(family_end[idx]) > int(family_start[idx]) for idx in range(int(family_count)))
-    starts, offsets, activations, table_great_ends, _is_greats, late_hit_ids, perfect_hit_ids, _perfect_valids = (
-        rb.region_core_table(
-            n, int(action_k.shape[0]), action_k, float(raw_fever_fill), timestamps,
-            rb.HitTimes(perfect_floor, perfect_candidates, great_floor, great_candidates, perfect_candidates + np.float32(0.001)),
-            lanes,
-        )
+    _head_starts, _head_rows, key_starts, key_rows = rb.region_core_table(
+        action_k, float(raw_fever_fill), timestamps,
+        rb.HitTimes(perfect_floor, perfect_candidates, great_floor, great_candidates, perfect_candidates + np.float32(0.001)),
+        lanes,
     )
 
     capped = (perfect_candidates.astype(np.float64) - 0.000001, great_candidates.astype(np.float64) - 0.000001)
@@ -732,17 +735,15 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                 state_i = int(activation) - int(activation_offset)
                 section_start = int(state_i) + 1
                 assert region_offset >= 1
-                # The run's row in the region table: a late Great activates at `activation`.
+                # The activation's late-Great run in the region table, at this section start.
                 rows = [
-                    row for row in range(int(starts[section_start]), int(starts[section_start + 1]))
-                    if int(offsets[row]) == region_offset and int(activations[row]) == activation
+                    row for row in key_rows[int(key_starts[activation]) : int(key_starts[activation + 1])]
+                    if int(row[0]) <= section_start <= int(row[1]) and int(row[3]) >= 0
                 ]
-                assert len(rows) == 1 and int(late_hit_ids[rows[0]]) >= 0
-                edge_e, _eg_e = rb.region_edge(
-                    n, activation, int(late_hit_ids[rows[0]]), int(perfect_hit_ids[rows[0]]), perfect_ends, great_ends
-                )
+                assert len(rows) == 1
+                edge_e, _eg_e = rb.region_edge(n, activation, int(rows[0][3]), int(rows[0][4]), perfect_ends, great_ends)
                 assert int(edge_e) > activation
-                activation_i, run_start, great_end = activation, section_start + region_offset, int(table_great_ends[rows[0]])
+                activation_i, run_start, great_end = activation, section_start + region_offset, int(rows[0][2])
                 edge = rb.pack_edge(
                     int(timestamps.shape[0]),
                     int(activation_i),
@@ -975,7 +976,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
 
 
 def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
-    from gear_optimizer.frontier.producer_kernels import lower_bound as _lower_bound_from
+    from gear_optimizer.trace.section_kernels import lower_bound as _lower_bound_from
     from gear_optimizer.trace.reconstruct import _centered_hit_window_for_exit
 
     timestamps = np.asarray(
@@ -1493,33 +1494,7 @@ def test_fg_response_exact_fill_runs_preserve_arbitrary_membership(
     assert starts.dtype == ends.dtype == np.int32
 
 
-def test_fg_response_interval_successor_skips_removed_indices() -> None:
-    from gear_optimizer.frontier.producer_kernels import (
-        HitTimes,
-        successor_find,
-        successor_remove,
-    )
-
-    successor = np.empty(9, dtype=np.int32)
-    stamps = np.zeros(9, dtype=np.int32)
-    epoch = 1
-    assert successor_remove(successor, stamps, epoch, 2) == 3
-    assert successor_remove(successor, stamps, epoch, 5) == 6
-    assert successor_remove(successor, stamps, epoch, 3) == 4
-    assert successor_remove(successor, stamps, epoch, 4) == 6
-    assert successor_find(successor, stamps, epoch, 2) == 6
-    assert successor_find(successor, stamps, epoch, 5) == 6
-    assert successor_find(successor, stamps, epoch, 6) == 6
-
-    # A new epoch makes every old removal logically live without clearing either scratch array.
-    next_epoch = 2
-    assert successor_find(successor, stamps, next_epoch, 2) == 2
-    assert successor_find(successor, stamps, next_epoch, 5) == 5
-    assert successor_remove(successor, stamps, next_epoch, 2) == 3
-    assert successor_find(successor, stamps, next_epoch, 2) == 3
-
-
-def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() -> None:
+def test_fg_response_prepass_by_activation_matches_retired_nested_scan() -> None:
     from gear_optimizer.frontier.producer_kernels import (
         ActivationEnds,
         HitTimes,
@@ -1575,6 +1550,18 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
     region_starts = np.zeros(n + 2, dtype=np.int64)
     empty_i32 = np.empty(0, dtype=np.int32)
     empty_f64 = np.empty(0, dtype=np.float64)
+    no_rows = np.empty((0, 5), dtype=np.int32)
+
+    def activation_ends(row: int) -> ActivationEnds:
+        return ActivationEnds(
+            prefix_perfect_valid, prefix_late_valid, capped_perfect_edge_e[row], capped_late_edge_e[row],
+            capped_eg_perfect_e[row], capped_eg_late_e[row], capped_perfect_exit_e[row], capped_late_exit_e[row],
+        )
+
+    # No region run: these cases price the plain activations of arbitrary action tables.
+    no_region_runs = RegionTables(
+        np.zeros(n + 2, dtype=np.int64), no_rows, np.zeros(n + 1, dtype=np.int64), no_rows, empty_i32, empty_i32
+    )
 
     for case_idx in range(80):
         action_count = int(rng.integers(0, 25))
@@ -1616,56 +1603,121 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
             "great_floor_timestamps": great_floor,
         }
         expected_reachable, expected_width = retired_nested_action_reachability_prepass(**common)
-        perfect_run_starts, perfect_run_ends = fill_runs(later_fill)
-        late_run_starts, late_run_ends = fill_runs(later_fill[later_activation_forced >= 0])
-        perfect_successor = np.empty(n + 1, dtype=np.int32)
-        perfect_successor_stamps = np.zeros(n + 1, dtype=np.int32)
-        late_successor = np.empty(n + 1, dtype=np.int32)
-        late_successor_stamps = np.zeros(n + 1, dtype=np.int32)
-        actual_reachable, actual_width = reachability_prepass(int(common["n"]), int(common["action_count"]), (common["first_fill"], common["first_activation_forced"]), (perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends), ActivationEnds(
-                common["prefix_perfect_hit"],
-                common["prefix_perfect_valid"],
-                common["prefix_late_hit"],
-                common["prefix_late_valid"],
-                *(table[int(real_time_idx)] for table in (
-                    capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e,
-                    capped_perfect_exit_e, capped_late_exit_e,
-                )),
-            ), (float(common["real_fever_time"]), int(common["use_forced_great_timing_i"])), (RegionTables(
-                common["region_starts"], common["region_offsets"], common["region_activations"],
-                common["region_great_ends"], common["region_is_greats"], empty_i32, empty_i32,
-                common["region_perfect_valids"], perfect_floor, great_floor,
-            ), common["great_floor_timestamps"]), (perfect_successor, perfect_successor_stamps, late_successor, late_successor_stamps, 1))
+        runs = (*fill_runs(later_fill), *fill_runs(later_fill[later_activation_forced >= 0]))
+        # The first section's activations, as the range kernel hands them over: bit 1 a Perfect, bit 2 a late Great.
+        first_activations = np.zeros(n, dtype=np.int8)
+        for fill, forced in zip(first_fill.tolist(), first_activation_forced.tolist()):
+            if fill < n:
+                first_activations[fill] |= 1 if forced < 0 else 3
+        actual_reachable, actual_width = reachability_prepass(
+            n, first_activations, runs, activation_ends(real_time_idx), use_forced, no_region_runs
+        )
         assert np.array_equal(actual_reachable, expected_reachable), case_idx
         assert int(actual_width) == int(expected_width), case_idx
 
-    # A negative fill offset fails loud in the kernel that walks the runs.
+    # A negative fill offset fails loud in the kernel that reads the runs.
     with pytest.raises(ValueError, match="must be nonnegative"):
         reachability_prepass(
             n,
-            0,
-            (empty_i32, empty_i32),
+            np.zeros(n, dtype=np.int8),
             (*fill_runs(np.asarray([2, -1], dtype=np.int32)), empty_i32, empty_i32),
-            ActivationEnds(
-                prefix_perfect_hit,
-                prefix_perfect_valid,
-                prefix_late_hit,
-                prefix_late_valid,
-                *(table[0] for table in (
-                    capped_perfect_edge_e, capped_late_edge_e, capped_eg_perfect_e, capped_eg_late_e,
-                    capped_perfect_exit_e, capped_late_exit_e,
-                )),
-            ),
-            (1.0, 0),
-            (RegionTables(region_starts, *(empty_i32 for _ in range(7)), perfect_floor, great_floor), great_floor),
-            (
-                np.empty(n + 1, dtype=np.int32),
-                np.zeros(n + 1, dtype=np.int32),
-                np.empty(n + 1, dtype=np.int32),
-                np.zeros(n + 1, dtype=np.int32),
-                1,
-            ),
+            activation_ends(0),
+            0,
+            no_region_runs,
         )
+
+
+def test_fg_response_prepass_reads_region_runs_by_activation() -> None:
+    """The prepass finds a region run by its activation, in the table's key rows. The retired scan walks the rows of
+    every enumerated section start of the table as it was laid out before, built run by run: both must reach the
+    same states with the same early-Great width, for production action tables (whose activations need ceil(fill)
+    notes, the reason the table holds no run at the section starts no fever can end before)."""
+    from gear_optimizer.frontier.producer_kernels import (
+        ActivationEnds,
+        HitTimes,
+        RegionTables,
+        activation_hit_tables,
+        reachability_prepass,
+        region_core_table,
+    )
+    from gear_optimizer.frontier.producer_batch import compact_action_table, song_arrays
+    from gear_optimizer.frontier.producer_precompute import fever_ends
+    from gear_optimizer.frontier.producer_reducer import fill_runs
+    from tests.retired_fg_frontier_semantics import retired_nested_action_reachability_prepass, retired_region_rows
+
+    rng = np.random.default_rng(20261111)
+    n = 150
+    # Dense stretches and chords, so capped hits, early Greats and lane swaps all occur.
+    gaps = rng.choice(np.asarray([0.0, 0.03, 0.07, 0.12, 0.21]), size=n, p=[0.1, 0.25, 0.3, 0.25, 0.1])
+    timestamps = np.cumsum(gaps).astype(np.float32)
+    perfect_candidates = (timestamps.astype(np.float64) + rng.uniform(0.035, 0.045, size=n)).astype(np.float32)
+    great_candidates = (timestamps.astype(np.float64) + rng.uniform(0.18, 0.19, size=n)).astype(np.float32)
+    perfect_floor = np.maximum.accumulate((timestamps.astype(np.float64) - 0.019).astype(np.float32))
+    great_floor = np.maximum.accumulate((timestamps.astype(np.float64) - 0.095).astype(np.float32))
+    lanes = rng.integers(0, 4, size=n, dtype=np.int32)
+    song = song_arrays(timestamps, perfect_candidates, great_candidates, perfect_floor, great_floor, None, None, lanes)
+    hit_times = HitTimes(perfect_floor, perfect_candidates, great_floor, great_candidates, song.late_great_floor)
+    perfect_hit, perfect_valid, late_hit, late_valid = activation_hit_tables(
+        n, timestamps, perfect_candidates, great_candidates, song.late_great_floor
+    )
+    real_times = np.asarray([0.35, 0.9, 2.5, 6.0], dtype=np.float64)
+    ends = fever_ends(song, perfect_hit, late_hit, real_times)
+    live_keys = 0
+    for raw_fever_fill, non_fever_base in ((3.0, 6), (4.5, 9), (7.25, 5), (12.0, 20), (30.5, 40)):
+        table = compact_action_table(raw_fever_fill, non_fever_base, True)
+        runs = (*fill_runs(table.later_fill), *fill_runs(table.later_fill[table.later_activation_forced >= 0]))
+        region = region_core_table(table.action_k, raw_fever_fill, timestamps, hit_times, lanes)
+        retired_rows = retired_region_rows(
+            action_k=table.action_k, raw_fever_fill=raw_fever_fill, timestamps=timestamps, hit_times=hit_times, lanes=lanes
+        )
+        first_activations = np.zeros(n, dtype=np.int8)
+        for fill, forced in zip(table.first_fill.tolist(), table.first_activation_forced.tolist()):
+            if fill < n:
+                first_activations[fill] |= 1 if forced < 0 else 3
+        for row, real_fever_time in enumerate(real_times.tolist()):
+            expected_reachable, expected_width = retired_nested_action_reachability_prepass(
+                n=n,
+                action_count=int(table.later_fill.shape[0]),
+                later_fill=table.later_fill,
+                first_fill=table.first_fill,
+                later_activation_forced=table.later_activation_forced,
+                first_activation_forced=table.first_activation_forced,
+                prefix_perfect_hit=perfect_hit,
+                prefix_perfect_valid=perfect_valid,
+                prefix_late_hit=late_hit,
+                prefix_late_valid=late_valid,
+                capped_perfect_edge_e=ends.perfect_e,
+                capped_late_edge_e=ends.late_e,
+                capped_eg_perfect_e=ends.eg_perfect_e,
+                capped_eg_late_e=ends.eg_late_e,
+                capped_perfect_exit_e=ends.perfect_exit_e,
+                capped_late_exit_e=ends.late_exit_e,
+                real_fever_time=real_fever_time,
+                real_time_idx=row,
+                use_forced_great_timing_i=1,
+                **dict(zip(
+                    ("region_starts", "region_offsets", "region_activations", "region_great_ends", "region_is_greats",
+                     "region_act_hits", "region_perfect_hits", "region_perfect_valids"),
+                    retired_rows,
+                )),
+                perfect_floor_timestamps=perfect_floor,
+                great_floor_timestamps=great_floor,
+            )
+            actual_reachable, actual_width = reachability_prepass(
+                n,
+                first_activations,
+                runs,
+                ActivationEnds(
+                    perfect_valid, late_valid, ends.perfect_e[row], ends.late_e[row], ends.eg_perfect_e[row],
+                    ends.eg_late_e[row], ends.perfect_exit_e[row], ends.late_exit_e[row],
+                ),
+                1,
+                RegionTables(*region, ends.perfect_floor_by_hit[row], ends.great_floor_by_hit[row]),
+            )
+            assert np.array_equal(actual_reachable, expected_reachable), (raw_fever_fill, real_fever_time)
+            assert int(actual_width) == int(expected_width), (raw_fever_fill, real_fever_time)
+        live_keys += int(region[3].shape[0])
+    assert live_keys > 0
 
 
 def test_fg_response_exact_schedule_query_matches_python_witness() -> None:

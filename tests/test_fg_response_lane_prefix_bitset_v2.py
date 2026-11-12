@@ -454,8 +454,6 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
         np.float32(np.max(np.maximum(perfect_candidates, great_candidates) - timestamps) + 1.0e-6)
     )
     table_args = (
-        n,
-        int(action_k.shape[0]),
         action_k,
         raw_fill,
         timestamps,
@@ -523,13 +521,29 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
                 )
                 expected_columns[6].append(int(perfect_valid))
     expected_starts.append(len(expected_columns[0]))
-    assert np.array_equal(actual[0], np.asarray(expected_starts, dtype=np.int64))
-    # The hit columns hold song tokens: each must resolve to its expected hit.
+    # The table holds the same runs: by activation in its key rows, and for the head section starts (all of them on
+    # a chart this short) in the same order in its head rows. Its hit columns hold song tokens: each must resolve to
+    # its expected hit. No fever ends before note ceil(fill) = 7, so the section starts 1 .. 7 are never enumerated:
+    # they hold no head row, and of their runs the key rows keep the late-Great ones, which belong to region-2 runs.
+    from tests.retired_fg_frontier_semantics import region_table_runs
+
     capped = (perfect_candidates.astype(np.float64) - 0.000001, great_candidates.astype(np.float64) - 0.000001)
     tokens = np.concatenate((timestamps, perfect_candidates, great_candidates, *capped))
-    hits = [np.where(column >= 0, tokens[column], -1.0) for column in actual[5:7]]
-    for actual_column, expected_column in zip((*actual[1:5], *hits, actual[7]), expected_columns, strict=True):
-        assert np.array_equal(actual_column, np.asarray(expected_column, dtype=actual_column.dtype))
+    compared = 0
+    for section_start in range(n + 1):
+        expected_rows = [
+            tuple(expected_columns[column][row] for column in (0, 1, 2, 4, 5))
+            for row in range(expected_starts[section_start], expected_starts[section_start + 1])
+        ]
+        head, keys = region_table_runs(actual, tokens, section_start)
+        if 1 <= section_start <= 7:
+            assert head == []
+            assert keys == {row[1:] for row in expected_rows if row[3] >= 0.0}, section_start
+            continue
+        assert head == expected_rows, section_start
+        assert keys == {row[1:] for row in expected_rows}, section_start
+        compared += len(expected_rows)
+    assert compared > 100
 
 
 def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversion() -> None:
@@ -540,9 +554,7 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
     timestamps = np.arange(n, dtype=np.float32)
     action_k = np.arange(8, dtype=np.int32)
     lanes = np.arange(n, dtype=np.int32)
-    table = rb.region_core_table(
-        n,
-        int(action_k.shape[0]),
+    head_starts, head_rows, key_starts, key_rows = rb.region_core_table(
         action_k,
         denom,
         timestamps,
@@ -553,8 +565,9 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
         timestamps + np.float32(0.081)),
         lanes,
     )
-    assert np.array_equal(table[0], np.zeros(n + 2, dtype=np.int64))
-    assert all(column.shape == (0,) for column in table[1:])
+    assert np.array_equal(head_starts, np.zeros(n + 2, dtype=np.int64))
+    assert np.array_equal(key_starts, np.zeros(n + 1, dtype=np.int64))
+    assert head_rows.shape == key_rows.shape == (0, 5)
     assert rb.region_core_candidate_capacity(
         n, int(action_k.shape[0]), action_k, denom
     ) == 0

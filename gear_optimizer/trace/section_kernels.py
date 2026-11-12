@@ -18,7 +18,6 @@ from gear_optimizer.frontier.producer_kernels import (
     fill_crossing_run,
     has_shifted_head_region,
     late_great_activation_hit_for_run,
-    lower_bound,
     mask_hash,
     minimal_reachable_region_great_end,
     pack_edge_eg,
@@ -28,7 +27,7 @@ from gear_optimizer.frontier.producer_kernels import (
 
 # Numba's disk cache watches only this file, and the kernels here carry compiled copies of the producer kernels they call.
 # This digest of producer_kernels.py makes an edit there change this file too (tests/test_repo_guardrails.py checks it).
-_PRODUCER_KERNELS_SHA256 = "c6086791bc74cf932757b1090dacb099537f22c8a2f48c3328af9b35e6f7b02c"
+_PRODUCER_KERNELS_SHA256 = "f29b2550a7e08d637c05def84fe21426997381f6529788d7d429aae41795d117"
 
 # What the sections of a song read: its hit times, lanes, and one fill denominator and fever time.
 SectionContext = namedtuple(
@@ -53,6 +52,21 @@ SectionContext = namedtuple(
 # section.
 _ROW_COLUMNS = 10
 _KEY_END = 8
+
+
+@njit(cache=True, nogil=True)
+def lower_bound(timestamps, value: float) -> int:
+    """The first index whose float32 time is at or past float32(value)."""
+    lo = 0
+    hi = timestamps.shape[0]
+    needle = np.float32(value)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if timestamps[mid] < needle:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
 
 
 @njit(cache=True, nogil=True)
