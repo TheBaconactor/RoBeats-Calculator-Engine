@@ -71,6 +71,14 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     "exact-frontier-v12+logic-1d9452c7fd66": (
         "exact-frontier-v12+logic-5f4d8f2f18e7",
     ),
+    # The frontier kernels organised by activation, the payload encoder moved into timeline_cache_serde and the
+    # fixed-timing builder into timeline_producer changed no stored byte: the gate (16 charts), the 40-chart sample
+    # (2,160 arrays and members) and the whole catalog (2,287 charts, both timing modes) are identical to the
+    # 1d9452c7fd66 and 5f4d8f2f18e7 producers'. Evidence in workspace/_engine_round3_2026-11-10.
+    "exact-frontier-v12+logic-b91994c1695a": (
+        "exact-frontier-v12+logic-1d9452c7fd66",
+        "exact-frontier-v12+logic-5f4d8f2f18e7",
+    ),
 }
 
 
