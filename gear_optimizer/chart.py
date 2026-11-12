@@ -8,7 +8,6 @@ put in time order here; notes at the same time keep their file order.
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -16,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from cachetools import LRUCache
 
-from .gamedata import ELEMENTS
+from .gamedata import ELEMENTS, load_cached
 
 NOTE_TYPES = (1, 2, 3)
 _SECTIONS = ("Timing Points", "Song Data")
@@ -137,19 +136,8 @@ def read_header(path: str | Path) -> dict[str, str]:
 
 
 _CHART_CACHE: LRUCache = LRUCache(maxsize=64)
-_CHART_CACHE_LOCK = threading.Lock()
 
 
 def load_chart(path: Path) -> Chart:
     """read_chart, cached per file until the file changes (charts are shared and immutable)."""
-    resolved = Path(path).resolve()
-    stat = resolved.stat()
-    stamp = (stat.st_mtime_ns, stat.st_size)
-    with _CHART_CACHE_LOCK:
-        cached = _CHART_CACHE.get(resolved)
-        if cached is not None and cached[0] == stamp:
-            return cached[1]
-    chart = read_chart(resolved)
-    with _CHART_CACHE_LOCK:
-        _CHART_CACHE[resolved] = (stamp, chart)
-    return chart
+    return load_cached(path, read_chart, _CHART_CACHE)

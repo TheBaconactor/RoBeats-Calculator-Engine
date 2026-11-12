@@ -1,7 +1,7 @@
 """RoBeats game rules that scores and the cached timing/FG frontiers depend on.
 
-This module is part of the frontier cache fingerprint (fg_cache_types / timeline_cache):
-changing anything here rotates every cache version. Keep it to game rules.
+Both frontier caches fingerprint this module (frontier.cache.FRONTIER_PRODUCER_SOURCES): a logic change here
+rotates every cache version. Keep it to game rules.
 """
 
 # The game's stat curves (gamedata.StatCurves) are indexed by stat value 0..MAX_STAT; higher values read the last one.

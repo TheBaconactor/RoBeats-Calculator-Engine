@@ -10,9 +10,6 @@ def _unconditional_mini_ascension_stats(
     mini_names: Sequence[str],
     minis_by_name: Mapping[str, Mini],
 ) -> dict[str, int]:
-    missing = [name for name in mini_names if name not in minis_by_name]
-    if missing:
-        raise KeyError(f"Missing mini stats for General Meta loadout: {missing[0]}")
     ascended = [name for name in mini_names if not isinstance(minis_by_name[name], Mini)]
     if ascended:
         # A song's minis already include this Perfect Points; adding it again would count it twice.

@@ -5,8 +5,8 @@ import signal
 import threading
 import time
 
-# Creating <bin>/STOP asks a running optimizer to finish its current work and exit.
-STOP_FILE_POLL_SEC = 1.0
+# Creating <bin>/STOP asks a running optimizer to finish its current work and exit; it is looked for once a second.
+_STOP_FILE_POLL_SEC = 1.0
 
 
 class StopController:
@@ -22,7 +22,6 @@ class StopController:
     def __init__(self, *, bin_dir: str):
         self.stop_requested_event = threading.Event()
         self.force_exit_requested_event = threading.Event()
-        self._signal_handlers_installed = False
         self._stop_file = os.path.join(bin_dir, "STOP")
         self._stop_file_next_check_monotonic = 0.0
         self._stop_file_present_cache = False
@@ -54,32 +53,19 @@ class StopController:
         now = time.monotonic()
         if now >= self._stop_file_next_check_monotonic:
             self._stop_file_present_cache = os.path.exists(self._stop_file)
-            self._stop_file_next_check_monotonic = now + STOP_FILE_POLL_SEC
+            self._stop_file_next_check_monotonic = now + _STOP_FILE_POLL_SEC
         if self._stop_file_present_cache:
             self.request_stop(f"stop file detected: {self._stop_file!r}")
             return True
         return self.stop_requested_event.is_set()
 
     def install_signal_handlers(self) -> None:
-        if self._signal_handlers_installed:
-            return
-        if threading.current_thread() is not threading.main_thread():
-            return
+        """Ctrl+C, SIGTERM (and Ctrl+Break on Windows): the first asks for a graceful stop, the second forces it.
+        Call it from the main thread."""
 
         def _handler(signum, _frame):
-            # First signal -> graceful stop, second -> force exit.
-            if self.stop_requested_event.is_set():
-                self.request_stop(f"signal {signum}", force=True)
-            else:
-                self.request_stop(f"signal {signum}", force=False)
+            self.request_stop(f"signal {signum}", force=self.stop_requested_event.is_set())
 
-        for sig in (
-            getattr(signal, "SIGINT", None),
-            getattr(signal, "SIGTERM", None),
-            getattr(signal, "SIGBREAK", None),
-        ):
-            if sig is None:
-                continue
-            signal.signal(sig, _handler)
-
-        self._signal_handlers_installed = True
+        for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", None)):
+            if sig is not None:
+                signal.signal(sig, _handler)

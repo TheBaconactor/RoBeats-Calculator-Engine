@@ -5,12 +5,6 @@ import shutil
 import threading
 import time
 
-__all__ = [
-    "ProgressUI",
-    "_progress_ui_enabled_default",
-    "_stream_is_tty",
-]
-
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -21,9 +15,9 @@ class ProgressUI:
     _INTERVAL_S = 0.2
     _SPINNER = ("|", "/", "-", "\\")
 
-    def __init__(self, total: int, *, completed: int = 0, new_records: int = 0, stream) -> None:
+    def __init__(self, total: int, *, new_records: int, stream) -> None:
         self._total = total
-        self._completed = completed
+        self._completed = 0
         self._failed = 0
         self._new_records = new_records
         self._stream = stream
@@ -36,46 +30,30 @@ class ProgressUI:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if self._thread is not None:
-            return
         self._thread = threading.Thread(target=self._run, name="ProgressUI", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        self._thread.join(timeout=2.0)
         self._render(final=True)
 
-    def update_counts(self, *, completed: int | None = None, total: int | None = None) -> None:
+    def add_new_record(self) -> None:
         with self._lock:
-            if completed is not None:
-                self._completed = max(0, completed)
-            if total is not None:
-                self._total = max(0, total)
+            self._new_records += 1
         self._render()
 
-    def add_new_record(self, count: int = 1) -> None:
+    def add_failed(self) -> None:
         with self._lock:
-            self._new_records = max(0, self._new_records + count)
+            self._failed += 1
         self._render()
 
-    def add_completed(self, count: int = 1) -> None:
+    def song_finished(self, song: str, status: str) -> None:
+        """One more task done: `song` and its status ("done" shows none) become the bar's tail."""
         with self._lock:
-            self._completed = max(0, self._completed + count)
-        self._render()
-
-    def add_failed(self, count: int = 1) -> None:
-        with self._lock:
-            self._failed = max(0, self._failed + count)
-        self._render()
-
-    def set_status(self, song: str | None, status: str | None) -> None:
-        with self._lock:
-            if song is not None:
-                self._song = song
-            if status is not None:
-                self._status = status
+            self._song = song
+            self._status = status
+            self._completed += 1
         self._render()
 
     def _run(self) -> None:
@@ -152,17 +130,7 @@ class ProgressUI:
         return f"{m:02d}:{s:02d}"
 
 
-def _stream_is_tty(stream) -> bool:
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty()) if callable(isatty) else False
 
-
-def _progress_ui_enabled_default(
-    *,
-    configured_enabled: bool,
-    output_enabled: bool,
-    progress_env_present: bool,
-    stream_is_tty: bool,
-) -> bool:
-    """Not when switched off; forced on by METAFINDER_PROGRESS; otherwise only on a terminal without verbose output."""
-    return configured_enabled and (progress_env_present or (not output_enabled and stream_is_tty))
+def progress_bar_enabled(setting: bool | None, *, verbose: bool, tty: bool) -> bool:
+    """METAFINDER_PROGRESS when set (settings.progress()); otherwise on a terminal without verbose output."""
+    return setting if setting is not None else tty and not verbose
