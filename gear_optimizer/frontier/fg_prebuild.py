@@ -9,6 +9,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import threading
 from pathlib import Path
 
 import psutil
@@ -61,7 +62,7 @@ _MAX_REDUCER_THREADS = 11
 def _fg_prebuild_song_weight_gb(note_count: int) -> float:
     """Estimated peak worker commit (GB) of a song's build: linear in notes, anchored at the measured giants."""
     slope = (_PEAK_COMMIT_GB - _FLOOR_COMMIT_GB) / _PEAK_COMMIT_NOTES
-    return _FLOOR_COMMIT_GB + max(0, int(note_count)) * slope
+    return _FLOOR_COMMIT_GB + note_count * slope
 
 
 def _fg_prebuild_available_ram_gb() -> float:
@@ -73,7 +74,7 @@ def _fg_prebuild_pool_worker_processes() -> list:
     workers = []
     for child in psutil.Process().children(recursive=False):
         try:
-            if "python" in (child.name() or "").lower():
+            if "python" in child.name().lower():
                 workers.append(child)
         except psutil.Error:
             continue  # the child exited while we looked
@@ -98,8 +99,6 @@ class _FgPrebuildRamGuard:
     is the only bound available mid-flight: ProcessPoolExecutor cannot survive killing a worker."""
 
     def __init__(self) -> None:
-        import threading
-
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="fg-prebuild-ram-guard", daemon=True)
         self._suspended: list = []
@@ -178,85 +177,53 @@ def _fg_prebuild_reducer_threads(
     workload_count: int,
 ) -> int:
     """A song's reducer threads: the cores the concurrency of its weight class leaves it (results never depend on them)."""
-    concurrency = max(1, min(int(max_workers), int(float(budget_gb) / max(float(weight_gb), _FLOOR_COMMIT_GB))))
+    concurrency = max(1, min(max_workers, int(budget_gb / max(weight_gb, _FLOOR_COMMIT_GB))))
     concurrency = min(concurrency, workload_count)
-    return max(1, min(_MAX_REDUCER_THREADS, int(frontier_cpus) // concurrency))
+    return max(1, min(_MAX_REDUCER_THREADS, frontier_cpus // concurrency))
 
 
 def _dedupe_paths_by_response_bundle_key(
-    song_paths: list[str],
+    chart_paths: list[str],
     curves: StatCurves,
     timing_mode: str,
 ) -> tuple[list[tuple[str, int]], dict[str, tuple[str, ...]]]:
-    """The songs one per response bundle key, with their note counts (for the order and the admission weights), and the
+    """The charts one per response bundle key, with their note counts (for the order and the admission weights), and the
     charts each one's bundle serves too."""
     representatives: list[tuple[str, int]] = []
     duplicates: dict[str, list[str]] = {}
     representative_by_key: dict[tuple, str] = {}
-    for path_text in song_paths:
-        path = str(path_text)
+    for path in chart_paths:
         song = time_song(load_chart(Path(path)), timing_mode)
         key = fg_response_frontier_bundle_cache_key(song, curves)
         representative = representative_by_key.get(key)
         if representative is None:
             representative_by_key[key] = path
             representatives.append((path, song.chart.total_notes))
-            duplicates[path] = []
         else:
-            duplicates[representative].append(path)
-    return representatives, {
-        str(path): tuple(str(value) for value in duplicate_paths)
-        for path, duplicate_paths in duplicates.items()
-        if duplicate_paths
-    }
+            duplicates.setdefault(representative, []).append(path)
+    return representatives, {path: tuple(others) for path, others in duplicates.items()}
 
 
 def _build_fg_chart(chart_path: str, reducer_threads: int, timing_mode: str) -> FrontierCacheBuildResult:
     # Per-task width from the admission scheduler: sized to this song's memory weight class.
-    configure_frontier_build_threads(int(reducer_threads))
+    configure_frontier_build_threads(reducer_threads)
     return build_frontier_cache_for_chart(
         chart_path, prebuild_worker_curves(), timing_mode, ensure_response_frontier_cache_for_song
     )
 
 
-def _add_with_duplicates(
-    tally: PrebuildTally, result: FrontierCacheBuildResult, duplicate_paths: tuple[str, ...]
-) -> None:
-    """A built chart and the charts whose songs its bundle serves too."""
-    tally.add(result)
-    if not duplicate_paths:
-        return
-    source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
-    for duplicate_path in duplicate_paths:
-        tally.add(
-            FrontierCacheBuildResult(path=duplicate_path, source=source, build_ms=0.0, cache_file=result.cache_file)
-        )
-
-
-def _build_fg_songs(song_paths: list[str], curves: StatCurves, timing_mode: str) -> PrebuildTally:
-    tally = PrebuildTally(FG_RESPONSE_FRONTIER_CACHE, len(song_paths), progress_every=10)
+def _build_fg_charts(chart_paths: list[str], curves: StatCurves, timing_mode: str, tally: PrebuildTally) -> None:
     # Sorted input: the representative of duplicate charts does not depend on the queue order. Execution is
     # heaviest first, ordered by the parse pass that also weighs the songs for admission.
-    build_items, duplicates_of = _dedupe_paths_by_response_bundle_key(sorted(song_paths), curves, timing_mode)
-    build_items.sort(key=lambda item: (-int(item[1]), str(item[0]).lower()))
-    if len(build_items) == 1:
-        path = build_items[0][0]
-        duplicate_paths = duplicates_of.get(path, ())
-        try:
-            result = build_frontier_cache_for_chart(path, curves, timing_mode, ensure_response_frontier_cache_for_song)
-        except Exception as exc:
-            tally.fail(path, exc, songs=1 + len(duplicate_paths))
-        else:
-            _add_with_duplicates(tally, result, duplicate_paths)
-        return tally
+    build_items, duplicates_of = _dedupe_paths_by_response_bundle_key(sorted(chart_paths), curves, timing_mode)
+    build_items.sort(key=lambda item: (-item[1], item[0].lower()))
     if duplicates_of:
         logger.info(
             "[FGResponseCache] Dedupe skipped %s/%s duplicate response bundle path(s) before worker build.",
             sum(len(values) for values in duplicates_of.values()),
-            len(song_paths),
+            len(chart_paths),
         )
     _build_admitted_by_weight(tally, build_items, duplicates_of, curves, timing_mode)
-    return tally
 
 
 def _build_admitted_by_weight(
@@ -267,10 +234,9 @@ def _build_admitted_by_weight(
     timing_mode: str,
 ) -> None:
     available_gb = _fg_prebuild_available_ram_gb()
-    budget_gb = max(_PEAK_COMMIT_GB, float(available_gb) - _SYSTEM_RESERVE_GB)
+    budget_gb = max(_PEAK_COMMIT_GB, available_gb - _SYSTEM_RESERVE_GB)
     max_workers = min(frontier_prebuild_worker_count(), max(1, int(budget_gb / _FLOOR_COMMIT_GB)))
     frontier_cpus = frontier_prebuild_cpu_count()
-    heaviest_weight = _fg_prebuild_song_weight_gb(int(build_items[0][1]))
     logger.info(
         "[FGResponseCache] Weighted admission: %s song(s), budget=%.1f GB (available=%.1f GB, reserve=%.1f GB), "
         "max_workers=%s, heaviest=%s notes (~%.1f GB).",
@@ -278,9 +244,9 @@ def _build_admitted_by_weight(
         budget_gb,
         available_gb,
         _SYSTEM_RESERVE_GB,
-        int(max_workers),
-        int(build_items[0][1]),
-        float(heaviest_weight),
+        max_workers,
+        build_items[0][1],
+        _fg_prebuild_song_weight_gb(build_items[0][1]),
     )
     pending: list[tuple[str, int]] = list(build_items)
     in_flight: dict[concurrent.futures.Future, tuple[str, float]] = {}
@@ -291,11 +257,11 @@ def _build_admitted_by_weight(
         nonlocal admitted_weight_gb
         while pending and len(in_flight) < max_workers:
             live_available_gb = _fg_prebuild_available_ram_gb()
-            effective_ledger_gb = max(float(admitted_weight_gb), _fg_prebuild_live_worker_commit_gb())
+            effective_ledger_gb = max(admitted_weight_gb, _fg_prebuild_live_worker_commit_gb())
             admit_index: int | None = None
             weight_gb = 0.0
             for index, (_path, note_count) in enumerate(pending):
-                weight_gb = _fg_prebuild_song_weight_gb(int(note_count))
+                weight_gb = _fg_prebuild_song_weight_gb(note_count)
                 if not in_flight:  # progress: one build always runs
                     admit_index = index
                     break
@@ -315,19 +281,19 @@ def _build_admitted_by_weight(
                 frontier_cpus=frontier_cpus,
                 workload_count=1 + len(pending) + len(in_flight),
             )
-            future = executor.submit(_build_fg_chart, path, int(reducer_threads), timing_mode)
-            in_flight[future] = (path, float(weight_gb))
-            admitted_weight_gb += float(weight_gb)
+            future = executor.submit(_build_fg_chart, path, reducer_threads, timing_mode)
+            in_flight[future] = (path, weight_gb)
+            admitted_weight_gb += weight_gb
             if weight_gb >= 4.0:
                 logger.info(
                     "[FGResponseCache] Admitted giant %s (%s notes, ~%.1f GB, %s reducer threads); "
                     "in-flight=%s (~%.1f/%.1f GB).",
                     os.path.basename(path),
-                    int(note_count),
-                    float(weight_gb),
-                    int(reducer_threads),
+                    note_count,
+                    weight_gb,
+                    reducer_threads,
                     len(in_flight),
-                    float(admitted_weight_gb),
+                    admitted_weight_gb,
                     budget_gb,
                 )
 
@@ -350,15 +316,8 @@ def _build_admitted_by_weight(
                 )
                 for future in done:
                     path, weight_gb = in_flight.pop(future)
-                    admitted_weight_gb -= float(weight_gb)
-                    duplicate_paths = duplicates_of.get(path, ())
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        tally.fail(path, exc, songs=1 + len(duplicate_paths))
-                        continue
-                    _add_with_duplicates(tally, result, duplicate_paths)
-                    tally.log_progress(result)
+                    admitted_weight_gb -= weight_gb
+                    tally.collect(path, future.result, duplicates_of.get(path, ()))
                 _admit_ready(executor)
     finally:
         ram_guard.stop()
@@ -376,6 +335,7 @@ def _maintain_fg_cache(plan: FrontierCacheManifestPlan, authorize_destructive_ro
 
 FG_RESPONSE_FRONTIER_PREBUILD = FrontierCachePrebuild(
     cache=FG_RESPONSE_FRONTIER_CACHE,
-    build_songs=_build_fg_songs,
+    ensure=ensure_response_frontier_cache_for_song,
+    build_in_pool=_build_fg_charts,
     maintain=_maintain_fg_cache,
 )

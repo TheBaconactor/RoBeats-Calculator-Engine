@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gear_optimizer.frontier.cache import FrontierCache, FrontierCacheBuildResult, content_addressed_path
+from gear_optimizer.frontier.cache import FrontierCache, FrontierCacheBuildResult
 from tests.curves_support import synthetic_curves
 
 CURVES = synthetic_curves({"Fever Time": np.ones(161, np.float32) * 0.15, "Fever Fill Rate": np.ones(161, np.float32) * 0.333})
@@ -24,7 +24,6 @@ def _cache(directory: Path, *, version: str = "v1", predecessors: tuple[str, ...
         name="unit",
         log_label="[UnitCache]",
         directory=lambda: directory,
-        file_path=lambda key: content_addressed_path(directory, key),
         version=lambda: version,
         predecessors={version: predecessors},
         is_complete=is_complete or (lambda path: Path(path).read_bytes() == b"complete"),

@@ -23,12 +23,7 @@ from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.frontier.cache import FrontierCache, MemoryLru, write_atomically
 from gear_optimizer.rules import MAX_STAT
 
-from .fg_cache_keys import (
-    _fg_response_disk_cache_dir,
-    _fg_response_disk_cache_path,
-    _fg_response_cache_version,
-    fg_response_frontier_bundle_cache_key,
-)
+from .fg_cache_keys import _fg_response_disk_cache_dir, _fg_response_cache_version, fg_response_frontier_bundle_cache_key
 from .fg_cache_patterns import intern_surface_row_words, pack_surface_patterns, surface_head_coeffs
 from .fg_cache_serde import _pack_frontiers, _unpack_frontiers
 from .fg_cache_types import (
@@ -277,7 +272,6 @@ FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
     name="fg_response",
     log_label="[FGResponseCache]",
     directory=_fg_response_disk_cache_dir,
-    file_path=_fg_response_disk_cache_path,
     version=_fg_response_cache_version,
     predecessors=_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS,
     is_complete=fg_response_cache_file_is_complete,

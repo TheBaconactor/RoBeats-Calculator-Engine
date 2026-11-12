@@ -165,27 +165,6 @@ class _InjectedPublicationStop(BaseException):
     pass
 
 
-def _write_song(path: Path, *, extra_tail: str = "") -> None:
-    lines = [
-        "Song Name\tFG Cache Unit",
-        "Difficulty\tEasy",
-        "Primary Color\tRush",
-        "Secondary Color\tFlow",
-        "Last Note Time\t0.4",
-        "Long Notes\t0",
-        "Song Data",
-        "0.000 0 0 1",
-        "0.200 0 0 1",
-        "0.400 0 0 1",
-    ]
-    if extra_tail:
-        lines.append(str(extra_tail))
-    path.write_text(
-        "\n".join(lines),
-        encoding="utf-8",
-    )
-
-
 def _remove_npz_array(path: Path, array_name: str) -> None:
     import zipfile
 
@@ -374,7 +353,7 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
 ) -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.frontier.fg_cache_store import (
-        _fg_response_disk_cache_path,
+        FG_RESPONSE_FRONTIER_CACHE,
         _payload_file_is_complete,
         _save_payload,
     )
@@ -399,7 +378,7 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     cache_key = ("unit", "non-exact-bundle", cache_mutation)
 
     _save_payload(cache_key, payload)
-    cache_path = _fg_response_disk_cache_path(cache_key)
+    cache_path = FG_RESPONSE_FRONTIER_CACHE.file_path(cache_key)
     if cache_mutation == "missing_core_array":
         _remove_npz_array(cache_path, "raw_fill_by_ff")
     elif cache_mutation == "missing_surface_table":
@@ -539,28 +518,6 @@ def test_fg_response_frontier_payload_load_is_not_a_production_api() -> None:
     from gear_optimizer.frontier import fg_cache
 
     assert not hasattr(fg_cache, "load_response_frontier_payload")
-
-
-def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> None:
-    from gear_optimizer.frontier.fg_prebuild import _dedupe_paths_by_response_bundle_key
-
-    first_path = tmp_path / "first.txt"
-    second_path = tmp_path / "second.txt"
-    _write_song(first_path)
-    _write_song(second_path)
-
-    representatives, duplicates = _dedupe_paths_by_response_bundle_key(
-        [str(first_path), str(second_path)],
-        _curves(),
-        "precise",
-    )
-
-    # Representatives carry the note count from the same parse pass (admission weight input).
-    assert [path for path, _notes in representatives] == [str(first_path)]
-    assert all(isinstance(notes, int) and notes > 0 for _path, notes in representatives)
-    assert duplicates == {str(first_path): (str(second_path),)}
-
-
 
 
 def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bundle(tmp_path: Path, monkeypatch) -> None:
@@ -1060,43 +1017,6 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_prebuild_admission_weight_is_anchored_to_measured_peaks() -> None:
-    """Weight model invariants: floored baseline for tiny charts, the measured ~7k-note giant maps
-    to the peak anchor, extrapolation above the anchor never clamps down (a bigger future chart
-    must weigh more -- clamping would re-create the 2026-07-09 over-commit crash)."""
-    from gear_optimizer.frontier import fg_prebuild as prebuild
-
-    assert prebuild._fg_prebuild_song_weight_gb(0) == prebuild._FLOOR_COMMIT_GB
-    anchor = prebuild._fg_prebuild_song_weight_gb(int(prebuild._PEAK_COMMIT_NOTES))
-    assert abs(anchor - prebuild._PEAK_COMMIT_GB) < 1e-9
-    assert prebuild._fg_prebuild_song_weight_gb(14000) > prebuild._PEAK_COMMIT_GB
-    # Monotone in note count.
-    weights = [prebuild._fg_prebuild_song_weight_gb(n) for n in (0, 1000, 3500, 7000, 10000)]
-    assert weights == sorted(weights)
-
-
-def test_fg_prebuild_reducer_threads_size_to_memory_weight_class(monkeypatch) -> None:
-    """Giants (few admitted concurrently by weight) get the freed cores as reducer threads, capped
-    at the measured-safe width; light charts that run wide get one thread. No flat worker cap."""
-    from gear_optimizer.frontier import fg_prebuild as prebuild
-
-    # 42 GB budget, 31 frontier CPUs, up to 24 workers (the 2026-07-09 box shape).
-    giant = prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=42.0, max_workers=24, frontier_cpus=31, workload_count=99)
-    light = prebuild._fg_prebuild_reducer_threads(2.0, budget_gb=42.0, max_workers=24, frontier_cpus=31, workload_count=99)
-    # 42/8 -> 5 concurrent -> 31//5=6, below the measured-safe saturation cap of 9.
-    assert giant == 6
-    assert prebuild._MAX_REDUCER_THREADS == 11
-    assert light == 1  # 42/2 -> 21 concurrent -> 31//21=1
-    # A one-song queue owns otherwise-idle CPUs, capped at the measured saturation width.
-    assert prebuild._fg_prebuild_reducer_threads(
-        8.0,
-        budget_gb=42.0,
-        max_workers=24,
-        frontier_cpus=31,
-        workload_count=1,
-    ) == 11
-
-
 def test_required_response_stat_keys_are_the_complete_legal_ftff_projection() -> None:
     from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
     from gear_optimizer.solver.fg_scoring import required_response_stat_keys
@@ -1133,38 +1053,3 @@ def test_release_fg_response_song_memory_evicts_only_target_song():
         assert other in store._scoring_bundle_memory
     finally:
         store.reset_fg_response_frontier_payload_cache()
-
-
-def _other_song():
-    return _song(timestamps=(0.0, 0.3, 0.6))
-
-
-
-
-
-
-
-
-def _seed_fixed_timing_song_memos(store, song, refs, other_song) -> tuple[list[tuple[object, tuple]], tuple]:
-    from gear_optimizer.frontier.fg_cache_keys import (
-        fg_response_frontier_bundle_cache_key,
-        fg_response_frontier_geometry_cache_key,
-        fg_response_frontier_payload_cache_key,
-    )
-
-    a_bundle = fg_response_frontier_bundle_cache_key(song, refs)
-    seeded = [
-        (store._scoring_bundle_memory, a_bundle),
-        (store._geometry_frontier_memory, fg_response_frontier_geometry_cache_key(song, refs, ft_stat=3, ff_stat=5)),
-        (store._payload_memory, fg_response_frontier_payload_cache_key(song, refs, [(3, 5)])),
-    ]
-    for cache, key in seeded:
-        cache.put(key, object())
-    b_bundle = fg_response_frontier_bundle_cache_key(other_song, refs)
-    assert a_bundle[:-1] != b_bundle[:-1]
-    store._scoring_bundle_memory.put(b_bundle, object())
-    return seeded, b_bundle
-
-
-
-

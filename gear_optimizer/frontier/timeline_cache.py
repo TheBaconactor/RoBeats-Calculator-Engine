@@ -17,7 +17,6 @@ from gear_optimizer.frontier.cache import (
     FrontierCacheInfo,
     FrontierCacheLoad,
     MemoryLru,
-    content_addressed_path,
     write_atomically,
 )
 from gear_optimizer.frontier.cache_scope import scoped_frontier_cache_dir
@@ -189,7 +188,6 @@ TIMELINE_FRONTIER_CACHE = FrontierCache(
     name="timeline",
     log_label="[TimelineCache]",
     directory=_frontier_disk_cache_dir,
-    file_path=lambda cache_key: content_addressed_path(_frontier_disk_cache_dir(), cache_key),
     version=lambda: _FRONTIER_DISK_CACHE_VERSION,
     predecessors=_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS,
     is_complete=timeline_frontier_cache_file_is_complete,
@@ -405,3 +403,13 @@ def build_or_load_timeline_frontier_payload(
         cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
     )
+
+
+def ensure_timeline_frontier_cache_for_song(song: TimedSong, curves: StatCurves) -> tuple[str, float, Path]:
+    """Make sure the song's payload file exists; returns (cache source, build ms, the file). A file that exists is
+    not read."""
+    info = timeline_frontier_payload_cache_info(song, curves)
+    if info.cache_source != "missing":
+        return info.cache_source, 0.0, info.disk_path
+    load = build_or_load_timeline_frontier_payload(song, curves)
+    return load.cache_source, load.elapsed_ms, load.disk_path

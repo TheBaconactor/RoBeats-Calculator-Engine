@@ -1,6 +1,6 @@
 """The startup prebuild driver both frontier caches share (frontier_cache.prebuild_frontier_cache).
 
-CPU-only: a unit FrontierCache over tmp_path whose "complete" files hold b"complete", and a recording build step.
+CPU-only: a unit FrontierCache over tmp_path whose "complete" files hold b"complete", and recording build steps.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from gear_optimizer.frontier.cache import (
     FrontierCacheBuildResult,
     FrontierCachePrebuild,
     PrebuildTally,
-    content_addressed_path,
+    build_frontier_cache_for_chart,
     prebuild_frontier_cache,
 )
 from tests.curves_support import synthetic_curves
@@ -25,7 +25,7 @@ CURVES = synthetic_curves({"Fever Time": np.ones(161, np.float32) * 0.15, "Fever
 
 
 class _Run:
-    """A unit cache and a prebuild whose steps record what ran, in order."""
+    """A unit cache and a prebuild whose steps record what ran, in order. A chart named "Broken" fails to build."""
 
     def __init__(self, tmp_path: Path, monkeypatch) -> None:
         directory = tmp_path / "cache"
@@ -34,7 +34,6 @@ class _Run:
             name="unit",
             log_label="[UnitCache]",
             directory=lambda: directory,
-            file_path=lambda key: content_addressed_path(directory, key),
             version=lambda: "v1",
             predecessors={},
             is_complete=lambda path: Path(path).read_bytes() == b"complete",
@@ -44,7 +43,8 @@ class _Run:
         )
         self.prebuild = FrontierCachePrebuild(
             cache=self.cache,
-            build_songs=self._build_songs,
+            ensure=self._ensure,
+            build_in_pool=self._build_in_pool,
             maintain=lambda _plan, rotate: self.calls.append(f"maintain:{rotate}"),
         )
 
@@ -55,16 +55,18 @@ class _Run:
 
         monkeypatch.setattr(frontier_cache, "exclusive_file_lock", lock)
 
-    def _build_songs(self, song_paths: list[str], curves, timing_mode: str) -> PrebuildTally:
-        self.calls.append(f"build:{len(song_paths)}")
-        tally = PrebuildTally(self.cache, len(song_paths), progress_every=10)
-        for song_path in song_paths:
-            tally.add(
-                FrontierCacheBuildResult(
-                    path=song_path, source="built", build_ms=1.0, cache_file=str(self.write(song_path, timing_mode))
-                )
-            )
-        return tally
+    def _ensure(self, song, curves) -> tuple[str, float, Path]:
+        if song.chart.name == "Broken":
+            raise ValueError("this chart does not build")
+        path = self.cache.file_path(self.cache.song_key(song, curves))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"complete")
+        return "built", 1.0, path
+
+    def _build_in_pool(self, chart_paths: list[str], curves, timing_mode: str, tally: PrebuildTally) -> None:
+        self.calls.append(f"pool:{len(chart_paths)}")
+        for chart_path in chart_paths:
+            tally.collect(chart_path, lambda: build_frontier_cache_for_chart(chart_path, curves, timing_mode, self._ensure))
 
     def write(self, chart: str, timing_mode: str = "non-precise", content: bytes = b"complete") -> Path:
         path = self.cache.chart_file(str(chart), CURVES, timing_mode)
@@ -128,7 +130,8 @@ def test_without_a_current_manifest_the_locked_plan_records_the_hits(tmp_path: P
     assert run.cache.manifest_entries()
 
 
-def test_missing_charts_are_built_and_recorded(tmp_path: Path, monkeypatch) -> None:
+def test_one_missing_chart_is_built_in_this_process_and_recorded(tmp_path: Path, monkeypatch) -> None:
+    """One missing chart (an upload's start) never goes to the worker pool."""
     run = _Run(tmp_path, monkeypatch)
     hit = _chart(tmp_path / "charts" / "A.txt", "A")
     missing = _chart(tmp_path / "charts" / "B.txt", "B")
@@ -136,7 +139,7 @@ def test_missing_charts_are_built_and_recorded(tmp_path: Path, monkeypatch) -> N
 
     summary = run.run([hit, missing])
 
-    assert run.calls == ["lock", "maintain:False", "build:1"]
+    assert run.calls == ["lock", "maintain:False"]  # no pool
     assert (summary.total, summary.built, summary.failures) == (2, 1, 0)
     assert (
         run.cache.manifest_plan([str(missing)], CURVES, timing_mode="non-precise").newly_recorded == 0
@@ -161,7 +164,7 @@ def test_every_timing_mode_is_verified_and_summed(tmp_path: Path, monkeypatch) -
 
     summary = run.run(charts, timing_modes=("precise", "non-precise"))
 
-    assert run.calls.count("build:2") == 2
+    assert run.calls.count("pool:2") == 2
     assert (summary.total, summary.built) == (4, 4)
 
 
@@ -174,5 +177,35 @@ def test_each_mode_verifies_its_own_charts_once(tmp_path: Path, monkeypatch) -> 
         curves=CURVES,
     )
 
-    assert sorted(call for call in run.calls if call.startswith("build")) == ["build:1", "build:2"]
+    assert [call for call in run.calls if call.startswith("pool")] == ["pool:2"]  # non-precise builds its one chart here
     assert (summary.total, summary.built) == (3, 3)
+
+
+def test_a_failed_build_is_counted_and_not_recorded(tmp_path: Path, monkeypatch) -> None:
+    run = _Run(tmp_path, monkeypatch)
+    charts = [_chart(tmp_path / "charts" / f"{name}.txt", name) for name in ("A", "Broken", "C")]
+
+    summary = run.run(charts)
+
+    assert (summary.total, summary.built, summary.failures) == (3, 2, 1)
+    plan = run.cache.manifest_plan([str(chart) for chart in charts], CURVES, timing_mode="non-precise")
+    assert plan.missing_paths == (str(charts[1]),) and plan.newly_recorded == 0
+
+
+def test_a_build_also_serves_the_charts_it_stands_for(tmp_path: Path, monkeypatch) -> None:
+    """Charts whose songs one file serves are built once: the others are results of that build, or fail with it."""
+    run = _Run(tmp_path, monkeypatch)
+    a, twin, broken, broken_twin = (
+        _chart(tmp_path / "charts" / f"{name}.txt", name) for name in ("A", "A twin", "Broken", "Broken twin")
+    )
+    tally = PrebuildTally(run.cache, 4)
+
+    tally.collect(str(a), lambda: build_frontier_cache_for_chart(str(a), CURVES, "non-precise", run._ensure), (str(twin),))
+    tally.collect(
+        str(broken), lambda: build_frontier_cache_for_chart(str(broken), CURVES, "non-precise", run._ensure),
+        (str(broken_twin),),
+    )
+
+    assert [(result.path, result.source) for result in tally.results] == [(str(a), "built"), (str(twin), "disk")]
+    assert tally.results[0].cache_file == tally.results[1].cache_file
+    assert tally.failures == 2
