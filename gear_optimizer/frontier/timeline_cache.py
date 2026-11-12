@@ -3,6 +3,7 @@
 Host-side, no Taichi: scoring, the prebuild and the website read it here; gpu.device uploads it to the GPU.
 """
 
+import contextlib
 import io
 import logging
 import time
@@ -30,6 +31,7 @@ from gear_optimizer.frontier.timeline_producer import (
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.settings import paths
+from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
 from gear_optimizer.solver.timing_envelope import TimedSong, fever_axes
 
 
@@ -88,21 +90,15 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:
+def _song_cache_key(song: TimedSong, curves: StatCurves) -> tuple:
+    """The key of the payload file serving `song`: the version, the song's timing and the FT/FF axes. The payload
+    depends on no other curve, so the startup prebuild and runtime scoring share one file."""
     return (
         _FRONTIER_DISK_CACHE_VERSION,
-        song_key,
-        bytes(array_sig16(np.asarray(ref_ft, dtype=np.float32).reshape(-1))),
-        bytes(array_sig16(np.asarray(ref_ff, dtype=np.float32).reshape(-1))),
+        song.timeline_key,
+        bytes(array_sig16(curves.f32["Fever Time"])),
+        bytes(array_sig16(curves.f32["Fever Fill Rate"])),
     )
-
-
-def _song_cache_key(song: TimedSong, curves: StatCurves) -> tuple:
-    """The key of the payload file serving `song`: its timing and the FT/FF axes.
-
-    The payload depends on the other curves not at all, so startup prebuild and runtime scoring share one file.
-    """
-    return _frontier_payload_cache_key(song.timeline_key, curves.f32["Fever Time"], curves.f32["Fever Fill Rate"])
 
 
 def _frontier_disk_cache_dir() -> Path:
@@ -112,7 +108,7 @@ def _frontier_disk_cache_dir() -> Path:
 
 def _encode_frontier_payload_npz(payload: TimelineFrontierGridPayload) -> bytes:
     """The compressed .npz form of a payload (the disk file and the memory tier's entry)."""
-    pool_used = max(0, int(payload.frontier_pool_used))
+    pool_used = payload.frontier_pool_used
     arrays = {}
     for name, dtype, _rank in _PAYLOAD_ARRAYS:
         slot = getattr(payload, name)[0]
@@ -132,46 +128,31 @@ def _decode_frontier_payload_npz(raw: bytes) -> TimelineFrontierGridPayload | No
     with np.load(io.BytesIO(raw), allow_pickle=False) as data:
         if str(data["version"].item()) not in TIMELINE_FRONTIER_CACHE.compatible_versions():
             return None
-        arrays = {}
-        for name, dtype, rank in _PAYLOAD_ARRAYS:
-            array = np.asarray(data[name], dtype=dtype)
-            arrays[name] = np.expand_dims(array, axis=0) if array.ndim == rank else array
-        return TimelineFrontierGridPayload(**arrays, frontier_pool_used=int(data["frontier_pool_used"].item()))
+        arrays = {name: data[name][np.newaxis] for name, _dtype, _rank in _PAYLOAD_ARRAYS}
+        return TimelineFrontierGridPayload(**arrays, frontier_pool_used=int(data["frontier_pool_used"]))
 
 
 def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
-    try:
-        path = Path(cache_file)
-    except TypeError:
-        return False
-    if not path.exists():
-        return False
+    """A readable payload file of a compatible version, with exactly a payload's arrays in the shapes of one song and
+    every cell's frontier inside the pool."""
     grid_shape = (MAX_STAT + 1, MAX_STAT + 1)
     try:
-        with np.load(path, allow_pickle=False) as data:
-            files = set(data.files)
-            if files != _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES:
+        with np.load(cache_file, allow_pickle=False) as data:
+            if set(data.files) != _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES:
                 return False
-            version = str(data["version"].item())
-            if version not in TIMELINE_FRONTIER_CACHE.compatible_versions():
+            if str(data["version"].item()) not in TIMELINE_FRONTIER_CACHE.compatible_versions():
                 return False
-            pool_used = int(np.asarray(data["frontier_pool_used"]).item())
-            if pool_used < 0:
-                return False
-            for name, _dtype, rank in _PAYLOAD_ARRAYS:
-                leading = (pool_used,) if name.endswith("_pool") else grid_shape
-                expected = (*leading, 4) if rank > len(leading) else leading
-                if tuple(np.asarray(data[name]).shape) != expected:
-                    return False
-            frontier_count = np.asarray(data["grid_frontier_count"], dtype=np.int64)
-            frontier_offset = np.asarray(data["grid_frontier_offset"], dtype=np.int64)
-            if bool(np.any(frontier_count < 0)) or bool(np.any(frontier_offset < 0)):
-                return False
-            if bool(np.any(frontier_offset + frontier_count > pool_used)):
-                return False
-    except Exception:
+            pool_used = int(data["frontier_pool_used"])
+            arrays = {name: data[name] for name, _dtype, _rank in _PAYLOAD_ARRAYS}
+    except Exception:  # whatever a missing, truncated or damaged file raises: it is not a complete file
         return False
-    return True
+    for name, _dtype, rank in _PAYLOAD_ARRAYS:
+        leading = (pool_used,) if name.endswith("_pool") else grid_shape
+        if arrays[name].shape != ((*leading, 4) if rank > len(leading) else leading):
+            return False
+    count = arrays["grid_frontier_count"].astype(np.int64)
+    offset = arrays["grid_frontier_offset"].astype(np.int64)
+    return bool((count >= 0).all() and (offset >= 0).all() and (offset + count <= pool_used).all())
 
 
 TIMELINE_FRONTIER_CACHE = FrontierCache(
@@ -188,19 +169,18 @@ TIMELINE_FRONTIER_CACHE = FrontierCache(
 
 
 def _load_frontier_payload(cache_key: tuple) -> tuple[TimelineFrontierGridPayload, bytes] | None:
+    """The key's payload and the bytes of its file; None when no file of a compatible version serves it. A file that
+    cannot be read is a miss and is deleted, so the next build writes it again."""
     path = TIMELINE_FRONTIER_CACHE.readable_path(cache_key)
     if path is None:
         return None
     try:
         raw = path.read_bytes()
         payload = _decode_frontier_payload_npz(raw)
-    except Exception as e:
-        # An unreadable or corrupt payload is a cache miss: drop it so the next build rewrites it.
-        logger.debug(f"timeline:_load_frontier_payload: {e}")
-        try:
+    except Exception:  # whatever a truncated or damaged file raises
+        logger.warning("[TimelineCache] unreadable payload %s; it is deleted and rebuilt", path, exc_info=True)
+        with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
-        except OSError:
-            pass
         return None
     return None if payload is None else (payload, raw)
 
@@ -208,9 +188,9 @@ def _load_frontier_payload(cache_key: tuple) -> tuple[TimelineFrontierGridPayloa
 def _save_frontier_payload(cache_key: tuple, raw: bytes) -> None:
     try:
         write_atomically(TIMELINE_FRONTIER_CACHE.file_path(cache_key), lambda tmp: tmp.write_bytes(raw))
-    except OSError as e:
+    except OSError:
         # The disk tier is an optimization: a failed write leaves the in-memory payload in use.
-        logger.debug(f"timeline:_save_frontier_payload: {e}")
+        logger.warning("[TimelineCache] the payload file of a song could not be written", exc_info=True)
 
 
 def _cached_frontier_payload(cache_key: tuple) -> tuple[TimelineFrontierGridPayload | None, str]:
@@ -234,13 +214,8 @@ def _cached_frontier_payload(cache_key: tuple) -> tuple[TimelineFrontierGridPayl
 
 
 def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) -> FrontierCacheInfo:
-    """
-    Return exact-frontier cache status without building group payloads or loading `.npz`.
-
-    Startup prebuild uses this to skip already-built songs cheaply, with the exact key runtime upload
-    uses. The disk path is the file that serves the key (a ratified predecessor's when only that one
-    exists), so the prebuild manifest records the file that is actually read.
-    """
+    """Whether the song's payload is in memory, on disk or missing, found without reading a file. The disk path is the
+    file that serves the key (a ratified predecessor's when only that one exists)."""
     cache_key = _song_cache_key(song, curves)
     readable = TIMELINE_FRONTIER_CACHE.readable_path(cache_key)
     if cache_key in _frontier_payload_memory:
@@ -257,88 +232,52 @@ def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) ->
 
 
 def _build_non_precise_timeline_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierGridPayload:
-    """Build the exact singleton chart-time surface for every FT/FF cell.
-
-    non-precise is fixed timing (every hit at its chart timestamp), so each (Fever Time, Fever Fill)
-    cell has exactly ONE deterministic fever surface -- there is no Perfect-window candidate
-    frontier to search. This is the cheap "partial" build: it reuses the same per-cell fever kernel
-    (``calculate_fever_timeline_indices``) the fixed-timing base scorer uses, so the payload scores
-    bit-identically to ``score_stats_fixed_timing_exact`` while costing a fraction of the full
-    carry-envelope DP that ``build_timeline_frontier_grid_payload`` runs for precise. It is
-    the subset of the shared representation the user's thin gate promotes to a full frontier only
-    when precise is actually requested.
-    """
-    if song.mode != "non-precise":
-        raise ValueError("fixed chart-time timeline payload requires a non-precise song")
+    """The payload of a fixed-timing song. Every hit lands at its hit time, so each (Fever Time, Fever Fill) cell has
+    exactly one fever surface and no Perfect-window frontier is searched; the per-cell fever kernel is the one the
+    fixed-timing Base scorer runs, so the payload scores bit-identically to it. Cells with equal surfaces share one
+    pool row, and the rows are in the order their first cells come (Fever Time major)."""
     timestamps = song.hit_timestamps
     total_notes = int(timestamps.shape[0])
-    if total_notes > 1 and bool(np.any(np.diff(timestamps) < np.float32(0.0))):
-        raise ValueError("non-precise chart timestamps must be non-decreasing")
-
+    head_len = min(total_notes, 100)
     fever_durations, fill_thresholds = fever_axes(total_notes, song.chart.long_notes, song.chart.last_note_time, curves)
-    fill_notes = np.ceil(fill_thresholds).astype(np.int64)
-    grid_size = MAX_STAT + 1
+    grid = (MAX_STAT + 1, MAX_STAT + 1)
+    body_fever, body_normal, activations, last_fever_end = (np.zeros(grid, dtype=np.int32) for _ in range(4))
+    masks = np.zeros((*grid, 4), dtype=np.uint32)
+    calculate_fever_timeline_surface_grid(
+        timestamps, total_notes, fever_durations, np.ceil(fill_thresholds).astype(np.int64),
+        (body_fever, body_normal, masks, activations, last_fever_end),
+    )
+    gap = (total_notes - last_fever_end).astype(np.int32)
 
-    shape = (1, grid_size, grid_size)
-    grid_count_body_fever = np.zeros(shape, dtype=np.int32)
-    grid_count_body_normal = np.zeros(shape, dtype=np.int32)
-    grid_head_len = np.full(shape, min(total_notes, 100), dtype=np.int8)
-    grid_fever_masks_bits = np.zeros((*shape, 4), dtype=np.uint32)
-    grid_frontier_count = np.ones(shape, dtype=np.int32)
-    grid_frontier_offset = np.zeros(shape, dtype=np.int32)
-    grid_gap = np.zeros(shape, dtype=np.int32)
-    grid_fever_activations = np.zeros(shape, dtype=np.int32)
-
-    pool_cap = MAX_TIMELINE_FRONTIER_SURFACES
-    body_fever_pool = np.zeros((1, pool_cap), dtype=np.int32)
-    body_normal_pool = np.zeros((1, pool_cap), dtype=np.int32)
-    masks_pool = np.zeros((1, pool_cap, 4), dtype=np.uint32)
-    head_coeffs_pool = np.zeros((1, pool_cap, 4), dtype=np.int16)
-    pool_by_surface: dict[tuple[int, int, tuple[int, int, int, int], int, int], int] = {}
-
-    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
-
-    last_fever_end = np.zeros((grid_size, grid_size), dtype=np.int32)
-    calculate_fever_timeline_surface_grid(timestamps, total_notes, fever_durations, fill_notes, (grid_count_body_fever[0], grid_count_body_normal[0], grid_fever_masks_bits[0], grid_fever_activations[0], last_fever_end))
-    grid_gap[0] = int(total_notes) - last_fever_end
-
-    for ft_idx in range(grid_size):
-        for ff_idx in range(grid_size):
-            body_fever = int(grid_count_body_fever[0, ft_idx, ff_idx])
-            body_normal = int(grid_count_body_normal[0, ft_idx, ff_idx])
-            word_tuple = tuple(int(word) for word in grid_fever_masks_bits[0, ft_idx, ff_idx])
-            activations = int(grid_fever_activations[0, ft_idx, ff_idx])
-            gap = int(grid_gap[0, ft_idx, ff_idx])
-            surface = (int(body_fever), int(body_normal), word_tuple, int(activations), gap)
-            pool_idx = pool_by_surface.get(surface)
-            if pool_idx is None:
-                pool_idx = len(pool_by_surface)
-                if pool_idx >= pool_cap:
-                    raise RuntimeError(f"non-precise timeline surface pool overflow: cap={pool_cap}")
-                pool_by_surface[surface] = pool_idx
-                body_fever_pool[0, pool_idx] = int(body_fever)
-                body_normal_pool[0, pool_idx] = int(body_normal)
-                masks_pool[0, pool_idx, :] = np.asarray(word_tuple, dtype=np.uint32)
-                head_coeffs_pool[0, pool_idx, :] = np.asarray(
-                    _head_mask_coefficients_py(*word_tuple, head_len=min(total_notes, 100)),
-                    dtype=np.int16,
-                )
-            grid_frontier_offset[0, ft_idx, ff_idx] = int(pool_idx)
-
+    # One row per cell: body fever, body normal, the four mask words, activations, gap (int64 holds them all exactly).
+    cells = np.column_stack(
+        (body_fever.ravel(), body_normal.ravel(), masks.reshape(-1, 4), activations.ravel(), gap.ravel())
+    ).astype(np.int64)
+    surfaces, first_cell, surface_of_cell = np.unique(cells, axis=0, return_index=True, return_inverse=True)
+    if surfaces.shape[0] > MAX_TIMELINE_FRONTIER_SURFACES:
+        raise RuntimeError(f"non-precise timeline surface pool overflow: cap={MAX_TIMELINE_FRONTIER_SURFACES}")
+    order = np.argsort(first_cell)  # np.unique sorts the surfaces: back to the order their first cells come
+    pool_row = np.empty_like(order)
+    pool_row[order] = np.arange(order.size)
+    surfaces = surfaces[order]
+    head_coeffs = np.asarray(
+        [_head_mask_coefficients_py(*words, head_len=head_len) for words in surfaces[:, 2:6].tolist()], dtype=np.int16
+    ).reshape(-1, 4)
+    shape = (1, *grid)
     return TimelineFrontierGridPayload(
-        grid_count_body_fever=grid_count_body_fever,
-        grid_count_body_normal=grid_count_body_normal,
-        grid_head_len=grid_head_len,
-        grid_fever_masks_bits=grid_fever_masks_bits,
-        grid_frontier_count=grid_frontier_count,
-        grid_frontier_offset=grid_frontier_offset,
-        grid_frontier_body_fever_pool=body_fever_pool,
-        grid_frontier_body_normal_pool=body_normal_pool,
-        grid_frontier_masks_bits_pool=masks_pool,
-        grid_frontier_head_coeffs_pool=head_coeffs_pool,
-        grid_gap=grid_gap,
-        grid_fever_activations=grid_fever_activations,
-        frontier_pool_used=len(pool_by_surface),
+        grid_count_body_fever=body_fever[np.newaxis],
+        grid_count_body_normal=body_normal[np.newaxis],
+        grid_head_len=np.full(shape, head_len, dtype=np.int8),
+        grid_fever_masks_bits=masks[np.newaxis],
+        grid_frontier_count=np.ones(shape, dtype=np.int32),
+        grid_frontier_offset=pool_row[surface_of_cell].astype(np.int32).reshape(shape),
+        grid_frontier_body_fever_pool=surfaces[:, 0].astype(np.int32)[np.newaxis],
+        grid_frontier_body_normal_pool=surfaces[:, 1].astype(np.int32)[np.newaxis],
+        grid_frontier_masks_bits_pool=surfaces[:, 2:6].astype(np.uint32)[np.newaxis],
+        grid_frontier_head_coeffs_pool=head_coeffs[np.newaxis],
+        grid_gap=gap[np.newaxis],
+        grid_fever_activations=activations[np.newaxis],
+        frontier_pool_used=int(surfaces.shape[0]),
     )
 
 
@@ -369,8 +308,7 @@ def build_timeline_payload(song: TimedSong, curves: StatCurves) -> TimelineFront
 def build_or_load_timeline_frontier_payload(
     song: TimedSong, curves: StatCurves
 ) -> FrontierCacheLoad[TimelineFrontierGridPayload]:
-    """
-    The song's exact timeline frontier payload: the memory or disk cache's, else built and persisted.
+    """The song's exact timeline frontier payload: the memory or disk cache's, else built and persisted.
 
     The one entry point of runtime scoring, background lookahead and offline disk-cache prebuilding, so they share the
     cache signatures. non-precise is fixed timing: its payload is the cheap chart-time singleton, never the precise
@@ -391,7 +329,7 @@ def build_or_load_timeline_frontier_payload(
         cache_key=cache_key,
         disk_path=TIMELINE_FRONTIER_CACHE.file_path(cache_key),
         cache_source=cache_source,
-        elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
+        elapsed_ms=(time.perf_counter() - t0) * 1000.0,
     )
 
 
