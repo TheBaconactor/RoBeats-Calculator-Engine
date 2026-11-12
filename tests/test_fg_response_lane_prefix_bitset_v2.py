@@ -558,8 +558,7 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
     assert rb.region_core_candidate_capacity(
         n, int(action_k.shape[0]), action_k, denom
     ) == 0
-    family_count, *_families = rb.region2_packet_families(
-        int(action_k.shape[0]), denom, action_k, n
-    )
-    assert int(family_count) == 0
+    no_rows = np.empty(0, dtype=np.int32)
+    families = rb.packet_families((n, 0, int(action_k.shape[0])), denom, (action_k, no_rows, no_rows, no_rows), 1)
+    assert families.shape == (0, 4)
     assert rb.region2_offset_for_count(0, 2, denom, n) == -1

@@ -417,32 +417,6 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
     ]
 
 
-def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) -> None:
-    from gear_optimizer.frontier import producer_kernels as rb
-
-    n = 120
-    empty = np.empty(0, dtype=np.int32)
-    limits = np.full(n, n, dtype=np.int32)
-    perfect_ends, great_ends = np.arange(3, dtype=np.int32), np.arange(4, dtype=np.int32)
-    region = rb.RegionTables(np.zeros(n + 2, dtype=np.int64), *(empty for _ in range(7)), perfect_ends, great_ends)
-    calls = []
-
-    def edge(*args):
-        assert args[-2] is perfect_ends and args[-1] is great_ends
-        calls.append(args)
-        return -1, -1, -1, -1, -1, -1, 0
-
-    monkeypatch.setattr(rb, "region_run_edge_for_offset", edge)
-    ts = np.arange(n, dtype=np.float32)
-    rb.region2_activation_packet.py_func(
-        (n, 20, -31, 110, 4.0), empty, empty, empty, (ts, ts, ts, ts, ts, ts, np.arange(n)), region, limits,
-        np.empty((1, 3), dtype=np.int64),
-    )
-    assert len(calls) == 1
-
-
-
-
 def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
     from gear_optimizer.frontier import fg_cache_types
 
@@ -723,13 +697,20 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
     )
     action_k = np.asarray(actions, dtype=np.int32)
 
-    family_count, family_defect, family_start, family_end = rb.region2_packet_families(
-        int(action_k.shape[0]),
-        float(raw_fever_fill),
-        action_k,
-        int(timestamps.shape[0]),
-    )
+    n = int(timestamps.shape[0])
+    no_rows = np.empty(0, dtype=np.int32)
+    families = rb.packet_families((n, 0, int(action_k.shape[0])), float(raw_fever_fill), (action_k, no_rows, no_rows, no_rows), 1)
+    assert families[:, 0].tolist() == [2] * len(families)
+    family_defect, family_start, family_end = families[:, 1], families[:, 2], families[:, 3]
+    family_count = len(families)
     assert any(int(family_end[idx]) > int(family_start[idx]) for idx in range(int(family_count)))
+    starts, offsets, activations, table_great_ends, _is_greats, late_hit_ids, perfect_hit_ids, _perfect_valids = (
+        rb.region_core_table(
+            n, int(action_k.shape[0]), action_k, float(raw_fever_fill), timestamps,
+            rb.HitTimes(perfect_floor, perfect_candidates, great_floor, great_candidates, perfect_candidates + np.float32(0.001)),
+            lanes,
+        )
+    )
 
     capped = (perfect_candidates.astype(np.float64) - 0.000001, great_candidates.astype(np.float64) - 0.000001)
     tokens = np.concatenate((timestamps, perfect_candidates, great_candidates, *capped))
@@ -751,15 +732,17 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                 state_i = int(activation) - int(activation_offset)
                 section_start = int(state_i) + 1
                 assert region_offset >= 1
-                direct = rb.region_run_edge_for_offset((int(timestamps.shape[0]), int(section_start), int(region_offset), int(k)), float(raw_fever_fill), timestamps, rb.HitTimes(perfect_floor,
-                    perfect_candidates,
-                    great_floor,
-                    great_candidates,
-                    perfect_candidates + np.float32(0.001)), lanes, perfect_ends, great_ends)
-                activation_i, edge_e, run_start, great_end, activation_great_idx, _eg_e, valid = direct
-                assert int(activation_i) == int(activation)
-                assert int(valid) != 0
-                assert int(activation_great_idx) == int(activation)
+                # The run's row in the region table: a late Great activates at `activation`.
+                rows = [
+                    row for row in range(int(starts[section_start]), int(starts[section_start + 1]))
+                    if int(offsets[row]) == region_offset and int(activations[row]) == activation
+                ]
+                assert len(rows) == 1 and int(late_hit_ids[rows[0]]) >= 0
+                edge_e, _eg_e = rb.region_edge(
+                    n, activation, int(late_hit_ids[rows[0]]), int(perfect_hit_ids[rows[0]]), perfect_ends, great_ends
+                )
+                assert int(edge_e) > activation
+                activation_i, run_start, great_end = activation, section_start + region_offset, int(table_great_ends[rows[0]])
                 edge = rb.pack_edge(
                     int(timestamps.shape[0]),
                     int(activation_i),
@@ -933,16 +916,23 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
     )
 
 
+def _queue_of(rows, *, state: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One family's queue (rows, heads, tails) holding `rows` of (normal Greats, fever Greats, body fever) as a body
+    state's packets do: (body fever, normal Greats + 2 x state, fever Greats, activation)."""
+    queue = np.asarray(
+        [[(body_fever, normal_great + 2 * state, fever_great, 0) for normal_great, fever_great, body_fever in rows]],
+        dtype=np.int64,
+    ).reshape(1, len(rows), 4)
+    return queue, np.zeros(1, dtype=np.int64), np.asarray([len(rows)], dtype=np.int64)
+
+
 def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
     """Issue #44 radix: the body skyline packs (normal_great, body_fever_great) as
     normal_great*pair_mod + body_fever_great. With pair_mod sized past the geometry's max
     body_fever_great, every distinct (normal_great, fever_great) -- including the high fever-great
     counts the early-Great band produces -- must get its OWN slot and decode back exactly, with no
     aliasing onto a phantom cell."""
-    from gear_optimizer.frontier.producer_kernels import (
-        HitTimes,
-        touch_body_candidate,
-    )
+    from gear_optimizer.frontier.producer_kernels import touch_body_rows
 
     pair_mod = 20  # exceeds the max planted fever_great (15) -> the pack is injective
     n = 60
@@ -954,10 +944,9 @@ def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
     # (normal_great, fever_great, body_fever); fever_great up to 15 -- a bare section-count radix
     # (~5) would alias several of these onto one another.
     planted = [(2, 11, 100), (3, 14, 90), (5, 7, 80), (0, 15, 70), (9, 3, 60)]
-    touched = 0
-    for normal_great, fever_great, body_fever in planted:
-        touched = touch_body_candidate((np.uint64(body_fever), np.uint64(normal_great + fever_great), np.uint64(fever_great)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, int(touched))
+    touched, read = touch_body_rows(*_queue_of(planted, state=7), 7, (pair_mod, 1), pair_stamp, best_fever_by_pair, touched_pair)
 
+    assert int(read) == len(planted)
     assert int(touched) == len(planted)  # no two distinct pairs collided onto one slot
     decoded = {}
     for i in range(int(touched)):
@@ -972,10 +961,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
     breaks trace reconstruction. The build must FAIL LOUD instead. The chosen pair_idx (3*5+11 = 26)
     stays inside pair_size (205), so the pre-existing pair-size guard does NOT catch it -- only the
     dedicated radix guard does."""
-    from gear_optimizer.frontier.producer_kernels import (
-        HitTimes,
-        touch_body_candidate,
-    )
+    from gear_optimizer.frontier.producer_kernels import touch_body_rows
 
     pair_mod = 5
     n = 40
@@ -985,7 +971,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
     touched_pair = np.empty(pair_size, dtype=np.int32)
 
     with pytest.raises(ValueError, match="fever-great"):
-        touch_body_candidate((np.uint64(100), np.uint64(14), np.uint64(11)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, 0)
+        touch_body_rows(*_queue_of([(3, 11, 100)], state=0), 0, (pair_mod, 1), pair_stamp, best_fever_by_pair, touched_pair)
 
 
 def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
@@ -1990,14 +1976,10 @@ def _ordered_rows_digest(value) -> str:
 
 class _BodyReducerDifferentialHarness:
     def __init__(self, *, pair_mod: int = 33, normal_great_capacity: int = 65) -> None:
-        from gear_optimizer.frontier.producer_kernels import (
-            HitTimes,
-            reduce_touched_body_pairs,
-            touch_body_candidate,
-        )
+        from gear_optimizer.frontier.producer_kernels import reduce_touched_body_pairs, touch_body_rows
 
         self._reduce = reduce_touched_body_pairs
-        self._touch = touch_body_candidate
+        self._touch = touch_body_rows
         self.pair_mod = int(pair_mod)
         pair_size = int(normal_great_capacity) * int(pair_mod)
         self.pair_stamp = np.zeros((pair_size,), dtype=np.int32)
@@ -2012,18 +1994,21 @@ class _BodyReducerDifferentialHarness:
         from tests.retired_fg_frontier_semantics import retired_body_reduce_from_raw_candidates
 
         self.stamp += 1
-        touched_count = 0
-        for body_fever, body_great, body_fever_great in rows:
-            touched_count = self._touch(
-                (np.uint64(body_fever), np.uint64(body_great), np.uint64(body_fever_great)),
-                (np.uint64(0), np.uint64(0), np.uint64(0)),
-                int(self.pair_mod),
-                self.pair_stamp,
-                self.best_fever_by_pair,
-                self.touched_pair,
-                int(self.stamp),
-                int(touched_count),
-            )
+        # The rows as one family's queue, read by state 0: (body fever, normal Greats, fever Greats, activation).
+        queue = np.asarray(
+            [(body_fever, body_great - body_fever_great, body_fever_great, 0) for body_fever, body_great, body_fever_great in rows],
+            dtype=np.int64,
+        ).reshape(1, len(rows), 4)
+        touched_count, _read = self._touch(
+            queue,
+            np.zeros(1, dtype=np.int64),
+            np.asarray([len(rows)], dtype=np.int64),
+            0,
+            (int(self.pair_mod), int(self.stamp)),
+            self.pair_stamp,
+            self.best_fever_by_pair,
+            self.touched_pair,
+        )
         self.last_touched_count = int(touched_count)
         self.last_touched_pairs = [
             int(value) for value in self.touched_pair[: int(touched_count)]
