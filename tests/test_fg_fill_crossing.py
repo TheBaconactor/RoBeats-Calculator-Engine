@@ -26,7 +26,7 @@ from gear_optimizer.frontier.fill_crossing import (
     perfect_crossing_is_region3,
     perfect_fill_crossing_offset,
 )
-from gear_optimizer.frontier.producer_kernels import _numba_fill_crossing_run, _numba_region2_offset_for_count
+from gear_optimizer.frontier.producer_kernels import fill_crossing_run, region2_offset_for_count
 from tests.parity.force_greats import fill_crossing_walk
 from tests.parity.force_greats.fill_crossing_walk import (
     canonical_fever_sections,
@@ -41,7 +41,7 @@ from tests.parity.force_greats.fill_crossing_walk import (
 def server_fill_crossing_run(start: int, great_run_start: int, k: int, fever_fill_denom: float, n: int):
     """The production kernel's crossing, in the plain-Python reference's form after checking that the two agree."""
     reference = fill_crossing_walk.server_fill_crossing_run(start, great_run_start, k, fever_fill_denom, n)
-    index, is_great = _numba_fill_crossing_run(start, great_run_start, k, fever_fill_denom, n)
+    index, is_great = fill_crossing_run(start, great_run_start, k, fever_fill_denom, n)
     assert (None if index < 0 else index, bool(is_great)) == reference
     return reference
 
@@ -274,7 +274,7 @@ def test_run_form_zero_denominator_fails_loud():
         server_fill_crossing_run(0, 2, 1, 0.0, 20)
     # The crossing kernel itself takes any denominator; what feeds it one rejects a zero.
     with pytest.raises(ValueError):
-        _numba_region2_offset_for_count(0, 1, 0.0, 20)
+        region2_offset_for_count(0, 1, 0.0, 20)
     with pytest.raises(ValueError):
         perfect_crossing_is_region3(2, 1, False, 0.0)
     with pytest.raises(ValueError):

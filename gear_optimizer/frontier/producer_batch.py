@@ -169,7 +169,7 @@ def build_frontiers(
     if not geometries:
         return ()
     n = song.timestamps.shape[0]
-    perfect_hit, perfect_valid, late_hit, late_valid = kernels._numba_build_prefix_activation_hit_tables(
+    perfect_hit, perfect_valid, late_hit, late_valid = kernels.activation_hit_tables(
         n, song.timestamps, song.perfect_candidates, song.great_candidates, song.late_great_floor
     )
     fever_times, fever_rows = np.unique(
@@ -197,7 +197,7 @@ def build_frontiers(
     admit_workspaces(plan, threads_for(max(len(groups), max(len(group) for group in groups))))
     build = SongBuild(
         song=song,
-        activation_hits=(perfect_hit, perfect_valid, late_hit, late_valid),
+        activation_valid=(perfect_valid, late_valid),
         ends=ends,
         use_forced_great_timing=use_forced_great_timing,
         early_exit_min_fill=early_exit_min_fill(song.perfect_floor, song.perfect_candidates),

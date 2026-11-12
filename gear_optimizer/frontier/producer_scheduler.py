@@ -12,7 +12,7 @@ from .producer_precompute import ActionTable, Geometry
 from .producer_reducer import SongBuild, fill_runs, reduce_geometries, threads_for
 from .types import FgResponseFrontierResult
 
-_REGION_TABLE_ENTRY_BYTES = 7 * np.dtype(np.int32).itemsize
+_TABLE_ROW_BYTES = 5 * np.dtype(np.int32).itemsize
 _Group = list[Geometry]  # the geometries that share a region table (precompute.canonical_groups)
 _Results = list[tuple[int, FgResponseFrontierResult]]  # (source, frontier) per geometry
 
@@ -23,9 +23,7 @@ def _executor(workers: int) -> concurrent.futures.ThreadPoolExecutor:
 
 def _region_table(build: SongBuild, table: ActionTable) -> tuple[np.ndarray, ...]:
     song = build.song
-    return kernels._numba_build_region_core_table(
-        song.timestamps.shape[0],
-        table.action_k.shape[0],
+    return kernels.region_core_table(
         table.action_k,
         table.raw_fever_fill,
         song.timestamps,
@@ -40,21 +38,31 @@ def _table_bytes(region_table: tuple[np.ndarray, ...]) -> int:
     return sum(array.nbytes for array in region_table)
 
 
+def _bounds_of(n: int, actions: int, candidates: int) -> tuple[int, int]:
+    """Upper bounds of the bytes of a region table of `candidates` candidate runs: while its build holds its working
+    rows beside the table's own, and after. A table has at most a key row per candidate and a head row per candidate
+    of a head section start (two offsets an action); its two start arrays cover the head section starts and the
+    notes. The build's working rows grow by doubling, and it keeps a few numbers per action, head run and note."""
+    head_sections = min(n, 100) + 1
+    rows = candidates + min(candidates, 2 * head_sections * actions)
+    starts = (head_sections + n + 2) * np.dtype(np.int64).itemsize
+    working = 25 * actions + 12 * head_sections * max(1, actions) + 36 * n + 6656
+    return starts + working + 5 * rows * _TABLE_ROW_BYTES, starts + rows * _TABLE_ROW_BYTES
+
+
 def _table_bounds(n: int, table: ActionTable) -> tuple[int, int]:
-    """Exact upper bounds of a region table's bytes: while its build holds the candidate arrays and their trimmed
-    copies, and after."""
-    capacity = kernels._numba_region_core_candidate_capacity(
-        n, table.action_k.shape[0], table.action_k, table.raw_fever_fill
+    """`_bounds_of` a table's exact candidate count."""
+    actions = table.action_k.shape[0]
+    return _bounds_of(
+        n, actions, kernels.region_core_candidate_capacity(n, actions, table.action_k, table.raw_fever_fill)
     )
-    starts_bytes = (n + 2) * np.dtype(np.int64).itemsize
-    return starts_bytes + 2 * capacity * _REGION_TABLE_ENTRY_BYTES, starts_bytes + capacity * _REGION_TABLE_ENTRY_BYTES
 
 
 def _single_table_byte_budget(n: int, groups: list[_Group]) -> int:
     """What the song's live tables may reserve together: the build bytes of one table with a candidate for every
     (section start, action, offset kind)."""
-    capacity = (n + 1) * max(group[0].table.action_k.shape[0] for group in groups) * 2
-    return (n + 2) * np.dtype(np.int64).itemsize + 2 * capacity * _REGION_TABLE_ENTRY_BYTES
+    actions = max(group[0].table.action_k.shape[0] for group in groups)
+    return _bounds_of(n, actions, (n + 1) * actions * 2)[0]
 
 
 def _reduce_group(
@@ -144,7 +152,8 @@ def schedule_groups(build: SongBuild, groups: list[_Group]) -> list[_Results]:
         def table_of(group: _Group) -> tuple[np.ndarray, ...]:
             return _region_table(build, group[0].table)
     else:
-        empty_table = (np.zeros(n + 2, dtype=np.int64), *(np.empty(0, dtype=np.int32) for _ in range(7)))
+        no_rows = np.empty((0, 5), dtype=np.int32)
+        empty_table = (np.zeros(min(n, 100) + 2, dtype=np.int64), no_rows, np.zeros(n + 1, dtype=np.int64), no_rows)
 
         def table_of(group: _Group) -> tuple[np.ndarray, ...]:
             return empty_table

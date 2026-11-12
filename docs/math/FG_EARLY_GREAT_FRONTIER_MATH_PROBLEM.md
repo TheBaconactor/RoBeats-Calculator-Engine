@@ -367,8 +367,8 @@ vectors, all distinct, `175` distinct head count-classes. A good method must han
 |---|---|
 | `pf`, `gf`, `pc`, `gc` envelopes | `gear_optimizer/solver/timing_envelope.py` (`perfect_window_envelopes`) |
 | `EP`, `EG`, fever-end search | `searchsorted(pf/gf, cutoff)` in `gear_optimizer/frontier/producer_precompute.py::fever_ends` |
-| play / segment DP, frontier build | `gear_optimizer/frontier/producer_kernels.py::_first_frontier_from_precomputed_end_indices_numba` |
-| §3(e) early-Great extension (the new, blowing-up code) | `_numba_activation_packet`, the head loop, and `_numba_pack_edge_eg` in `gear_optimizer/frontier/producer_kernels.py` |
+| play / segment DP, frontier build | `gear_optimizer/frontier/producer_kernels.py::_frontier_of_fever_time` |
+| §3(e) early-Great extension (the new, blowing-up code) | `_activation_packet`, the head loop, and `pack_edge_eg` in `gear_optimizer/frontier/producer_kernels.py` |
 | feature vector `S` | `gear_optimizer/frontier/types.py::FgResponseSurface`: `fever0..3`, `great0..3` (head bitmasks, 4×32 bits), `body_fever`, `body_great`, `body_fever_great` |
 | `score(S;θ)` | `gear_optimizer/score.py::fg_surface_score` |
 | timeline / fill | `gear_optimizer/timing.py` (fixed timeline); constants `0.333, 0.15, 0.15`, great base `+150` (`gear_optimizer/score.py::GREAT_POINTS`) |

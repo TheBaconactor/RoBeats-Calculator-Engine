@@ -9,7 +9,7 @@ from tests.activation_witness_oracle import (
 )
 from gear_optimizer.frontier.producer_kernels import (
     HitTimes,
-    _numba_activation_reachable_contiguous_run,
+    activation_reachable_contiguous_run,
 )
 from tests.fg_response_frontier_oracles import build_activation_reachability_context
 
@@ -88,7 +88,7 @@ def _dense_inputs(n: int = 96) -> tuple[np.ndarray, ...]:
 def _exact_surface_query(*args) -> bool:
     """Call the canonical query from the retired oracle's wider historical signature."""
     return bool(
-        _numba_activation_reachable_contiguous_run(args[0], args[1], args[3], HitTimes(args[4],
+        activation_reachable_contiguous_run(args[0], args[1], args[3], HitTimes(args[4],
             args[5],
             args[6],
             args[7],
@@ -288,7 +288,7 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
             great_count,
             int(activation_great),
         )
-        actual = _numba_activation_reachable_contiguous_run(activation, float(hit), context.timestamps, HitTimes(
+        actual = activation_reachable_contiguous_run(activation, float(hit), context.timestamps, HitTimes(
                 context.perfect_floor_timestamps, context.perfect_candidate_timestamps, context.great_floor_timestamps,
                 context.great_candidate_timestamps, context.late_great_floor_timestamps,
             ), context.lanes, context.fever_fill_denom, (start, end, great_start, great_count), int(activation_great))
@@ -299,7 +299,7 @@ def test_trace_reachability_context_uses_exact_surface_query() -> None:
 def test_exact_surface_query_rejects_nonfinite_denominator(denom: float) -> None:
     timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
     with pytest.raises(ValueError, match="finite"):
-        _numba_activation_reachable_contiguous_run(40, float(timestamps[40]), timestamps, HitTimes(perfect_floor,
+        activation_reachable_contiguous_run(40, float(timestamps[40]), timestamps, HitTimes(perfect_floor,
             perfect_candidates,
             great_floor,
             great_candidates,
@@ -324,7 +324,7 @@ def _retired_boolean_region_core_for_offset(
 ) -> tuple[int, int, int, int, int, int, int]:
     """Test-only retired Boolean owner for complete ordered region-table differentials."""
     run_start = int(section_start) + int(offset)
-    activation, is_great = rb._numba_fill_crossing_run(
+    activation, is_great = rb.fill_crossing_run(
         int(section_start), int(run_start), int(k), float(raw_fill), int(n)
     )
     if int(activation) < 0:
@@ -341,7 +341,7 @@ def _retired_boolean_region_core_for_offset(
         great_end = -1
         activation_hit = -1
         for candidate_end in range(int(activation) + 1, int(max_great_end) + 1):
-            hit, valid, _token = rb._numba_late_great_activation_hit_for_run(
+            hit, valid, _token = rb.late_great_activation_hit_for_run(
                 int(activation),
                 timestamps,
                 perfect_candidates,
@@ -374,7 +374,7 @@ def _retired_boolean_region_core_for_offset(
         if int(great_end) < 0:
             return -1, -1, 0, 0, -1, -1, 0
         _perfect_hit, perfect_valid, _token = (
-            rb._numba_perfect_activation_hit_for_run(
+            rb.perfect_activation_hit_for_run(
                 int(activation),
                 timestamps,
                 perfect_candidates,
@@ -397,7 +397,7 @@ def _retired_boolean_region_core_for_offset(
     great_end = min(int(n), int(run_start) + int(k))
     if int(great_end) <= int(run_start):
         return -1, -1, 0, 0, -1, -1, 0
-    perfect_hit, perfect_valid, _token = rb._numba_perfect_activation_hit_for_run(
+    perfect_hit, perfect_valid, _token = rb.perfect_activation_hit_for_run(
         int(activation),
         timestamps,
         perfect_candidates,
@@ -454,32 +454,30 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
         np.float32(np.max(np.maximum(perfect_candidates, great_candidates) - timestamps) + 1.0e-6)
     )
     table_args = (
-        n,
-        int(action_k.shape[0]),
         action_k,
         raw_fill,
         timestamps,
         rb.HitTimes(perfect_floor, perfect_candidates, great_floor, great_candidates, perfect_candidates + np.float32(0.001)),
         lanes,
     )
-    actual = rb._numba_build_region_core_table(*table_args)
-    repeated = rb._numba_build_region_core_table(*table_args)
+    actual = rb.region_core_table(*table_args)
+    repeated = rb.region_core_table(*table_args)
     assert all(np.array_equal(left, right) for left, right in zip(actual, repeated, strict=True))
 
     expected_starts: list[int] = []
     expected_columns: list[list[int]] = [[] for _ in range(7)]
     region_stop = int(
-        rb._numba_region2_k_scan_stop(int(action_k.shape[0]), float(raw_fill))
+        rb.region2_k_scan_stop(int(action_k.shape[0]), float(raw_fill))
     )
     for section_start in range(n + 1):
         expected_starts.append(len(expected_columns[0]))
-        shifted = 1 if int(rb._numba_has_shifted_head_region(section_start, raw_fill)) else -1
+        shifted = 1 if int(rb.has_shifted_head_region(section_start, raw_fill)) else -1
         for action_idx, k_value in enumerate(action_k):
             k = int(k_value)
             region_offset = -1
             if action_idx < region_stop:
                 region_offset = int(
-                    rb._numba_region2_offset_for_count(section_start, k, raw_fill, n)
+                    rb.region2_offset_for_count(section_start, k, raw_fill, n)
                 )
             for offset_idx, offset in enumerate((region_offset, shifted)):
                 if int(offset_idx) == 1 and int(shifted) == int(region_offset):
@@ -523,13 +521,29 @@ def test_region_core_table_preserves_exact_schedule_stream() -> None:
                 )
                 expected_columns[6].append(int(perfect_valid))
     expected_starts.append(len(expected_columns[0]))
-    assert np.array_equal(actual[0], np.asarray(expected_starts, dtype=np.int64))
-    # The hit columns hold song tokens: each must resolve to its expected hit.
+    # The table holds the same runs: by activation in its key rows, and for the head section starts (all of them on
+    # a chart this short) in the same order in its head rows. Its hit columns hold song tokens: each must resolve to
+    # its expected hit. No fever ends before note ceil(fill) = 7, so the section starts 1 .. 7 are never enumerated:
+    # they hold no head row, and of their runs the key rows keep the late-Great ones, which belong to region-2 runs.
+    from tests.retired_fg_frontier_semantics import region_table_runs
+
     capped = (perfect_candidates.astype(np.float64) - 0.000001, great_candidates.astype(np.float64) - 0.000001)
     tokens = np.concatenate((timestamps, perfect_candidates, great_candidates, *capped))
-    hits = [np.where(column >= 0, tokens[column], -1.0) for column in actual[5:7]]
-    for actual_column, expected_column in zip((*actual[1:5], *hits, actual[7]), expected_columns, strict=True):
-        assert np.array_equal(actual_column, np.asarray(expected_column, dtype=actual_column.dtype))
+    compared = 0
+    for section_start in range(n + 1):
+        expected_rows = [
+            tuple(expected_columns[column][row] for column in (0, 1, 2, 4, 5))
+            for row in range(expected_starts[section_start], expected_starts[section_start + 1])
+        ]
+        head, keys = region_table_runs(actual, tokens, section_start)
+        if 1 <= section_start <= 7:
+            assert head == []
+            assert keys == {row[1:] for row in expected_rows if row[3] >= 0.0}, section_start
+            continue
+        assert head == expected_rows, section_start
+        assert keys == {row[1:] for row in expected_rows}, section_start
+        compared += len(expected_rows)
+    assert compared > 100
 
 
 def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversion() -> None:
@@ -540,9 +554,7 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
     timestamps = np.arange(n, dtype=np.float32)
     action_k = np.arange(8, dtype=np.int32)
     lanes = np.arange(n, dtype=np.int32)
-    table = rb._numba_build_region_core_table(
-        n,
-        int(action_k.shape[0]),
+    head_starts, head_rows, key_starts, key_rows = rb.region_core_table(
         action_k,
         denom,
         timestamps,
@@ -553,13 +565,13 @@ def test_region_table_huge_finite_denominator_is_exactly_empty_without_conversio
         timestamps + np.float32(0.081)),
         lanes,
     )
-    assert np.array_equal(table[0], np.zeros(n + 2, dtype=np.int64))
-    assert all(column.shape == (0,) for column in table[1:])
-    assert rb._numba_region_core_candidate_capacity(
+    assert np.array_equal(head_starts, np.zeros(n + 2, dtype=np.int64))
+    assert np.array_equal(key_starts, np.zeros(n + 1, dtype=np.int64))
+    assert head_rows.shape == key_rows.shape == (0, 5)
+    assert rb.region_core_candidate_capacity(
         n, int(action_k.shape[0]), action_k, denom
     ) == 0
-    family_count, *_families = rb._numba_build_region2_packet_families(
-        int(action_k.shape[0]), denom, action_k, n
-    )
-    assert int(family_count) == 0
-    assert rb._numba_region2_offset_for_count(0, 2, denom, n) == -1
+    no_rows = np.empty(0, dtype=np.int32)
+    families = rb.packet_families((n, 0, int(action_k.shape[0])), denom, (action_k, no_rows, no_rows, no_rows), 1)
+    assert families.shape == (0, 4)
+    assert rb.region2_offset_for_count(0, 2, denom, n) == -1

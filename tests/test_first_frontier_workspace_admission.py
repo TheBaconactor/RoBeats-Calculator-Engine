@@ -12,7 +12,6 @@ def test_workspace_plan_reports_exact_numpy_allocation_bytes() -> None:
     expected = 4 * (
         3 * ((100 + 1) * 25)
         + 2 * (100 + 2)
-        + 4 * (100 + 1)
     )
     assert plan.bytes_per_thread == expected
 

@@ -4,7 +4,7 @@ These deliberately use plain Python scans and Lists instead of the production Fe
 fused hull stack.  They are differential oracles, not alternate runtime routes.
 
 Provenance is committed main ``f00747a5``.  Body mirrors the retired
-``_numba_touch_body_candidate`` -> ``_numba_reduce_touched_body_pairs`` ->
+``touch_body_candidate`` -> ``reduce_touched_body_pairs`` ->
 ``_numba_hull_filter_body_pairs`` pipeline.
 """
 from __future__ import annotations
@@ -67,12 +67,22 @@ def retired_nested_action_reachability_prepass(
     perfect_floor_timestamps,
     great_floor_timestamps,
 ):
-    """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``."""
-    from gear_optimizer.frontier.producer_kernels import (
-        _numba_great_floor_extended_end_at_hit,
-        _numba_late_edge_extends,
-        _numba_mark_early_great_reachable_from_hit,
-    )
+    """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``. Every fever end is searched
+    here (the early-Great reach too), so the scan also checks the fever-end tables the production prepass reads."""
+    from gear_optimizer.frontier.producer_kernels import late_edge_extends
+
+    def great_floor_extended_end_at_hit(n, activation, hit, real_fever_time, great_floor_timestamps) -> int:
+        return clamped_end_idx_at_hit(n, activation, hit, real_fever_time, great_floor_timestamps)
+
+    def mark_early_great_reachable_from_hit(
+        reachable, n, activation, base_e, activation_hit, great_floor_timestamps, real_fever_time
+    ) -> int:
+        if base_e < 0 or activation < 0 or activation >= n:
+            return 0
+        eg_e = clamped_end_idx_at_hit(n, activation, activation_hit, real_fever_time, great_floor_timestamps)
+        for end in range(base_e + 1, eg_e + 1):
+            reachable[end] = True
+        return max(0, eg_e - base_e)
 
     def mark_perfect(activation: int) -> int:
         if int(prefix_perfect_valid[int(activation)]) == 0:
@@ -83,7 +93,7 @@ def retired_nested_action_reachability_prepass(
         for end_e in range(min(int(capped_perfect_exit_e[int(real_time_idx), int(activation)]), edge_e), edge_e + 1):
             reachable[int(end_e)] = True
         return int(
-            _numba_mark_early_great_reachable_from_hit(
+            mark_early_great_reachable_from_hit(
                 reachable,
                 int(n),
                 int(activation),
@@ -105,7 +115,7 @@ def retired_nested_action_reachability_prepass(
         if int(prefix_late_valid[int(activation)]) != 0:
             activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
             activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
-        if not _numba_late_edge_extends(
+        if not late_edge_extends(
             int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
         ):
             return 0
@@ -113,7 +123,7 @@ def retired_nested_action_reachability_prepass(
         for end_e in range(min(late_exit_e, activation_e), activation_e + 1):
             reachable[int(end_e)] = True
         return int(
-            _numba_mark_early_great_reachable_from_hit(
+            mark_early_great_reachable_from_hit(
                 reachable,
                 int(n),
                 int(activation),
@@ -145,7 +155,7 @@ def retired_nested_action_reachability_prepass(
                         )
                     )
                     perfect_eg_e = int(
-                        _numba_great_floor_extended_end_at_hit(
+                        great_floor_extended_end_at_hit(
                             int(n),
                             int(activation),
                             float(region_perfect_hits[int(idx)]),
@@ -164,7 +174,7 @@ def retired_nested_action_reachability_prepass(
                     )
                 )
                 activation_eg_e = int(
-                    _numba_great_floor_extended_end_at_hit(
+                    great_floor_extended_end_at_hit(
                         int(n),
                         int(activation),
                         float(activation_hit),
@@ -172,7 +182,7 @@ def retired_nested_action_reachability_prepass(
                         great_floor_timestamps,
                     )
                 )
-                if int(perfect_e) >= 0 and not _numba_late_edge_extends(
+                if int(perfect_e) >= 0 and not late_edge_extends(
                     int(perfect_e),
                     int(edge_e),
                     int(activation_eg_e),
@@ -195,7 +205,7 @@ def retired_nested_action_reachability_prepass(
             for end_e in range(min(int(exit_table[int(real_time_idx), int(activation)]), int(edge_e)), int(edge_e)):
                 reachable[int(end_e)] = True
             width = int(
-                _numba_mark_early_great_reachable_from_hit(
+                mark_early_great_reachable_from_hit(
                     reachable,
                     int(n),
                     int(activation),
@@ -263,6 +273,93 @@ def retired_nested_action_reachability_prepass(
                 ),
             )
     return reachable, int(max_eg_width)
+
+
+def retired_region_rows(*, action_k, raw_fever_fill: float, timestamps, hit_times, lanes):
+    """The region core table as it was laid out before it was organised by activation: per section start 0 .. n its
+    valid runs in enumeration order (action ascending, the region-2 offset before the shifted-head one), every run
+    built on its own with the general kernels. Returns (starts, offsets, activations, great_ends, is_greats,
+    act_hits, perfect_hits, perfect_valids), the hits as times (-1.0: none)."""
+    from gear_optimizer.frontier import producer_kernels as kernels
+
+    n = int(timestamps.shape[0])
+    perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
+    stop = int(kernels.region2_k_scan_stop(len(action_k), raw_fever_fill))
+    starts = [0]
+    rows: list[tuple[int, int, int, int, float, float, int]] = []
+    for section_start in range(n + 1):
+        shifted = 1 if kernels.has_shifted_head_region(section_start, raw_fever_fill) else -1
+        for action, k in enumerate(int(value) for value in action_k):
+            region = int(kernels.region2_offset_for_count(section_start, k, raw_fever_fill, n)) if action < stop else -1
+            for offset in (region,) if shifted == region else (region, shifted):
+                if offset < 1:
+                    continue
+                run_start = section_start + offset
+                activation, is_great = kernels.fill_crossing_run(section_start, run_start, k, raw_fever_fill, n)
+                if activation < 0:
+                    continue
+                if is_great:
+                    great_end, _token = kernels.minimal_reachable_region_great_end(
+                        activation, section_start, run_start, raw_fever_fill, timestamps, hit_times, lanes, n
+                    )
+                    if great_end < 0:
+                        continue
+                    act_hit = kernels.late_great_activation_hit_for_run(
+                        activation, timestamps, perfect_candidates, great_candidates,
+                        hit_times.late_great_floor_timestamps, run_start, great_end - run_start, n,
+                    )[0]
+                    perfect_hit, perfect_valid, _token = kernels.perfect_activation_hit_for_run(
+                        activation, timestamps, perfect_candidates, great_candidates, run_start, great_end - run_start, n
+                    )
+                    rows.append((
+                        offset, activation, great_end, 1, float(act_hit), float(perfect_hit) if perfect_valid else -1.0,
+                        int(perfect_valid),
+                    ))
+                    continue
+                great_end = min(n, run_start + k)
+                if great_end <= run_start:
+                    continue
+                perfect_hit, perfect_valid, _token = kernels.perfect_activation_hit_for_run(
+                    activation, timestamps, perfect_candidates, great_candidates, run_start, great_end - run_start, n
+                )
+                if not perfect_valid or not kernels.activation_reachable_contiguous_run(
+                    activation, float(perfect_hit), timestamps, hit_times, lanes, raw_fever_fill,
+                    (section_start, n, run_start, great_end - run_start), 0,
+                ):
+                    continue
+                rows.append((offset, activation, great_end, 0, -1.0, float(perfect_hit), 1))
+        starts.append(len(rows))
+    columns = list(zip(*rows)) if rows else [()] * 7
+    return (
+        np.asarray(starts, dtype=np.int64),
+        *(np.asarray(columns[index], dtype=np.int32) for index in range(4)),
+        np.asarray(columns[4], dtype=np.float64),
+        np.asarray(columns[5], dtype=np.float64),
+        np.asarray(columns[6], dtype=np.int32),
+    )
+
+
+def region_table_runs(table, hit_of_token, section_start: int):
+    """What a region table (producer_kernels.region_core_table) holds at one section start: its head rows there in
+    order, as (offset, activation, Great end, late-Great hit, Perfect hit), and the set of (activation, Great end,
+    late-Great hit, Perfect hit) its key rows hold there. Hits are times (-1.0: none)."""
+    head_starts, head_rows, key_starts, key_rows = table
+
+    def hit(token: int) -> float:
+        return float(hit_of_token[token]) if token >= 0 else -1.0
+
+    head = []
+    if section_start + 1 < head_starts.shape[0]:
+        head = [
+            (int(row[0]), int(row[1]), int(row[2]), hit(int(row[3])), hit(int(row[4])))
+            for row in head_rows[int(head_starts[section_start]) : int(head_starts[section_start + 1])]
+        ]
+    keys = set()
+    for activation in range(key_starts.shape[0] - 1):
+        for row in key_rows[int(key_starts[activation]) : int(key_starts[activation + 1])]:
+            if int(row[0]) <= section_start <= int(row[1]):
+                keys.add((activation, int(row[2]), hit(int(row[3])), hit(int(row[4]))))
+    return head, keys
 
 
 def retired_touch_body_candidates(

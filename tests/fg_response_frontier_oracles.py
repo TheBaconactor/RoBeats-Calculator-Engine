@@ -249,11 +249,11 @@ def _head_envelope_reduce_surfaces(
 ) -> tuple[FgResponseSurface, ...]:
     if not surfaces:
         return (_EMPTY_SURFACE,)
-    from gear_optimizer.frontier.producer_kernels import _numba_head_envelope_filter
+    from gear_optimizer.frontier.producer_kernels import head_envelope_filter
 
     # The surfaces are already the exact Pareto set (_reduce_surfaces).
     rows = np.array([_to_numba_surface(surface) for surface in surfaces], dtype=np.uint64)
-    reduced = _numba_head_envelope_filter(rows, int(lo_pos), int(hi_pos))
+    reduced = head_envelope_filter(rows, int(lo_pos), int(hi_pos))
     return tuple(_from_numba_surface(reduced[idx]) for idx in range(len(reduced))) or (
         _EMPTY_SURFACE,
     )

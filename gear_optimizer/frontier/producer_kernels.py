@@ -3,32 +3,19 @@ from collections import namedtuple
 import numpy as np
 from numba import njit
 
-# The tables a candidate append reads: the body-tail surface arrays and the head-state frontier arena (rows in
-# `head_pool`, addressed per state by head_state_start / head_state_count) for the first `head_limit` states.
-HeadTables = namedtuple(
-    "HeadTables",
+# What a head state's candidates read: every body state's tail frontier (rows of `body_values`, addressed per state by
+# body_starts / body_counts) and the frontiers of the head states already built (rows of `head_pool`, addressed by
+# head_state_start / head_state_count) for the first `head_limit` states.
+_HeadTables = namedtuple(
+    "_HeadTables",
     ["body_values", "body_starts", "body_counts", "head_pool", "head_state_start", "head_state_count", "head_limit"],
 )
-# The first-frontier build's action-region tables (per region, and per song hit token), passed together.
+# A group's region table (region_core_table) and one fever time's end of every hit token on the Perfect and the Great
+# floor.
 RegionTables = namedtuple(
-    "RegionTables",
-    [
-        "region_starts",
-        "region_offsets",
-        "region_activations",
-        "region_great_ends",
-        "region_is_greats",
-        "region_act_hit_ids",
-        "region_perfect_hit_ids",
-        "region_perfect_valids",
-        "region_perfect_end_by_hit",
-        "region_great_end_by_hit",
-    ],
+    "RegionTables", ["head_starts", "head_rows", "key_starts", "key_rows", "perfect_end_by_hit", "great_end_by_hit"]
 )
-# One packet queue's back-segment arrays (alpha, packet offsets, Great-activation bounds, lengths, arenas).
-# The Perfect / Great floor and candidate hit times of every note and its earliest planned late-Great hit (the
-# reachability and region-core checks).
-
+# Every note's earliest (floor) and latest (candidate) Perfect and Great hit, and its earliest late-Great hit.
 HitTimes = namedtuple(
     "HitTimes",
     [
@@ -39,17 +26,15 @@ HitTimes = namedtuple(
         "late_great_floor_timestamps",
     ],
 )
-# One fever time's per-activation tables: each note's latest reachable Perfect / late-Great activation hit (valid where
-# `*_valid` != 0), the window ends those hits reach on the Perfect floor (`perfect_e`, `late_e`) and on the
-# early-Great floor (`eg_perfect_e`, `eg_late_e`), clamped to (activation, n], and the earliest ends a Perfect /
-# late-Great activation can exit at (`perfect_exit_e`, `late_exit_e`; its ends are every e from there to `perfect_e` /
-# `late_e`).
+# One fever time's per-activation tables: whether a note has a reachable Perfect / late-Great activation hit
+# (`*_valid` != 0), the ends its latest such hit reaches on the Perfect floor (`perfect_e`, `late_e`) and on the Great
+# floor (`eg_perfect_e`, `eg_late_e`: its early-Great reach), clamped to (activation, n], and the earliest end a
+# Perfect / late-Great activation can exit at (`perfect_exit_e`, `late_exit_e`; its ends are every e from there to
+# its early-Great reach).
 ActivationEnds = namedtuple(
     "ActivationEnds",
     [
-        "perfect_hit",
         "perfect_valid",
-        "late_hit",
         "late_valid",
         "perfect_e",
         "late_e",
@@ -59,19 +44,16 @@ ActivationEnds = namedtuple(
         "late_exit_e",
     ],
 )
-_HEAD_BASIS_FEVER_LO = 0
-_HEAD_BASIS_FEVER_HI = 1
-_HEAD_BASIS_GREAT_LO = 2
-_HEAD_BASIS_GREAT_HI = 3
-_HEAD_BASIS_BODY_FEVER = 4
-_HEAD_BASIS_BODY_NORMAL_GREAT = 5
-_HEAD_BASIS_BODY_FEVER_GREAT = 6
-_HEAD_BASIS_B_LO = 7
-_HEAD_BASIS_C_LO = 8
-_HEAD_BASIS_D_LO = 9
-_HEAD_BASIS_B_HI = 10
-_HEAD_BASIS_C_HI = 11
-_HEAD_BASIS_D_HI = 12
+# A surface's basis for the corner scores: its body counts, then its head sums at the box's low and high combo.
+_BASIS_BODY_FEVER = 0
+_BASIS_BODY_NORMAL_GREAT = 1
+_BASIS_BODY_FEVER_GREAT = 2
+_BASIS_B_LO = 3
+_BASIS_C_LO = 4
+_BASIS_D_LO = 5
+_BASIS_B_HI = 6
+_BASIS_C_HI = 7
+_BASIS_D_HI = 8
 
 # Song tokens ``kind * n + note_index`` name every value activation-hit selection can return (chart / Perfect /
 # Great / capped Perfect / capped Great); the song-wide endpoint tables are indexed by them directly.
@@ -81,10 +63,24 @@ _REGION_HIT_GREAT = 2
 _REGION_HIT_PERFECT_CAPPED = 3
 _REGION_HIT_GREAT_CAPPED = 4
 _EXACT_LANE_SIGNATURE_MAX_WORD_CELLS = 16_777_216
+# The kinds of a body state's activation families (packet_families). A late-Great activation is itself one fever Great.
+_PERFECT_FAMILY = 0
+_LATE_FAMILY = 1
+_REGION_FAMILY = 2
+# Columns of a region table's rows (region_core_table). A head row holds a run's offset and activation, a key row the
+# section starts a run of its activation holds at; both end with the run's Great end and the song tokens of its
+# late-Great and Perfect activation hits (-1: it has none).
+_HEAD_OFFSET = 0
+_HEAD_ACTIVATION = 1
+_KEY_FIRST_SECTION = 0
+_KEY_LAST_SECTION = 1
+_ROW_GREAT_END = 2
+_ROW_LATE_HIT = 3
+_ROW_PERFECT_HIT = 4
 
 
 @njit(cache=True, nogil=True)
-def _numba_mask_segment(start: int, end: int, offset: int) -> np.uint64:
+def _mask_segment(start: int, end: int, offset: int) -> np.uint64:
     lo = max(start, offset)
     hi = min(end, offset + 64)
     if hi <= lo:
@@ -96,14 +92,14 @@ def _numba_mask_segment(start: int, end: int, offset: int) -> np.uint64:
 
 
 @njit(cache=True, nogil=True)
-def _numba_range_mask(start: int, end: int, n: int):
+def _range_mask(start: int, end: int, n: int):
     start_i = max(0, min(min(start, n), 100))
     end_i = max(0, min(min(end, n), 100))
-    return _numba_mask_segment(start_i, end_i, 0), _numba_mask_segment(start_i, end_i, 64)
+    return _mask_segment(start_i, end_i, 0), _mask_segment(start_i, end_i, 64)
 
 
 @njit(cache=True, nogil=True)
-def _numba_body_count(start: int, end: int, n: int) -> np.uint64:
+def _body_count(start: int, end: int, n: int) -> np.uint64:
     body_start = max(start, 100)
     body_end = min(end, n)
     if body_end <= body_start:
@@ -112,38 +108,26 @@ def _numba_body_count(start: int, end: int, n: int) -> np.uint64:
 
 
 @njit(cache=True, nogil=True)
-def _numba_body_overlap_count(
-    first_start: int, first_end: int, second_start: int, second_end: int, n: int
-) -> np.uint64:
-    body_start = max(max(first_start, second_start), 100)
-    body_end = min(min(first_end, second_end), n)
-    if body_end <= body_start:
-        return np.uint64(0)
-    return np.uint64(body_end - body_start)
-
-
-@njit(cache=True, nogil=True)
-def _numba_single_head_mask(idx: int, n: int):
-    idx_i = idx
-    if idx_i < 0 or idx_i >= min(n, 100):
+def _single_head_mask(idx: int, n: int):
+    if idx < 0 or idx >= min(n, 100):
         return np.uint64(0), np.uint64(0)
-    if idx_i < 64:
-        return np.uint64(1) << np.uint64(idx_i), np.uint64(0)
-    return np.uint64(0), np.uint64(1) << np.uint64(idx_i - 64)
+    if idx < 64:
+        return np.uint64(1) << np.uint64(idx), np.uint64(0)
+    return np.uint64(0), np.uint64(1) << np.uint64(idx - 64)
 
 
 @njit(cache=True, nogil=True)
-def _numba_pack_edge(
+def pack_edge(
     n: int, fever_start: int, fever_end: int, great_start: int, great_end: int, activation_great_idx: int
 ):
-    fever_lo, fever_hi = _numba_range_mask(fever_start, fever_end, n)
-    great_lo, great_hi = _numba_range_mask(great_start, great_end, n)
+    fever_lo, fever_hi = _range_mask(fever_start, fever_end, n)
+    great_lo, great_hi = _range_mask(great_start, great_end, n)
     if activation_great_idx >= 0:
-        activation_lo, activation_hi = _numba_single_head_mask(activation_great_idx, n)
+        activation_lo, activation_hi = _single_head_mask(activation_great_idx, n)
         great_lo = great_lo | activation_lo
         great_hi = great_hi | activation_hi
-    body_great = _numba_body_count(great_start, great_end, n)
-    body_fever_great = _numba_body_overlap_count(fever_start, fever_end, great_start, great_end, n)
+    body_great = _body_count(great_start, great_end, n)
+    body_fever_great = _body_count(max(fever_start, great_start), min(fever_end, great_end), n)
     if (
         activation_great_idx >= max(100, fever_start)
         and activation_great_idx < min(fever_end, n)
@@ -156,14 +140,14 @@ def _numba_pack_edge(
         fever_hi,
         great_lo,
         great_hi,
-        _numba_body_count(fever_start, fever_end, n),
+        _body_count(fever_start, fever_end, n),
         body_great,
         body_fever_great,
     )
 
 
 @njit(cache=True, nogil=True)
-def _numba_pack_edge_eg(
+def pack_edge_eg(
     n: int,
     fever_start: int,
     fever_end: int,
@@ -173,44 +157,29 @@ def _numba_pack_edge_eg(
     early_great_start: int,
     early_great_end: int,
 ):
-    """`_numba_pack_edge` plus the issue-#44 early-Great tail range [early_great_start,
-    early_great_end): notes pulled into fever ONLY as Greats at a section end. They are
-    in-fever-and-Great, so they OR into the Great head mask and add to BOTH body_great and
-    body_fever_great. The tail is disjoint from the forced-Great prefix [great_start,
-    great_end) (forced greats precede the activation), so there is no double count."""
-    fever_lo, fever_hi, great_lo, great_hi, body_fever, body_great, body_fever_great = _numba_pack_edge(
+    """`pack_edge` plus the early-Great tail [early_great_start, early_great_end): notes pulled into the fever only as
+    Greats at a section end. They are in fever and Great, so they join the Great head mask and add to both body_great
+    and body_fever_great. The tail is disjoint from the forced-Great run [great_start, great_end) (forced Greats
+    precede the activation), so nothing is counted twice."""
+    fever_lo, fever_hi, great_lo, great_hi, body_fever, body_great, body_fever_great = pack_edge(
         n, fever_start, fever_end, great_start, great_end, activation_great_idx
     )
     if early_great_end > early_great_start:
-        eg_lo, eg_hi = _numba_range_mask(early_great_start, early_great_end, n)
+        eg_lo, eg_hi = _range_mask(early_great_start, early_great_end, n)
         great_lo = great_lo | eg_lo
         great_hi = great_hi | eg_hi
-        eg_body = _numba_body_count(early_great_start, early_great_end, n)
+        eg_body = _body_count(early_great_start, early_great_end, n)
         body_great = body_great + eg_body
         # The early-Great tail lies inside [fever_start, fever_end) by construction, so every
         # tail note is also a fever note -> the overlap equals the tail's body count.
-        body_fever_great = body_fever_great + _numba_body_overlap_count(
-            fever_start, fever_end, early_great_start, early_great_end, n
+        body_fever_great = body_fever_great + _body_count(
+            max(fever_start, early_great_start), min(fever_end, early_great_end), n
         )
     return (fever_lo, fever_hi, great_lo, great_hi, body_fever, body_great, body_fever_great)
 
 
 @njit(cache=True, nogil=True)
-def _numba_lower_bound_from(timestamps, value: float) -> int:
-    lo = 0
-    hi = timestamps.shape[0]
-    needle = np.float32(value)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if timestamps[mid] < needle:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
-
-
-@njit(cache=True, nogil=True)
-def _numba_latest_activation_hit_for_contiguous_great_run(
+def _latest_activation_hit(
     activation_idx: int,
     window,
     timestamps,
@@ -250,22 +219,14 @@ def _numba_latest_activation_hit_for_contiguous_great_run(
 
 
 @njit(cache=True, nogil=True)
-def _numba_great_floor_extended_end_at_hit(
-    n: int, activation_idx: int, hit: float, real_fever_time: float, great_floor_timestamps
-) -> int:
-    e = _numba_lower_bound_from(great_floor_timestamps, hit + real_fever_time)
-    return _numba_clamped_end_idx(n, activation_idx, int(e))
-
-
-@njit(cache=True, nogil=True)
-def _numba_late_edge_extends(edge_e: int, activation_e: int, activation_eg_e: int, edge_eg_e: int) -> bool:
+def late_edge_extends(edge_e: int, activation_e: int, activation_eg_e: int, edge_eg_e: int) -> bool:
     """Whether the late-Great activation edge carries content the Perfect edge cannot: a strictly
     longer perfect-floor extent OR, on extent ties, a strictly longer early-Great (great-floor)
     reach -- the late hit pushes the fever end further, pulling boundary notes in as fever-Greats
     the Perfect edge's window cannot reach (record 16.33: +337.5 oracle witness). When both tie,
     skipping the late edge stays lossless (its surfaces are the Perfect edge's plus a strictly
     costlier activation Great). The two early-Great (great-floor) extended ends arrive precomputed
-    (clamped, `_numba_clamped_end_idx` semantics): `activation_eg_e` at the late-Great hit,
+    (clamped, `_clamped_end` semantics): `activation_eg_e` at the late-Great hit,
     `edge_eg_e` at the Perfect hit. They are only read when 0 <= activation_e <= edge_e -- both
     edges valid -- so callers may pass any deterministic value on the invalid paths."""
     if activation_e < 0:
@@ -276,7 +237,7 @@ def _numba_late_edge_extends(edge_e: int, activation_e: int, activation_eg_e: in
 
 
 @njit(cache=True, nogil=True)
-def _numba_perfect_activation_hit_for_run(
+def perfect_activation_hit_for_run(
     activation_idx: int,
     timestamps,
     perfect_candidate_timestamps,
@@ -293,7 +254,7 @@ def _numba_perfect_activation_hit_for_run(
     perfect = float(perfect_candidate_timestamps[a])
     lo = chart if chart < perfect else perfect
     hi = perfect if perfect > chart else chart
-    return _numba_latest_activation_hit_for_contiguous_great_run(
+    return _latest_activation_hit(
         a,
         (lo, hi),
         timestamps,
@@ -306,7 +267,7 @@ def _numba_perfect_activation_hit_for_run(
 
 
 @njit(cache=True, nogil=True)
-def _numba_late_great_activation_hit_for_run(
+def late_great_activation_hit_for_run(
     activation_idx: int,
     timestamps,
     perfect_candidate_timestamps,
@@ -322,7 +283,7 @@ def _numba_late_great_activation_hit_for_run(
         return 0.0, 0, -1
     hit_lo = float(late_great_floor_timestamps[a])
     hit_hi = float(great_candidate_timestamps[a])
-    return _numba_latest_activation_hit_for_contiguous_great_run(
+    return _latest_activation_hit(
         a,
         (hit_lo, hit_hi),
         timestamps,
@@ -335,7 +296,7 @@ def _numba_late_great_activation_hit_for_run(
 
 
 @njit(cache=True, nogil=True)
-def _numba_build_prefix_activation_hit_tables(
+def activation_hit_tables(
     n: int, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, late_great_floor_timestamps
 ):
     perfect_hit = np.zeros(n, dtype=np.float64)
@@ -343,12 +304,12 @@ def _numba_build_prefix_activation_hit_tables(
     late_hit = np.zeros(n, dtype=np.float64)
     late_valid = np.zeros(n, dtype=np.int8)
     for activation in range(n):
-        hit, valid, _token = _numba_perfect_activation_hit_for_run(
+        hit, valid, _token = perfect_activation_hit_for_run(
             activation, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, activation, 0, n
         )
         perfect_hit[activation] = float(hit)
         perfect_valid[activation] = np.int8(valid)
-        hit, valid, _token = _numba_late_great_activation_hit_for_run(
+        hit, valid, _token = late_great_activation_hit_for_run(
             activation,
             timestamps,
             perfect_candidate_timestamps,
@@ -364,7 +325,7 @@ def _numba_build_prefix_activation_hit_tables(
 
 
 @njit(cache=True, nogil=True)
-def _numba_fill_crossing_run(start: int, great_run_start: int, k: int, fever_fill_denom: float, n: int):
+def fill_crossing_run(start: int, great_run_start: int, k: int, fever_fill_denom: float, n: int):
     s = start
     g0 = great_run_start
     count = k
@@ -402,7 +363,7 @@ def _numba_fill_crossing_run(start: int, great_run_start: int, k: int, fever_fil
 
 
 @njit(cache=True, nogil=True)
-def _numba_region2_offset_for_count(start: int, count: int, fever_fill_denom: float, n: int) -> int:
+def region2_offset_for_count(start: int, count: int, fever_fill_denom: float, n: int) -> int:
     if count <= 0 or start >= n:
         return -1
     denom = fever_fill_denom
@@ -427,7 +388,7 @@ def _numba_region2_offset_for_count(start: int, count: int, fever_fill_denom: fl
 
 
 @njit(cache=True, nogil=True)
-def _numba_region2_k_scan_stop(action_count: int, fever_fill_denom: float) -> int:
+def region2_k_scan_stop(action_count: int, fever_fill_denom: float) -> int:
     count = action_count
     denom = fever_fill_denom
     if count <= 0:
@@ -447,7 +408,7 @@ def _numba_region2_k_scan_stop(action_count: int, fever_fill_denom: float) -> in
 
 
 @njit(cache=True, nogil=True)
-def _numba_exact_surface_signature_lane_prefix_reachable(
+def _lane_prefix_signature_reachable(
     activation_index: int,
     activation_hit_timestamp: float,
     hit_times,
@@ -594,7 +555,33 @@ def _numba_exact_surface_signature_lane_prefix_reachable(
 
 
 @njit(cache=True, nogil=True)
-def _numba_activation_reachable_contiguous_run(
+def _fill_window_holds(denom: float, preactivation_count: int, great_before: int, activation_is_great: bool) -> bool:
+    """Whether the bar fills on the activation: `preactivation_count` notes of the section precede it, `great_before`
+    of them Greats (half a fill unit each), and the activation adds a unit as a Perfect and half as a Great."""
+    preactivation_half = 2 * preactivation_count - great_before
+    activation_half = 1 if activation_is_great else 2
+    fill_before = 0.5 * float(preactivation_half)
+    return fill_before < denom and denom <= fill_before + 0.5 * float(activation_half)
+
+
+@njit(cache=True, nogil=True)
+def _later_notes_allow(a: int, h_a, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, run) -> bool:
+    """Whether every note after activation `a` can stay at or after its hit `h_a`. Candidate highs are per note (aware
+    of held tails), so only the later notes whose chart time is still before the hit are read: once a chart time is
+    at or past it, the judgment windows put that note's high there too. run = (Great run start, Great run end, the
+    section's end)."""
+    g0, g1, end = run
+    for j in range(a + 1, end):
+        if timestamps[j] >= h_a:
+            break
+        label_high = great_candidate_timestamps[j] if g0 <= j and j < g1 else perfect_candidate_timestamps[j]
+        if label_high < h_a:
+            return False
+    return True
+
+
+@njit(cache=True, nogil=True)
+def activation_reachable_contiguous_run(
     activation_index: int,
     activation_hit_timestamp: float,
     timestamps,
@@ -659,10 +646,7 @@ def _numba_activation_reachable_contiguous_run(
     # position-exact and body event/Great counts remain identical to the cached surface.
     preactivation_count = a - start
     great_before = max(0, min(a, g1) - max(start, g0))
-    preactivation_half = 2 * preactivation_count - great_before
-    activation_half = 1 if activation_is_great else 2
-    fill_before = 0.5 * float(preactivation_half)
-    if not (fill_before < denom and denom <= fill_before + 0.5 * float(activation_half)):
+    if not _fill_window_holds(denom, preactivation_count, great_before, activation_is_great):
         return False
 
     # Both floor streams are monotone prefix maxima.  Check the last row of each constant-label
@@ -680,22 +664,13 @@ def _numba_activation_reachable_contiguous_run(
     if a > perfect_after_run_start and perfect_floor_timestamps[a - 1] > h_a:
         chart_prefix_legal = False
 
-    # Every remaining chart-order event must stay at/after the activation.  Candidate highs are
-    # per-note (held-tail aware), so inspect only later notes whose chart timestamp is still before
-    # h_a; once chart >= h_a, the canonical judgment windows guarantee high >= chart >= h_a.
-    for j in range(a + 1, end):
-        if timestamps[j] >= h_a:
-            break
-        is_great = g0 <= j and j < g1
-        label_high = great_candidate_timestamps[j] if is_great else perfect_candidate_timestamps[j]
-        if label_high < h_a:
-            chart_prefix_legal = False
-            break
-    if bool(chart_prefix_legal):
+    if chart_prefix_legal and _later_notes_allow(
+        a, h_a, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, (g0, g1, end)
+    ):
         return True
 
     return bool(
-        _numba_exact_surface_signature_lane_prefix_reachable(
+        _lane_prefix_signature_reachable(
             a,
             float(h_a),
             hit_times,
@@ -709,7 +684,7 @@ def _numba_activation_reachable_contiguous_run(
 
 
 @njit(cache=True, nogil=True)
-def _numba_minimal_reachable_region_great_end(
+def minimal_reachable_region_great_end(
     activation: int, section_start: int, run_start: int, raw_fever_fill: float, timestamps, hit_times, lanes, n: int
 ):
     (
@@ -725,7 +700,7 @@ def _numba_minimal_reachable_region_great_end(
     while max_great_end < n and perfect_candidate_timestamps[max_great_end] < hit_hi:
         max_great_end += 1
     for great_end in range(a + 1, max_great_end + 1):
-        hit, valid, token = _numba_late_great_activation_hit_for_run(
+        hit, valid, token = late_great_activation_hit_for_run(
             a,
             timestamps,
             perfect_candidate_timestamps,
@@ -737,7 +712,7 @@ def _numba_minimal_reachable_region_great_end(
         )
         if int(valid) == 0:
             continue
-        if _numba_activation_reachable_contiguous_run(
+        if activation_reachable_contiguous_run(
             a,
             float(hit),
             timestamps,
@@ -752,21 +727,21 @@ def _numba_minimal_reachable_region_great_end(
 
 
 @njit(cache=True, nogil=True)
-def _numba_has_shifted_head_region(section_start: int, raw_fever_fill: float) -> int:
+def has_shifted_head_region(section_start: int, raw_fever_fill: float) -> int:
     if section_start >= 99:
         return 0
     return 1 if int(np.ceil(raw_fever_fill)) > 1 else 0
 
 
 @njit(cache=True, nogil=True)
-def _numba_region_core_candidate_capacity(n: int, region_action_count: int, action_k, raw_fever_fill: float) -> int:
+def region_core_candidate_capacity(n: int, region_action_count: int, action_k, raw_fever_fill: float) -> int:
     """Exact count of offsets that can reach the expensive region-core producer.
 
     This is an allocation bound only: validity still belongs exclusively to
-    ``_numba_region_run_core_for_offset``. Counting repeats the cheap offset arithmetic but never
+    ``_region_run_core``. Counting repeats the cheap offset arithmetic but never
     reconstructs semantics, and the fill pass retains the canonical section/action/offset order.
     """
-    region_k_stop = _numba_region2_k_scan_stop(region_action_count, raw_fever_fill)
+    region_k_stop = region2_k_scan_stop(region_action_count, raw_fever_fill)
     denom = raw_fever_fill
     if denom <= 0.0 or not np.isfinite(denom):
         raise ValueError("raw_fever_fill must be finite and > 0")
@@ -781,7 +756,7 @@ def _numba_region_core_candidate_capacity(n: int, region_action_count: int, acti
     candidate_count = shifted_sections * region_action_count
     for action_idx in range(int(region_k_stop)):
         k = int(action_k[action_idx])
-        region_offset = _numba_region2_offset_for_count(0, k, raw_fever_fill, n)
+        region_offset = region2_offset_for_count(0, k, raw_fever_fill, n)
         if int(region_offset) < 1:
             continue
         section_count = max(0, n - int(region_offset) - k + 1)
@@ -794,545 +769,393 @@ def _numba_region_core_candidate_capacity(n: int, region_action_count: int, acti
     return candidate_count
 
 
-@njit(cache=True, nogil=True, inline="always")
-def _numba_region_run_core_for_offset(
-    n: int, section_start: int, offset: int, k: int, raw_fever_fill: float, timestamps, hit_times, lanes
-):
-    """The rt-independent core of a region-run candidate: fill crossing, minimal reachable region
-    Great end, capped activation/perfect hits, and the weighted lane-aware reachability check.
-    Depends on the geometry only through the fever-fill denom (never real_fever_time), so results
-    are shareable across every geometry of one (raw_fever_fill, non_fever_base) group.
-
-    Returns ``(activation, great_end, is_great, perfect_valid, activation_token,
-    perfect_token, valid)``, the hits as song tokens."""
+@njit(cache=True, nogil=True)
+def _region_run_core(n: int, section_start: int, offset: int, k: int, raw_fever_fill: float, timestamps, hit_times, lanes):
+    """The core of the run of `k` forced Greats from `section_start` + `offset`, by the general route: its fill
+    crossing, its minimal reachable Great end, its capped activation hits and the lane-aware reachability of its
+    activation. Returns (activation, Great end, late-Great hit token, Perfect hit token), a token -1 where the run has
+    no such hit, or activation -1 when the run is not valid."""
     run_start = section_start + offset
-    activation, is_great = _numba_fill_crossing_run(section_start, run_start, k, raw_fever_fill, n)
-    if int(activation) < 0:
-        return -1, -1, 0, 0, -1, -1, 0
-
-    if int(is_great) != 0:
-        great_end, activation_token = _numba_minimal_reachable_region_great_end(
-            int(activation), section_start, run_start, raw_fever_fill, timestamps, hit_times, lanes, n
+    activation, is_great = fill_crossing_run(section_start, run_start, k, raw_fever_fill, n)
+    if activation < 0:
+        return -1, -1, -1, -1
+    perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
+    if is_great != 0:
+        great_end, late_token = minimal_reachable_region_great_end(
+            activation, section_start, run_start, raw_fever_fill, timestamps, hit_times, lanes, n
         )
-        if int(great_end) < 0:
-            return -1, -1, 0, 0, -1, -1, 0
-        perfect_hit, perfect_valid, perfect_token = _numba_perfect_activation_hit_for_run(
-            int(activation),
-            timestamps,
-            hit_times.perfect_candidate_timestamps,
-            hit_times.great_candidate_timestamps,
-            run_start,
-            int(great_end) - run_start,
-            n,
+        if great_end < 0:
+            return -1, -1, -1, -1
+        _hit, _valid, perfect_token = perfect_activation_hit_for_run(
+            activation, timestamps, perfect_candidates, great_candidates, run_start, great_end - run_start, n
         )
-        return (int(activation), int(great_end), 1, int(perfect_valid), int(activation_token), int(perfect_token), 1)
-
+        return activation, great_end, late_token, perfect_token
     great_end = min(n, run_start + k)
-    if int(great_end) <= run_start:
-        return -1, -1, 0, 0, -1, -1, 0
-    perfect_hit, perfect_valid, perfect_token = _numba_perfect_activation_hit_for_run(
-        int(activation),
-        timestamps,
-        hit_times.perfect_candidate_timestamps,
-        hit_times.great_candidate_timestamps,
-        run_start,
-        int(great_end) - run_start,
-        n,
+    if great_end <= run_start:
+        return -1, -1, -1, -1
+    perfect_hit, perfect_valid, perfect_token = perfect_activation_hit_for_run(
+        activation, timestamps, perfect_candidates, great_candidates, run_start, great_end - run_start, n
     )
-    if int(perfect_valid) == 0:
-        return -1, -1, 0, 0, -1, -1, 0
-    if not _numba_activation_reachable_contiguous_run(
-        int(activation),
+    if perfect_valid == 0 or not activation_reachable_contiguous_run(
+        activation,
         float(perfect_hit),
         timestamps,
         hit_times,
         lanes,
         raw_fever_fill,
-        (section_start, n, run_start, int(great_end) - run_start),
+        (section_start, n, run_start, great_end - run_start),
         0,
     ):
-        return -1, -1, 0, 0, -1, -1, 0
-    return (int(activation), int(great_end), 0, 1, -1, int(perfect_token), 1)
+        return -1, -1, -1, -1
+    return activation, great_end, -1, perfect_token
 
 
-@njit(cache=True, nogil=True, inline="always")
-def _numba_region_run_edge_from_core(
-    n: int, section_start: int, offset: int, core, perfect_end_by_hit, great_end_by_hit
-):
-    (
-        core_activation,
-        core_great_end,
-        core_is_great,
-        core_activation_hit_id,
-        core_perfect_hit_id,
-        core_perfect_valid,
-        core_valid,
-    ) = core
-    if core_valid == 0:
-        return -1, -1, -1, -1, -1, -1, 0
-    run_start = section_start + offset
+@njit(cache=True, nogil=True)
+def region_edge(n: int, activation: int, late_hit_id: int, perfect_hit_id: int, perfect_end_by_hit, great_end_by_hit):
+    """A region run's edge at one fever time, from the ends its hits reach: (base end, early-Great end), both clamped
+    to (activation, n], or (-1, -1) when the run has no edge there. `perfect_hit_id` is the token of its Perfect
+    activation hit (-1: none), `late_hit_id` that of its late-Great activation hit (-1: a Perfect crosses the fill). A
+    late-Great activation is kept only where it carries more than the Perfect one (late_edge_extends)."""
     perfect_e, perfect_eg_e = -1, -1
-    if core_perfect_valid != 0:
-        perfect_e = _numba_clamped_end_idx(n, core_activation, int(perfect_end_by_hit[core_perfect_hit_id]))
-        perfect_eg_e = _numba_clamped_end_idx(n, core_activation, int(great_end_by_hit[core_perfect_hit_id]))
-    if core_is_great == 0:
-        return core_activation, int(perfect_e), run_start, core_great_end, -1, int(perfect_eg_e), 1
-    activation_e = _numba_clamped_end_idx(n, core_activation, int(perfect_end_by_hit[core_activation_hit_id]))
-    activation_eg_e = _numba_clamped_end_idx(n, core_activation, int(great_end_by_hit[core_activation_hit_id]))
-    if int(perfect_e) >= 0 and not _numba_late_edge_extends(
-        int(perfect_e), int(activation_e), int(activation_eg_e), int(perfect_eg_e)
-    ):
-        return -1, -1, -1, -1, -1, -1, 0
-    return (core_activation, int(activation_e), run_start, core_great_end, core_activation, int(activation_eg_e), 1)
+    if perfect_hit_id >= 0:
+        perfect_e = _clamped_end(n, activation, int(perfect_end_by_hit[perfect_hit_id]))
+        perfect_eg_e = _clamped_end(n, activation, int(great_end_by_hit[perfect_hit_id]))
+    if late_hit_id < 0:
+        return perfect_e, perfect_eg_e
+    late_e = _clamped_end(n, activation, int(perfect_end_by_hit[late_hit_id]))
+    late_eg_e = _clamped_end(n, activation, int(great_end_by_hit[late_hit_id]))
+    if perfect_e >= 0 and not late_edge_extends(perfect_e, late_e, late_eg_e, perfect_eg_e):
+        return -1, -1
+    return late_e, late_eg_e
 
 
 @njit(cache=True, nogil=True)
-def _numba_region_run_edge_for_offset(
-    where, raw_fever_fill: float, timestamps, hit_times, lanes, perfect_end_by_hit, great_end_by_hit
-):
-    n, section_start, offset, k = where
-    core = _numba_region_run_core_for_offset(n, section_start, offset, k, raw_fever_fill, timestamps, hit_times, lanes)
-    return _numba_region_run_edge_from_core(
-        n,
-        section_start,
-        offset,
-        (core[0], core[1], core[2], core[4], core[5], core[3], core[6]),
-        perfect_end_by_hit,
-        great_end_by_hit,
-    )
+def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, lanes):
+    """The region runs of one (fill, non-Fever base) group: at a section start, an action's k forced Greats from its
+    region-2 offset (where the k-th Great of the run crosses the fill, so the run's last Great activates) and, at the
+    first 99 section starts, from the shifted-head offset 1. A run's core (_region_run_core) reads the fill only,
+    never a fever time, so every fever time of the group shares the table.
 
+    No fever ends before note ceil(fill), because an activation needs that many notes of its section: the section
+    starts 1 .. ceil(fill) are never enumerated, and the table holds no head row and no shifted-head run for them.
 
-@njit(cache=True, nogil=True)
-def _numba_mark_early_great_reachable_from_hit(
-    reachable,
-    n: int,
-    activation: int,
-    base_e: int,
-    activation_hit: float,
-    great_floor_timestamps,
-    real_fever_time: float,
-) -> int:
-    if base_e < 0 or activation < 0 or activation >= n:
-        return 0
-    eg_e = _numba_great_floor_extended_end_at_hit(
-        n, activation, activation_hit, real_fever_time, great_floor_timestamps
-    )
-    for e in range(base_e + 1, int(eg_e) + 1):
-        reachable[e] = True
-    return max(0, int(eg_e) - base_e)
+    Returns four arrays:
+    - head_starts, head_rows: per section start up to note 100 (those the head states and the first section list) its
+      valid runs in enumeration order, action ascending and the region-2 offset before the shifted-head one, as rows
+      (offset, activation, Great end, late-Great hit, Perfect hit);
+    - key_starts, key_rows: per activation its distinct runs as rows (first section start, last section start, Great
+      end, late-Great hit, Perfect hit), every section start of a row's interval holding that run. A fever time
+      finishes a run from these alone, so the reachability prepass and the body states find a run by its activation
+      instead of walking the rows of every (section start, action).
 
-
-@njit(cache=True, nogil=True)
-def _numba_build_region_core_table(
-    n: int, region_action_count: int, action_k, raw_fever_fill: float, timestamps, hit_times, lanes
-):
-    """Per-denom CSR table of VALID region-run cores.
-
-    The region-run core (fill crossing, minimal reachable region Great end, capped hits, weighted
-    lane-aware reachability) depends on the geometry only through the fever-fill denom, never
-    real_fever_time — so it is computed ONCE per (raw_fever_fill, non_fever_base) action-key group
-    and shared read-only across every rt variant of that group (~115x reuse on a full stat grid).
-
-    Entries for each ``section_start`` row are stored in EXACTLY the enumeration order of the
-    per-geometry loops they replace — ``(action_idx asc, offset_kind asc)`` with the same
-    region-2 / shifted-head gating — so the rt consumers (reachability prepass marking and the
-    order-sensitive same-end head-edge bucket prune) see an identical candidate stream.
-
-    Returns ``(starts, offsets, activations, great_ends, is_greats, act_hit_ids,
-    perfect_hit_ids, perfect_valids)`` (hit IDs are song tokens) with ``starts`` of length ``n + 2``."""
+    A region-2 run of activation `a` with k Greats starts at a - k + 1 in the section starting at a - offset - k + 1.
+    Its late-Great hit and the notes after it do not depend on k, so per activation they are found once, for the
+    first Great end with a valid hit, and a run is valid at once when its chart prefix is legal there (the test of
+    activation_reachable_contiguous_run, whose pieces this shares); any other run takes the general route."""
+    n = timestamps.shape[0]
+    actions = action_k.shape[0]
     if lanes.shape[0] != n:
         raise ValueError("FG region-core lane rows must match n")
-    denom = raw_fever_fill
-    if denom <= 0.0 or not np.isfinite(denom):
+    if raw_fever_fill <= 0.0 or not np.isfinite(raw_fever_fill):
         raise ValueError("raw_fever_fill must be finite and > 0")
-    if denom > float(n):
-        return (
-            np.zeros(n + 2, dtype=np.int64),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-        )
-    cap = _numba_region_core_candidate_capacity(n, region_action_count, action_k, raw_fever_fill)
-    starts = np.zeros(n + 2, dtype=np.int64)
-    e_offset = np.empty(int(cap), dtype=np.int32)
-    e_activation = np.empty(int(cap), dtype=np.int32)
-    e_great_end = np.empty(int(cap), dtype=np.int32)
-    e_is_great = np.empty(int(cap), dtype=np.int32)
-    e_act_hit_id = np.empty(int(cap), dtype=np.int32)
-    e_perfect_hit_id = np.empty(int(cap), dtype=np.int32)
-    e_perfect_valid = np.empty(int(cap), dtype=np.int32)
-    region_k_stop = _numba_region2_k_scan_stop(region_action_count, raw_fever_fill)
-    cursor = 0
-    for section_start in range(0, n + 1):
-        starts[section_start] = cursor
-        shifted_head_offset = 1 if _numba_has_shifted_head_region(section_start, raw_fever_fill) else -1
-        for action_idx in range(region_action_count):
-            k = int(action_k[action_idx])
-            region_offset = -1
-            if action_idx < int(region_k_stop):
-                region_offset = _numba_region2_offset_for_count(section_start, k, raw_fever_fill, n)
-            for offset_idx in range(2):
-                if offset_idx == 0:
-                    offset = int(region_offset)
-                else:
-                    offset = shifted_head_offset
-                    if offset == int(region_offset):
-                        continue
-                if offset < 1:
-                    continue
-                (activation, great_end, is_great, perfect_valid, act_hit_id, perfect_hit_id, valid) = (
-                    _numba_region_run_core_for_offset(
-                        n, section_start, offset, k, raw_fever_fill, timestamps, hit_times, lanes
-                    )
-                )
-                if int(valid) == 0:
-                    continue
-                if cursor >= int(cap):
-                    raise ValueError("FG region-core rows exceed the producer-owned candidate capacity")
-                e_offset[cursor] = offset
-                e_activation[cursor] = int(activation)
-                e_great_end[cursor] = int(great_end)
-                e_is_great[cursor] = int(is_great)
-                e_act_hit_id[cursor] = int(act_hit_id) if int(is_great) != 0 else -1
-                e_perfect_hit_id[cursor] = int(perfect_hit_id) if int(perfect_valid) != 0 else -1
-                e_perfect_valid[cursor] = int(perfect_valid)
-                cursor += 1
-    starts[n + 1] = cursor
-    return (
-        starts,
-        e_offset[:cursor].copy(),
-        e_activation[:cursor].copy(),
-        e_great_end[:cursor].copy(),
-        e_is_great[:cursor].copy(),
-        e_act_hit_id[:cursor].copy(),
-        e_perfect_hit_id[:cursor].copy(),
-        e_perfect_valid[:cursor].copy(),
-    )
+    head_limit = min(n, 100)
+    head_starts = np.zeros(head_limit + 2, dtype=np.int64)
+    key_starts = np.zeros(n + 1, dtype=np.int64)
+    if raw_fever_fill > float(n):
+        return head_starts, np.empty((0, 5), dtype=np.int32), key_starts, np.empty((0, 5), dtype=np.int32)
+    perfect_floor, great_floor = hit_times.perfect_floor_timestamps, hit_times.great_floor_timestamps
+    perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
+    late_great_floor = hit_times.late_great_floor_timestamps
+    first_later_section = int(np.ceil(raw_fever_fill)) + 1
 
-
-@njit(cache=True, nogil=True)
-def _numba_mark_region_entries_for_section(
-    reachable, n: int, section_start: int, region, perfect_exit_e, late_exit_e
-) -> int:
-    """rt-finish + reachability marking for every valid region core of one section row. Returns
-    the max early-Great extension width, exactly like the per-candidate marking it replaces."""
-    (
-        region_starts,
-        region_offsets,
-        region_activations,
-        region_great_ends,
-        region_is_greats,
-        region_act_hit_ids,
-        region_perfect_hit_ids,
-        region_perfect_valids,
-        region_perfect_end_by_hit,
-        region_great_end_by_hit,
-    ) = region
-    max_width = 0
-    for idx in range(int(region_starts[section_start]), int(region_starts[section_start + 1])):
-        activation, edge_e, _run_start, _great_end, activation_great_idx, eg_e, valid = (
-            _numba_region_run_edge_from_core(
-                n,
-                section_start,
-                int(region_offsets[idx]),
-                (
-                    int(region_activations[idx]),
-                    int(region_great_ends[idx]),
-                    int(region_is_greats[idx]),
-                    int(region_act_hit_ids[idx]),
-                    int(region_perfect_hit_ids[idx]),
-                    int(region_perfect_valids[idx]),
-                    1,
-                ),
-                region_perfect_end_by_hit,
-                region_great_end_by_hit,
-            )
-        )
-        if int(valid) == 0:
+    # The actions with a region-2 run: k, the activation's distance from the section start, and its fill window.
+    run_action = np.empty(actions, dtype=np.int64)
+    run_k = np.empty(actions, dtype=np.int64)
+    run_reach = np.empty(actions, dtype=np.int64)
+    run_fills = np.empty(actions, dtype=np.bool_)
+    runs = 0
+    for action in range(region2_k_scan_stop(actions, raw_fever_fill)):
+        k = int(action_k[action])
+        offset = region2_offset_for_count(0, k, raw_fever_fill, n + k + 2)
+        if offset < 1:
             continue
-        # The activation can also end its fever early.
-        exit_e = perfect_exit_e if int(activation_great_idx) < 0 else late_exit_e
-        for end_e in range(min(int(exit_e[int(activation)]), int(edge_e)), int(eg_e) + 1):
-            reachable[end_e] = True
-        width = max(0, int(eg_e) - int(edge_e))
-        if width > max_width:
-            max_width = width
-    return max_width
+        run_action[runs] = action
+        run_k[runs] = k
+        run_reach[runs] = offset + k - 1
+        run_fills[runs] = _fill_window_holds(raw_fever_fill, offset + k - 1, k - 1, True)
+        runs += 1
 
+    # Region-2 runs, activation by activation. keys: rows (activation, first section start, last section start,
+    # Great end, late-Great hit, Perfect hit); head_runs: the runs of the head section starts, for the head rows.
+    keys = np.empty((n + 64, 6), dtype=np.int32)
+    key_count = 0
+    head_runs = np.full(((head_limit + 1) * max(1, runs), 3), -1, dtype=np.int32)
+    for activation in range(n):
+        # The first Great end with a valid late-Great hit: the hit does not depend on where the run starts.
+        hit_high = great_candidates[activation]
+        last_great_end = activation + 1
+        while last_great_end < n and perfect_candidates[last_great_end] < hit_high:
+            last_great_end += 1
+        great_end = -1
+        hit, late_token = 0.0, -1
+        for candidate in range(activation + 1, last_great_end + 1):
+            hit, valid, late_token = late_great_activation_hit_for_run(
+                activation, timestamps, perfect_candidates, great_candidates, late_great_floor, activation,
+                candidate - activation, n,
+            )
+            if valid != 0:
+                great_end = candidate
+                break
+        if great_end < 0:
+            continue
+        h_a = np.float32(hit)
+        legal = not (h_a < great_floor[activation] or h_a > great_candidates[activation]) and _later_notes_allow(
+            activation, h_a, timestamps, perfect_candidates, great_candidates, (activation, great_end, n)
+        )
+        greats_before_legal = activation == 0 or not (great_floor[activation - 1] > h_a)
+        _hit, _valid, perfect_token = perfect_activation_hit_for_run(
+            activation, timestamps, perfect_candidates, great_candidates, activation, great_end - activation, n
+        )
+        open_key = -1
+        for run in range(runs):
+            section_start = activation - run_reach[run]
+            if section_start < 0:
+                continue
+            k = run_k[run]
+            run_start = activation - k + 1
+            if (
+                legal
+                and run_fills[run]
+                and not (raw_fever_fill > float(n - section_start))
+                and not (perfect_floor[run_start - 1] > h_a)
+                and (k < 2 or greats_before_legal)
+            ):
+                run_great_end, run_late, run_perfect = great_end, late_token, perfect_token
+            else:
+                run_great_end, run_late = minimal_reachable_region_great_end(
+                    activation, section_start, run_start, raw_fever_fill, timestamps, hit_times, lanes, n
+                )
+                if run_great_end < 0:
+                    continue
+                _hit, _valid, run_perfect = perfect_activation_hit_for_run(
+                    activation, timestamps, perfect_candidates, great_candidates, run_start, run_great_end - run_start, n
+                )
+            if section_start <= head_limit and (section_start == 0 or section_start >= first_later_section):
+                head_runs[section_start * runs + run, 0] = run_great_end
+                head_runs[section_start * runs + run, 1] = run_late
+                head_runs[section_start * runs + run, 2] = run_perfect
+            if (
+                open_key >= 0
+                and keys[open_key, 3] == run_great_end
+                and keys[open_key, 4] == run_late
+                and keys[open_key, 5] == run_perfect
+                and keys[open_key, 1] - 1 <= section_start <= keys[open_key, 2] + 1
+            ):
+                keys[open_key, 1] = min(keys[open_key, 1], section_start)
+                keys[open_key, 2] = max(keys[open_key, 2], section_start)
+                continue
+            if key_count == keys.shape[0]:
+                keys = _rows_ensure(keys, key_count, 1)
+            keys[key_count, 0] = activation
+            keys[key_count, 1] = section_start
+            keys[key_count, 2] = section_start
+            keys[key_count, 3] = run_great_end
+            keys[key_count, 4] = run_late
+            keys[key_count, 5] = run_perfect
+            open_key = key_count
+            key_count += 1
 
-@njit(cache=True, nogil=True, inline="always")
-def _numba_successor_find(successor, successor_stamps, successor_epoch: int, index: int) -> int:
-    """Return the first live index at/after ``index`` in one stamped successor epoch."""
-    root = index
-    while int(successor_stamps[root]) == successor_epoch:
-        root = int(successor[root])
-    cursor = index
-    while int(successor_stamps[cursor]) == successor_epoch:
-        next_cursor = int(successor[cursor])
-        successor[cursor] = root
-        cursor = next_cursor
-    return root
+    # The head rows, section start by section start, and the keys of the shifted-head runs (a run of the same
+    # activation at the next section start extends the key its activation made last).
+    head = np.empty((256, 5), dtype=np.int32)
+    head_count = 0
+    last_shifted_key = np.full(n, -1, dtype=np.int32)
+    for section_start in range(head_limit + 1):
+        head_starts[section_start] = head_count
+        if 0 < section_start < first_later_section:
+            continue
+        run = 0
+        for action in range(actions):
+            k = int(action_k[action])
+            region_offset = -1
+            if run < runs and run_action[run] == action:
+                if section_start + run_reach[run] < n:
+                    region_offset = run_reach[run] - k + 1
+                    if head_runs[section_start * runs + run, 0] >= 0:
+                        if head_count == head.shape[0]:
+                            head = _rows_ensure(head, head_count, 1)
+                        head[head_count, _HEAD_OFFSET] = region_offset
+                        head[head_count, _HEAD_ACTIVATION] = section_start + run_reach[run]
+                        head[head_count, _ROW_GREAT_END] = head_runs[section_start * runs + run, 0]
+                        head[head_count, _ROW_LATE_HIT] = head_runs[section_start * runs + run, 1]
+                        head[head_count, _ROW_PERFECT_HIT] = head_runs[section_start * runs + run, 2]
+                        head_count += 1
+                run += 1
+            if has_shifted_head_region(section_start, raw_fever_fill) == 0 or region_offset == 1:
+                continue
+            activation, great_end, late_token, perfect_token = _region_run_core(
+                n, section_start, 1, k, raw_fever_fill, timestamps, hit_times, lanes
+            )
+            if activation < 0:
+                continue
+            if head_count == head.shape[0]:
+                head = _rows_ensure(head, head_count, 1)
+            head[head_count, _HEAD_OFFSET] = 1
+            head[head_count, _HEAD_ACTIVATION] = activation
+            head[head_count, _ROW_GREAT_END] = great_end
+            head[head_count, _ROW_LATE_HIT] = late_token
+            head[head_count, _ROW_PERFECT_HIT] = perfect_token
+            head_count += 1
+            key = last_shifted_key[activation]
+            if (
+                key >= 0
+                and keys[key, 3] == great_end
+                and keys[key, 4] == late_token
+                and keys[key, 5] == perfect_token
+                and section_start <= keys[key, 2] + 1
+            ):
+                keys[key, 2] = section_start
+                continue
+            if key_count == keys.shape[0]:
+                keys = _rows_ensure(keys, key_count, 1)
+            keys[key_count, 0] = activation
+            keys[key_count, 1] = section_start
+            keys[key_count, 2] = section_start
+            keys[key_count, 3] = great_end
+            keys[key_count, 4] = late_token
+            keys[key_count, 5] = perfect_token
+            last_shifted_key[activation] = key_count
+            key_count += 1
+    head_starts[head_limit + 1] = head_count
 
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_successor_remove(successor, successor_stamps, successor_epoch: int, index: int) -> int:
-    """Remove one live index and return its next live successor."""
-    next_index = _numba_successor_find(successor, successor_stamps, successor_epoch, index + 1)
-    successor[index] = int(next_index)
-    successor_stamps[index] = successor_epoch
-    return int(next_index)
-
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_mark_perfect_activation_closure(
-    reachable, n: int, activation: int, ends, great_floor_timestamps, real_fever_time: float
-) -> int:
-    if int(ends.perfect_valid[activation]) == 0:
-        return 0
-    edge_e = int(ends.perfect_e[activation])
-    if edge_e < 0:
-        return 0
-    # The activation can also end its fever early (an earlier hit, the boundary notes late): every end in
-    # [perfect_exit_e, edge_e] is a state.
-    for end_e in range(min(int(ends.perfect_exit_e[activation]), edge_e), edge_e + 1):
-        reachable[end_e] = True
-    return _numba_mark_early_great_reachable_from_hit(
-        reachable, n, activation, edge_e, float(ends.perfect_hit[activation]), great_floor_timestamps, real_fever_time
-    )
-
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_mark_late_activation_closure(
-    reachable, n: int, activation: int, ends, great_floor_timestamps, real_fever_time: float
-) -> int:
-    edge_e = -1
-    edge_eg_e = 0
-    if int(ends.perfect_valid[activation]) != 0:
-        edge_e = int(ends.perfect_e[activation])
-        edge_eg_e = int(ends.eg_perfect_e[activation])
-    activation_e = -1
-    activation_eg_e = 0
-    if int(ends.late_valid[activation]) != 0:
-        activation_e = int(ends.late_e[activation])
-        activation_eg_e = int(ends.eg_late_e[activation])
-    if not _numba_late_edge_extends(edge_e, activation_e, activation_eg_e, edge_eg_e):
-        return 0
-    # The activation can also end its fever early: every end in [late_exit_e, activation_e] is a state.
-    for end_e in range(min(int(ends.late_exit_e[activation]), activation_e), activation_e + 1):
-        reachable[end_e] = True
-    return _numba_mark_early_great_reachable_from_hit(
-        reachable,
-        n,
-        activation,
-        activation_e,
-        float(ends.late_hit[activation]),
-        great_floor_timestamps,
-        real_fever_time,
-    )
+    # The keys by activation.
+    for key in range(key_count):
+        key_starts[keys[key, 0] + 1] += 1
+    for activation in range(n):
+        key_starts[activation + 1] += key_starts[activation]
+    key_rows = np.empty((key_count, 5), dtype=np.int32)
+    next_row = key_starts[:n].copy()
+    for key in range(key_count):
+        row = next_row[keys[key, 0]]
+        next_row[keys[key, 0]] = row + 1
+        for column in range(5):
+            key_rows[row, column] = keys[key, column + 1]
+    return head_starts, head[:head_count].copy(), key_starts, key_rows
 
 
 @njit(cache=True, nogil=True)
-def _numba_first_frontier_reachability_prepass(
-    n: int, action_count: int, plan, runs, ends, fever, region_floor, successors
-):
-    """Build the exact reachable-state closure with interval successor traversal.
+def reachability_prepass(n: int, first_activations, runs, ends, forced_timing: int, region):
+    """The states a play can reach at one fever time, as a mask over the fever ends 0 .. n (n is always reached), and
+    the largest early-Great width of an activation that reaches one.
 
-    The former nested scan probed every action for every reachable state even after an absolute
-    activation had already been evaluated. Exact fill runs turn each state's action set into
-    activation intervals; disjoint-set successors skip globally processed activations. Perfect and
-    late-Great closures remain separate because only some action routes permit a late activation.
-    """
-    first_fill, first_activation_forced = plan
+    A fever ends past its activation, so when the notes are taken in ascending order every state before a note is
+    final by the time the note is tried as an activation. Its Perfect activation is live when the first section
+    activates there (`first_activations` bit 1) or a reached state has it at one of its fill offsets (`runs`: the
+    inclusive runs of the later-section offsets); its late-Great activation likewise (bit 2, the late-Great runs);
+    a region run of it is live when a section start it holds at is enumerated: the song start, or the note after a
+    reached state. A live activation marks every end from its exit end to its early-Great reach. Reached states are
+    counted in a prefix sum, so a note costs a few lookups however many states and actions reach it.
+    Returns (reachable, width)."""
     perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends = runs
-    real_fever_time, use_forced_great_timing_i = fever
-    region, great_floor_timestamps = region_floor
-    perfect_successor, perfect_successor_stamps, late_successor, late_successor_stamps, successor_epoch = successors
-    if n < 0 or action_count < 0:
-        raise ValueError("FG reachability dimensions must be nonnegative")
-    if first_fill.shape[0] < action_count:
-        raise ValueError("FG first-fill offsets are shorter than action_count")
-    if first_activation_forced.shape[0] < action_count:
-        raise ValueError("FG first activation-forced rows are shorter than action_count")
-    if perfect_run_starts.shape[0] != perfect_run_ends.shape[0]:
-        raise ValueError("FG Perfect fill-run arrays must align")
-    if late_run_starts.shape[0] != late_run_ends.shape[0]:
-        raise ValueError("FG late-Great fill-run arrays must align")
-    previous_end = -2
-    for run_idx in range(perfect_run_starts.shape[0]):
-        run_start = int(perfect_run_starts[run_idx])
-        run_end = int(perfect_run_ends[run_idx])
-        if run_start < 0 or run_end < run_start or run_start <= previous_end:
-            raise ValueError("FG Perfect fill runs must be nonnegative, ordered, and disjoint")
-        previous_end = run_end
-    previous_end = -2
-    for run_idx in range(late_run_starts.shape[0]):
-        run_start = int(late_run_starts[run_idx])
-        run_end = int(late_run_ends[run_idx])
-        if run_start < 0 or run_end < run_start or run_start <= previous_end:
-            raise ValueError("FG late-Great fill runs must be nonnegative, ordered, and disjoint")
-        previous_end = run_end
-    if successor_epoch < 1:
-        raise ValueError("FG successor epoch must be positive")
-    if (
-        perfect_successor.shape[0] < n + 1
-        or perfect_successor_stamps.shape[0] < n + 1
-        or late_successor.shape[0] < n + 1
-        or late_successor_stamps.shape[0] < n + 1
-    ):
-        raise ValueError("FG successor workspace is shorter than n + 1")
+    for run in range(perfect_run_starts.shape[0]):
+        if perfect_run_starts[run] < 0:
+            raise ValueError("FG Perfect fill runs must be nonnegative")
+    for run in range(late_run_starts.shape[0]):
+        if late_run_starts[run] < 0:
+            raise ValueError("FG late-Great fill runs must be nonnegative")
+    perfect_valid, late_valid = ends.perfect_valid, ends.late_valid
+    perfect_e, late_e = ends.perfect_e, ends.late_e
+    eg_perfect_e, eg_late_e = ends.eg_perfect_e, ends.eg_late_e
+    perfect_exit_e, late_exit_e = ends.perfect_exit_e, ends.late_exit_e
+    key_starts, key_rows = region.key_starts, region.key_rows
+    perfect_end_by_hit, great_end_by_hit = region.perfect_end_by_hit, region.great_end_by_hit
 
     reachable = np.zeros(n + 1, dtype=np.bool_)
     reachable[n] = True
-
-    # First-section actions retain their original producer order. Removing an activation from its
-    # successor set is exactly the former processed-bit write, with the same Perfect/late split.
-    max_eg_width = 0
-    for action_idx in range(action_count):
-        fill = int(first_fill[action_idx])
-        if fill < 0:
-            raise ValueError("FG first-fill offsets must be nonnegative")
-        if fill >= n:
+    reached = np.zeros(n + 2, dtype=np.int64)
+    width = 0
+    for activation in range(n):
+        reached[activation + 1] = reached[activation] + reachable[activation]
+        live = first_activations[activation] & 1
+        for run in range(perfect_run_starts.shape[0]):
+            if live != 0:
+                break
+            newest = activation - perfect_run_starts[run]
+            if newest >= 0 and reached[newest + 1] > reached[max(0, activation - perfect_run_ends[run])]:
+                live = 1
+        if live != 0 and perfect_valid[activation] != 0:
+            edge_e, eg_e = perfect_e[activation], eg_perfect_e[activation]
+            for end in range(min(perfect_exit_e[activation], edge_e), max(edge_e, eg_e) + 1):
+                reachable[end] = True
+            width = max(width, eg_e - edge_e)
+        if forced_timing == 0:
             continue
-        if int(_numba_successor_find(perfect_successor, perfect_successor_stamps, successor_epoch, fill)) == fill:
-            width = _numba_mark_perfect_activation_closure(
-                reachable, n, fill, ends, great_floor_timestamps, real_fever_time
-            )
-            _numba_successor_remove(perfect_successor, perfect_successor_stamps, successor_epoch, fill)
-            if int(width) > int(max_eg_width):
-                max_eg_width = int(width)
-        if (
-            use_forced_great_timing_i != 0
-            and int(first_activation_forced[action_idx]) >= 0
-            and int(_numba_successor_find(late_successor, late_successor_stamps, successor_epoch, fill)) == fill
-        ):
-            width = _numba_mark_late_activation_closure(
-                reachable, n, fill, ends, great_floor_timestamps, real_fever_time
-            )
-            _numba_successor_remove(late_successor, late_successor_stamps, successor_epoch, fill)
-            if int(width) > int(max_eg_width):
-                max_eg_width = int(width)
-
-    if use_forced_great_timing_i != 0:
-        max_eg_width = max(
-            int(max_eg_width),
-            _numba_mark_region_entries_for_section(reachable, n, 0, region, ends.perfect_exit_e, ends.late_exit_e),
-        )
-
-    for state_i in range(n):
-        if not reachable[state_i]:
-            continue
-
-        for run_idx in range(perfect_run_starts.shape[0]):
-            interval_start = state_i + int(perfect_run_starts[run_idx])
-            if interval_start >= n:
+        live = first_activations[activation] & 2
+        for run in range(late_run_starts.shape[0]):
+            if live != 0:
+                break
+            newest = activation - late_run_starts[run]
+            if newest >= 0 and reached[newest + 1] > reached[max(0, activation - late_run_ends[run])]:
+                live = 1
+        if live != 0 and late_valid[activation] != 0:
+            edge_e, eg_e = late_e[activation], eg_late_e[activation]
+            if perfect_valid[activation] == 0 or late_edge_extends(
+                perfect_e[activation], edge_e, eg_e, eg_perfect_e[activation]
+            ):
+                for end in range(min(late_exit_e[activation], edge_e), max(edge_e, eg_e) + 1):
+                    reachable[end] = True
+                width = max(width, eg_e - edge_e)
+        for key in range(key_starts[activation], key_starts[activation + 1]):
+            first_section = key_rows[key, _KEY_FIRST_SECTION]
+            if first_section > 0 and reached[key_rows[key, _KEY_LAST_SECTION]] == reached[first_section - 1]:
                 continue
-            interval_end = min(n - 1, state_i + int(perfect_run_ends[run_idx]))
-            activation = _numba_successor_find(
-                perfect_successor, perfect_successor_stamps, successor_epoch, interval_start
+            late_hit = key_rows[key, _ROW_LATE_HIT]
+            edge_e, eg_e = region_edge(
+                n, activation, late_hit, key_rows[key, _ROW_PERFECT_HIT], perfect_end_by_hit, great_end_by_hit
             )
-            while int(activation) <= interval_end:
-                width = _numba_mark_perfect_activation_closure(
-                    reachable, n, int(activation), ends, great_floor_timestamps, real_fever_time
-                )
-                activation = _numba_successor_remove(
-                    perfect_successor, perfect_successor_stamps, successor_epoch, int(activation)
-                )
-                if int(width) > int(max_eg_width):
-                    max_eg_width = int(width)
-
-        if use_forced_great_timing_i != 0:
-            for run_idx in range(late_run_starts.shape[0]):
-                interval_start = state_i + int(late_run_starts[run_idx])
-                if interval_start >= n:
-                    continue
-                interval_end = min(n - 1, state_i + int(late_run_ends[run_idx]))
-                activation = _numba_successor_find(
-                    late_successor, late_successor_stamps, successor_epoch, interval_start
-                )
-                while int(activation) <= interval_end:
-                    width = _numba_mark_late_activation_closure(
-                        reachable, n, int(activation), ends, great_floor_timestamps, real_fever_time
-                    )
-                    activation = _numba_successor_remove(
-                        late_successor, late_successor_stamps, successor_epoch, int(activation)
-                    )
-                    if int(width) > int(max_eg_width):
-                        max_eg_width = int(width)
-
-            max_eg_width = max(
-                int(max_eg_width),
-                _numba_mark_region_entries_for_section(
-                    reachable, n, state_i + 1, region, ends.perfect_exit_e, ends.late_exit_e
-                ),
-            )
-    return reachable, int(max_eg_width)
+            if edge_e < 0:
+                continue
+            exit_e = perfect_exit_e[activation] if late_hit < 0 else late_exit_e[activation]
+            for end in range(min(exit_e, edge_e), eg_e + 1):
+                reachable[end] = True
+            width = max(width, eg_e - edge_e)
+    return reachable, width
 
 
 @njit(cache=True, nogil=True)
-def _numba_prefix_max_query_stamped(values, stamps, stamp: int, idx: int) -> int:
-    best = -1
-    cursor = idx + 1
-    while cursor > 0:
-        if int(stamps[cursor]) == stamp:
-            value = int(values[cursor])
-            if value > best:
-                best = value
-        cursor -= cursor & -cursor
-    return best
+def touch_body_rows(queue, heads, tails, state: int, key, pair_stamp, best_fever_by_pair, touched_pair):
+    """Register the live rows [heads, tails) of every family's queue as the body candidates of `state`: per (normal
+    Greats, fever Greats) pair the largest body fever, in the stamped pair table. A row holds (body fever, normal
+    Greats + 2 x its reader's state, fever Greats, activation); a row whose normal Greats come out negative for this
+    state belongs to none of its plays. key = (pair radix, stamp). Returns (pairs touched, rows read).
 
-
-@njit(cache=True, nogil=True)
-def _numba_prefix_max_update_stamped(values, stamps, stamp: int, idx: int, value: int) -> None:
-    cursor = idx + 1
-    limit = values.shape[0]
-    while cursor < limit:
-        if int(stamps[cursor]) != stamp:
-            stamps[cursor] = stamp
-            values[cursor] = value
-        elif value > int(values[cursor]):
-            values[cursor] = value
-        cursor += cursor & -cursor
-
-
-@njit(cache=True, nogil=True)
-def _numba_touch_body_candidate(
-    edge, tail, pair_mod, pair_stamp, best_fever_by_pair, touched_pair, stamp: int, touched_count: int
-) -> int:
-    edge_fever, edge_great, edge_fever_great = edge
-    tail_fever, tail_great, tail_fever_great = tail
-    body_fever = int(edge_fever + tail_fever)
-    body_great = int(edge_great + tail_great)
-    body_fever_great = int(edge_fever_great + tail_fever_great)
-    if body_fever_great > body_great:
-        return touched_count
-    normal_great = body_great - body_fever_great
-    # Fail loud on radix overflow. The pack normal_great*pair_mod + body_fever_great is injective
-    # ONLY while body_fever_great < pair_mod; otherwise it silently ALIASES onto a different
-    # (normal_great, fever_great) cell -- a phantom surface that the decoder later materialises with
-    # the wrong Great counts (it scores higher, wins, and corrupts best_fg_score / breaks trace
-    # reconstruction). pair_mod is sized to this geometry's true max body_fever_great, so this must
-    # never fire; raising beats silently mis-scoring.
-    if body_fever_great < 0 or body_fever_great >= pair_mod:
-        raise ValueError("FG response body skyline fever-great exceeded pair radix")
-    pair_idx = normal_great * pair_mod + body_fever_great
-    if pair_idx < 0 or pair_idx >= best_fever_by_pair.shape[0]:
-        raise ValueError("FG response body skyline pair bound was too small")
-    if int(pair_stamp[pair_idx]) != stamp:
-        pair_stamp[pair_idx] = stamp
-        best_fever_by_pair[pair_idx] = body_fever
-        touched_pair[touched_count] = pair_idx
-        return touched_count + 1
-    if body_fever > int(best_fever_by_pair[pair_idx]):
-        best_fever_by_pair[pair_idx] = body_fever
-    return touched_count
-
-
-# Body-tail hull: the Pareto reduce and the per-normal-Great upper-hull filter are fused into
-# `_numba_reduce_touched_body_pairs`; see its docstring for the exactness and ordering proof.
+    The pack normal Greats x radix + fever Greats is injective only while fever Greats < radix: past it a pair would
+    alias another cell, a surface with the wrong Great counts that the decoder then materialises. The radix is sized
+    to the geometry's largest fever-Great count, so the check must never fire, and a build that reaches it fails."""
+    pair_mod, stamp = key
+    touched = 0
+    rows = 0
+    for family in range(heads.shape[0]):
+        for row in range(heads[family], tails[family]):
+            rows += 1
+            normal_great = queue[family, row, 1] - 2 * state
+            if normal_great < 0:
+                continue
+            fever_great = queue[family, row, 2]
+            if fever_great < 0 or fever_great >= pair_mod:
+                raise ValueError("FG response body skyline fever-great exceeded pair radix")
+            pair = normal_great * pair_mod + fever_great
+            if pair >= best_fever_by_pair.shape[0]:
+                raise ValueError("FG response body skyline pair bound was too small")
+            body_fever = queue[family, row, 0]
+            if pair_stamp[pair] != stamp:
+                pair_stamp[pair] = stamp
+                best_fever_by_pair[pair] = body_fever
+                touched_pair[touched] = pair
+                touched += 1
+            elif body_fever > best_fever_by_pair[pair]:
+                best_fever_by_pair[pair] = body_fever
+    return touched, rows
 
 
 # The realizable stat box of the lossless cone filters. A surface's score is MULTILINEAR in (E = 2 x primary + secondary,
@@ -1353,7 +1176,7 @@ _HEAD_DOM_GREAT_FLOOR_W = 30
 
 
 @njit(cache=True, nogil=True)
-def _numba_popcount64(x):
+def _popcount64(x):
     x = x - ((x >> np.uint64(1)) & np.uint64(0x5555555555555555))
     x = (x & np.uint64(0x3333333333333333)) + ((x >> np.uint64(2)) & np.uint64(0x3333333333333333))
     x = (x + (x >> np.uint64(4))) & np.uint64(0x0F0F0F0F0F0F0F0F)
@@ -1361,19 +1184,19 @@ def _numba_popcount64(x):
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_surface_margin(left, right) -> float:
+def _surface_margin(left, right) -> float:
     """The most the score's integer floors can move the gap between two surface rows: their head-class Hamming distance
     + the body floor weight x their body-count L1 distance + the Great floor weight x the Great notes they differ on."""
     normal_greats = abs(int((np.int64(left[5]) - np.int64(left[6])) - (np.int64(right[5]) - np.int64(right[6]))))
     fever_greats = abs(int(np.int64(left[6]) - np.int64(right[6])))
     return float(
-        _numba_popcount64((left[0] ^ right[0]) | (left[2] ^ right[2]))
-        + _numba_popcount64((left[1] ^ right[1]) | (left[3] ^ right[3]))
+        _popcount64((left[0] ^ right[0]) | (left[2] ^ right[2]))
+        + _popcount64((left[1] ^ right[1]) | (left[3] ^ right[3]))
         + _HEAD_DOM_BODY_FLOOR_W * (abs(int(np.int64(left[4]) - np.int64(right[4]))) + normal_greats + fever_greats)
         + _HEAD_DOM_GREAT_FLOOR_W
         * (
-            _numba_popcount64(left[2] ^ right[2])
-            + _numba_popcount64(left[3] ^ right[3])
+            _popcount64(left[2] ^ right[2])
+            + _popcount64(left[3] ^ right[3])
             + normal_greats
             + fever_greats
         )
@@ -1381,44 +1204,40 @@ def _numba_head_surface_margin(left, right) -> float:
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_basis_corner_score(basis, v, c, f, g, use_hi_c: int) -> float:
+def _corner_score(basis, v, c, f, g, use_hi_c: int) -> float:
     gv = g - v
     body_dn = v * c * (f - 1.0)
     pen_n = c * gv
     pen_f = c * f * gv
     if use_hi_c == 0:
         head = (
-            gv * basis[_HEAD_BASIS_C_LO]
-            + v * (f - 1.0) * basis[_HEAD_BASIS_B_LO]
-            + gv * (f - 1.0) * basis[_HEAD_BASIS_D_LO]
+            gv * basis[_BASIS_C_LO]
+            + v * (f - 1.0) * basis[_BASIS_B_LO]
+            + gv * (f - 1.0) * basis[_BASIS_D_LO]
         )
     else:
         head = (
-            gv * basis[_HEAD_BASIS_C_HI]
-            + v * (f - 1.0) * basis[_HEAD_BASIS_B_HI]
-            + gv * (f - 1.0) * basis[_HEAD_BASIS_D_HI]
+            gv * basis[_BASIS_C_HI]
+            + v * (f - 1.0) * basis[_BASIS_B_HI]
+            + gv * (f - 1.0) * basis[_BASIS_D_HI]
         )
     return (
         head
-        + float(basis[_HEAD_BASIS_BODY_FEVER]) * body_dn
-        + float(basis[_HEAD_BASIS_BODY_NORMAL_GREAT]) * pen_n
-        + float(basis[_HEAD_BASIS_BODY_FEVER_GREAT]) * pen_f
+        + float(basis[_BASIS_BODY_FEVER]) * body_dn
+        + float(basis[_BASIS_BODY_NORMAL_GREAT]) * pen_n
+        + float(basis[_BASIS_BODY_FEVER_GREAT]) * pen_f
     )
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_corner_scores(rows, terms, term_of):
+def _corner_scores(rows, terms, term_of):
     """(m, 16) each surface row's relative score at the 16 corners of the _HEAD_DOM box (E, c, f, b, each low and high);
-    row i's head terms are terms[term_of[i]] (_numba_head_pattern_basis's b, c, d at the low and high combo)."""
+    row i's head terms are terms[term_of[i]] (_head_pattern_basis's b, c, d at the low and high combo)."""
     m = rows.shape[0]
     scores = np.empty((m, 16), dtype=np.float64)
     for i in range(m):
         head = terms[term_of[i]]
         basis = (
-            rows[i, 0],
-            rows[i, 1],
-            rows[i, 2],
-            rows[i, 3],
             np.int64(rows[i, 4]),
             np.int64(rows[i, 5]) - np.int64(rows[i, 6]),
             np.int64(rows[i, 6]),
@@ -1435,13 +1254,13 @@ def _numba_head_corner_scores(rows, terms, term_of):
             for ic in range(2):
                 for f in _HEAD_DOM_F:
                     for b in _HEAD_DOM_B:
-                        scores[i, col] = _numba_head_basis_corner_score(basis, e + b, _HEAD_DOM_C[ic], f, g, ic)
+                        scores[i, col] = _corner_score(basis, e + b, _HEAD_DOM_C[ic], f, g, ic)
                         col += 1
     return scores
 
 
 @njit(cache=True, nogil=True)
-def _numba_cone_kept(rows, scores):
+def _cone_kept(rows, scores):
     """The rows no other row dominates (score gap >= the pair's margin at all 16 corners), by descending corner-score
     sum. Dominance is transitive, since the margin (head-class Hamming distance + 2 x body-count L1) is a metric and
     gaps add, and a dominator's sum exceeds the dominated row's by at least 16 margins (> 0 unless the rows are
@@ -1463,9 +1282,9 @@ def _numba_cone_kept(rows, scores):
         dominated = False
         for ki in range(kept_count):
             k = kept_rows[ki]
-            if not _numba_head_scores_dominate(scores, k, i, 0.0):
+            if not _scores_dominate(scores, k, i, 0.0):
                 continue
-            if _numba_head_scores_dominate(scores, k, i, _numba_head_surface_margin(rows[k], rows[i])):
+            if _scores_dominate(scores, k, i, _surface_margin(rows[k], rows[i])):
                 dominated = True
                 break
         if not dominated:
@@ -1475,7 +1294,7 @@ def _numba_cone_kept(rows, scores):
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_scores_dominate(scores, left_idx: int, right_idx: int, margin: float) -> bool:
+def _scores_dominate(scores, left_idx: int, right_idx: int, margin: float) -> bool:
     for cc in range(16):
         if scores[left_idx, cc] - scores[right_idx, cc] < margin:
             return False
@@ -1483,11 +1302,11 @@ def _numba_head_scores_dominate(scores, left_idx: int, right_idx: int, margin: f
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_envelope_filter(frontier, lo_pos, hi_pos):
+def head_envelope_filter(frontier, lo_pos, hi_pos):
     """LOSSLESS prune of the head frontier to its cone-Pareto set -- the surfaces that are best for SOME realizable stat
     cell. The head+body score is multilinear on the _HEAD_DOM box, so its unfloored value hits its extrema at the 16 corners.
     Surface K dominates C over the WHOLE box iff unfloored score(K)-score(C) >= the per-pair floor margin at all 16 corners.
-    This is the head analog of `_numba_body_cone_filter`: best-preserving for EVERY realizable cell, by a 16-corner proof, not
+    This is the head analog of `_body_cone_filter`: best-preserving for EVERY realizable cell, by a 16-corner proof, not
     probe sampling. Composition-safe (the score is additive over disjoint edge/tail head ranges), so an envelope-minimal
     tail stays representative as the DP prepends edges."""
     m = frontier.shape[0]
@@ -1506,12 +1325,12 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos):
             or gl != frontier[i - 1, 2]
             or gh != frontier[i - 1, 3]
         ):
-            head = _numba_head_pattern_basis(fl, fh, gl, gh, lo_pos, hi_pos)
+            head = _head_pattern_basis(fl, fh, gl, gh, lo_pos, hi_pos)
             for t in range(6):
                 terms[runs, t] = head[t]
             runs += 1
         term_of[i] = runs - 1
-    kept_rows = _numba_cone_kept(frontier, _numba_head_corner_scores(frontier, terms, term_of))
+    kept_rows = _cone_kept(frontier, _corner_scores(frontier, terms, term_of))
     out = np.empty((kept_rows.shape[0], 7), dtype=np.uint64)
     for ki in range(kept_rows.shape[0]):
         out[ki] = frontier[kept_rows[ki]]
@@ -1519,7 +1338,7 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos):
 
 
 @njit(cache=True, nogil=True)
-def _numba_body_cone_filter(values, count: int) -> int:
+def _body_cone_filter(values, count: int) -> int:
     """Drops the rows (body fever, normal Greats, fever Greats, _) of a body state's frontier that another row of it dominates
     at every corner of the stat box. Every play through the state adds the same counts and head to both, so the dominance
     holds for all of them. Keeps the rows' order; returns their new count."""
@@ -1530,14 +1349,14 @@ def _numba_body_cone_filter(values, count: int) -> int:
         rows[i, 4] = np.uint64(values[i, 0])
         rows[i, 5] = np.uint64(values[i, 1] + values[i, 2])
         rows[i, 6] = np.uint64(values[i, 2])
-    kept = np.sort(_numba_cone_kept(rows, _numba_head_corner_scores(rows, np.zeros((1, 6)), np.zeros(count, np.int64))))
+    kept = np.sort(_cone_kept(rows, _corner_scores(rows, np.zeros((1, 6)), np.zeros(count, np.int64))))
     for i in range(kept.shape[0]):
         values[i] = values[kept[i]]
     return kept.shape[0]
 
 
 @njit(cache=True, nogil=True)
-def _numba_head_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int):
+def _head_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int):
     """Head-only portion of a surface's basis at the box's low and high combo, shared by every row with this mask
     pattern."""
     lo = lo_pos
@@ -1576,97 +1395,106 @@ def _numba_head_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int):
     return b_lo, c_lo_arr, d_lo, b_hi, c_hi_arr, d_hi
 
 
-@njit(cache=True, nogil=True, inline="always")
-def _numba_skyline_hull_push(stack, count: int, group, point, fen_values, fen_stamps, fen_stamp):
-    """One candidate of a skyline with per-normal-Great upper hulls, fed in (normal Greats asc, fever Greats asc) order
-    with one candidate per pair: kept iff its body fever beats every earlier candidate with fever Greats <= (stamped
-    Fenwick prefix maxima), which includes the kept rows of its own normal-Great group, so a group's kept rows have
-    strictly increasing body fever and its upper hull of (body fever, -fever Greats) runs incrementally on the `stack`
-    rows (body fever, normal Greats, fever Greats, tag). Returns (count, group_base, group_ng)."""
-    group_base, group_ng = group
-    bf, ng, fg, tag = point
-    if bf > _numba_prefix_max_query_stamped(fen_values, fen_stamps, fen_stamp, fg):
-        if ng != group_ng:
-            group_ng = ng
-            group_base = count
-        while count - group_base >= 2:
-            cross = (stack[count - 1, 0] - stack[count - 2, 0]) * (stack[count - 2, 2] - fg) - (
-                stack[count - 2, 2] - stack[count - 1, 2]
-            ) * (bf - stack[count - 2, 0])
-            if cross >= 0:
-                count -= 1
-            else:
-                break
-        stack[count, 0] = bf
-        stack[count, 1] = ng
-        stack[count, 2] = fg
-        stack[count, 3] = tag
-        count += 1
-    _numba_prefix_max_update_stamped(fen_values, fen_stamps, fen_stamp, fg, bf)
-    return count, group_base, group_ng
+@njit(cache=True, nogil=True)
+def _skyline_hulls(points, count: int, limit: int, fen_values, fen_stamps, fen_stamp: int):
+    """Each tag's skyline with per-normal-Great upper hulls, in place: `points` rows (body fever, normal Greats, fever
+    Greats, tag) come sorted by tag, normal Greats, fever Greats and then body fever descending, and a row repeating
+    the (tag, normal Greats, fever Greats) of the row before it is skipped.
 
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_reduce_touched_body_pairs(
-    pair_mod: int, touched_pair, touched_count: int, best_fever_by_pair, bit_values, bit_stamps, bit_stamp: int, stack
-):
-    """Fused Pareto reduce + body-tail hull filter, allocation-free.
-
-    Emits the surviving (body_fever, normal_great, fever_great, 0) rows into the reusable grow-doubling (cap, 4)
-    int64 `stack` and returns (stack, count). One pass is exact because:
-
-    - `touched_pair[:touched_count]` holds DISTINCT pair indices (`_numba_touch_body_candidate` appends a pair_idx
-      only on its first stamp-set; every touch batch bumps the stamp and resets touched_count), and nothing reads
-      their insertion order afterwards, so the live slice is sorted in place.
-    - Pairs are visited in ascending pair_idx = normal_great*pair_mod + fever_great, i.e. (normal_great asc,
-      fever_great asc). A kept entry's body_fever strictly exceeds the stamped-Fenwick prefix max over everything
-      already processed with fever_great' <= fever_great, which includes every earlier kept entry of the same
-      normal_great group, so within a group kept rows have strictly increasing body_fever and the per-group upper
-      hull of (body_fever, -fever_great) runs incrementally over the kept stream (_numba_skyline_hull_push; the
-      finished-groups prefix of `stack` doubles as the current group's stack).
-    - The Fenwick gets one update per distinct pair, in pair order (hull pops never touch it), so the carried
-      bit_values/bit_stamps workspace does not depend on what the hull removes. It spans the batch's fever-Great
-      range only.
-
-    For a fixed (PP/combo/fever/color) cell the body score is LINEAR in the three body counts:
-    `A*body_fever - pnp*normal_great - pfp*fever_great` with A,pnp,pfp >= 0. The early-Great
-    extension adds points at CONSTANT normal_great, so within each normal_great level the useful
-    set is the 2-D upper hull in (body_fever, -fever_great); pruning to it is bit-exact for every
-    cone direction, shift-invariant, and composition-safe as the DP adds section counts."""
-    if touched_count <= 0:
-        return stack, 0
-    touched_pair[:touched_count].sort()
-    stack = _numba_i64_rows_ensure(stack, 0, touched_count)
-    max_fever_great = 0
-    for idx in range(touched_count):
-        max_fever_great = max(max_fever_great, int(touched_pair[idx]) % pair_mod)
-    bit_values = bit_values[: max_fever_great + 2]
-    bit_stamps = bit_stamps[: max_fever_great + 2]
-    count = 0
-    group_base = 0
-    group_ng = -1
-    for idx in range(touched_count):
-        pair_idx = int(touched_pair[idx])
-        normal_great = pair_idx // pair_mod
-        count, group_base, group_ng = _numba_skyline_hull_push(
-            stack,
-            count,
-            (group_base, group_ng),
-            (
-                np.int64(best_fever_by_pair[pair_idx]),
-                np.int64(normal_great),
-                np.int64(pair_idx - normal_great * pair_mod),
-                0,
-            ),
-            bit_values,
-            bit_stamps,
-            bit_stamp,
-        )
-    return stack, int(count)
+    A point is kept iff its body fever beats every earlier point of its tag with fever Greats <= its own (stamped
+    Fenwick prefix maxima over fever Greats below `limit` - 1, one stamp per tag). Those include the kept rows of its
+    own normal-Great level, so a level's kept rows have strictly increasing body fever, and its upper hull of (body
+    fever, -fever Greats) runs incrementally on them. The Fenwick takes one update per point, kept or not, so it does
+    not depend on what the hull removes. Kept rows go to the front of `points`: a kept row never lies past its own
+    point. Returns (kept rows, the last stamp used)."""
+    kept = 0
+    level = -1
+    level_base = 0
+    tag = -1
+    seen_level = -1
+    seen_fever_great = -1
+    for index in range(count):
+        bf, ng, fg = points[index, 0], points[index, 1], points[index, 2]
+        if points[index, 3] != tag:
+            tag = points[index, 3]
+            fen_stamp += 1
+            level = -1
+        elif ng == seen_level and fg == seen_fever_great:
+            continue
+        seen_level = ng
+        seen_fever_great = fg
+        best = -1
+        cursor = fg + 1
+        while cursor > 0:
+            if fen_stamps[cursor] == fen_stamp and fen_values[cursor] > best:
+                best = fen_values[cursor]
+            cursor -= cursor & -cursor
+        if bf > best:
+            if ng != level:
+                level = ng
+                level_base = kept
+            while kept - level_base >= 2:
+                cross = (points[kept - 1, 0] - points[kept - 2, 0]) * (points[kept - 2, 2] - fg) - (
+                    points[kept - 2, 2] - points[kept - 1, 2]
+                ) * (bf - points[kept - 2, 0])
+                if cross >= 0:
+                    kept -= 1
+                else:
+                    break
+            points[kept, 0] = bf
+            points[kept, 1] = ng
+            points[kept, 2] = fg
+            points[kept, 3] = tag
+            kept += 1
+        cursor = fg + 1
+        while cursor < limit:
+            if fen_stamps[cursor] != fen_stamp:
+                fen_stamps[cursor] = fen_stamp
+                fen_values[cursor] = bf
+            elif bf > fen_values[cursor]:
+                fen_values[cursor] = bf
+            cursor += cursor & -cursor
+    return kept, fen_stamp
 
 
 @njit(cache=True, nogil=True)
-def _numba_packet_points_append(buf, base: int, write: int, cf: int, cn: int, cq: int) -> int:
+def reduce_touched_body_pairs(
+    pair_mod: int, touched_pair, touched_count: int, best_fever_by_pair, bit_values, bit_stamps, bit_stamp: int, stack
+):
+    """A body state's frontier from its touched pairs: rows (body fever, normal Greats, fever Greats, 0) in the reusable
+    `stack`, which grows as needed. Returns (stack, rows).
+
+    `touched_pair[:touched_count]` holds distinct pair indices (touch_body_rows adds a pair on its first stamp only),
+    and nothing reads their insertion order, so they are sorted in place: ascending pair index is (normal Greats,
+    fever Greats) ascending, the order `_skyline_hulls` reduces. The Fenwick spans the batch's fever-Great range and
+    is stamped `bit_stamp`.
+
+    For a fixed stat cell the body score is linear in the three counts, A x body fever - p x normal Greats - q x fever
+    Greats with A, p, q >= 0, and an early-Great extension adds points at a constant normal-Great count. So within a
+    normal-Great level the useful set is the upper hull in (body fever, -fever Greats): pruning to it loses nothing
+    for any cell, is invariant under shifts, and survives the DP adding section counts."""
+    if touched_count <= 0:
+        return stack, 0
+    touched_pair[:touched_count].sort()
+    stack = _rows_ensure(stack, 0, touched_count)
+    max_fever_great = 0
+    for index in range(touched_count):
+        pair = touched_pair[index]
+        normal_great = pair // pair_mod
+        fever_great = pair - normal_great * pair_mod
+        stack[index, 0] = best_fever_by_pair[pair]
+        stack[index, 1] = normal_great
+        stack[index, 2] = fever_great
+        stack[index, 3] = 0
+        max_fever_great = max(max_fever_great, fever_great)
+    count, _stamp = _skyline_hulls(
+        stack, touched_count, min(max_fever_great + 2, bit_values.shape[0]), bit_values, bit_stamps, bit_stamp - 1
+    )
+    return stack, count
+
+
+@njit(cache=True, nogil=True)
+def _points_append(buf, base: int, write: int, cf: int, cn: int, cq: int) -> int:
     """Packet-point Pareto insert: a dominated candidate is dropped, the points it dominates are compacted out in
     order, and the candidate is appended last. The working set is
     buf rows [base, write); returns the new write cursor."""
@@ -1692,8 +1520,8 @@ def _numba_packet_points_append(buf, base: int, write: int, cf: int, cn: int, cq
 
 
 @njit(cache=True, nogil=True)
-def _numba_packet_points_skyline(buf, start: int, end: int) -> int:
-    """Reduce rows [start, end) to their Pareto skyline in place (the dominance of `_numba_packet_points_append`); returns
+def _points_skyline(buf, start: int, end: int) -> int:
+    """Reduce rows [start, end) to their Pareto skyline in place (the dominance of `_points_append`); returns
     the new end. A packet spanning several fever ends can hold points one end dominates with another's, and the queue's
     unions keep a packet verbatim when it is the only operand."""
     kept = start
@@ -1701,101 +1529,57 @@ def _numba_packet_points_skyline(buf, start: int, end: int) -> int:
         cf = buf[idx, 0]
         cn = buf[idx, 1]
         cq = buf[idx, 2]
-        kept = _numba_packet_points_append(buf, start, int(kept), int(cf), int(cn), int(cq))
+        kept = _points_append(buf, start, int(kept), int(cf), int(cn), int(cq))
     return int(kept)
 
 
 @njit(cache=True, nogil=True)
-def _numba_build_packet_families(action_count: int, later_fill, later_forced, later_activation_forced):
-    cap = max(1, action_count * 2)
-    family_mode = np.empty(cap, dtype=np.int32)
-    family_defect = np.empty(cap, dtype=np.int32)
-    family_start = np.empty(cap, dtype=np.int32)
-    family_end = np.empty(cap, dtype=np.int32)
-    family_count = 0
-
-    prev_defect = 0
-    prev_offset = -1000000000
-    for action_idx in range(action_count):
-        offset = int(later_fill[action_idx])
-        defect = int(later_forced[action_idx]) - (2 * offset)
-        if (
-            family_count > 0
-            and int(family_mode[family_count - 1]) == 0
-            and prev_defect == defect
-            and offset == prev_offset + 1
-        ):
-            family_end[family_count - 1] = offset
-        else:
-            family_mode[family_count] = 0
-            family_defect[family_count] = defect
-            family_start[family_count] = offset
-            family_end[family_count] = offset
-            family_count += 1
-        prev_defect = defect
-        prev_offset = offset
-
-    prev_defect = 0
-    prev_offset = -1000000000
-    have_late = False
-    for action_idx in range(action_count):
-        offset = int(later_fill[action_idx])
-        prefix = int(later_activation_forced[action_idx])
-        if prefix < 0:
-            continue
-        defect = prefix - (2 * offset)
-        if (
-            bool(have_late)
-            and family_count > 0
-            and int(family_mode[family_count - 1]) == 1
-            and prev_defect == defect
-            and offset == prev_offset + 1
-        ):
-            family_end[family_count - 1] = offset
-        else:
-            family_mode[family_count] = 1
-            family_defect[family_count] = defect
-            family_start[family_count] = offset
-            family_end[family_count] = offset
-            family_count += 1
-        prev_defect = defect
-        prev_offset = offset
-        have_late = True
-
-    return family_count, family_mode, family_defect, family_start, family_end
+def packet_families(sizes, raw_fever_fill: float, plan, forced_timing: int):
+    """The activation families of a body state, as rows (kind, defect, first offset, last offset): a family is a run of
+    consecutive activation offsets past the state whose forced Greats grow by two per offset, so `defect` = forced
+    Greats - 2 x offset is one number and an activation's packet serves every state that reaches it (_body_tails).
+    Perfect activations come first, then with forced-Great timing the late-Great activations (their forced Greats
+    are the ones before the activation) and the region-2 runs (an action's k Greats end on the activation: offset =
+    its region offset + k, forced Greats k - 1)."""
+    n, action_count, region_action_count = sizes
+    action_k, later_fill, later_forced, later_activation_forced = plan
+    families = np.empty((2 * action_count + region_action_count, 4), dtype=np.int64)
+    count = 0
+    for kind in range(3 if forced_timing != 0 else 1):
+        first_action, actions = 0, action_count
+        if kind == _REGION_FAMILY:
+            first_action, actions = 1, region2_k_scan_stop(region_action_count, raw_fever_fill)
+        previous_offset = -2
+        previous_defect = 0
+        for action in range(first_action, actions):
+            if kind == _REGION_FAMILY:
+                k = int(action_k[action])
+                region_offset = region2_offset_for_count(0, k, raw_fever_fill, n + k + 2)
+                if region_offset < 1:
+                    continue
+                offset = region_offset + k
+                forced = k - 1
+            else:
+                offset = int(later_fill[action])
+                forced = int(later_forced[action]) if kind == _PERFECT_FAMILY else int(later_activation_forced[action])
+                if kind == _LATE_FAMILY and forced < 0:
+                    continue
+            defect = forced - 2 * offset
+            if offset == previous_offset + 1 and defect == previous_defect:
+                families[count - 1, 3] = offset
+            else:
+                families[count, 0] = kind
+                families[count, 1] = defect
+                families[count, 2] = offset
+                families[count, 3] = offset
+                count += 1
+            previous_offset = offset
+            previous_defect = defect
+    return families[:count]
 
 
 @njit(cache=True, nogil=True)
-def _numba_build_region2_packet_families(action_count: int, raw_fever_fill: float, action_k, n: int):
-    family_defect = np.empty(max(1, action_count), dtype=np.int32)
-    family_start = np.empty(max(1, action_count), dtype=np.int32)
-    family_end = np.empty(max(1, action_count), dtype=np.int32)
-    family_count = 0
-
-    prev_defect = 0
-    prev_offset = -1000000000
-    stop = _numba_region2_k_scan_stop(action_count, raw_fever_fill)
-    for action_idx in range(1, int(stop)):
-        k = int(action_k[action_idx])
-        region_offset = _numba_region2_offset_for_count(0, k, raw_fever_fill, n + k + 2)
-        if int(region_offset) < 1:
-            continue
-        activation_offset = int(region_offset) + k
-        defect = k - 1 - (2 * activation_offset)
-        if family_count > 0 and prev_defect == defect and activation_offset == prev_offset + 1:
-            family_end[family_count - 1] = activation_offset
-        else:
-            family_defect[family_count] = defect
-            family_start[family_count] = activation_offset
-            family_end[family_count] = activation_offset
-            family_count += 1
-        prev_defect = defect
-        prev_offset = activation_offset
-    return family_count, family_defect, family_start, family_end
-
-
-@njit(cache=True, nogil=True)
-def _numba_clamped_end_idx(n: int, activation_idx: int, raw_end_idx: int) -> int:
+def _clamped_end(n: int, activation_idx: int, raw_end_idx: int) -> int:
     edge_e = raw_end_idx
     if edge_e <= activation_idx:
         edge_e = activation_idx + 1
@@ -1804,483 +1588,224 @@ def _numba_clamped_end_idx(n: int, activation_idx: int, raw_end_idx: int) -> int
     return edge_e
 
 
-@njit(cache=True, nogil=True, inline="always")
-def _numba_activation_packet(
-    where, body_values, body_starts, body_counts, use_forced_great_timing_i: int, ends, pk_buf
-):
-    """One section activation's packet: its edge (Perfect activation, or late-Great when `mode` != 0) at every end in
-    [exit, early-Great reach] joined with that end's body tail, as rows (body fever, normal Greats + 2 x activation +
-    defect, fever Greats) in pk_buf [0, count). The rows do not depend on the state: state s reads normal Greats as the
-    second column - 2s. Returns (pk_buf, count); count 0 when the activation is invalid or no end has a tail."""
-    n, mode, defect, activation = where
-    if activation < 100 or activation >= n:
-        return pk_buf, 0
-    if int(ends.perfect_valid[activation]) == 0:
-        return pk_buf, 0
-    perfect_e = int(ends.perfect_e[activation])
-    edge_e = perfect_e
-    edge_eg_e = int(ends.eg_perfect_e[activation])
-    fever_great_delta = 0
-    if mode != 0:
-        if use_forced_great_timing_i == 0:
-            return pk_buf, 0
-        if int(ends.late_valid[activation]) == 0:
-            return pk_buf, 0
-        late_e = int(ends.late_e[activation])
-        late_eg_e = int(ends.eg_late_e[activation])
-        if not _numba_late_edge_extends(perfect_e, late_e, late_eg_e, edge_eg_e):
-            return pk_buf, 0
-        edge_e = late_e
-        edge_eg_e = late_eg_e
-        fever_great_delta = 1
-
-    # Early Greats: extend the fever end from `edge_e` (the Perfect/late boundary) up to the
-    # earliest-Great floor boundary `eg_e`. Each e in [edge_e, eg_e] is its own Pareto surface;
-    # the notes [edge_e, e) are pulled into fever as GREATS (all body, since activation >= 100),
-    # so each such e contributes (e - edge_e) extra fever-greats on top of the section's fever
-    # length. eg_e == edge_e on the overwhelming majority of activations, so the loop usually runs once.
-    eg_e = edge_eg_e
-    # The activation can also end its fever early, at every end in [perfect_exit_e / late_exit_e, edge_e).
-    exit_e = ends.perfect_exit_e if mode == 0 else ends.late_exit_e
-    lo_e = min(int(exit_e[activation]), edge_e)
-    total_points = 0
-    for end_e in range(lo_e, eg_e + 1):
-        total_points += int(body_counts[end_e])
-    if total_points <= 0:
-        return pk_buf, 0
-    pk_buf = _numba_i64_rows_ensure(pk_buf, 0, total_points)
-    write = 0
-    for end_e in range(lo_e, eg_e + 1):
-        tail_count = int(body_counts[end_e])
-        if tail_count <= 0:
-            continue
-        fever_len = end_e - activation
-        extra_fever_great = max(0, end_e - edge_e)
-        tail_start = int(body_starts[end_e])
-        for tail_idx in range(tail_count):
-            value_idx = tail_start + tail_idx
-            tail_fever = body_values[value_idx, 0]
-            tail_great = body_values[value_idx, 1]
-            tail_fever_great = body_values[value_idx, 2]
-            tail_normal_great = int(tail_great) - int(tail_fever_great)
-            shifted_normal_great = tail_normal_great + (2 * activation) + defect
-            packet_fever_great = int(tail_fever_great) + fever_great_delta + extra_fever_great
-            pk_buf[int(write), 0] = np.int64(int(tail_fever) + fever_len)
-            pk_buf[int(write), 1] = np.int64(shifted_normal_great)
-            pk_buf[int(write), 2] = np.int64(packet_fever_great)
-            write += 1
-    if lo_e < eg_e:
-        write = _numba_packet_points_skyline(pk_buf, 0, int(write))
-    return pk_buf, int(write)
-
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_region2_activation_packet(where, body_values, body_starts, body_counts, chart, region, late_exit_e, pk_buf):
-    """One region-2 activation's packet (a forced-Great run moves the activation; the run's core comes from the
-    shared region table, or live when the table skipped it), rows as in _numba_activation_packet. Returns (pk_buf,
-    count)."""
-    n, activation_offset, defect, activation, raw_fever_fill = where
-    (
-        region_starts,
-        region_offsets,
-        region_activations,
-        region_great_ends,
-        region_is_greats,
-        region_act_hit_ids,
-        region_perfect_hit_ids,
-        region_perfect_valids,
-        region_perfect_end_by_hit,
-        region_great_end_by_hit,
-    ) = region
-    if activation < 100 or activation >= n:
-        return pk_buf, 0
-    k = (2 * activation_offset) + defect + 1
-    region_offset = activation_offset - k
-    if k <= 0 or region_offset < 1:
-        return pk_buf, 0
-    state_i = activation - activation_offset
-    section_start = state_i + 1
-    if section_start < 0 or section_start >= n:
-        return pk_buf, 0
-
-    # Shared-core lookup: the great-branch region-run core (great_end, capped hits) is a pure
-    # function of (section_start, run_start, activation) -- k participates only via the
-    # within-run test of the fill crossing -- so a stored CSR entry matching (offset, activation,
-    # is_great) with the activation inside THIS push's k-run is byte-identical to re-deriving the
-    # core live. Entries the table's fits-in-chart guard skipped (clamped near-end runs) miss the
-    # lookup and take the exact live path below, preserving current emitted frontiers verbatim.
-    push_run_start = section_start + region_offset
-    looked_up = 0
-    activation_i = -1
-    edge_e = -1
-    run_start = -1
-    great_end = -1
-    activation_great_idx = -1
-    eg_e = -1
-    valid = 0
-    for entry_idx in range(int(region_starts[section_start]), int(region_starts[section_start + 1])):
-        if (
-            int(region_offsets[entry_idx]) == region_offset
-            and int(region_activations[entry_idx]) == activation
-            and int(region_is_greats[entry_idx]) == 1
-            and int(region_activations[entry_idx]) < push_run_start + k
-        ):
-            (activation_i, edge_e, run_start, great_end, activation_great_idx, eg_e, valid) = (
-                _numba_region_run_edge_from_core(
-                    n,
-                    section_start,
-                    region_offset,
-                    (
-                        int(region_activations[entry_idx]),
-                        int(region_great_ends[entry_idx]),
-                        1,
-                        int(region_act_hit_ids[entry_idx]),
-                        int(region_perfect_hit_ids[entry_idx]),
-                        int(region_perfect_valids[entry_idx]),
-                        1,
-                    ),
-                    region_perfect_end_by_hit,
-                    region_great_end_by_hit,
-                )
-            )
-            looked_up = 1
-            break
-    if looked_up == 0:
-        timestamps, perfect_ts, great_ts, perfect_floor, great_floor, late_great_floor, lanes = chart
-        (activation_i, edge_e, run_start, great_end, activation_great_idx, eg_e, valid) = (
-            _numba_region_run_edge_for_offset(
-                (n, section_start, region_offset, k),
-                raw_fever_fill,
-                timestamps,
-                HitTimes(perfect_floor, perfect_ts, great_floor, great_ts, late_great_floor),
-                lanes,
-                region_perfect_end_by_hit,
-                region_great_end_by_hit,
-            )
-        )
-    if int(valid) == 0 or int(activation_great_idx) < 0 or int(activation_i) != activation:
-        return pk_buf, 0
-
-    # The activation can also end its fever early, at every end in [late_exit_e, edge_e).
-    lo_e = min(int(late_exit_e[activation]), int(edge_e))
-    total_points = 0
-    for end_e in range(lo_e, int(eg_e) + 1):
-        total_points += int(body_counts[end_e])
-    if total_points <= 0:
-        return pk_buf, 0
-    pk_buf = _numba_i64_rows_ensure(pk_buf, 0, total_points)
-    write = 0
-    for end_e in range(lo_e, int(eg_e) + 1):
-        tail_count = int(body_counts[end_e])
-        if tail_count <= 0:
-            continue
-        if end_e <= int(edge_e):
-            edge = _numba_pack_edge(n, activation, end_e, int(run_start), int(great_end), activation)
-        else:
-            edge = _numba_pack_edge_eg(
-                n, activation, end_e, int(run_start), int(great_end), activation, int(edge_e), end_e
-            )
-        edge_fever = int(edge[4])
-        edge_fever_great = int(edge[6])
-        edge_normal = int(edge[5]) - int(edge[6])
-        extra_normal = edge_normal - ((2 * activation_offset) + defect)
-        tail_start = int(body_starts[end_e])
-        for tail_idx in range(tail_count):
-            value_idx = tail_start + tail_idx
-            tail_fever = body_values[value_idx, 0]
-            tail_great = body_values[value_idx, 1]
-            tail_fever_great = body_values[value_idx, 2]
-            tail_normal_great = int(tail_great) - int(tail_fever_great)
-            pk_buf[int(write), 0] = np.int64(int(tail_fever) + edge_fever)
-            pk_buf[int(write), 1] = np.int64(tail_normal_great + (2 * activation) + defect + extra_normal)
-            pk_buf[int(write), 2] = np.int64(int(tail_fever_great) + edge_fever_great)
-            write += 1
-    if lo_e < int(eg_e):
-        write = _numba_packet_points_skyline(pk_buf, 0, int(write))
-    return pk_buf, int(write)
-
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_touch_packet_points_for_state(
-    points, point_range, state_i: int, key, pair_stamp, best_fever_by_pair, touched_pair, touched_count: int
-):
-    point_start, point_end = point_range
-    pair_mod, pair_stamp_value = key
-    generated_count = 0
-    for packet_idx in range(point_start, point_end):
-        body_fever = points[packet_idx, 0]
-        shifted_normal = points[packet_idx, 1]
-        fever_great = points[packet_idx, 2]
-        true_normal_great = int(shifted_normal) - (2 * state_i)
-        touched_count = _numba_touch_body_candidate(
-            (np.uint64(int(body_fever)), np.uint64(true_normal_great + int(fever_great)), np.uint64(int(fever_great))),
-            (np.uint64(0), np.uint64(0), np.uint64(0)),
-            pair_mod,
-            pair_stamp,
-            best_fever_by_pair,
-            touched_pair,
-            pair_stamp_value,
-            int(touched_count),
-        )
-        generated_count += 1
-    return touched_count, generated_count
-
-
 @njit(cache=True, nogil=True)
-def _numba_store_shared_empty_body_tail(body_starts, body_counts, state: int) -> None:
-    body_starts[state] = 0
-    body_counts[state] = 1
+def _body_tails(n: int, families, reachable, region, ends, scratch):
+    """The tail frontier of every reachable body state, states n - 1 down to 100: rows (body fever, body Greats, fever
+    Greats) of `body_values`, addressed per state by body_starts / body_counts. State n holds the tail of a play that
+    never activates again, and a state with no candidate shares it.
 
+    A state's candidates are the packets of its families' activations (packet_families): an activation's edge at each
+    of its fever ends, joined with that end's tail frontier. A packet row (body fever, normal Greats + 2 x activation
+    + defect, fever Greats) does not depend on the state it serves, which reads its normal Greats as the second column
+    - 2 x state. So each family keeps the packets of its live window [state + first offset, state + last offset] in a
+    queue, rows (.., activation) in push order: an activation is built once, when a window first reaches it, and
+    leaves at the head when the windows have passed it. A queued row that a new row dominates is dropped: the new
+    activation is smaller, so it stays in every later window the old one is in. The queue so keeps every point of its
+    window's Pareto set.
 
-@njit(cache=True, nogil=True)
-def _numba_u64_rows_ensure(values, used: int, extra: int):
-    """Grow-doubling reservation on a flat (cap, w) uint64 row store (body-tail values, the fused
-    reduce+hull output buffer, the flat head-state pool). Rows [0, used) are live and preserved
-    verbatim; stored offsets stay valid."""
-    need = used + extra
-    cap = values.shape[0]
-    if need <= cap:
-        return values
-    new_cap = cap
-    while new_cap < need:
-        new_cap *= 2
-    grown = np.empty((new_cap, values.shape[1]), dtype=np.uint64)
-    grown[:used] = values[:used]
-    return grown
+    An activation's ends are its base end, every earlier end from its exit end (the fever can end early) and every
+    later end up to its early-Great reach (the notes from the base end on join the fever as Greats). A region-2
+    activation takes its run from the region table: the late-Great run of the activation at the section start its
+    family's first offset puts it at. Where the table holds none, the run has no valid core.
 
+    The per-activation and per-row loops are written out in this function: a helper that takes arrays costs the
+    kernel several times its own work on every call.
 
-@njit(cache=True, nogil=True, inline="always")
-def _numba_store_body_tail_frontier(
-    body_values, body_starts, body_counts, state: int, cursor: int, frontier_values, frontier_count: int
-):
-    count = frontier_count
-    grown = _numba_u64_rows_ensure(body_values, cursor, count)
-    body_starts[state] = cursor
-    body_counts[state] = count
-    for idx in range(count):
-        grown[cursor + idx, 0] = np.uint64(frontier_values[idx, 0])
-        grown[cursor + idx, 1] = np.uint64(frontier_values[idx, 1] + frontier_values[idx, 2])
-        grown[cursor + idx, 2] = np.uint64(frontier_values[idx, 2])
-    return grown, cursor + count
+    Returns (body_values, body_starts, body_counts, states evaluated, rows generated, rows retained, the largest
+    frontier, the pair epoch, the bit epoch)."""
+    pair_mod, best_fever_by_pair, pair_stamp, touched_pair, pair_epoch, bit_values, bit_stamps, bit_epoch = scratch
+    perfect_valid, late_valid = ends.perfect_valid, ends.late_valid
+    perfect_e, late_e = ends.perfect_e, ends.late_e
+    eg_perfect_e, eg_late_e = ends.eg_perfect_e, ends.eg_late_e
+    perfect_exit_e, late_exit_e = ends.perfect_exit_e, ends.late_exit_e
+    key_starts, key_rows = region.key_starts, region.key_rows
+    perfect_end_by_hit, great_end_by_hit = region.perfect_end_by_hit, region.great_end_by_hit
 
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_skyline_queue_push(queue, heads, tails, family_idx: int, activation: int, pk_buf, count: int):
-    """Append one activation's packet rows (pk_buf [0, count)) to its family's skyline queue: rows (body fever, shifted
-    normal Greats, fever Greats, activation) in push order, so activations descend from head to tail and expired ones
-    leave at the head. A queued row a new row dominates is dropped: the new activation is smaller, so it stays in every
-    later window the old one is in. The queue keeps every point of its window's Pareto set (in practice exactly that
-    set). Returns the (possibly grown) queue array."""
-    f = family_idx
-    head = int(heads[f])
-    write = head
-    for row in range(head, int(tails[f])):
-        dominated = False
-        for p in range(count):
-            if (
-                pk_buf[p, 0] >= queue[f, row, 0]
-                and pk_buf[p, 1] <= queue[f, row, 1]
-                and pk_buf[p, 2] <= queue[f, row, 2]
-            ):
-                dominated = True
-                break
-        if not dominated:
-            if write != row:
-                for col in range(4):
-                    queue[f, write, col] = queue[f, row, col]
-            write += 1
-    if write + count > queue.shape[1]:
-        for row in range(head, write):
-            for col in range(4):
-                queue[f, row - head, col] = queue[f, row, col]
-        write -= head
-        head = 0
-        if write + count > queue.shape[1]:
-            cap = queue.shape[1]
-            while cap < write + count:
-                cap *= 2
-            grown = np.empty((queue.shape[0], cap, 4), dtype=np.int64)
-            grown[:, : queue.shape[1]] = queue
-            queue = grown
-    for p in range(count):
-        queue[f, write, 0] = pk_buf[p, 0]
-        queue[f, write, 1] = pk_buf[p, 1]
-        queue[f, write, 2] = pk_buf[p, 2]
-        queue[f, write, 3] = activation
-        write += 1
-    heads[f] = head
-    tails[f] = write
-    return queue
-
-
-@njit(cache=True, nogil=True)
-def _numba_packet_body_tails_from_precomputed_end_indices(
-    sizes, raw_fever_fill: float, plan, reachable, use_forced_great_timing_i: int, chart, tables, scratch
-):
-    n, action_count, region_action_count = sizes
-    action_k, later_fill, later_forced, later_activation_forced = plan
-    (
-        timestamps,
-        perfect_candidate_timestamps,
-        great_candidate_timestamps,
-        perfect_floor_timestamps,
-        great_floor_timestamps,
-        late_great_floor_timestamps,
-        lanes,
-    ) = chart
-    region, ends = tables
-    (
-        pair_mod,
-        best_fever_by_pair,
-        pair_stamp,
-        touched_pair,
-        pair_stamp_value,
-        bit_values,
-        bit_stamps,
-        bit_stamp_value,
-    ) = scratch
     body_values = np.empty((1024, 3), dtype=np.uint64)
+    body_values[0, 0] = 0
+    body_values[0, 1] = 0
+    body_values[0, 2] = 0
     body_starts = np.zeros(n + 1, dtype=np.int32)
     body_counts = np.zeros(n + 1, dtype=np.int32)
-    body_values[0, 0] = np.uint64(0)
-    body_values[0, 1] = np.uint64(0)
-    body_values[0, 2] = np.uint64(0)
-    _numba_store_shared_empty_body_tail(body_starts, body_counts, n)
-    body_cursor = 1
-    # Reusable output buffer for the fused per-state reduce+hull (grow-doubling, rewritten from
-    # row 0 each state; survivors are copied into body_values before the next state runs).
-    reduce_values = np.empty((1024, 4), dtype=np.int64)
-
-    family_count, family_mode, family_defect, family_start, family_end = _numba_build_packet_families(
-        action_count, later_fill, later_forced, later_activation_forced
-    )
-    region_family_count, region_family_defect, region_family_start, region_family_end = (
-        _numba_build_region2_packet_families(region_action_count, raw_fever_fill, action_k, n)
-    )
-    # One skyline queue per packet family (the section families, then the region-2 families) holding the packets of
-    # its live activation window [state + start, state + end] (_numba_skyline_queue_push); each activation is built
-    # once, when its window first reaches it.
-    families = int(family_count) + (int(region_family_count) if use_forced_great_timing_i != 0 else 0)
-    queue = np.empty((max(1, families), 16, 4), dtype=np.int64)
-    queue_heads = np.zeros(max(1, families), dtype=np.int64)
-    queue_tails = np.zeros(max(1, families), dtype=np.int64)
-    next_push_state = np.full(max(1, families), n - 1, dtype=np.int64)
-    pk_buf = np.empty((64, 3), dtype=np.int64)
-
-    states_evaluated = 0
-    retained_total = 1
-    max_state_frontier = 1
-    generated_surfaces = 0
-
-    for state_i in range(n - 1, 99, -1):
-        if not reachable[state_i]:
+    body_counts[n] = 1
+    cursor = 1
+    family_count = families.shape[0]
+    queue = np.empty((max(1, family_count), 16, 4), dtype=np.int64)
+    heads = np.zeros(max(1, family_count), dtype=np.int64)
+    tails = np.zeros(max(1, family_count), dtype=np.int64)
+    next_push = np.full(max(1, family_count), n - 1, dtype=np.int64)
+    packet = np.empty((64, 3), dtype=np.int64)
+    kept = np.empty((1024, 4), dtype=np.int64)
+    states = 0
+    generated = 0
+    retained = 1
+    largest = 1
+    for state in range(n - 1, 99, -1):
+        if not reachable[state]:
             continue
-        for q in range(families):
-            region_family = q >= int(family_count)
-            start = int(region_family_start[q - int(family_count)]) if region_family else int(family_start[q])
-            high_alpha = state_i + (
-                int(region_family_end[q - int(family_count)]) if region_family else int(family_end[q])
-            )
-            while queue_heads[q] < queue_tails[q] and queue[q, queue_heads[q], 3] > high_alpha:
-                queue_heads[q] += 1
-            push_state = min(next_push_state[q], high_alpha - start)
-            while push_state >= state_i:
-                activation = push_state + start
-                if region_family:
-                    pk_buf, count = _numba_region2_activation_packet(
-                        (n, start, int(region_family_defect[q - int(family_count)]), activation, raw_fever_fill),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        chart,
-                        region,
-                        ends.late_exit_e,
-                        pk_buf,
+        for family in range(family_count):
+            kind, defect, first_offset = families[family, 0], families[family, 1], families[family, 2]
+            newest = state + families[family, 3]
+            head = heads[family]
+            while head < tails[family] and queue[family, head, 3] > newest:
+                head += 1
+            heads[family] = head
+            first_push = min(next_push[family], newest - first_offset) + first_offset
+            next_push[family] = state - 1
+            for activation in range(first_push, state + first_offset - 1, -1):
+                if activation >= n:
+                    continue
+                # The activation's edge: its base end, early-Great reach and earliest end.
+                run_start, great_end = 0, 0
+                if kind == _REGION_FAMILY:
+                    k = 2 * first_offset + defect + 1
+                    run_start = activation - k + 1
+                    section_start = activation - first_offset + 1
+                    key = -1
+                    for candidate in range(key_starts[activation], key_starts[activation + 1]):
+                        if (
+                            key_rows[candidate, _ROW_LATE_HIT] >= 0
+                            and key_rows[candidate, _KEY_FIRST_SECTION] <= section_start
+                            and section_start <= key_rows[candidate, _KEY_LAST_SECTION]
+                        ):
+                            key = candidate
+                            break
+                    if key < 0:
+                        continue
+                    edge_e, eg_e = region_edge(
+                        n, activation, key_rows[key, _ROW_LATE_HIT], key_rows[key, _ROW_PERFECT_HIT], perfect_end_by_hit,
+                        great_end_by_hit,
                     )
+                    if edge_e < 0:
+                        continue
+                    great_end = key_rows[key, _ROW_GREAT_END]
+                    lo_e = min(late_exit_e[activation], edge_e)
+                elif perfect_valid[activation] == 0:
+                    continue
+                elif kind == _PERFECT_FAMILY:
+                    edge_e, eg_e = perfect_e[activation], eg_perfect_e[activation]
+                    lo_e = min(perfect_exit_e[activation], edge_e)
                 else:
-                    pk_buf, count = _numba_activation_packet(
-                        (n, int(family_mode[q]), int(family_defect[q]), activation),
-                        body_values,
-                        body_starts,
-                        body_counts,
-                        use_forced_great_timing_i,
-                        ends,
-                        pk_buf,
-                    )
-                if count > 0:
-                    queue = _numba_skyline_queue_push(queue, queue_heads, queue_tails, q, activation, pk_buf, count)
-                push_state -= 1
-            next_push_state[q] = state_i - 1
+                    if late_valid[activation] == 0:
+                        continue
+                    edge_e, eg_e = late_e[activation], eg_late_e[activation]
+                    if not late_edge_extends(perfect_e[activation], edge_e, eg_e, eg_perfect_e[activation]):
+                        continue
+                    lo_e = min(late_exit_e[activation], edge_e)
+                need = 0
+                for end in range(lo_e, eg_e + 1):
+                    need += body_counts[end]
+                if need <= 0:
+                    continue
+                if need > packet.shape[0]:
+                    packet = _rows_ensure(packet, 0, need)
+                # The packet: per end, its tail rows moved by the edge's counts there.
+                rows = 0
+                for end in range(lo_e, eg_e + 1):
+                    if body_counts[end] <= 0:
+                        continue
+                    if kind == _REGION_FAMILY:
+                        if end <= edge_e:
+                            edge = pack_edge(n, activation, end, run_start, great_end, activation)
+                        else:
+                            edge = pack_edge_eg(n, activation, end, run_start, great_end, activation, edge_e, end)
+                        fever = np.int64(edge[4])
+                        fever_great = np.int64(edge[6])
+                        normal = 2 * activation + (np.int64(edge[5]) - fever_great) - 2 * first_offset
+                    else:
+                        fever = end - activation
+                        fever_great = kind + max(0, end - edge_e)
+                        normal = 2 * activation + defect
+                    for tail in range(body_starts[end], body_starts[end] + body_counts[end]):
+                        tail_fever_great = np.int64(body_values[tail, 2])
+                        packet[rows, 0] = np.int64(body_values[tail, 0]) + fever
+                        packet[rows, 1] = np.int64(body_values[tail, 1]) - tail_fever_great + normal
+                        packet[rows, 2] = tail_fever_great + fever_great
+                        rows += 1
+                if lo_e < eg_e:
+                    rows = _points_skyline(packet, 0, rows)
+                # Into the family's queue: drop the rows the packet dominates, then append it.
+                write = head
+                for queued in range(head, tails[family]):
+                    dominated = False
+                    for p in range(rows):
+                        if (
+                            packet[p, 0] >= queue[family, queued, 0]
+                            and packet[p, 1] <= queue[family, queued, 1]
+                            and packet[p, 2] <= queue[family, queued, 2]
+                        ):
+                            dominated = True
+                            break
+                    if not dominated:
+                        if write != queued:
+                            for column in range(4):
+                                queue[family, write, column] = queue[family, queued, column]
+                        write += 1
+                if write + rows > queue.shape[1]:
+                    for queued in range(head, write):
+                        for column in range(4):
+                            queue[family, queued - head, column] = queue[family, queued, column]
+                    write -= head
+                    head = 0
+                    if write + rows > queue.shape[1]:
+                        capacity = queue.shape[1]
+                        while capacity < write + rows:
+                            capacity *= 2
+                        grown = np.empty((queue.shape[0], capacity, 4), dtype=np.int64)
+                        grown[:, : queue.shape[1]] = queue
+                        queue = grown
+                for p in range(rows):
+                    queue[family, write, 0] = packet[p, 0]
+                    queue[family, write, 1] = packet[p, 1]
+                    queue[family, write, 2] = packet[p, 2]
+                    queue[family, write, 3] = activation
+                    write += 1
+                heads[family] = head
+                tails[family] = write
 
-        states_evaluated += 1
-        touched_count = 0
-        pair_stamp_value += 1
-        for q in range(families):
-            if queue_tails[q] > queue_heads[q]:
-                touched_count, generated_count = _numba_touch_packet_points_for_state(
-                    queue[q],
-                    (queue_heads[q], queue_tails[q]),
-                    state_i,
-                    (pair_mod, pair_stamp_value),
-                    pair_stamp,
-                    best_fever_by_pair,
-                    touched_pair,
-                    int(touched_count),
-                )
-                generated_surfaces += int(generated_count)
-
-        if int(touched_count) == 0:
-            _numba_store_shared_empty_body_tail(body_starts, body_counts, state_i)
-            frontier_len = 1
-        else:
-            bit_stamp_value += 1
-            reduce_values, frontier_len = _numba_reduce_touched_body_pairs(
-                pair_mod,
-                touched_pair,
-                int(touched_count),
-                best_fever_by_pair,
-                bit_values,
-                bit_stamps,
-                bit_stamp_value,
-                reduce_values,
+        states += 1
+        pair_epoch += 1
+        touched, read = touch_body_rows(
+            queue, heads, tails, state, (pair_mod, pair_epoch), pair_stamp, best_fever_by_pair, touched_pair
+        )
+        generated += read
+        frontier = 1
+        if touched > 0:
+            bit_epoch += 1
+            kept, frontier = reduce_touched_body_pairs(
+                pair_mod, touched_pair, touched, best_fever_by_pair, bit_values, bit_stamps, bit_epoch, kept
             )
-            frontier_len = _numba_body_cone_filter(reduce_values, int(frontier_len))
-            body_values, body_cursor = _numba_store_body_tail_frontier(
-                body_values, body_starts, body_counts, state_i, int(body_cursor), reduce_values, int(frontier_len)
-            )
-        retained_total += int(frontier_len)
-        if int(frontier_len) > max_state_frontier:
-            max_state_frontier = int(frontier_len)
-
-    return (
-        body_values,
-        body_starts,
-        body_counts,
-        states_evaluated,
-        generated_surfaces,
-        retained_total,
-        max_state_frontier,
-        pair_stamp_value,
-        bit_stamp_value,
-    )
+            frontier = _body_cone_filter(kept, frontier)
+            body_values = _rows_ensure(body_values, cursor, frontier)
+            body_starts[state] = cursor
+            for row in range(frontier):
+                body_values[cursor + row, 0] = np.uint64(kept[row, 0])
+                body_values[cursor + row, 1] = np.uint64(kept[row, 1] + kept[row, 2])
+                body_values[cursor + row, 2] = np.uint64(kept[row, 2])
+            cursor += frontier
+        body_counts[state] = frontier
+        retained += frontier
+        largest = max(largest, frontier)
+    return body_values, body_starts, body_counts, states, generated, retained, largest, pair_epoch, bit_epoch
 
 
 @njit(cache=True, nogil=True)
-def _numba_i64_rows_ensure(values, used: int, extra: int):
-    """Grow-doubling reservation on a flat (cap, w) int64 row store; rows [0, used) are kept."""
+def _rows_ensure(values, used: int, extra: int):
+    """Room for `extra` more rows in a (cap, w) row store, which doubles until they fit; rows [0, used) are kept, so
+    offsets into them stay valid."""
     need = used + extra
     cap = values.shape[0]
     if need <= cap:
         return values
     while cap < need:
         cap *= 2
-    grown = np.empty((cap, values.shape[1]), dtype=np.int64)
+    grown = np.empty((cap, values.shape[1]), dtype=values.dtype)
     grown[:used] = values[:used]
     return grown
 
 
 @njit(cache=True, nogil=True, inline="always")
-def _numba_add_entry(entries, count: int, activation: int, section_ends, run, activation_great_idx: int) -> int:
+def _add_entry(entries, count: int, activation: int, section_ends, run, activation_great_idx: int) -> int:
     """Write one activation section into reserved rows: (activation, base end, earliest early end, early-Great reach,
     Great run start, Great run end, the activation's own Great or -1). Its ends are base_e, every e in
     [exit_e, base_e) and every e in (base_e, eg_e]."""
@@ -2297,14 +1822,14 @@ def _numba_add_entry(entries, count: int, activation: int, section_ends, run, ac
 
 
 @njit(cache=True, nogil=True)
-def _numba_section_entries(
+def _section_entries(
     entries, count: int, section, fills, forced, activation_forced, ends, use_forced_great_timing_i: int
 ):
     """Every action's activation sections for one section starting at `section_start` (activation = state + fill):
-    the Perfect activation and, when it carries more than that edge (see _numba_late_edge_extends), the late-Great
+    the Perfect activation and, when it carries more than that edge (see late_edge_extends), the late-Great
     one."""
     n, action_count, state, section_start = section
-    entries = _numba_i64_rows_ensure(entries, int(count), 2 * action_count)
+    entries = _rows_ensure(entries, int(count), 2 * action_count)
     prev_fill = -1
     prev_edge_e = -1
     prev_activation_fill = -1
@@ -2328,7 +1853,7 @@ def _numba_section_entries(
         if edge_e >= 0 and (fill != prev_fill or edge_e != prev_edge_e):
             prev_fill = fill
             prev_edge_e = edge_e
-            count = _numba_add_entry(
+            count = _add_entry(
                 entries,
                 count,
                 activation,
@@ -2341,7 +1866,7 @@ def _numba_section_entries(
         if use_forced_great_timing_i != 0 and prefix_forced >= 0:
             if int(ends.late_valid[activation]) != 0:
                 activation_e = int(ends.late_e[activation])
-        if not _numba_late_edge_extends(
+        if not late_edge_extends(
             edge_e, activation_e, int(ends.eg_late_e[activation]), int(ends.eg_perfect_e[activation])
         ):
             continue
@@ -2354,7 +1879,7 @@ def _numba_section_entries(
         prev_activation_fill = fill
         prev_activation_e = activation_e
         prev_activation_prefix = prefix_forced
-        count = _numba_add_entry(
+        count = _add_entry(
             entries,
             count,
             activation,
@@ -2366,61 +1891,35 @@ def _numba_section_entries(
 
 
 @njit(cache=True, nogil=True)
-def _numba_region2_entries(
-    entries, count: int, n: int, section_start: int, region, perfect_exit_e, late_exit_e, use_forced_great_timing_i: int
-):
-    """The region-2 activation sections of one section start (a forced-Great run moves the activation): the region
-    core table's entries for `section_start`, each finished for this fever time (its ends and early-Great reach)."""
-    if use_forced_great_timing_i == 0:
-        return entries, int(count)
-    (
-        region_starts,
-        region_offsets,
-        region_activations,
-        region_great_ends,
-        region_is_greats,
-        region_act_hit_ids,
-        region_perfect_hit_ids,
-        region_perfect_valids,
-        region_perfect_end_by_hit,
-        region_great_end_by_hit,
-    ) = region
-    entries = _numba_i64_rows_ensure(
-        entries, int(count), int(region_starts[section_start + 1]) - int(region_starts[section_start])
-    )
-    for entry_idx in range(int(region_starts[section_start]), int(region_starts[section_start + 1])):
-        activation, edge_e, run_start, great_end, activation_great_idx, eg_e, valid = _numba_region_run_edge_from_core(
-            n,
-            section_start,
-            int(region_offsets[entry_idx]),
-            (
-                int(region_activations[entry_idx]),
-                int(region_great_ends[entry_idx]),
-                int(region_is_greats[entry_idx]),
-                int(region_act_hit_ids[entry_idx]),
-                int(region_perfect_hit_ids[entry_idx]),
-                int(region_perfect_valids[entry_idx]),
-                1,
-            ),
-            region_perfect_end_by_hit,
-            region_great_end_by_hit,
+def _region2_entries(entries, count: int, n: int, section_start: int, region, perfect_exit_e, late_exit_e):
+    """The region-run activation sections of one head section start (a forced-Great run moves the activation): the
+    region table's head rows for `section_start`, each finished for this fever time (its ends and early-Great
+    reach)."""
+    head_starts, head_rows = region.head_starts, region.head_rows
+    entries = _rows_ensure(entries, count, head_starts[section_start + 1] - head_starts[section_start])
+    for row in range(head_starts[section_start], head_starts[section_start + 1]):
+        activation = int(head_rows[row, _HEAD_ACTIVATION])
+        late_hit = int(head_rows[row, _ROW_LATE_HIT])
+        edge_e, eg_e = region_edge(
+            n, activation, late_hit, int(head_rows[row, _ROW_PERFECT_HIT]), region.perfect_end_by_hit,
+            region.great_end_by_hit,
         )
-        if int(valid) == 0:
+        if edge_e < 0:
             continue
-        exit_e = perfect_exit_e if int(activation_great_idx) < 0 else late_exit_e
-        count = _numba_add_entry(
+        exit_e = perfect_exit_e if late_hit < 0 else late_exit_e
+        count = _add_entry(
             entries,
             count,
-            int(activation),
-            (int(edge_e), int(exit_e[int(activation)]), int(eg_e)),
-            (int(run_start), int(great_end)),
-            int(activation_great_idx),
+            activation,
+            (edge_e, int(exit_e[activation]), eg_e),
+            (section_start + int(head_rows[row, _HEAD_OFFSET]), int(head_rows[row, _ROW_GREAT_END])),
+            activation if late_hit >= 0 else -1,
         )
-    return entries, int(count)
+    return entries, count
 
 
 @njit(cache=True, nogil=True, inline="always")
-def _numba_mask_hash(w0, w1, w2, w3):
+def mask_hash(w0, w1, w2, w3):
     h = w0 * np.uint64(0x9E3779B97F4A7C15)
     h = (h ^ (h >> np.uint64(29)) ^ w1) * np.uint64(0xBF58476D1CE4E5B9)
     h = (h ^ (h >> np.uint64(31)) ^ w2) * np.uint64(0x94D049BB133111EB)
@@ -2428,16 +1927,35 @@ def _numba_mask_hash(w0, w1, w2, w3):
     return h ^ (h >> np.uint64(32))
 
 
+@njit(cache=True, nogil=True, inline="always")
+def _intern_reserved(slots, masks, patterns: int, w0, w1, w2, w3):
+    """Id of the head-mask pattern (w0..w3) in an open-addressing table with room for one more pattern; a new pattern
+    gets the next id. Returns (id, patterns)."""
+    cap = slots.shape[0]
+    slot = np.int64(mask_hash(w0, w1, w2, w3) & np.uint64(cap - 1))
+    while True:
+        pid = int(slots[slot])
+        if pid < 0:
+            slots[slot] = patterns
+            masks[patterns, 0] = w0
+            masks[patterns, 1] = w1
+            masks[patterns, 2] = w2
+            masks[patterns, 3] = w3
+            return patterns, patterns + 1
+        if masks[pid, 0] == w0 and masks[pid, 1] == w1 and masks[pid, 2] == w2 and masks[pid, 3] == w3:
+            return pid, patterns
+        slot = (slot + 1) & (cap - 1)
+
+
 @njit(cache=True, nogil=True)
-def _numba_pattern_id(slots, masks, patterns: int, w0, w1, w2, w3):
-    """Id of the head-mask pattern (w0..w3) in an open-addressing table; a new pattern gets the next id (the table
-    and the mask rows grow as needed). Returns (slots, masks, id, patterns)."""
+def _pattern_id(slots, masks, patterns: int, w0, w1, w2, w3):
+    """`_intern_reserved` on tables that grow as needed. Returns (slots, masks, id, patterns)."""
     if 2 * (patterns + 1) > slots.shape[0]:
         cap = 2 * slots.shape[0]
         slots = np.full(cap, -1, dtype=np.int64)
         for pid in range(patterns):
             slot = np.int64(
-                _numba_mask_hash(masks[pid, 0], masks[pid, 1], masks[pid, 2], masks[pid, 3]) & np.uint64(cap - 1)
+                mask_hash(masks[pid, 0], masks[pid, 1], masks[pid, 2], masks[pid, 3]) & np.uint64(cap - 1)
             )
             while slots[slot] >= 0:
                 slot = (slot + 1) & (cap - 1)
@@ -2446,36 +1964,24 @@ def _numba_pattern_id(slots, masks, patterns: int, w0, w1, w2, w3):
         grown = np.empty((2 * masks.shape[0], 4), dtype=np.uint64)
         grown[:patterns] = masks[:patterns]
         masks = grown
-    cap = slots.shape[0]
-    slot = np.int64(_numba_mask_hash(w0, w1, w2, w3) & np.uint64(cap - 1))
-    while True:
-        pid = slots[slot]
-        if pid < 0:
-            slots[slot] = patterns
-            masks[patterns, 0] = w0
-            masks[patterns, 1] = w1
-            masks[patterns, 2] = w2
-            masks[patterns, 3] = w3
-            return slots, masks, patterns, patterns + 1
-        if masks[pid, 0] == w0 and masks[pid, 1] == w1 and masks[pid, 2] == w2 and masks[pid, 3] == w3:
-            return slots, masks, pid, patterns
-        slot = (slot + 1) & (cap - 1)
+    pid, patterns = _intern_reserved(slots, masks, patterns, w0, w1, w2, w3)
+    return slots, masks, pid, patterns
 
 
 @njit(cache=True, nogil=True)
-def _numba_entry_end_points(points, m: int, slots, masks, patterns: int, edge, end_e: int, head):
+def _entry_end_points(points, m: int, slots, masks, patterns: int, edge, end_e: int, head):
     """The candidates of one edge ending at `end_e`, joined with that state's tail frontier: body tail points, the
     terminal state (the edge alone), or a head state's rows (their masks combine with the edge's)."""
     body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit = head
     if end_e >= 100 or end_e >= int(head_limit):
-        slots, masks, pid, patterns = _numba_pattern_id(slots, masks, patterns, edge[0], edge[1], edge[2], edge[3])
+        slots, masks, pid, patterns = _pattern_id(slots, masks, patterns, edge[0], edge[1], edge[2], edge[3])
         bf0 = np.int64(edge[4])
         ng0 = np.int64(edge[5]) - np.int64(edge[6])
         fg0 = np.int64(edge[6])
         if end_e >= 100:
             tails = int(body_counts[end_e])
             start = int(body_starts[end_e])
-            points = _numba_i64_rows_ensure(points, m, tails)
+            points = _rows_ensure(points, m, tails)
             for idx in range(tails):
                 points[m, 0] = bf0 + np.int64(body_values[start + idx, 0])
                 points[m, 1] = ng0 + np.int64(body_values[start + idx, 1]) - np.int64(body_values[start + idx, 2])
@@ -2483,7 +1989,7 @@ def _numba_entry_end_points(points, m: int, slots, masks, patterns: int, edge, e
                 points[m, 3] = pid
                 m += 1
         else:
-            points = _numba_i64_rows_ensure(points, m, 1)
+            points = _rows_ensure(points, m, 1)
             points[m, 0] = bf0
             points[m, 1] = ng0
             points[m, 2] = fg0
@@ -2492,10 +1998,10 @@ def _numba_entry_end_points(points, m: int, slots, masks, patterns: int, edge, e
         return points, m, slots, masks, int(patterns)
     start = int(head_state_start[end_e])
     rows = int(head_state_count[end_e])
-    points = _numba_i64_rows_ensure(points, m, rows)
+    points = _rows_ensure(points, m, rows)
     for idx in range(rows):
         row = start + idx
-        slots, masks, pid, patterns = _numba_pattern_id(
+        slots, masks, pid, patterns = _pattern_id(
             slots,
             masks,
             patterns,
@@ -2515,7 +2021,7 @@ def _numba_entry_end_points(points, m: int, slots, masks, patterns: int, edge, e
 
 
 @njit(cache=True, nogil=True, inline="always")
-def _numba_pattern_dominates(masks, q: int, p: int) -> bool:
+def _pattern_dominates(masks, q: int, p: int) -> bool:
     """Whether head pattern q can dominate pattern p: equal fever/Great overlap, q's fever mask a superset and its
     Great mask a subset of p's (a same-pattern pair qualifies)."""
     return (
@@ -2529,7 +2035,7 @@ def _numba_pattern_dominates(masks, q: int, p: int) -> bool:
 
 
 @njit(cache=True, nogil=True, inline="always")
-def _numba_int_slot(slot_key, key: int, cap: int) -> int:
+def _int_slot(slot_key, key: int, cap: int) -> int:
     """The slot of a non-negative key in an open-addressing table (`slot_key` = -1 when empty): the slot holding it,
     else the empty slot where it goes."""
     slot = np.int64((np.uint64(key) * np.uint64(0x9E3779B97F4A7C15)) >> np.uint64(32)) & (cap - 1)
@@ -2538,27 +2044,8 @@ def _numba_int_slot(slot_key, key: int, cap: int) -> int:
     return slot
 
 
-@njit(cache=True, nogil=True, inline="always")
-def _numba_intern_reserved(slots, masks, patterns: int, w0, w1, w2, w3):
-    """_numba_pattern_id on tables with room reserved for every new pattern: returns (id, patterns)."""
-    cap = slots.shape[0]
-    slot = np.int64(_numba_mask_hash(w0, w1, w2, w3) & np.uint64(cap - 1))
-    while True:
-        pid = int(slots[slot])
-        if pid < 0:
-            slots[slot] = patterns
-            masks[patterns, 0] = w0
-            masks[patterns, 1] = w1
-            masks[patterns, 2] = w2
-            masks[patterns, 3] = w3
-            return patterns, patterns + 1
-        if masks[pid, 0] == w0 and masks[pid, 1] == w1 and masks[pid, 2] == w2 and masks[pid, 3] == w3:
-            return pid, patterns
-        slot = (slot + 1) & (cap - 1)
-
-
 @njit(cache=True, nogil=True)
-def _numba_state_points(entries, count: int, n: int, head, points, slots, masks, arena):
+def _state_points(entries, count: int, n: int, head, points, slots, masks, arena):
     """All candidate points (body fever, normal Greats, fever Greats, pattern id) of one state's activation sections.
 
     A section whose activation and ends all lie in the body, with Great counts constant over its early ends and
@@ -2566,7 +2053,7 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
     them), is a shift (-activation, normal Greats, fever Greats) of its windows' skylines. Such sections are grouped
     by their window pair: each group's skylines are computed once, and a section whose shift a section of a dominating
     pattern (or its own) dominates adds nothing. Any other section is joined end by end.
-    Returns (points, m, slots, masks, patterns, arena)."""
+    Returns (points, m, slots, masks, arena)."""
     width = n + 2
     rows = max(1, count)
     # Room for every section's pattern, so interning below never reallocates.
@@ -2602,7 +2089,7 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
             continue
         if eg_e > base_e and max(0, min(int(eg_e), int(great_end), n) - run_lo) != overlap_base:
             continue
-        at_base = _numba_pack_edge(n, int(activation), int(base_e), int(great_start), int(great_end), int(agi))
+        at_base = pack_edge(n, int(activation), int(base_e), int(great_start), int(great_end), int(agi))
         if (
             prev_pid >= 0
             and masks[prev_pid, 0] == at_base[0]
@@ -2612,7 +2099,7 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
         ):
             pid = prev_pid
         else:
-            pid, patterns = _numba_intern_reserved(
+            pid, patterns = _intern_reserved(
                 slots, masks, patterns, at_base[0], at_base[1], at_base[2], at_base[3]
             )
         prev_pid = pid
@@ -2621,7 +2108,7 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
         info[idx, 1] = np.int64(at_base[5]) - np.int64(at_base[6])
         info[idx, 2] = np.int64(at_base[6])
         info[idx, 3] = -1
-        slot = _numba_int_slot(table_key, int(key), table_cap)
+        slot = _int_slot(table_key, int(key), table_cap)
         if table_key[slot] < 0:
             table_key[slot] = key
             group_slots[groups] = slot
@@ -2643,7 +2130,7 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
                     and entries[b_idx, 0] <= entries[a_idx, 0]
                     and info[b_idx, 1] <= info[a_idx, 1]
                     and info[b_idx, 2] <= info[a_idx, 2]
-                    and _numba_pattern_dominates(masks, info[b_idx, 0], info[a_idx, 0])
+                    and _pattern_dominates(masks, info[b_idx, 0], info[a_idx, 0])
                 ):
                     info[a_idx, 0] = -2
                     break
@@ -2662,12 +2149,12 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
                 start = int(body_starts[end_e])
                 tails = int(body_counts[end_e])
                 if all_rows + tails > arena.shape[0]:
-                    arena = _numba_i64_rows_ensure(arena, all_rows, tails)
+                    arena = _rows_ensure(arena, all_rows, tails)
                 for t in range(tails):
                     bf = end_e + np.int64(body_values[start + t, 0])
                     ng = np.int64(body_values[start + t, 1]) - np.int64(body_values[start + t, 2])
                     fg = np.int64(body_values[start + t, 2]) + (end_e if kind == 1 else 0)
-                    all_rows = _numba_packet_points_append(arena, exit_rows if kind == 1 else 0, all_rows, bf, ng, fg)
+                    all_rows = _points_append(arena, exit_rows if kind == 1 else 0, all_rows, bf, ng, fg)
             if kind == 0:
                 exit_rows = all_rows
         idx = first
@@ -2676,7 +2163,7 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
                 activation, base_e = entries[idx, 0], entries[idx, 1]
                 pid, ng, fg = info[idx, 0], info[idx, 1], info[idx, 2]
                 if m + all_rows > points.shape[0]:
-                    points = _numba_i64_rows_ensure(points, m, all_rows)
+                    points = _rows_ensure(points, m, all_rows)
                 for row in range(all_rows):
                     points[m, 0] = arena[row, 0] - activation
                     points[m, 1] = arena[row, 1] + ng
@@ -2689,41 +2176,39 @@ def _numba_state_points(entries, count: int, n: int, head, points, slots, masks,
             continue
         activation, base_e, lo_e, eg_e = entries[idx, 0], entries[idx, 1], entries[idx, 2], entries[idx, 3]
         great_start, great_end, agi = entries[idx, 4], entries[idx, 5], entries[idx, 6]
-        points, m, slots, masks, patterns = _numba_entry_end_points(
+        points, m, slots, masks, patterns = _entry_end_points(
             points,
             m,
             slots,
             masks,
             patterns,
-            _numba_pack_edge(n, int(activation), int(base_e), int(great_start), int(great_end), int(agi)),
+            pack_edge(n, int(activation), int(base_e), int(great_start), int(great_end), int(agi)),
             int(base_e),
             head,
         )
         for end_e in range(int(base_e) + 1, int(eg_e) + 1):
-            edge = _numba_pack_edge_eg(
+            edge = pack_edge_eg(
                 n, int(activation), end_e, int(great_start), int(great_end), int(agi), int(base_e), end_e
             )
-            points, m, slots, masks, patterns = _numba_entry_end_points(
+            points, m, slots, masks, patterns = _entry_end_points(
                 points, m, slots, masks, patterns, edge, end_e, head
             )
         for end_e in range(int(lo_e), int(base_e)):
-            edge = _numba_pack_edge(n, int(activation), end_e, int(great_start), int(great_end), int(agi))
-            points, m, slots, masks, patterns = _numba_entry_end_points(
+            edge = pack_edge(n, int(activation), end_e, int(great_start), int(great_end), int(agi))
+            points, m, slots, masks, patterns = _entry_end_points(
                 points, m, slots, masks, patterns, edge, end_e, head
             )
-    return points, int(m), slots, masks, int(patterns), arena
+    return points, int(m), slots, masks, arena
 
 
 @njit(cache=True, nogil=True)
-def _numba_points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_stamp):
+def _points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_stamp):
     """A state's frontier from its candidate points, by three reductions, cheapest and strongest first:
 
-    1. Each pattern's skyline (exact): a pattern's points in (normal Greats, fever Greats, body fever desc) order; a
-       point is kept iff its body fever beats every earlier point with fever Greats <= (stamped Fenwick prefix
-       maxima), then each normal-Great level is pruned to its upper hull of (body fever, -fever Great) by
-       `_numba_skyline_hull_push`, the body DP's pair reduce (same-pattern points share their head score and the
-       body score is linear in the three counts). The Fenwick spans the state's fever-Great range only.
-    2. The head envelope (cone) filter across patterns (`_numba_head_envelope_filter`, lossless by its 16-corner
+    1. Each pattern's skyline with per-normal-Great upper hulls (`_skyline_hulls`, the body states' reduction, with
+       the pattern as the tag): exact, since same-pattern points share their head score and the body score is linear
+       in the three counts. The Fenwick spans the state's fever-Great range only.
+    2. The head envelope (cone) filter across patterns (`head_envelope_filter`, lossless by its 16-corner
        proof): it compares surfaces of different head patterns, which structural dominance cannot.
     3. The exact structural Pareto set of what remains: rows visited by body fever desc, normal Greats asc, fever
        Greats asc, then pattern rank (Great bits minus fever bits) asc; a row is kept unless a kept row of a
@@ -2732,7 +2217,7 @@ def _numba_points_frontier(points, masks, sizes, head, fen_values, fen_stamps, f
        transitive, so this keeps exactly the non-dominated rows.
     No points gives the zero surface (the play that never activates) when `empty_is_zero`, else nothing. Returns
     (frontier, Fenwick stamp)."""
-    m, patterns, n = sizes
+    m, n = sizes
     lo_pos, hi_pos, empty_is_zero = head
     if m == 0:
         return np.zeros((1 if empty_is_zero else 0, 7), dtype=np.uint64), fen_stamp
@@ -2746,29 +2231,14 @@ def _numba_points_frontier(points, masks, sizes, head, fen_values, fen_stamps, f
         keys[idx] = ((points[idx, 3] * radix + ng) * radix + fg) * radix + (radix - 1 - bf)
         max_fg = max(max_fg, fg)
     order = np.argsort(keys)
-    fen_values = fen_values[: max_fg + 2]
-    fen_stamps = fen_stamps[: max_fg + 2]
     stack = np.empty((m, 4), dtype=np.int64)
-    count = 0
-    group_base = 0
-    group_ng = -1
-    pid = -1
-    prev_pair = -1
     for pos in range(m):
-        idx = int(order[pos])
-        if points[idx, 3] != pid:
-            pid = points[idx, 3]
-            fen_stamp += 1
-            group_ng = -1
-            prev_pair = -1
-        bf, ng, fg = points[idx, 0], points[idx, 1], points[idx, 2]
-        pair = ng * radix + fg
-        if pair == prev_pair:
-            continue
-        prev_pair = pair
-        count, group_base, group_ng = _numba_skyline_hull_push(
-            stack, count, (group_base, group_ng), (bf, ng, fg, pid), fen_values, fen_stamps, fen_stamp
-        )
+        idx = order[pos]
+        for col in range(4):
+            stack[pos, col] = points[idx, col]
+    count, fen_stamp = _skyline_hulls(
+        stack, m, min(max_fg + 2, fen_values.shape[0]), fen_values, fen_stamps, fen_stamp
+    )
     frontier = np.empty((count, 7), dtype=np.uint64)
     for k in range(count):
         p = stack[k, 3]
@@ -2777,17 +2247,17 @@ def _numba_points_frontier(points, masks, sizes, head, fen_values, fen_stamps, f
         frontier[k, 4] = np.uint64(stack[k, 0])
         frontier[k, 6] = np.uint64(stack[k, 2])
         frontier[k, 5] = np.uint64(stack[k, 1]) + frontier[k, 6]
-    frontier = _numba_head_envelope_filter(frontier, lo_pos, hi_pos)
+    frontier = head_envelope_filter(frontier, lo_pos, hi_pos)
     rows = frontier.shape[0]
     rank_keys = np.empty(rows, dtype=np.int64)
     for k in range(rows):
         row = frontier[k]
         rank = (
             128
-            + np.int64(_numba_popcount64(row[2]))
-            + np.int64(_numba_popcount64(row[3]))
-            - np.int64(_numba_popcount64(row[0]))
-            - np.int64(_numba_popcount64(row[1]))
+            + np.int64(_popcount64(row[2]))
+            + np.int64(_popcount64(row[3]))
+            - np.int64(_popcount64(row[0]))
+            - np.int64(_popcount64(row[1]))
         )
         rank_keys[k] = (
             ((radix - 1 - np.int64(row[4])) * radix + (np.int64(row[5]) - np.int64(row[6]))) * radix + np.int64(row[6])
@@ -2823,144 +2293,38 @@ def _numba_points_frontier(points, masks, sizes, head, fen_values, fen_stamps, f
 
 
 @njit(cache=True, nogil=True)
-def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, chart, hits, fever, regions, workspace):
-    n, action_count, region_action_count = sizes
-    action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
-        actions
-    )
-    perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends = runs
-    (
-        timestamps,
-        perfect_candidate_timestamps,
-        great_candidate_timestamps,
-        perfect_floor_timestamps,
-        great_floor_timestamps,
-        late_great_floor_timestamps,
-        lanes,
-    ) = chart
-    (
-        prefix_perfect_hit,
-        prefix_perfect_valid,
-        prefix_late_hit,
-        prefix_late_valid,
-        capped_perfect_edge_e,
-        capped_late_edge_e,
-        capped_eg_perfect_e,
-        capped_eg_late_e,
-        capped_perfect_exit_e,
-        capped_late_exit_e,
-    ) = hits
-    raw_fever_fill, real_fever_time, real_time_idx, use_forced_great_timing_i = fever
-    (
-        region_starts,
-        region_offsets,
-        region_activations,
-        region_great_ends,
-        region_is_greats,
-        region_act_hit_ids,
-        region_perfect_hit_ids,
-        region_perfect_valids,
-        region_perfect_end_by_hit,
-        region_great_end_by_hit,
-    ) = regions
-    (
-        ws_pair_values,
-        ws_pair_stamps,
-        ws_pair_touched,
-        ws_bit_values,
-        ws_bit_stamps,
-        ws_perfect_successor,
-        ws_perfect_successor_stamps,
-        ws_late_successor,
-        ws_late_successor_stamps,
-        successor_epoch_in,
-        pair_epoch_in,
-        bit_epoch_in,
-    ) = workspace
-    rt = real_time_idx
-    ends = ActivationEnds(
-        prefix_perfect_hit,
-        prefix_perfect_valid,
-        prefix_late_hit,
-        prefix_late_valid,
-        capped_perfect_edge_e[rt],
-        capped_late_edge_e[rt],
-        capped_eg_perfect_e[rt],
-        capped_eg_late_e[rt],
-        capped_perfect_exit_e[rt],
-        capped_late_exit_e[rt],
-    )
-    region = RegionTables(
-        region_starts,
-        region_offsets,
-        region_activations,
-        region_great_ends,
-        region_is_greats,
-        region_act_hit_ids,
-        region_perfect_hit_ids,
-        region_perfect_valids,
-        region_perfect_end_by_hit,
-        region_great_end_by_hit,
-    )
-    reachable, max_eg_width = _numba_first_frontier_reachability_prepass(
-        n,
-        action_count,
-        (first_fill, first_activation_forced),
-        (perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends),
-        ends,
-        (real_fever_time, use_forced_great_timing_i),
-        (region, great_floor_timestamps),
-        (
-            ws_perfect_successor,
-            ws_perfect_successor_stamps,
-            ws_late_successor,
-            ws_late_successor_stamps,
-            successor_epoch_in,
-        ),
-    )
-    states_evaluated = 0
-    retained_total = 1
-    max_state_frontier = 1
-    generated_surfaces = 0
-    min_later_fill = max(1, int(later_fill[0]) if action_count > 0 else 1)
-    # Body-pair radix sizing. pair_idx packs (normal_great, body_fever_great) as
-    # normal_great*pair_mod + body_fever_great, injective only while body_fever_great < pair_mod.
-    # body_fever_great sums, per section, <=1 boundary Great plus the issue-#44 early-Great band
-    # (<= max_eg_width extras), over at most `section_bound` sections -> true max is
-    # section_bound*(1 + max_eg_width). Size pair_mod one past that (max_eg_width == 0 on the common no-early-Great
-    # path). Capped at n+1 since body_fever_great <= body_great <= n always; a smaller radix would alias pairs.
-    section_bound = n // min_later_fill + 4
-    pair_mod = min(n + 1, section_bound * (1 + int(max_eg_width)) + 1)
+def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: int, region, workspace):
+    """One fever time's frontier: its reachable states (reachability_prepass), the body states' tail frontiers
+    (_body_tails), then the head states from 99 down and last the first section from the song start, each from its
+    activation sections (_state_points, _points_frontier). group = what the group's fever times share: (the packet
+    families, the first section's activations).
+    Returns (frontier rows, states evaluated, surfaces generated, surfaces retained, the largest state frontier, the
+    pair epoch, the bit epoch)."""
+    n, action_count = sizes
+    later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = actions
+    families, first_activations = group
+    pair_values, pair_stamps, pair_touched, bit_values, bit_stamps, pair_epoch, bit_epoch = workspace
+    reachable, max_eg_width = reachability_prepass(n, first_activations, runs, ends, forced_timing, region)
+    # The pair radix: a pair packs (normal Greats, fever Greats) as normal Greats x pair_mod + fever Greats, injective
+    # while fever Greats < pair_mod. A play's body fever Greats are at most one boundary Great and max_eg_width early
+    # Greats per section, over at most section_bound sections, and never more than n.
+    section_bound = n // max(1, int(later_fill[0]) if action_count > 0 else 1) + 4
+    pair_mod = min(n + 1, section_bound * (1 + max_eg_width) + 1)
     pair_size = (n + 1) * pair_mod
-    # Workspace capacity guard (fail loud, never resize): the host sizes the per-thread pair
-    # workspaces to a provable song-level pair_mod bound (producer_reducer.pair_mod_bound) and the
-    # Fenwick workspace to n + 2 (the head states' fever-Great counts reach n).
-    # If this geometry's true radix ever escaped that bound, numpy's silent slice truncation
-    # below would hand the stamp loops short arrays -> out-of-bounds writes under njit. Raise
-    # instead; a violation means the host bound derivation is wrong, never a recoverable state.
+    # The host sizes a thread's pair workspace for the song's largest radix (producer_reducer.pair_mod_bound) and its
+    # Fenwick for n + 2 (a head state's fever Greats reach n). A smaller workspace would be sliced short below and
+    # written past its end: it fails here instead.
     if (
-        ws_pair_values.shape[0] < pair_size
-        or ws_pair_stamps.shape[0] < pair_size
-        or ws_pair_touched.shape[0] < pair_size
-        or ws_bit_values.shape[0] < n + 2
-        or ws_bit_stamps.shape[0] < n + 2
+        pair_values.shape[0] < pair_size
+        or pair_stamps.shape[0] < pair_size
+        or pair_touched.shape[0] < pair_size
+        or bit_values.shape[0] < n + 2
+        or bit_stamps.shape[0] < n + 2
     ):
         raise ValueError("FG first-frontier stamp workspace is undersized for this geometry's pair radix")
-    # Reused per-thread stamp-radix workspace (allocation-lifetime change only). A cell is valid
-    # iff its stamp equals the current epoch, and epochs carry monotonically across calls (the
-    # incoming epoch is the max stamp any earlier call wrote), so stale cells from earlier
-    # geometries hold older epochs and are invisible -- the same invariant that hides stale cells
-    # between consecutive states within one call. The views are sliced to this geometry's exact
-    # sizes so every shape-derived bound (pair radix guard, stamped-Fenwick ascent limits) is identical to the
-    # fresh-allocation behavior.
-    best_fever_by_pair = ws_pair_values[:pair_size]
-    pair_stamp = ws_pair_stamps[:pair_size]
-    touched_pair = ws_pair_touched[:pair_size]
-    pair_stamp_value = pair_epoch_in
-    bit_values = ws_bit_values[: pair_mod + 1]
-    bit_stamps = ws_bit_stamps[: pair_mod + 1]
-    bit_stamp_value = bit_epoch_in
-
+    # A workspace cell counts as written when its stamp equals the current epoch, and epochs only grow, so the cells of
+    # earlier geometries stay invisible, as the cells of earlier states do. The slices give every bound read from a
+    # shape (the pair guard, the Fenwick's limit) this geometry's own size.
     (
         body_values,
         body_starts,
@@ -2969,57 +2333,42 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
         generated_surfaces,
         retained_total,
         max_state_frontier,
-        pair_stamp_value,
-        bit_stamp_value,
-    ) = _numba_packet_body_tails_from_precomputed_end_indices(
-        (n, action_count, region_action_count),
-        raw_fever_fill,
-        (action_k, later_fill, later_forced, later_activation_forced),
+        pair_epoch,
+        bit_epoch,
+    ) = _body_tails(
+        n,
+        families,
         reachable,
-        use_forced_great_timing_i,
-        (
-            timestamps,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
-            perfect_floor_timestamps,
-            great_floor_timestamps,
-            late_great_floor_timestamps,
-            lanes,
-        ),
-        (region, ends),
+        region,
+        ends,
         (
             pair_mod,
-            best_fever_by_pair,
-            pair_stamp,
-            touched_pair,
-            int(pair_stamp_value),
-            bit_values,
-            bit_stamps,
-            int(bit_stamp_value),
+            pair_values[:pair_size],
+            pair_stamps[:pair_size],
+            pair_touched[:pair_size],
+            pair_epoch,
+            bit_values[: pair_mod + 1],
+            bit_stamps[: pair_mod + 1],
+            bit_epoch,
         ),
     )
 
     head_limit = min(n, 100)
-    # Flat head-state store: retained per-state head frontiers live in one grow-doubling
-    # (cap, 7) uint64 arena addressed by a state -> (start, count) CSR. Rows are written in the
-    # envelope filter's retained order, and a state's rows are final before any earlier state composes against
-    # them (states run descending). Unreachable states keep count 0.
+    # The head states' frontiers live in one row store, addressed per state by (start, count); a state's rows are
+    # final before an earlier state joins against them (states run descending), and an unreachable state has none.
     head_pool = np.empty((256, 7), dtype=np.uint64)
     head_pool_cursor = 0
     head_state_start = np.zeros(max(1, head_limit), dtype=np.int64)
     head_state_count = np.zeros(max(1, head_limit), dtype=np.int64)
-    head = HeadTables(body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit)
-    # Per-state scratch reused by every state of this build: activation sections, candidate points, the
-    # head-mask pattern table and the window skyline arena. The states' Fenwick is the bit workspace, its epoch
-    # carried on from the body tails.
+    head = _HeadTables(body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit)
+    # Scratch every state of this build reuses: activation sections, candidate points, the head-mask pattern table and
+    # the window skyline arena. The states' Fenwick is the bit workspace, its epoch carried on from the body tails.
     entries = np.empty((256, 7), dtype=np.int64)
     points = np.empty((1024, 4), dtype=np.int64)
     slots = np.full(1024, -1, dtype=np.int64)
     masks = np.empty((256, 4), dtype=np.uint64)
     arena = np.empty((1024, 3), dtype=np.int64)
 
-    # Head states (descending), then the first section from the song start (state 0 with the first-section action
-    # arrays): each state's frontier from its activation sections (_numba_state_points, _numba_points_frontier).
     first_frontier = np.zeros((0, 7), dtype=np.uint64)
     for state_i in range(head_limit - 1, -2, -1):
         first = state_i < 0
@@ -3027,19 +2376,12 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
             continue
         state = 0 if first else state_i
         if first:
-            entries, count = _numba_section_entries(
-                entries,
-                0,
-                (n, action_count, 0, 0),
-                first_fill,
-                first_forced,
-                first_activation_forced,
-                ends,
-                use_forced_great_timing_i,
+            entries, count = _section_entries(
+                entries, 0, (n, action_count, 0, 0), first_fill, first_forced, first_activation_forced, ends, forced_timing
             )
         else:
             states_evaluated += 1
-            entries, count = _numba_section_entries(
+            entries, count = _section_entries(
                 entries,
                 0,
                 (n, action_count, state, state + 1),
@@ -3047,31 +2389,23 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
                 later_forced,
                 later_activation_forced,
                 ends,
-                use_forced_great_timing_i,
+                forced_timing,
             )
-        entries, count = _numba_region2_entries(
-            entries,
-            count,
-            n,
-            0 if first else state + 1,
-            region,
-            ends.perfect_exit_e,
-            ends.late_exit_e,
-            use_forced_great_timing_i,
-        )
-        points, m, slots, masks, patterns, arena = _numba_state_points(
-            entries, count, n, head, points, slots, masks, arena
-        )
+        if forced_timing != 0:
+            entries, count = _region2_entries(
+                entries, count, n, 0 if first else state + 1, region, ends.perfect_exit_e, ends.late_exit_e
+            )
+        points, m, slots, masks, arena = _state_points(entries, count, n, head, points, slots, masks, arena)
         generated_surfaces += m
         # A first section whose activations all lie in the body keeps no surface when none reaches it.
-        frontier, bit_stamp_value = _numba_points_frontier(
+        frontier, bit_epoch = _points_frontier(
             points,
             masks,
-            (m, patterns, n),
+            (m, n),
             (state, head_limit, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
-            ws_bit_values,
-            ws_bit_stamps,
-            int(bit_stamp_value),
+            bit_values,
+            bit_stamps,
+            bit_epoch,
         )
         retained_total += len(frontier)
         if len(frontier) > max_state_frontier:
@@ -3079,13 +2413,14 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
         if first:
             first_frontier = frontier
             break
-        head_pool = _numba_u64_rows_ensure(head_pool, int(head_pool_cursor), len(frontier))
-        head = HeadTables(
+        head_pool = _rows_ensure(head_pool, head_pool_cursor, len(frontier))
+        # The row store may have grown.
+        head = _HeadTables(
             body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit
-        )  # the arena may have regrown
-        head_state_start[state] = int(head_pool_cursor)
+        )
+        head_state_start[state] = head_pool_cursor
         head_state_count[state] = len(frontier)
-        head_pool[int(head_pool_cursor) : int(head_pool_cursor) + len(frontier)] = frontier
+        head_pool[head_pool_cursor : head_pool_cursor + len(frontier)] = frontier
         head_pool_cursor += len(frontier)
 
     return (
@@ -3094,38 +2429,65 @@ def _first_frontier_from_precomputed_end_indices_numba(sizes, actions, runs, cha
         generated_surfaces,
         retained_total,
         max_state_frontier,
-        int(pair_stamp_value),
-        int(bit_stamp_value),
+        pair_epoch,
+        bit_epoch,
     )
 
 
 @njit(cache=True, nogil=True)
-def _first_frontiers_of_fever_times(sizes, actions, runs, chart, hits, fever, regions, workspace):
-    """`_first_frontier_from_precomputed_end_indices_numba` for each fever time of one (fill, non-Fever base) group, with
-    no call back into Python between them. fever: (raw fill, real fever times, their indices, forced timing); regions: the eight region tables, then the Perfect and Great end tables per fever-time index; workspace: its
-    arrays, then the first successor epoch (one per fever time), and the pair and bit epochs. Returns the frontiers' rows,
-    each one's first row (with the end), per fever time (states, generated surfaces, retained surfaces, largest state
-    frontier), and the pair and bit epochs."""
-    raw_fever_fill, real_fever_times, real_time_idxs, forced_timing = fever
-    r0, r1, r2, r3, r4, r5, r6, r7, perfect_ends, great_ends = regions
-    w0, w1, w2, w3, w4, w5, w6, w7, w8, successor_epoch, pair_epoch, bit_epoch = workspace
-    count = real_fever_times.shape[0]
+def frontiers_of_fever_times(sizes, actions, runs, ends, fever, regions, workspace):
+    """The frontier of each fever time of one (fill, non-Fever base) group, with no call back into Python between them.
+    sizes: (notes, action rows, actions); actions: the action table's seven arrays; runs: the fill runs of its later
+    offsets, then of those a late Great can activate at; ends: each note's Perfect and late-Great activation validity,
+    then the six fever-end tables per fever-time row (ActivationEnds); fever: (raw fill, the fever times' rows,
+    forced-Great timing); regions: the group's region table (region_core_table), then each hit token's end on the
+    Perfect and the Great floor per fever-time row; workspace: a thread's five stamp arrays, then its pair and bit
+    epochs.
+    Returns the frontiers' rows, each one's first row (with the end), per fever time (states, generated surfaces,
+    retained surfaces, largest state frontier), and the pair and bit epochs."""
+    n, action_count, _region_action_count = sizes
+    action_k, later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = (
+        actions
+    )
+    perfect_valid, late_valid, perfect_e, late_e, eg_perfect_e, eg_late_e, perfect_exit_e, late_exit_e = ends
+    raw_fever_fill, fever_rows, forced_timing = fever
+    head_starts, head_rows, key_starts, key_rows, perfect_ends, great_ends = regions
+    w0, w1, w2, w3, w4, pair_epoch, bit_epoch = workspace
+    families = packet_families(
+        sizes, raw_fever_fill, (action_k, later_fill, later_forced, later_activation_forced), forced_timing
+    )
+    # The first section's activations: bit 1 where a Perfect activates, bit 2 where a late Great may.
+    first_activations = np.zeros(n, dtype=np.int8)
+    for action in range(action_count):
+        fill = first_fill[action]
+        if fill < 0:
+            raise ValueError("FG first-fill offsets must be nonnegative")
+        if fill < n:
+            first_activations[fill] |= 1 if first_activation_forced[action] < 0 else 3
+    count = fever_rows.shape[0]
     offsets = np.zeros(count + 1, dtype=np.int64)
     stats = np.empty((count, 4), dtype=np.int64)
     frontiers = []
     for index in range(count):
-        rt = real_time_idxs[index]
-        frontier, states, generated, retained, largest, pair_epoch, bit_epoch = (
-            _first_frontier_from_precomputed_end_indices_numba(
-                sizes,
-                actions,
-                runs,
-                chart,
-                hits,
-                (raw_fever_fill, real_fever_times[index], rt, forced_timing),
-                (r0, r1, r2, r3, r4, r5, r6, r7, perfect_ends[rt], great_ends[rt]),
-                (w0, w1, w2, w3, w4, w5, w6, w7, w8, successor_epoch + index, pair_epoch, bit_epoch),
-            )
+        row = fever_rows[index]
+        frontier, states, generated, retained, largest, pair_epoch, bit_epoch = _frontier_of_fever_time(
+            (n, action_count),
+            (later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced),
+            runs,
+            (families, first_activations),
+            ActivationEnds(
+                perfect_valid,
+                late_valid,
+                perfect_e[row],
+                late_e[row],
+                eg_perfect_e[row],
+                eg_late_e[row],
+                perfect_exit_e[row],
+                late_exit_e[row],
+            ),
+            forced_timing,
+            RegionTables(head_starts, head_rows, key_starts, key_rows, perfect_ends[row], great_ends[row]),
+            (w0, w1, w2, w3, w4, pair_epoch, bit_epoch),
         )
         frontiers.append(frontier)
         offsets[index + 1] = offsets[index] + frontier.shape[0]
