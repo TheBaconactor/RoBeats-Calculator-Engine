@@ -1,4 +1,6 @@
-from gear_optimizer.app_stop_control import STOP_FILE_POLL_SEC, StopController
+from gear_optimizer.app_stop_control import StopController
+
+STOP_FILE_POLL_SEC = 1.0  # the controller looks for the stop file once a second
 
 
 def test_stop_controller_throttles_stop_file_checks(monkeypatch, tmp_path):
