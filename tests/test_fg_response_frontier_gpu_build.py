@@ -452,12 +452,11 @@ def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
 
 
 def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
+    import gear_optimizer
     from gear_optimizer.frontier import fg_cache_types
 
-    fingerprinted = {
-        source.relative_to(fg_cache_types._ENGINE).as_posix()
-        for source in fg_cache_types._FG_DP_SOURCES
-    }
+    engine = Path(gear_optimizer.__file__).resolve().parent
+    fingerprinted = {source.relative_to(engine).as_posix() for source in fg_cache_types._FG_DP_SOURCES}
     # The game-engine inputs of the bundle build (timing, input order, lane reachability, fever) must rotate the FG
     # cache. Witnesses are reconstructed from a result after a bundle is read, so the note graph is not one of them.
     assert {

@@ -29,8 +29,7 @@ from gear_optimizer.trace.materialize import (
 )
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination_batch
 from gear_optimizer.trace.reconstruct import UnplayableTrace
-from gear_optimizer.frontier.fg_cache import load_response_frontier_scoring_bundle
-from gear_optimizer.frontier.fg_cache_store import release_fg_response_song_memory
+from gear_optimizer.frontier.fg_cache import load_response_frontier_scoring_bundle, release_fg_response_song_memory
 from gear_optimizer.solver.fg_scoring import bundle_without_surface, fg_solve_result, score_fg_base_components
 from gear_optimizer.stats import GEM_KINDS, apply_gems, gems
 

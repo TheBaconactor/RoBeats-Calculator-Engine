@@ -1,5 +1,4 @@
-"""The FG response-frontier cache on disk: one .npz bundle per song timing and stat curves, and the process memory tiers
-in front of it.
+"""The FG response-frontier cache on disk: one .npz bundle per song timing and stat curves.
 
 A bundle holds the frontier metadata and two surface tables. rows (n, 4) uint32: one head-pattern ID and three body
 counts per logical surface row, in producer order. patterns (m, 10) uint32: each distinct head pattern's eight
@@ -12,41 +11,37 @@ so its metadata and tables always come from one write.
 from __future__ import annotations
 
 import logging
-import threading
+import tokenize
 import zipfile
+import zlib
 from pathlib import Path
 
 import numpy as np
 from numpy.lib import format as np_format
 
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.frontier.cache import FrontierCache, MemoryLru, write_atomically
+from gear_optimizer.frontier.cache import FrontierCache, write_atomically
 from gear_optimizer.rules import MAX_STAT
 
-from .fg_cache_keys import (
-    _fg_response_disk_cache_dir,
-    _fg_response_disk_cache_path,
-    _fg_response_cache_version,
-    fg_response_frontier_bundle_cache_key,
-)
+from .fg_cache_keys import _fg_response_disk_cache_dir, _fg_response_cache_version, fg_response_frontier_bundle_cache_key
 from .fg_cache_patterns import intern_surface_row_words, pack_surface_patterns, surface_head_coeffs
 from .fg_cache_serde import _pack_frontiers, _unpack_frontiers
-from .fg_cache_types import (
-    _BUNDLE_ARRAY_NAMES,
-    FgResponseFrontierCachePayload,
-    FgResponseFrontierScoringBundle,
-    all_response_stat_keys,
-)
+from .fg_cache_types import FgResponseFrontierCachePayload, all_response_stat_keys
 
 logger = logging.getLogger(__name__)
 
-# Decoded scoring bundles, keyed like the files (a few MB each, up to ~100 MB on the longest charts).
-_scoring_bundle_memory: MemoryLru[FgResponseFrontierScoringBundle] = MemoryLru(8)
-_response_bundle_build_slot = threading.Lock()
 _NPZ_FAST_COMPRESS_LEVEL = 1
+# What reading a damaged or truncated bundle file raises: mostly a BadZipFile (a bad CRC is one); a broken deflate
+# stream is a zlib.error, a broken member header a ValueError, a TokenError or a NotImplementedError.
+_UNREADABLE = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZipFile, zlib.error, tokenize.TokenError,
+               NotImplementedError)
 _SURFACE_TABLES = ("surface_rows", "surface_patterns")
-# What reading a damaged or truncated bundle file raises (a bad CRC is a BadZipFile).
-_UNREADABLE = (OSError, ValueError, KeyError, IndexError, EOFError, zipfile.BadZipFile)
+# The members of a bundle file, in the order they are written.
+_BUNDLE_ARRAY_NAMES = (
+    "version", "stat_keys", "frontier_ids", "raw_fill_by_ff", "non_fever_base_by_ff", "real_time_by_ft", "total_notes",
+    "long_notes", "use_forced_great_timing", "first_surface_head_len", "frontier_meta", "first_offsets", "first_counts",
+    *_SURFACE_TABLES,
+)
 
 # Exact cache compatibility is explicit and non-transitive: a version reads an older version's bundles only when it lists
 # that version here, after a byte gate proved the persisted bundles identical. The version history is in git.
@@ -77,37 +72,36 @@ _PURGED_VERSION_MARKER = ".purged_version"
 
 
 def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
-    """Delete bundles outside the current exact compatibility lineage.
+    """Delete the bundles no version of the current lineage reads; returns how many.
 
-    Versions outside the explicit compatible set are dead weight because every reader rejects them, but deleting a
-    provisioned full pool is an explicit production rotation, never routine startup maintenance. Without
-    ``authorize_rotation`` this function detects any incompatible bundle and fails loudly before unlinking a byte. An
-    authorized prebuild sweeps once per compatibility-lineage change, guarded by a `.purged_version` marker so later
-    startup stays O(1). Returns the number of files removed. Unreadable bundles are left in place rather than guessed
-    at, and if any unlink fails (e.g. a locked file) the marker remains unwritten so the next authorized prebuild
-    retries.
+    They are dead weight (no reader derives their names), but deleting a provisioned pool is an explicit production
+    rotation, never routine maintenance: without `authorize_rotation` any such bundle raises before a byte is unlinked.
+    The `.purged_version` marker lists the versions every bundle had when the directory was last swept. While the
+    lineage still reads all of them no bundle can be stale, so nothing is opened: a restart, and a start after a
+    ratified version change, cost one small read. Any other marker (or none) sweeps: every bundle's version is read.
+    An unreadable bundle is kept rather than guessed at, and if an unlink fails (a locked file) the marker stays as it
+    is, so the next prebuild sweeps again.
     """
     directory = FG_RESPONSE_FRONTIER_CACHE.directory()
     if not directory.exists():
         return 0
     compatible_versions = FG_RESPONSE_FRONTIER_CACHE.compatible_versions()
-    marker_value = "\n".join(compatible_versions)
     marker = directory / _PURGED_VERSION_MARKER
     try:
-        if marker.read_text(encoding="utf-8").strip() == marker_value:
-            return 0
+        swept_versions = marker.read_text(encoding="utf-8").split()
     except OSError:
-        pass
+        swept_versions = []
     stale_bundles: list[Path] = []
-    for npz in directory.glob("*.npz"):
-        try:
-            with np.load(npz, allow_pickle=False) as bundle:
-                version = str(bundle["version"].item())
-        except _UNREADABLE:  # not proven stale: keep it
-            continue
-        if version not in compatible_versions:
-            stale_bundles.append(npz)
-    if stale_bundles and not bool(authorize_rotation):
+    if not swept_versions or not set(swept_versions) <= set(compatible_versions):
+        for npz in directory.glob("*.npz"):
+            try:
+                with np.load(npz, allow_pickle=False) as bundle:
+                    version = str(bundle["version"].item())
+            except _UNREADABLE:  # not proven stale: keep it
+                continue
+            if version not in compatible_versions:
+                stale_bundles.append(npz)
+    if stale_bundles and not authorize_rotation:
         raise RuntimeError(
             "FG response frontier cache contains "
             f"{len(stale_bundles)} incompatible bundle(s); preserved them because destructive "
@@ -123,46 +117,30 @@ def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
             pass
         except OSError:
             purge_complete = False  # locked/in-use: leave the marker unwritten, retry next prebuild
-    if purge_complete:
+    if purge_complete and swept_versions != list(compatible_versions):
         try:
-            marker.write_text(marker_value, encoding="utf-8")
+            marker.write_text("\n".join(compatible_versions), encoding="utf-8")
         except OSError:
             pass
     return removed
 
 
 def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
-    array = np.asarray(values)
-    if array.size:
-        min_value = int(np.min(array))
-        max_value = int(np.max(array))
-        info = np.iinfo(np.uint8)
-        if min_value < int(info.min) or max_value > int(info.max):
-            raise ValueError(f"{name} exceeds persisted uint8 bounds: {min_value}..{max_value}")
-    return np.asarray(array, dtype=np.uint8)
+    if values.size and not (0 <= values.min() and values.max() <= np.iinfo(np.uint8).max):
+        raise ValueError(f"{name} exceeds persisted uint8 bounds: {values.min()}..{values.max()}")
+    return values.astype(np.uint8)
 
 
-def reset_fg_response_frontier_payload_cache() -> None:
-    _scoring_bundle_memory.clear()
-
-
-def release_fg_response_song_memory(bundle_key: tuple) -> None:
-    """Drop a song's decoded bundle once its FG scoring is done (the entry-count LRU alone would let them trip the memory
-    guard after a few dozen songs). Lossless: a later access reads the file again."""
-    _scoring_bundle_memory.pop(bundle_key)
-
-
-def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
+def save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
+    """Write the payload as the key's bundle file (atomically: readers see the old file or the whole new one)."""
     frontiers = payload.frontiers
     frontier_id_by_object = {id(frontier): idx for idx, frontier in enumerate(frontiers)}
     sorted_items = sorted(payload.frontier_by_key.items())
     packed_frontiers = _pack_frontiers(frontiers)
-    head_len = min(int(payload.total_notes), 100)
+    head_len = min(payload.total_notes, 100)
     # Pattern identity is established from every exact mask word before coefficient work: head coefficients depend
     # only on those words and head_len, so they are computed once per pattern instead of once per row.
-    rows, pattern_words = intern_surface_row_words(
-        np.ascontiguousarray(np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32))
-    )
+    rows, pattern_words = intern_surface_row_words(packed_frontiers["first_surface_pool"])
     patterns = pack_surface_patterns(pattern_words, surface_head_coeffs(pattern_words, head_len=head_len))
     stat_keys = np.asarray([key for key, _frontier in sorted_items], dtype=np.int32)
     arrays = {
@@ -174,15 +152,13 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         "raw_fill_by_ff": np.asarray(payload.raw_fill_by_ff, dtype=np.float64),
         "non_fever_base_by_ff": np.asarray(payload.non_fever_base_by_ff, dtype=np.int32),
         "real_time_by_ft": np.asarray(payload.real_time_by_ft, dtype=np.float64),
-        "total_notes": np.asarray(int(payload.total_notes), dtype=np.int32),
-        "long_notes": np.asarray(int(payload.long_notes), dtype=np.int32),
-        "use_forced_great_timing": np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
-        "first_surface_head_len": _as_uint8_exact(
-            "FG response first surface head length", np.asarray(head_len, dtype=np.int32)
-        ),
-        "frontier_meta": np.asfortranarray(np.asarray(packed_frontiers["frontier_meta"], dtype=np.int32)),
-        "first_offsets": np.asarray(packed_frontiers["first_offsets"], dtype=np.int32),
-        "first_counts": np.asarray(packed_frontiers["first_counts"], dtype=np.int32),
+        "total_notes": np.asarray(payload.total_notes, dtype=np.int32),
+        "long_notes": np.asarray(payload.long_notes, dtype=np.int32),
+        "use_forced_great_timing": np.asarray(payload.use_forced_great_timing, dtype=np.int8),
+        "first_surface_head_len": np.asarray(head_len, dtype=np.uint8),
+        "frontier_meta": np.asfortranarray(packed_frontiers["frontier_meta"]),
+        "first_offsets": packed_frontiers["first_offsets"],
+        "first_counts": packed_frontiers["first_counts"],
         "surface_rows": _byte_planes(rows),
         "surface_patterns": _byte_planes(patterns),
     }
@@ -191,18 +167,14 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
 
 def _save_npz_fast_compressed(path: Path, arrays: dict[str, np.ndarray]) -> None:
     with zipfile.ZipFile(
-        path,
-        mode="w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=int(_NPZ_FAST_COMPRESS_LEVEL),
-        allowZip64=True,
+        path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=_NPZ_FAST_COMPRESS_LEVEL, allowZip64=True
     ) as archive:
         for name, array in arrays.items():
             with archive.open(f"{name}.npy", mode="w", force_zip64=True) as handle:
-                np_format.write_array(handle, np.asanyarray(array), allow_pickle=False)
+                np_format.write_array(handle, array, allow_pickle=False)
 
 
-def _read_bundle(path: Path) -> dict[str, np.ndarray]:
+def read_bundle(path: Path) -> dict[str, np.ndarray]:
     """Every array of a bundle file, its surface tables decoded to (columns, rows) uint32."""
     with np.load(path, allow_pickle=False) as data:
         arrays = {name: data[name] for name in data.files}
@@ -212,17 +184,23 @@ def _read_bundle(path: Path) -> dict[str, np.ndarray]:
 
 
 def read_compatible_bundle(cache_key: tuple) -> dict[str, np.ndarray] | None:
-    """The arrays of the key's bundle file (`_read_bundle`); None when no file of a compatible version exists."""
+    """The arrays of the key's bundle file (`read_bundle`); None when no file of a compatible version exists."""
     path = FG_RESPONSE_FRONTIER_CACHE.readable_path(cache_key)
     if path is None:
         return None
-    arrays = _read_bundle(path)
+    arrays = read_bundle(path)
     if str(arrays["version"].item()) not in FG_RESPONSE_FRONTIER_CACHE.compatible_versions():
         return None
     return arrays
 
 
-def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
+def _delete_unreadable(path: Path) -> None:
+    """A damaged bundle file is rebuilt, never served."""
+    logger.warning("[FGResponseCache] unreadable bundle %s; it is deleted and rebuilt", path, exc_info=True)
+    path.unlink(missing_ok=True)
+
+
+def load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     """The key's bundle as a payload; None when there is none. An unreadable file is deleted (it is rebuilt)."""
     try:
         arrays = read_compatible_bundle(cache_key)
@@ -235,34 +213,32 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
         }
         return FgResponseFrontierCachePayload(
             frontier_by_key=frontier_by_key,
-            raw_fill_by_ff=np.asarray(arrays["raw_fill_by_ff"], dtype=np.float64),
-            non_fever_base_by_ff=np.asarray(arrays["non_fever_base_by_ff"], dtype=np.int32),
-            real_time_by_ft=np.asarray(arrays["real_time_by_ft"], dtype=np.float64),
-            total_notes=int(arrays["total_notes"].item()),
-            long_notes=int(arrays["long_notes"].item()),
-            use_forced_great_timing=bool(int(arrays["use_forced_great_timing"].item())),
+            raw_fill_by_ff=arrays["raw_fill_by_ff"],
+            non_fever_base_by_ff=arrays["non_fever_base_by_ff"],
+            real_time_by_ft=arrays["real_time_by_ft"],
+            total_notes=int(arrays["total_notes"]),
+            long_notes=int(arrays["long_notes"]),
+            use_forced_great_timing=bool(arrays["use_forced_great_timing"]),
         )
-    except _UNREADABLE:  # a damaged cache file is rebuilt, never served
-        path = FG_RESPONSE_FRONTIER_CACHE.serving_path(cache_key)
-        logger.warning("[FGResponseCache] unreadable bundle %s; it is deleted and rebuilt", path, exc_info=True)
-        path.unlink(missing_ok=True)
+    except _UNREADABLE:
+        _delete_unreadable(FG_RESPONSE_FRONTIER_CACHE.serving_path(cache_key))
         return None
 
 
-def _payload_file_is_complete(path: Path, keys: np.ndarray) -> bool:
-    """A bundle of a compatible version with every member that covers `keys` (an unreadable file is deleted)."""
+def bundle_file_holds(path: Path, keys: np.ndarray) -> bool:
+    """Whether `path` is a bundle of a compatible version with every member that holds the stat keys `keys` (an
+    unreadable file is deleted)."""
     if not path.exists():
         return False
     try:
         with np.load(path, allow_pickle=False) as data:
-            if set(data.files) != _BUNDLE_ARRAY_NAMES:
+            if set(data.files) != set(_BUNDLE_ARRAY_NAMES):
                 return False
             if str(data["version"].item()) not in FG_RESPONSE_FRONTIER_CACHE.compatible_versions():
                 return False
-            held = np.asarray(data["stat_keys"], dtype=np.intp)
-    except _UNREADABLE:  # a damaged cache file is rebuilt, never served
-        logger.warning("[FGResponseCache] unreadable bundle %s; it is deleted and rebuilt", path, exc_info=True)
-        path.unlink(missing_ok=True)
+            held = data["stat_keys"].astype(np.intp)
+    except _UNREADABLE:
+        _delete_unreadable(path)
         return False
     present = np.zeros((MAX_STAT + 1, MAX_STAT + 1), dtype=np.bool_)
     present[held[:, 0], held[:, 1]] = True
@@ -270,15 +246,14 @@ def _payload_file_is_complete(path: Path, keys: np.ndarray) -> bool:
 
 
 def fg_response_cache_file_is_complete(cache_file: str | Path) -> bool:
-    """A complete bundle of a compatible version covering every FT/FF stat key."""
-    return _payload_file_is_complete(Path(cache_file), all_response_stat_keys())
+    """A complete bundle of a compatible version holding every FT/FF stat key."""
+    return bundle_file_holds(Path(cache_file), all_response_stat_keys())
 
 
 FG_RESPONSE_FRONTIER_CACHE = FrontierCache(
     name="fg_response",
     log_label="[FGResponseCache]",
     directory=_fg_response_disk_cache_dir,
-    file_path=_fg_response_disk_cache_path,
     version=_fg_response_cache_version,
     predecessors=_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS,
     is_complete=fg_response_cache_file_is_complete,

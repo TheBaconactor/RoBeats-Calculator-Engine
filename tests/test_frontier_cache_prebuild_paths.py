@@ -4,69 +4,30 @@ from pathlib import Path
 
 import pytest
 
+from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE
+from gear_optimizer.frontier.timeline_cache import TIMELINE_FRONTIER_CACHE
 
-@pytest.mark.parametrize(
-    ("module_name", "resolver_name", "override_name", "cache_leaf"),
-    (
-        (
-            "gear_optimizer.frontier.timeline_cache",
-            "_frontier_disk_cache_dir",
-            "TIMELINE_FRONTIER_CACHE_DIR",
-            "timeline_frontier_cache",
-        ),
-        (
-            "gear_optimizer.frontier.fg_cache_keys",
-            "_fg_response_disk_cache_dir",
-            "FG_RESPONSE_FRONTIER_CACHE_DIR",
-            "fg_response_frontier_cache",
-        ),
-    ),
+CACHES = (
+    (TIMELINE_FRONTIER_CACHE, "TIMELINE_FRONTIER_CACHE_DIR", "timeline_frontier_cache"),
+    (FG_RESPONSE_FRONTIER_CACHE, "FG_RESPONSE_FRONTIER_CACHE_DIR", "fg_response_frontier_cache"),
 )
-def test_frontier_cache_default_follows_runtime_bin_dir(
-    monkeypatch,
-    tmp_path: Path,
-    module_name: str,
-    resolver_name: str,
-    override_name: str,
-    cache_leaf: str,
-) -> None:
-    import importlib
 
-    module = importlib.import_module(module_name)
+
+@pytest.mark.parametrize(("cache", "override_name", "cache_leaf"), CACHES)
+def test_frontier_cache_default_follows_runtime_bin_dir(monkeypatch, tmp_path: Path, cache, override_name, cache_leaf) -> None:
     runtime_bin = tmp_path / "instance-bin"
     monkeypatch.delenv(override_name, raising=False)
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_BIN_DIR", str(runtime_bin))
 
-    assert getattr(module, resolver_name)() == runtime_bin / cache_leaf
+    assert cache.directory() == runtime_bin / cache_leaf
 
 
-@pytest.mark.parametrize(
-    ("module_name", "resolver_name", "override_name"),
-    (
-        (
-            "gear_optimizer.frontier.timeline_cache",
-            "_frontier_disk_cache_dir",
-            "TIMELINE_FRONTIER_CACHE_DIR",
-        ),
-        (
-            "gear_optimizer.frontier.fg_cache_keys",
-            "_fg_response_disk_cache_dir",
-            "FG_RESPONSE_FRONTIER_CACHE_DIR",
-        ),
-    ),
-)
+@pytest.mark.parametrize(("cache", "override_name", "_cache_leaf"), CACHES)
 def test_frontier_cache_explicit_override_wins_over_runtime_bin_dir(
-    monkeypatch,
-    tmp_path: Path,
-    module_name: str,
-    resolver_name: str,
-    override_name: str,
+    monkeypatch, tmp_path: Path, cache, override_name, _cache_leaf
 ) -> None:
-    import importlib
-
-    module = importlib.import_module(module_name)
     explicit_cache = tmp_path / "explicit-cache"
     monkeypatch.setenv(override_name, str(explicit_cache))
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_BIN_DIR", str(tmp_path / "instance-bin"))
 
-    assert getattr(module, resolver_name)() == explicit_cache
+    assert cache.directory() == explicit_cache

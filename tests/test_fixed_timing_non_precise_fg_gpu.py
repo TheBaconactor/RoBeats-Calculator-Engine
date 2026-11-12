@@ -26,9 +26,9 @@ def _reset_fg_cache() -> None:
     # The bundle memory cache is process-global and keyed by song timing/ref, not by the
     # per-test FG_RESPONSE_FRONTIER_CACHE_DIR. Reset it so each test rebuilds against its own
     # tmp cache dir (otherwise a sibling test's in-memory bundle points at a stale sidecar path).
-    from gear_optimizer.frontier.fg_cache_store import reset_fg_response_frontier_payload_cache
+    from tests.fg_cache_support import forget_scoring_bundles
 
-    reset_fg_response_frontier_payload_cache()
+    forget_scoring_bundles()
 
 
 def _inside_float32(values, box_max: float):

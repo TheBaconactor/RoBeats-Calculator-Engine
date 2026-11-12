@@ -21,9 +21,9 @@ pytestmark = pytest.mark.gpu
 
 
 def _reset_fg_cache() -> None:
-    from gear_optimizer.frontier.fg_cache_store import reset_fg_response_frontier_payload_cache
+    from tests.fg_cache_support import forget_scoring_bundles
 
-    reset_fg_response_frontier_payload_cache()
+    forget_scoring_bundles()
 
 
 def _inside_float32(values, box_max: float):

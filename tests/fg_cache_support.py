@@ -9,7 +9,7 @@ import numpy as np
 from gear_optimizer.frontier import fg_cache
 from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key
 from gear_optimizer.frontier.fg_cache_patterns import unpack_surface_patterns
-from gear_optimizer.frontier.fg_cache_store import _load_payload
+from gear_optimizer.frontier.fg_cache_store import load_payload
 from gear_optimizer.frontier.producer_surfaces import SurfaceRowsFirstFrontier
 
 
@@ -20,6 +20,12 @@ def surface_frontier(*surfaces) -> SurfaceRowsFirstFrontier:
         for s in surfaces
     ]
     return SurfaceRowsFirstFrontier(np.asarray(rows, dtype=np.uint64).reshape(-1, 7))
+
+
+def forget_scoring_bundles() -> None:
+    """Empty the process's memory tier of decoded bundles, so the next load reads its file: tests reuse one song under
+    many cache directories and versions."""
+    fg_cache._scoring_bundle_memory.clear()
 
 
 def stat_key_array(stat_keys) -> np.ndarray:
@@ -40,10 +46,10 @@ def build_or_load_payload(song, curves, *, stat_keys):
     """The song's bundle with `stat_keys` as a payload, narrowed to them, and how it was served."""
     source, build_ms, path = ensure_cache(song, curves, stat_keys=stat_keys)
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
-    bundle = _load_payload(bundle_key)
+    bundle = load_payload(bundle_key)
     if bundle is None:  # a damaged file was deleted
         source, build_ms, path = ensure_cache(song, curves, stat_keys=stat_keys)
-        bundle = _load_payload(bundle_key)
+        bundle = load_payload(bundle_key)
     frontiers = {tuple(key): bundle.frontier_by_key[tuple(key)] for key in stat_key_array(stat_keys).tolist()}
     return SimpleNamespace(
         payload=SimpleNamespace(
