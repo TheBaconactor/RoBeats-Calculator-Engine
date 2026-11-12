@@ -303,7 +303,7 @@ def _body_hull_filter_reference(points):
 
 
 def test_body_hull_filter_preserves_max_for_every_cone_direction():
-    """Issue #44 perf: the body-tail hull filter (fused into `_numba_reduce_touched_body_pairs`) is BIT-EXACT.
+    """Issue #44 perf: the body-tail hull filter (fused into `reduce_touched_body_pairs`) is BIT-EXACT.
     For any fixed stat cell the body score is linear: A*body_fever - pnp*normal_great -
     pfp*fever_great with A,pnp,pfp >= 0. So pruning each body-tail frontier to its convex hull may
     NEVER change the max for any (A,pnp,pfp) in the cone. This locks that invariant against a
@@ -358,14 +358,14 @@ def _head_surface_score(fever_positions, great_positions, head_len, base_value, 
 
 
 def test_head_envelope_filter_preserves_best_score_and_prunes():
-    """Issue #44 Route A: `_numba_head_envelope_filter` is the LOSSLESS cone-dominance prune. It must
+    """Issue #44 Route A: `head_envelope_filter` is the LOSSLESS cone-dominance prune. It must
     (a) keep a strict SUBSET, (b) shrink a rich early-Great family hard (most surfaces are
     cone-dominated -- optimal for NO realizable cell), and (c) preserve the max for EVERY realizable
     stat cell (the best_fg_score criterion) -- EXACTLY, by the 16-corner proof, not probe sampling."""
     import random
 
     from gear_optimizer.frontier.producer_kernels import (
-        _numba_head_envelope_filter,
+        head_envelope_filter,
         _HEAD_DOM_C,
         _HEAD_DOM_F,
     )
@@ -384,7 +384,7 @@ def test_head_envelope_filter_preserves_best_score_and_prunes():
     assert len(family) > 60  # a genuinely rich set
 
     rows = np.array([_mk_head_surface(fever, great) for fever, great in family], dtype=np.uint64)
-    kept = _numba_head_envelope_filter(rows, 0, head_len)
+    kept = head_envelope_filter(rows, 0, head_len)
 
     kept_keys = {(int(s[0]), int(s[2])) for s in kept}
     family_keys = {(sum(1 << p for p in fv), sum(1 << p for p in gr)) for fv, gr in family}

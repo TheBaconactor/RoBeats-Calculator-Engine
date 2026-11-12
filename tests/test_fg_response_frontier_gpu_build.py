@@ -367,26 +367,26 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
     perfect_hi = timestamps + np.float32(0.04)
     great_hi = timestamps + np.float32(0.09)
     action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
-    capacity = producer_kernels._numba_region_core_candidate_capacity(
+    capacity = producer_kernels.region_core_candidate_capacity(
         12,
         4,
         action_k,
         4.0,
     )
     brute_capacity = 0
-    region_stop = producer_kernels._numba_region2_k_scan_stop(4, 4.0)
+    region_stop = producer_kernels.region2_k_scan_stop(4, 4.0)
     for section_start in range(13):
-        shifted = 1 if producer_kernels._numba_has_shifted_head_region(section_start, 4.0) else -1
+        shifted = 1 if producer_kernels.has_shifted_head_region(section_start, 4.0) else -1
         for action_idx, k in enumerate(action_k):
             region = -1
             if action_idx < region_stop:
-                region = producer_kernels._numba_region2_offset_for_count(
+                region = producer_kernels.region2_offset_for_count(
                     section_start, int(k), 4.0, 12
                 )
             brute_capacity += int(region >= 1)
             brute_capacity += int(shifted >= 1 and shifted != region)
     assert capacity == brute_capacity
-    table = producer_kernels._numba_build_region_core_table(
+    table = producer_kernels.region_core_table(
         12,
         4,
         action_k,
@@ -432,9 +432,9 @@ def test_region_packet_missing_core_receives_its_endpoint_tables(monkeypatch) ->
         calls.append(args)
         return -1, -1, -1, -1, -1, -1, 0
 
-    monkeypatch.setattr(rb, "_numba_region_run_edge_for_offset", edge)
+    monkeypatch.setattr(rb, "region_run_edge_for_offset", edge)
     ts = np.arange(n, dtype=np.float32)
-    rb._numba_region2_activation_packet.py_func(
+    rb.region2_activation_packet.py_func(
         (n, 20, -31, 110, 4.0), empty, empty, empty, (ts, ts, ts, ts, ts, ts, np.arange(n)), region, limits,
         np.empty((1, 3), dtype=np.int64),
     )
@@ -476,7 +476,7 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
 
     n = 12
     action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
-    capacity = producer_kernels._numba_region_core_candidate_capacity(
+    capacity = producer_kernels.region_core_candidate_capacity(
         n,
         int(action_k.shape[0]),
         action_k,
@@ -540,7 +540,7 @@ def test_fg_response_frontier_build_runs_admitted_groups_concurrently(monkeypatc
 
     monkeypatch.setattr(producer_scheduler, "_table_bounds", lambda *_args: (200, 100))
     monkeypatch.setattr(producer_scheduler, "_single_table_byte_budget", lambda *_args: 400)
-    monkeypatch.setattr(producer_scheduler.kernels, "_numba_build_region_core_table", _fake_build)
+    monkeypatch.setattr(producer_scheduler.kernels, "region_core_table", _fake_build)
     monkeypatch.setattr(producer_scheduler, "_reduce_group", _fake_reduce)
     previous_threads = producer_reducer.configure_frontier_build_threads(2)
     try:
@@ -637,7 +637,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
     great_hi = np.asarray([0.095, 0.113, 0.136, 0.155, 0.178, 0.235, 0.256, 0.279], dtype=np.float32)
     n = int(timestamps.shape[0])
 
-    perfect_hit, perfect_valid, late_hit, late_valid = rb._numba_build_prefix_activation_hit_tables(
+    perfect_hit, perfect_valid, late_hit, late_valid = rb.activation_hit_tables(
         n,
         timestamps,
         perfect_hi,
@@ -646,7 +646,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
     )
 
     for activation in range(n):
-        expected_hit, expected_valid, _token = rb._numba_perfect_activation_hit_for_run(
+        expected_hit, expected_valid, _token = rb.perfect_activation_hit_for_run(
             activation,
             timestamps,
             perfect_hi,
@@ -659,7 +659,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
         assert float(perfect_hit[activation]) == pytest.approx(float(expected_hit))
 
         expected_late_hit, expected_late_valid, _token = (
-            rb._numba_late_great_activation_hit_for_run(
+            rb.late_great_activation_hit_for_run(
                 activation,
                 timestamps,
                 perfect_hi,
@@ -675,7 +675,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
 
         for great_start in range(max(0, activation - 3), activation + 1):
             great_count = max(0, activation - great_start)
-            direct_hit, direct_valid, _token = rb._numba_perfect_activation_hit_for_run(
+            direct_hit, direct_valid, _token = rb.perfect_activation_hit_for_run(
                 activation,
                 timestamps,
                 perfect_hi,
@@ -688,7 +688,7 @@ def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
             assert float(perfect_hit[activation]) == pytest.approx(float(direct_hit))
 
             direct_late_hit, direct_late_valid, _token = (
-                rb._numba_late_great_activation_hit_for_run(
+                rb.late_great_activation_hit_for_run(
                     activation,
                     timestamps,
                     perfect_hi,
@@ -723,7 +723,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
     )
     action_k = np.asarray(actions, dtype=np.int32)
 
-    family_count, family_defect, family_start, family_end = rb._numba_build_region2_packet_families(
+    family_count, family_defect, family_start, family_end = rb.region2_packet_families(
         int(action_k.shape[0]),
         float(raw_fever_fill),
         action_k,
@@ -751,7 +751,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                 state_i = int(activation) - int(activation_offset)
                 section_start = int(state_i) + 1
                 assert region_offset >= 1
-                direct = rb._numba_region_run_edge_for_offset((int(timestamps.shape[0]), int(section_start), int(region_offset), int(k)), float(raw_fever_fill), timestamps, rb.HitTimes(perfect_floor,
+                direct = rb.region_run_edge_for_offset((int(timestamps.shape[0]), int(section_start), int(region_offset), int(k)), float(raw_fever_fill), timestamps, rb.HitTimes(perfect_floor,
                     perfect_candidates,
                     great_floor,
                     great_candidates,
@@ -760,7 +760,7 @@ def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
                 assert int(activation_i) == int(activation)
                 assert int(valid) != 0
                 assert int(activation_great_idx) == int(activation)
-                edge = rb._numba_pack_edge(
+                edge = rb.pack_edge(
                     int(timestamps.shape[0]),
                     int(activation_i),
                     int(edge_e),
@@ -941,7 +941,7 @@ def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
     aliasing onto a phantom cell."""
     from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
-        _numba_touch_body_candidate,
+        touch_body_candidate,
     )
 
     pair_mod = 20  # exceeds the max planted fever_great (15) -> the pack is injective
@@ -956,7 +956,7 @@ def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
     planted = [(2, 11, 100), (3, 14, 90), (5, 7, 80), (0, 15, 70), (9, 3, 60)]
     touched = 0
     for normal_great, fever_great, body_fever in planted:
-        touched = _numba_touch_body_candidate((np.uint64(body_fever), np.uint64(normal_great + fever_great), np.uint64(fever_great)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, int(touched))
+        touched = touch_body_candidate((np.uint64(body_fever), np.uint64(normal_great + fever_great), np.uint64(fever_great)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, int(touched))
 
     assert int(touched) == len(planted)  # no two distinct pairs collided onto one slot
     decoded = {}
@@ -974,7 +974,7 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
     dedicated radix guard does."""
     from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
-        _numba_touch_body_candidate,
+        touch_body_candidate,
     )
 
     pair_mod = 5
@@ -985,11 +985,11 @@ def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> 
     touched_pair = np.empty(pair_size, dtype=np.int32)
 
     with pytest.raises(ValueError, match="fever-great"):
-        _numba_touch_body_candidate((np.uint64(100), np.uint64(14), np.uint64(11)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, 0)
+        touch_body_candidate((np.uint64(100), np.uint64(14), np.uint64(11)), (np.uint64(0), np.uint64(0), np.uint64(0)), int(pair_mod), pair_stamp, best_fever_by_pair, touched_pair, 1, 0)
 
 
 def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
-    from gear_optimizer.frontier.producer_kernels import _numba_lower_bound_from as _lower_bound_from
+    from gear_optimizer.frontier.producer_kernels import lower_bound as _lower_bound_from
     from gear_optimizer.trace.reconstruct import _centered_hit_window_for_exit
 
     timestamps = np.asarray(
@@ -1147,7 +1147,7 @@ def test_fg_response_fever_ends_match_exact_edge_end_at_float32_boundaries() -> 
     from gear_optimizer.frontier import producer_kernels as rb
 
     prefix_perfect_hit, _prefix_perfect_valid, prefix_late_hit, _prefix_late_valid = (
-        rb._numba_build_prefix_activation_hit_tables(
+        rb.activation_hit_tables(
             int(song_inputs.timestamps.shape[0]),
             song_inputs.timestamps,
             song_inputs.perfect_candidates,
@@ -1510,27 +1510,27 @@ def test_fg_response_exact_fill_runs_preserve_arbitrary_membership(
 def test_fg_response_interval_successor_skips_removed_indices() -> None:
     from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
-        _numba_successor_find,
-        _numba_successor_remove,
+        successor_find,
+        successor_remove,
     )
 
     successor = np.empty(9, dtype=np.int32)
     stamps = np.zeros(9, dtype=np.int32)
     epoch = 1
-    assert _numba_successor_remove(successor, stamps, epoch, 2) == 3
-    assert _numba_successor_remove(successor, stamps, epoch, 5) == 6
-    assert _numba_successor_remove(successor, stamps, epoch, 3) == 4
-    assert _numba_successor_remove(successor, stamps, epoch, 4) == 6
-    assert _numba_successor_find(successor, stamps, epoch, 2) == 6
-    assert _numba_successor_find(successor, stamps, epoch, 5) == 6
-    assert _numba_successor_find(successor, stamps, epoch, 6) == 6
+    assert successor_remove(successor, stamps, epoch, 2) == 3
+    assert successor_remove(successor, stamps, epoch, 5) == 6
+    assert successor_remove(successor, stamps, epoch, 3) == 4
+    assert successor_remove(successor, stamps, epoch, 4) == 6
+    assert successor_find(successor, stamps, epoch, 2) == 6
+    assert successor_find(successor, stamps, epoch, 5) == 6
+    assert successor_find(successor, stamps, epoch, 6) == 6
 
     # A new epoch makes every old removal logically live without clearing either scratch array.
     next_epoch = 2
-    assert _numba_successor_find(successor, stamps, next_epoch, 2) == 2
-    assert _numba_successor_find(successor, stamps, next_epoch, 5) == 5
-    assert _numba_successor_remove(successor, stamps, next_epoch, 2) == 3
-    assert _numba_successor_find(successor, stamps, next_epoch, 2) == 3
+    assert successor_find(successor, stamps, next_epoch, 2) == 2
+    assert successor_find(successor, stamps, next_epoch, 5) == 5
+    assert successor_remove(successor, stamps, next_epoch, 2) == 3
+    assert successor_find(successor, stamps, next_epoch, 2) == 3
 
 
 def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() -> None:
@@ -1538,8 +1538,8 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         ActivationEnds,
         HitTimes,
         RegionTables,
-        _numba_build_prefix_activation_hit_tables,
-        _numba_first_frontier_reachability_prepass,
+        activation_hit_tables,
+        reachability_prepass,
     )
     from gear_optimizer.frontier.producer_batch import song_arrays
     from gear_optimizer.frontier.producer_precompute import fever_ends
@@ -1566,7 +1566,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         prefix_perfect_valid,
         prefix_late_hit,
         prefix_late_valid,
-    ) = _numba_build_prefix_activation_hit_tables(
+    ) = activation_hit_tables(
         int(n),
         timestamps,
         perfect_candidates,
@@ -1636,7 +1636,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         perfect_successor_stamps = np.zeros(n + 1, dtype=np.int32)
         late_successor = np.empty(n + 1, dtype=np.int32)
         late_successor_stamps = np.zeros(n + 1, dtype=np.int32)
-        actual_reachable, actual_width = _numba_first_frontier_reachability_prepass(int(common["n"]), int(common["action_count"]), (common["first_fill"], common["first_activation_forced"]), (perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends), ActivationEnds(
+        actual_reachable, actual_width = reachability_prepass(int(common["n"]), int(common["action_count"]), (common["first_fill"], common["first_activation_forced"]), (perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends), ActivationEnds(
                 common["prefix_perfect_hit"],
                 common["prefix_perfect_valid"],
                 common["prefix_late_hit"],
@@ -1655,7 +1655,7 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
 
     # A negative fill offset fails loud in the kernel that walks the runs.
     with pytest.raises(ValueError, match="must be nonnegative"):
-        _numba_first_frontier_reachability_prepass(
+        reachability_prepass(
             n,
             0,
             (empty_i32, empty_i32),
@@ -1689,9 +1689,9 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
     )
     from gear_optimizer.frontier.producer_kernels import (
         HitTimes,
-        _numba_activation_reachable_contiguous_run,
-        _numba_region2_k_scan_stop,
-        _numba_region2_offset_for_count,
+        activation_reachable_contiguous_run,
+        region2_k_scan_stop,
+        region2_offset_for_count,
     )
 
     def full_scan(
@@ -1768,7 +1768,7 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
         )
         denom = float(rng.choice(np.asarray([1.25, 2.25, 3.5, 8.0, 63.2118], dtype=np.float64)))
         assert bool(
-            _numba_activation_reachable_contiguous_run(activation, float(hit), timestamps, HitTimes(perfect_floor,
+            activation_reachable_contiguous_run(activation, float(hit), timestamps, HitTimes(perfect_floor,
                 perfect_candidates,
                 great_floor,
                 great_candidates,
@@ -1792,10 +1792,10 @@ def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
 
     for action_count in (1, 2, 5, 64, 274):
         for denom in (1.25, 2.25, 3.5, 8.0, 63.2118, 273.726):
-            stop = int(_numba_region2_k_scan_stop(int(action_count), float(denom)))
+            stop = int(region2_k_scan_stop(int(action_count), float(denom)))
             for start in (0, 1, 17, 46):
                 for k in range(stop, int(action_count)):
-                    assert _numba_region2_offset_for_count(int(start), int(k), float(denom), 48) < 1
+                    assert region2_offset_for_count(int(start), int(k), float(denom), 48) < 1
 
 
 @pytest.mark.parametrize(
@@ -1992,12 +1992,12 @@ class _BodyReducerDifferentialHarness:
     def __init__(self, *, pair_mod: int = 33, normal_great_capacity: int = 65) -> None:
         from gear_optimizer.frontier.producer_kernels import (
             HitTimes,
-            _numba_reduce_touched_body_pairs,
-            _numba_touch_body_candidate,
+            reduce_touched_body_pairs,
+            touch_body_candidate,
         )
 
-        self._reduce = _numba_reduce_touched_body_pairs
-        self._touch = _numba_touch_body_candidate
+        self._reduce = reduce_touched_body_pairs
+        self._touch = touch_body_candidate
         self.pair_mod = int(pair_mod)
         pair_size = int(normal_great_capacity) * int(pair_mod)
         self.pair_stamp = np.zeros((pair_size,), dtype=np.int32)

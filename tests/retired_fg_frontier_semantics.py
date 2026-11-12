@@ -4,7 +4,7 @@ These deliberately use plain Python scans and Lists instead of the production Fe
 fused hull stack.  They are differential oracles, not alternate runtime routes.
 
 Provenance is committed main ``f00747a5``.  Body mirrors the retired
-``_numba_touch_body_candidate`` -> ``_numba_reduce_touched_body_pairs`` ->
+``touch_body_candidate`` -> ``reduce_touched_body_pairs`` ->
 ``_numba_hull_filter_body_pairs`` pipeline.
 """
 from __future__ import annotations
@@ -69,9 +69,9 @@ def retired_nested_action_reachability_prepass(
 ):
     """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``."""
     from gear_optimizer.frontier.producer_kernels import (
-        _numba_great_floor_extended_end_at_hit,
-        _numba_late_edge_extends,
-        _numba_mark_early_great_reachable_from_hit,
+        great_floor_extended_end_at_hit,
+        late_edge_extends,
+        mark_early_great_reachable_from_hit,
     )
 
     def mark_perfect(activation: int) -> int:
@@ -83,7 +83,7 @@ def retired_nested_action_reachability_prepass(
         for end_e in range(min(int(capped_perfect_exit_e[int(real_time_idx), int(activation)]), edge_e), edge_e + 1):
             reachable[int(end_e)] = True
         return int(
-            _numba_mark_early_great_reachable_from_hit(
+            mark_early_great_reachable_from_hit(
                 reachable,
                 int(n),
                 int(activation),
@@ -105,7 +105,7 @@ def retired_nested_action_reachability_prepass(
         if int(prefix_late_valid[int(activation)]) != 0:
             activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
             activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
-        if not _numba_late_edge_extends(
+        if not late_edge_extends(
             int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
         ):
             return 0
@@ -113,7 +113,7 @@ def retired_nested_action_reachability_prepass(
         for end_e in range(min(late_exit_e, activation_e), activation_e + 1):
             reachable[int(end_e)] = True
         return int(
-            _numba_mark_early_great_reachable_from_hit(
+            mark_early_great_reachable_from_hit(
                 reachable,
                 int(n),
                 int(activation),
@@ -145,7 +145,7 @@ def retired_nested_action_reachability_prepass(
                         )
                     )
                     perfect_eg_e = int(
-                        _numba_great_floor_extended_end_at_hit(
+                        great_floor_extended_end_at_hit(
                             int(n),
                             int(activation),
                             float(region_perfect_hits[int(idx)]),
@@ -164,7 +164,7 @@ def retired_nested_action_reachability_prepass(
                     )
                 )
                 activation_eg_e = int(
-                    _numba_great_floor_extended_end_at_hit(
+                    great_floor_extended_end_at_hit(
                         int(n),
                         int(activation),
                         float(activation_hit),
@@ -172,7 +172,7 @@ def retired_nested_action_reachability_prepass(
                         great_floor_timestamps,
                     )
                 )
-                if int(perfect_e) >= 0 and not _numba_late_edge_extends(
+                if int(perfect_e) >= 0 and not late_edge_extends(
                     int(perfect_e),
                     int(edge_e),
                     int(activation_eg_e),
@@ -195,7 +195,7 @@ def retired_nested_action_reachability_prepass(
             for end_e in range(min(int(exit_table[int(real_time_idx), int(activation)]), int(edge_e)), int(edge_e)):
                 reachable[int(end_e)] = True
             width = int(
-                _numba_mark_early_great_reachable_from_hit(
+                mark_early_great_reachable_from_hit(
                     reachable,
                     int(n),
                     int(activation),

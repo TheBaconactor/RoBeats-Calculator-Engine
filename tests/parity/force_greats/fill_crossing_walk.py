@@ -4,7 +4,7 @@
 Great half of it) and activates on the first note whose own fill takes the bar to full; ``server_fill_crossing_fast``
 is the same answer by prefix sum + searchsorted; ``server_fever_end`` is the canonical drain; and
 ``canonical_fever_sections`` steps a whole timeline with them. Production never calls these: its O(1) closed forms
-(the ``_numba_fill_crossing_run`` kernel, ``late_great_prefix_is_legal``, ``action_table``'s ``ceil(raw + 0.5k)``) are
+(the ``fill_crossing_run`` kernel, ``late_great_prefix_is_legal``, ``action_table``'s ``ceil(raw + 0.5k)``) are
 proven bit-exact against them in tests/test_fg_fill_crossing.py. ``server_fill_crossing_run`` is that kernel's reference
 in plain Python. The module docstring of fill_crossing.py explains the model.
 """

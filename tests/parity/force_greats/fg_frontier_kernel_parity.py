@@ -11,7 +11,7 @@ from gear_optimizer.solver.timing_envelope import precise_envelopes
 from gear_optimizer.frontier.producer_batch import compact_action_table, song_arrays
 from gear_optimizer.frontier.producer_precompute import fever_ends
 from gear_optimizer.frontier.producer_kernels import (
-    _numba_build_prefix_activation_hit_tables,
+    activation_hit_tables,
 )
 
 
@@ -62,7 +62,7 @@ def build_kernel_args(
     table = compact_action_table(float(raw_fever_fill), max(0, int(non_fever_base)), bool(use_forced_great_timing))
     song = song_arrays(ts, perfect_ts, great_ts, floor_ts, great_floor_ts, None, None, lane_arr)
     prefix_perfect_hit, _prefix_perfect_valid, prefix_late_hit, _prefix_late_valid = (
-        _numba_build_prefix_activation_hit_tables(int(n), ts, perfect_ts, great_ts, song.late_great_floor)
+        activation_hit_tables(int(n), ts, perfect_ts, great_ts, song.late_great_floor)
     )
     # One fever time (kept in float32, as this bundle always held it): its row is 0.
     ends = fever_ends(song, prefix_perfect_hit, prefix_late_hit, np.asarray([np.float32(real_fever_time)], dtype=np.float64))

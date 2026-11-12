@@ -11,7 +11,7 @@ places only Perfects and one contiguous forced-Great run per section, so the cro
     crossing (the bar must fill ON that Great, not on an earlier Perfect) and its forced-Great prefix.
 
 The crossing of a whole placement, in one of three regions (a Perfect before the run, a Great inside it, a Perfect
-after it), is producer_kernels._numba_fill_crossing_run. tests/parity/force_greats/fill_crossing_walk.py walks the notes
+after it), is producer_kernels.fill_crossing_run. tests/parity/force_greats/fill_crossing_walk.py walks the notes
 one by one; tests/test_fg_fill_crossing.py proves every closed form bit-exact against that walk. activation_witness.py
 answers the per-hit question for a concrete label stream.
 """
@@ -45,7 +45,7 @@ def perfect_fill_crossing_offset(fever_fill_denom: float, k: int, first: bool) -
     one owner of ``producer_batch.action_table``'s fills.
 
     The activation note is the section's state plus this offset in a later section, and this offset itself in the
-    first section, which has no wasted note. It is the region-3 crossing of producer_kernels._numba_fill_crossing_run
+    first section, which has no wasted note. It is the region-3 crossing of producer_kernels.fill_crossing_run
     (a Perfect after the packed run): ``ceil(denom + 0.5 * k)``, less the wasted note in the first section."""
     fill = ceil(fever_fill_denom + 0.5 * k)
     return max(0, fill - 1) if first else fill

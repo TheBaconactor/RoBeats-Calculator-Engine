@@ -14,21 +14,21 @@ from numba import njit
 
 from gear_optimizer.frontier.producer_kernels import (
     HitTimes,
-    _numba_activation_reachable_contiguous_run,
-    _numba_fill_crossing_run,
-    _numba_has_shifted_head_region,
-    _numba_late_great_activation_hit_for_run,
-    _numba_lower_bound_from,
-    _numba_mask_hash,
-    _numba_minimal_reachable_region_great_end,
-    _numba_pack_edge_eg,
-    _numba_perfect_activation_hit_for_run,
-    _numba_region2_offset_for_count,
+    activation_reachable_contiguous_run,
+    fill_crossing_run,
+    has_shifted_head_region,
+    late_great_activation_hit_for_run,
+    lower_bound,
+    mask_hash,
+    minimal_reachable_region_great_end,
+    pack_edge_eg,
+    perfect_activation_hit_for_run,
+    region2_offset_for_count,
 )
 
 # Numba's disk cache watches only this file, and the kernels here carry compiled copies of the producer kernels they call.
 # This digest of producer_kernels.py makes an edit there change this file too (tests/test_repo_guardrails.py checks it).
-_PRODUCER_KERNELS_SHA256 = "4ab48f74d114f925f712041c7c1613ac2cee58f52f1fdd3a2bea32fbcc5f8bcc"
+_PRODUCER_KERNELS_SHA256 = "7cf9279667847982800741e365382a87911c3015d55aeb25dc80958526fe4f0c"
 
 # What the sections of a song read: its hit times, lanes, and one fill denominator and fever time.
 SectionContext = namedtuple(
@@ -58,7 +58,7 @@ _KEY_END = 8
 @njit(cache=True, nogil=True)
 def fever_end(hit, a, floor_timestamps, real_fever_time, n):
     """The first note past the fever of activation `a` hit at `hit`, by the notes' earliest hits: in (a, n]."""
-    return min(max(_numba_lower_bound_from(floor_timestamps, hit + real_fever_time), a + 1), n)
+    return min(max(lower_bound(floor_timestamps, hit + real_fever_time), a + 1), n)
 
 
 @njit(cache=True, nogil=True)
@@ -74,19 +74,19 @@ def _region_section(context, times, section_start, run_start, k):
     floor, great_floor, late_floor = (
         times.perfect_floor_timestamps, times.great_floor_timestamps, times.late_great_floor_timestamps
     )
-    a, crossing_is_great = _numba_fill_crossing_run(section_start, run_start, k, denom, n)
+    a, crossing_is_great = fill_crossing_run(section_start, run_start, k, denom, n)
     if a < 0:
         return none
     if crossing_is_great:
-        run_end, _token = _numba_minimal_reachable_region_great_end(
+        run_end, _token = minimal_reachable_region_great_end(
             a, section_start, run_start, denom, ts, times, lanes, n
         )
         if run_end < 0:
             return none
         count = run_end - run_start
-        hit = _numba_late_great_activation_hit_for_run(a, ts, perfect, great, late_floor, run_start, count, n)[0]
+        hit = late_great_activation_hit_for_run(a, ts, perfect, great, late_floor, run_start, count, n)[0]
         end, tail_end = fever_end(hit, a, floor, rft, n), fever_end(hit, a, great_floor, rft, n)
-        perfect_hit, perfect_valid, _token = _numba_perfect_activation_hit_for_run(
+        perfect_hit, perfect_valid, _token = perfect_activation_hit_for_run(
             a, ts, perfect, great, run_start, count, n
         )
         if (
@@ -100,8 +100,8 @@ def _region_section(context, times, section_start, run_start, k):
     if run_end <= run_start:
         return none
     count = run_end - run_start
-    hit, valid, _token = _numba_perfect_activation_hit_for_run(a, ts, perfect, great, run_start, count, n)
-    if not valid or not _numba_activation_reachable_contiguous_run(a, hit, ts, times, lanes, denom, (section_start, n, run_start, count), 0):
+    hit, valid, _token = perfect_activation_hit_for_run(a, ts, perfect, great, run_start, count, n)
+    if not valid or not activation_reachable_contiguous_run(a, hit, ts, times, lanes, denom, (section_start, n, run_start, count), 0):
         return none
     end, tail_end = fever_end(hit, a, floor, rft, n), fever_end(hit, a, great_floor, rft, n)
     return a, 0, run_end, end, tail_end, min(float(ts[a]), float(perfect[a])), hit
@@ -120,7 +120,7 @@ def _section_families(context, times, actions, fills, forced, first, state):
     forced_timing = context.use_forced_great_timing
     section_start = 0 if first else state + 1
     wasted = 0 if first else 1  # a later section's first note after the fever does not fill
-    shifted = bool(_numba_has_shifted_head_region(section_start, denom)) and section_start + 1 < n
+    shifted = bool(has_shifted_head_region(section_start, denom)) and section_start + 1 < n
     families = []
     prev_fill, prev_start_time, prev_e = -1, -1.0, -1
     for idx in range(actions.shape[0]):
@@ -129,7 +129,7 @@ def _section_families(context, times, actions, fills, forced, first, state):
         if a >= n:
             break
         chart_time, perfect_time = float(ts[a]), float(perfect[a])
-        hit, valid, _token = _numba_perfect_activation_hit_for_run(a, ts, perfect, great, section_start, count, n)
+        hit, valid, _token = perfect_activation_hit_for_run(a, ts, perfect, great, section_start, count, n)
         start_time = hit if valid else chart_time
         e = fever_end(hit, a, floor, rft, n) if valid else -1
         eg_e = fever_end(start_time, a, great_floor, rft, n)
@@ -138,7 +138,7 @@ def _section_families(context, times, actions, fills, forced, first, state):
         crosses_after_run = k <= 0 or (k <= slots and float(slots) - 0.5 * k < denom)
         if (
             valid and crosses_after_run and (fill != prev_fill or (start_time != prev_start_time and e != prev_e))
-            and _numba_activation_reachable_contiguous_run(a, hit, ts, times, lanes, denom, (section_start, n, section_start, count), 0)
+            and activation_reachable_contiguous_run(a, hit, ts, times, lanes, denom, (section_start, n, section_start, count), 0)
         ):
             run_end = min(n, section_start + count)
             families.append((k, a, 0, section_start, run_end, e, eg_e, min(chart_time, perfect_time), hit))
@@ -149,17 +149,17 @@ def _section_families(context, times, actions, fills, forced, first, state):
             forced_timing and prev_fill == fill and k > 0 and slots >= prefix and bar_before < denom
             and bar_before + 0.5 >= denom
         ):
-            late_hit, late_valid, _token = _numba_late_great_activation_hit_for_run(
+            late_hit, late_valid, _token = late_great_activation_hit_for_run(
                 a, ts, perfect, great, late_floor, section_start, prefix, n
             )
             if late_valid:
                 late_e, late_eg_e = fever_end(late_hit, a, floor, rft, n), fever_end(late_hit, a, great_floor, rft, n)
                 # It has to reach past the Perfect activation's end or early-Great tail.
-                if (late_e > e or late_eg_e > eg_e) and _numba_activation_reachable_contiguous_run(a, late_hit, ts, times, lanes, denom, (section_start, n, section_start, prefix), 1):
+                if (late_e > e or late_eg_e > eg_e) and activation_reachable_contiguous_run(a, late_hit, ts, times, lanes, denom, (section_start, n, section_start, prefix), 1):
                     run_end = min(n, section_start + prefix)
                     families.append((k, a, 1, section_start, run_end, late_e, late_eg_e, float(late_floor[a]), late_hit))
         if forced_timing and k > 0:
-            region2 = _numba_region2_offset_for_count(section_start, k, denom, n)
+            region2 = region2_offset_for_count(section_start, k, denom, n)
             for offset in (1 if shifted else -1, -1 if shifted and region2 == 1 else region2):
                 if offset > 0:
                     run_start = section_start + offset
@@ -192,7 +192,7 @@ def _emit(store, count, family, n, section):
     row = rows[count]
     row[0], row[1], row[2], row[3], row[4] = k, next_state, a, late, run_start
     row[5], row[6], row[7], row[8], row[9] = run_end - run_start, tail_start, tail_end, target_end, early_exit
-    hashed = _numba_mask_hash(
+    hashed = mask_hash(
         np.uint64(next_state), np.uint64(a) | (np.uint64(late) << np.uint64(32)),
         np.uint64(run_start) | (np.uint64(run_end) << np.uint64(32)),
         np.uint64(tail_start + 1) | (np.uint64(tail_end + 1) << np.uint64(32)),
@@ -204,7 +204,7 @@ def _emit(store, count, family, n, section):
             return count
         slot = (slot + 1) & mask
     slots[slot] = count
-    edge = _numba_pack_edge_eg(n, a, next_state, run_start, run_end, a if late else -1, tail_start, tail_end)
+    edge = pack_edge_eg(n, a, next_state, run_start, run_end, a if late else -1, tail_start, tail_end)
     for column in range(7):
         edges[count, column] = edge[column]
     hits[count, 0], hits[count, 1] = hit_lo, hit_hi
@@ -218,7 +218,7 @@ def section_rows(context, actions, fills, forced, first, state):
     its end, then one per later end up to its early-Great end whose tail past the end is fever-great (issue #44: the same
     witness still reproduces the end), then the activation ending its fever early: hit from its earliest legal hit (a
     Perfect's floor, a late Great's late-Great floor), at every end from which the later notes can still be hit past its
-    cutoff. Returns rows (_ROW_COLUMNS), their edges (`_numba_pack_edge_eg`) and witness hit windows (low, high)."""
+    cutoff. Returns rows (_ROW_COLUMNS), their edges (`pack_edge_eg`) and witness hit windows (low, high)."""
     n = context.timestamps.shape[0]
     times = HitTimes(
         context.perfect_floor_timestamps, context.perfect_candidate_timestamps, context.great_floor_timestamps,
@@ -231,7 +231,7 @@ def section_rows(context, actions, fills, forced, first, state):
     for index in range(len(families)):
         _k, a, late, _run_start, _run_end, end, early_great_end, _hit_lo, _hit_hi = families[index]
         lows[index] = (context.late_great_floor_timestamps if late else context.perfect_floor_timestamps)[a]
-        exit_lo = _numba_lower_bound_from(context.exit_ceiling_timestamps, lows[index] + context.real_fever_time)
+        exit_lo = lower_bound(context.exit_ceiling_timestamps, lows[index] + context.real_fever_time)
         exits[index] = min(max(exit_lo, a + 1), end)
         total += 1 + max(0, early_great_end - end) + end - exits[index]
     size = 2

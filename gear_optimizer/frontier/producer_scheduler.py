@@ -23,7 +23,7 @@ def _executor(workers: int) -> concurrent.futures.ThreadPoolExecutor:
 
 def _region_table(build: SongBuild, table: ActionTable) -> tuple[np.ndarray, ...]:
     song = build.song
-    return kernels._numba_build_region_core_table(
+    return kernels.region_core_table(
         song.timestamps.shape[0],
         table.action_k.shape[0],
         table.action_k,
@@ -43,7 +43,7 @@ def _table_bytes(region_table: tuple[np.ndarray, ...]) -> int:
 def _table_bounds(n: int, table: ActionTable) -> tuple[int, int]:
     """Exact upper bounds of a region table's bytes: while its build holds the candidate arrays and their trimmed
     copies, and after."""
-    capacity = kernels._numba_region_core_candidate_capacity(
+    capacity = kernels.region_core_candidate_capacity(
         n, table.action_k.shape[0], table.action_k, table.raw_fever_fill
     )
     starts_bytes = (n + 2) * np.dtype(np.int64).itemsize

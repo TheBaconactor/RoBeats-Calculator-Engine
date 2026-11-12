@@ -11,7 +11,7 @@ from math import ceil
 import numpy as np
 import psutil
 
-from .producer_kernels import _first_frontiers_of_fever_times
+from .producer_kernels import frontiers_of_fever_times
 from .producer_precompute import FeverEnds, Geometry, SongArrays
 from .producer_surfaces import SurfaceRowsFirstFrontier
 from .types import FgResponseFrontierResult
@@ -183,7 +183,7 @@ def reduce_geometries(
         else (ends.no_exit_e, ends.no_exit_e)
     )
     fever_rows = np.asarray([geometry.fever_row for geometry in geometries], dtype=np.int32)
-    rows, offsets, stats, pair_epoch, bit_epoch = _first_frontiers_of_fever_times(
+    rows, offsets, stats, pair_epoch, bit_epoch = frontiers_of_fever_times(
         (song.timestamps.shape[0], table.later_fill.shape[0], table.action_k.shape[0]),
         table.arrays,
         runs,
