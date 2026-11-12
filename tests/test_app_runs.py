@@ -16,7 +16,7 @@ def _tasks(count: int) -> list[SongTask]:
     return [SongTask(f"song-{idx}.txt", f"Song {idx}", PRECISE, context) for idx in range(count)]
 
 
-def _app(monkeypatch, tmp_path, run: RunSettings, queues: list[list[SongTask]], outcome) -> tuple[GearOptimizerApp, list]:
+def _app(monkeypatch, tmp_path, run: RunSettings, queues: list[list[SongTask]], outcome):
     """An app whose iterations queue `queues` in turn (then stop the loop) and whose worker pool plays
     `outcome(tasks, kwargs)`; returns the app and the pool's calls."""
     import gear_optimizer.app as app_module
@@ -51,7 +51,8 @@ def _all_done(tasks, kw):
 
 
 def test_the_queue_goes_to_the_configured_workers_capped_by_its_size(monkeypatch, tmp_path):
-    app, calls = _app(monkeypatch, tmp_path, RunSettings(workers=8, loop_forever=True), [_tasks(3), _tasks(9)], _all_done)
+    run = RunSettings(workers=8, loop_forever=True)
+    app, calls = _app(monkeypatch, tmp_path, run, [_tasks(3), _tasks(9)], _all_done)
     assert app.run() == 0
     assert [call["workers"] for call in calls] == [3, 8]
 

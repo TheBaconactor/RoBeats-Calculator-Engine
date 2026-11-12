@@ -29,6 +29,7 @@ from .loadout_stats import build_general_meta_loadout_stats
 
 # The tier a category shows first (also the tier the stored rows were solved at).
 _DEFAULT_TIER_LABEL = team_buff_display_label("T5", default="T5")
+_HEADER_KEYS = ("Song Name", "Primary Color", "Secondary Color")
 
 
 def _songs_by_colors() -> dict[tuple[str, str], list[Song]]:
@@ -40,7 +41,7 @@ def _songs_by_colors() -> dict[tuple[str, str], list[Song]]:
                 if not fname.lower().endswith(".txt"):
                     continue
                 header = read_header(os.path.join(root, fname))
-                name, primary, secondary = (header.get(key, "") for key in ("Song Name", "Primary Color", "Secondary Color"))
+                name, primary, secondary = (header.get(key, "") for key in _HEADER_KEYS)
                 if name and primary:
                     songs.setdefault((primary, secondary), []).append(Song(name, difficulty, primary, secondary))
     return songs
@@ -75,10 +76,16 @@ def _known_mini_names(ranked: RankedSet, minis_by_name: Mapping[str, Mini]) -> l
 
 
 def _category_result(
-    primary: str, secondary: str, songs: list[Song], team_buff_tiers: list[str], conn: sqlite3.Connection, catalog: Catalog
+    primary: str,
+    secondary: str,
+    songs: list[Song],
+    team_buff_tiers: list[str],
+    conn: sqlite3.Connection,
+    catalog: Catalog,
 ) -> dict:
     """One elemental category (primary/secondary): its ranked sets at every TeamBuff tier."""
-    rows_by_song = {name: rows for name in dict.fromkeys(song.name for song in songs) if (rows := _song_rows(conn, name))}
+    names = dict.fromkeys(song.name for song in songs)  # a song in two folders is read once
+    rows_by_song = {name: rows for name in names if (rows := _song_rows(conn, name))}
     sets = [
         (ranked, _known_mini_names(ranked, catalog.minis))
         for ranked in ranked_sets(songs, rows_by_song, catalog.minis, catalog.gears)

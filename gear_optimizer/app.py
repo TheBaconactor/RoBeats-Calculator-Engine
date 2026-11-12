@@ -31,9 +31,8 @@ class GearOptimizerApp:
         self._output_enabled = settings.output_enabled()
         tty = sys.__stdout__.isatty()
         self._banner_enabled = tty
-        self._console = RunConsole(
-            self._stop_control, progress=progress_bar_enabled(settings.progress(), verbose=self._output_enabled, tty=tty)
-        )
+        progress = progress_bar_enabled(settings.progress(), verbose=self._output_enabled, tty=tty)
+        self._console = RunConsole(self._stop_control, progress=progress)
         self._orig_stdout = None
         self._orig_stderr = None
 
