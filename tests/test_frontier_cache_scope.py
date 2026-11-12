@@ -33,11 +33,9 @@ def test_temporary_frontier_scope_is_context_local_and_resets(tmp_path: Path) ->
 
 
 def test_temporary_frontier_scope_owns_both_real_disk_cache_paths(tmp_path: Path) -> None:
-    from gear_optimizer.frontier.timeline_cache import _frontier_disk_cache_dir
-    from gear_optimizer.frontier.fg_cache_keys import (
-        _fg_response_disk_cache_dir,
-    )
+    from gear_optimizer.frontier.fg_cache_store import FG_RESPONSE_FRONTIER_CACHE
+    from gear_optimizer.frontier.timeline_cache import TIMELINE_FRONTIER_CACHE
 
     with temporary_frontier_cache_scope(tmp_path / "job"):
-        assert _frontier_disk_cache_dir() == tmp_path / "job" / "timeline"
-        assert _fg_response_disk_cache_dir() == tmp_path / "job" / "fg_response"
+        assert TIMELINE_FRONTIER_CACHE.directory() == tmp_path / "job" / "timeline"
+        assert FG_RESPONSE_FRONTIER_CACHE.directory() == tmp_path / "job" / "fg_response"
