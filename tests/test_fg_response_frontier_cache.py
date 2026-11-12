@@ -692,6 +692,36 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     assert store.purge_stale_version_cache_files() == 0
 
 
+def test_purge_opens_no_bundle_while_the_lineage_reads_every_swept_version(tmp_path: Path, monkeypatch) -> None:
+    """The marker lists the versions every bundle had at the last sweep. A restart, and a start after a ratified version
+    change, read nothing; a lineage that dropped one of those versions sweeps again and refuses to delete unasked."""
+    from gear_optimizer.frontier import fg_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    marker = tmp_path / store._PURGED_VERSION_MARKER
+    old, new, unrelated = (f"fg-response-frontier-test+logic-{name}" for name in ("old", "new", "unrelated"))
+    np.savez(str(tmp_path / "bundle.npz"), version=np.array(old))
+    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", old)
+    assert store.purge_stale_version_cache_files() == 0  # no marker yet: swept
+    assert marker.read_text(encoding="utf-8") == old
+
+    opened: list[str] = []
+    real_load = np.load
+    monkeypatch.setattr(store.np, "load", lambda path, **kwargs: opened.append(str(path)) or real_load(path, **kwargs))
+    assert store.purge_stale_version_cache_files() == 0  # a restart
+    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", new)
+    monkeypatch.setitem(store._EXACT_COMPATIBLE_PREDECESSOR_VERSIONS, new, (old,))
+    assert store.purge_stale_version_cache_files() == 0  # a ratified version change
+    assert opened == []
+    assert marker.read_text(encoding="utf-8") == f"{new}\n{old}"
+
+    monkeypatch.setattr(fg_cache_types, "_FG_RESPONSE_CACHE_VERSION", unrelated)
+    with pytest.raises(RuntimeError, match="destructive cache rotation was not explicitly authorized"):
+        store.purge_stale_version_cache_files()
+    assert opened == [str(tmp_path / "bundle.npz")] and (tmp_path / "bundle.npz").exists()
+    assert marker.read_text(encoding="utf-8") == f"{new}\n{old}"
+
+
 def test_fg_response_frontier_uint8_persistence_bounds_fail_loud() -> None:
     from gear_optimizer.frontier.fg_cache_store import _as_uint8_exact
 

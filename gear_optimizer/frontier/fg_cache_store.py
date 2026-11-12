@@ -77,37 +77,36 @@ _PURGED_VERSION_MARKER = ".purged_version"
 
 
 def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
-    """Delete bundles outside the current exact compatibility lineage.
+    """Delete the bundles no version of the current lineage reads; returns how many.
 
-    Versions outside the explicit compatible set are dead weight because every reader rejects them, but deleting a
-    provisioned full pool is an explicit production rotation, never routine startup maintenance. Without
-    ``authorize_rotation`` this function detects any incompatible bundle and fails loudly before unlinking a byte. An
-    authorized prebuild sweeps once per compatibility-lineage change, guarded by a `.purged_version` marker so later
-    startup stays O(1). Returns the number of files removed. Unreadable bundles are left in place rather than guessed
-    at, and if any unlink fails (e.g. a locked file) the marker remains unwritten so the next authorized prebuild
-    retries.
+    They are dead weight (no reader derives their names), but deleting a provisioned pool is an explicit production
+    rotation, never routine maintenance: without `authorize_rotation` any such bundle raises before a byte is unlinked.
+    The `.purged_version` marker lists the versions every bundle had when the directory was last swept. While the
+    lineage still reads all of them no bundle can be stale, so nothing is opened: a restart, and a start after a
+    ratified version change, cost one small read. Any other marker (or none) sweeps: every bundle's version is read.
+    An unreadable bundle is kept rather than guessed at, and if an unlink fails (a locked file) the marker stays as it
+    is, so the next prebuild sweeps again.
     """
     directory = FG_RESPONSE_FRONTIER_CACHE.directory()
     if not directory.exists():
         return 0
     compatible_versions = FG_RESPONSE_FRONTIER_CACHE.compatible_versions()
-    marker_value = "\n".join(compatible_versions)
     marker = directory / _PURGED_VERSION_MARKER
     try:
-        if marker.read_text(encoding="utf-8").strip() == marker_value:
-            return 0
+        swept_versions = marker.read_text(encoding="utf-8").split()
     except OSError:
-        pass
+        swept_versions = []
     stale_bundles: list[Path] = []
-    for npz in directory.glob("*.npz"):
-        try:
-            with np.load(npz, allow_pickle=False) as bundle:
-                version = str(bundle["version"].item())
-        except _UNREADABLE:  # not proven stale: keep it
-            continue
-        if version not in compatible_versions:
-            stale_bundles.append(npz)
-    if stale_bundles and not bool(authorize_rotation):
+    if not swept_versions or not set(swept_versions) <= set(compatible_versions):
+        for npz in directory.glob("*.npz"):
+            try:
+                with np.load(npz, allow_pickle=False) as bundle:
+                    version = str(bundle["version"].item())
+            except _UNREADABLE:  # not proven stale: keep it
+                continue
+            if version not in compatible_versions:
+                stale_bundles.append(npz)
+    if stale_bundles and not authorize_rotation:
         raise RuntimeError(
             "FG response frontier cache contains "
             f"{len(stale_bundles)} incompatible bundle(s); preserved them because destructive "
@@ -123,9 +122,9 @@ def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
             pass
         except OSError:
             purge_complete = False  # locked/in-use: leave the marker unwritten, retry next prebuild
-    if purge_complete:
+    if purge_complete and swept_versions != list(compatible_versions):
         try:
-            marker.write_text(marker_value, encoding="utf-8")
+            marker.write_text("\n".join(compatible_versions), encoding="utf-8")
         except OSError:
             pass
     return removed
