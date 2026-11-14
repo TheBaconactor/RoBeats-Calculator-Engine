@@ -7,7 +7,7 @@ Primary Color	Flow
 Secondary Color	Rush
 Cover Image ID	105781355336825
 Audio Asset ID	rbxassetid://90196081881541
-Audio File	N/A
+Audio File	90196081881541.ogg
 Last Note Time	171.025
 Total Notes	3111
 Fever Fill	798

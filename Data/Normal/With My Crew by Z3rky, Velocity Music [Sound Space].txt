@@ -7,7 +7,7 @@ Primary Color	Vibe
 Secondary Color	Flow
 Cover Image ID	140504778842393
 Audio Asset ID	rbxassetid://107149538460489
-Audio File	N/A
+Audio File	107149538460489.ogg
 Last Note Time	164.713
 Total Notes	973
 Fever Fill	271
