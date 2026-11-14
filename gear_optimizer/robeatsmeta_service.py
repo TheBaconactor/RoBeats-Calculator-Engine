@@ -4,6 +4,8 @@ The host application owns identity, quotas, sharing and per-job persistence. Thi
 the process that can prove a solve used an official chart and the untouched catalog.
   GET  /songs              the official chart list (chart headers, read once per Data revision or refresh)
   POST /frontiers/refresh  the song publisher wrote charts: re-read the list and look for the new revision now
+  POST /catalog/rebuild    re-solve every described official chart in both modes into evolution.db (an admin's action);
+                           GET reads its progress
   POST /optimize           solve one chart (official `targetSongId` or uploaded `chartText`) and return its T5 leaderboard
                            in the shape store.legacy.best_loadouts yields for the catalog
   POST /reverse            the sets behind a Top Scores row of an official chart: `targetSongId`, `score` and what else the
@@ -41,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -644,9 +647,14 @@ def warm_lookups() -> None:
 # describes and the database lacks, one at a time. Waiting for the game data is deliberate: its Mini Ascension targets
 # change a new song's scores.
 
+def _described_charts() -> set[str]:
+    """Each official chart the game export describes."""
+    return game_song_names(paths().game_export).intersection(_official_charts().paths_by_song_id)
+
+
 def unbuilt_catalog_songs() -> list[tuple[str, str]]:
     """(song, timing mode) of each official chart the game export describes that evolution.db has no build for."""
-    candidates = game_song_names(paths().game_export).intersection(_official_charts().paths_by_song_id)
+    candidates = _described_charts()
     if not paths().database.exists():
         return sorted((song, mode) for song in candidates for mode in TIMING_MODES)
     conn = schema.connect(paths().database)
@@ -656,20 +664,30 @@ def unbuilt_catalog_songs() -> list[tuple[str, str]]:
         conn.close()
 
 
+def _build_catalog_entry(song_id: str, mode: str) -> bool:
+    """Solve one chart as a clean official request, so it promotes into evolution.db. False when it failed; a drain
+    raises ServiceNotReady. Every pass names a chart's job alike, so two passes over one chart join one solve."""
+    digest = hashlib.sha256(f"{song_id}|{mode}".encode()).hexdigest()[:16]
+    try:
+        solve({"jobId": f"catalog-{digest}", "targetSongId": song_id, "timingMode": mode})
+    except ServiceNotReady:
+        raise
+    except Exception:  # noqa: BLE001 - one bad chart must not stop the rest of the catalog
+        logger.exception("catalog build failed for %s (%s); the next Data revision retries it", song_id, mode)
+        return False
+    print(f"[robeatsmeta-service] built catalog entry for {song_id} ({mode})", flush=True)
+    return True
+
+
 def build_missing_catalog_songs() -> None:
     missing = unbuilt_catalog_songs()
     if missing:
         print(f"[robeatsmeta-service] building {len(missing)} official chart(s) missing from the catalog", flush=True)
     for song_id, mode in missing:
-        digest = hashlib.sha256(f"{song_id}|{mode}".encode()).hexdigest()[:16]
         try:
-            solve({"jobId": f"catalog-{digest}", "targetSongId": song_id, "timingMode": mode})
+            _build_catalog_entry(song_id, mode)
         except ServiceNotReady:
             return
-        except Exception:  # noqa: BLE001 - one bad chart must not stop the rest of the catalog
-            logger.exception("catalog build failed for %s (%s); the next Data revision retries it", song_id, mode)
-            continue
-        print(f"[robeatsmeta-service] built catalog entry for {song_id} ({mode})", flush=True)
     if not missing:
         # One official chart solved for nothing: no job waits for a cold worker (12 s, a minute under load).
         song = min(_official_charts().paths_by_song_id)
@@ -677,6 +695,43 @@ def build_missing_catalog_songs() -> None:
         with contextlib.suppress(ServiceNotReady):
             _solve_official(replace(warmup, promotes=False))
             print(f"[robeatsmeta-service] solver warm ({song})", flush=True)
+
+
+# An admin rebuild re-solves every described chart in both modes, built or not, so evolution.db takes what the current
+# engine finds. One runs at a time, in its own thread; a code update's drain ends it (the new image starts none).
+_rebuild_lock = threading.Lock()
+_rebuild = {"running": False, "total": 0, "built": 0, "failed": 0, "startedAt": None, "finishedAt": None,
+            "stopped": False}
+
+
+def catalog_rebuild_status() -> dict[str, Any]:
+    with _rebuild_lock:
+        return dict(_rebuild)
+
+
+def _rebuild_catalog(entries: list[tuple[str, str]]) -> None:
+    stopped = False
+    for song_id, mode in entries:
+        try:
+            built = _build_catalog_entry(song_id, mode)
+        except ServiceNotReady:
+            stopped = True
+            break
+        with _rebuild_lock:
+            _rebuild["built" if built else "failed"] += 1
+    with _rebuild_lock:
+        _rebuild.update(running=False, finishedAt=time.time(), stopped=stopped)
+
+
+def start_catalog_rebuild() -> dict[str, Any]:
+    """Start a rebuild unless one runs; either way, the rebuild's status."""
+    with _rebuild_lock:
+        if not _rebuild["running"]:
+            entries = sorted((song, mode) for song in _described_charts() for mode in TIMING_MODES)
+            _rebuild.update(running=True, total=len(entries), built=0, failed=0, startedAt=time.time(),
+                            finishedAt=None, stopped=False)
+            threading.Thread(target=_rebuild_catalog, args=(entries,), name="catalog-rebuild", daemon=True).start()
+        return dict(_rebuild)
 
 
 def _build_frontier_caches() -> None:
@@ -710,10 +765,13 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
         return not token or hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {token}")
 
     def do_GET(self) -> None:
-        if self.path.rstrip("/") != "/songs":
+        path = self.path.rstrip("/")
+        if path not in {"/songs", "/catalog/rebuild"}:
             self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
         elif not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+        elif path == "/catalog/rebuild":
+            self._send(HTTPStatus.OK, catalog_rebuild_status())
         else:
             try:
                 self._send(HTTPStatus.OK, {"songs": list_official_songs()})
@@ -722,7 +780,7 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.rstrip("/")
-        if path not in {"/optimize", "/reverse", "/reverse/prepare", "/frontiers/refresh"}:
+        if path not in {"/optimize", "/reverse", "/reverse/prepare", "/frontiers/refresh", "/catalog/rebuild"}:
             self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
         elif not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
@@ -730,6 +788,11 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             clear_official_charts()
             self.server.updater.request_check()  # type: ignore[attr-defined]  # main() sets it before serving
             self._send(HTTPStatus.ACCEPTED, {"queued": True})
+        elif path == "/catalog/rebuild":
+            try:
+                self._send(HTTPStatus.ACCEPTED, start_catalog_rebuild())
+            except Exception as exc:  # noqa: BLE001 - HTTP boundary
+                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
         elif path == "/reverse":
             self._answer(lambda request: _lookups.lookup(parse_lookup(request)))
         elif path == "/reverse/prepare":

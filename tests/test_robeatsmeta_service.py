@@ -742,3 +742,87 @@ def test_lookups_run_in_arrival_order_and_refuse_past_the_queue(monkeypatch):
     for thread in threads:
         thread.join(timeout=5.0)
     assert order == [0, 1, 2]
+
+
+def _wait_for_rebuild() -> dict:
+    deadline = time.monotonic() + 10
+    while (status := service.catalog_rebuild_status())["running"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    return status
+
+
+def test_a_rebuild_resolves_every_described_chart_built_or_not(data_root, monkeypatch):
+    _write_chart(data_root, "Normal", "Built by Artist", "built.txt")
+    _write_chart(data_root, "Hard", "Bad (Hard) by Artist", "bad.txt")
+    _write_chart(data_root, "Normal", "Unreleased by Artist", "unreleased.txt")
+    _write_export(data_root, (1, "Built", "Artist"), (2, "Bad (Hard)", "Artist"))
+    _store_catalog(data_root, "Built by Artist")
+    solved: list[dict] = []
+
+    def solve(request):
+        solved.append(request)
+        if request["targetSongId"].startswith("Bad"):
+            raise RuntimeError("no T5")
+        return []
+
+    monkeypatch.setattr(service, "solve", solve)
+
+    started = service.start_catalog_rebuild()
+    status = _wait_for_rebuild()
+
+    assert started["total"] == 4
+    assert sorted((r["targetSongId"], r["timingMode"]) for r in solved) == [
+        ("Bad (Hard) by Artist", "non-precise"), ("Bad (Hard) by Artist", "precise"),
+        ("Built by Artist", "non-precise"), ("Built by Artist", "precise"),
+    ]
+    # The missing-chart pass names its jobs alike, so a rebuild and that pass over one chart join one solve.
+    assert all(set(r) == {"jobId", "targetSongId", "timingMode"} and r["jobId"].startswith("catalog-") for r in solved)
+    assert {k: status[k] for k in ("running", "total", "built", "failed", "stopped")} == {
+        "running": False, "total": 4, "built": 2, "failed": 2, "stopped": False,
+    }
+
+
+def test_one_rebuild_runs_at_a_time_and_a_drain_ends_it(data_root, monkeypatch):
+    for name in ("A by Artist", "B by Artist"):
+        _write_chart(data_root, "Normal", name, f"{name}.txt")
+    _write_export(data_root, (1, "A", "Artist"), (2, "B", "Artist"))
+    release = threading.Event()
+    attempted: list[str] = []
+
+    def solve(request):
+        attempted.append(request["targetSongId"])
+        release.wait(5)
+        raise service.ServiceNotReady("a code update is draining")
+
+    monkeypatch.setattr(service, "solve", solve)
+
+    first = service.start_catalog_rebuild()
+    second = service.start_catalog_rebuild()
+    release.set()
+    status = _wait_for_rebuild()
+
+    assert first["running"] and second["running"] and second["startedAt"] == first["startedAt"]
+    assert attempted == ["A by Artist"]
+    assert status["stopped"] and status["built"] == 0 and status["failed"] == 0
+
+
+def test_the_rebuild_routes_need_the_token_and_answer_its_status(data_root, monkeypatch):
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_API_TOKEN", "secret")
+    sent: list[object] = []
+    handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
+    handler.path = "/catalog/rebuild"
+    monkeypatch.setattr(handler, "_send", lambda status, payload: sent.append((status, payload)))
+    monkeypatch.setattr(service, "start_catalog_rebuild", lambda: {"running": True})
+
+    handler.headers = {"Authorization": "Bearer wrong"}
+    handler.do_POST()
+    handler.do_GET()
+    handler.headers = {"Authorization": "Bearer secret"}
+    handler.do_POST()
+    handler.do_GET()
+
+    assert [status for status, _ in sent] == [service.HTTPStatus.UNAUTHORIZED] * 2 + [
+        service.HTTPStatus.ACCEPTED, service.HTTPStatus.OK]
+    assert sent[2][1] == {"running": True}
+    assert set(sent[3][1]) == {"running", "total", "built", "failed", "startedAt", "finishedAt", "stopped"}
