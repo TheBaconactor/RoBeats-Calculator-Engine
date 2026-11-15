@@ -1,5 +1,5 @@
-"""A song's GA on the GPU executor's thread: its runs, the 1-swap polish of each run's best, and the candidate table the
-FG stage selects from. warmup runs it once on a synthetic song, so a real song finds every kernel loaded."""
+"""A song's GA on the GPU executor's thread: its runs and the candidate table the FG stage selects from. warmup runs it
+once on a synthetic song, so a real song finds every kernel loaded."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload, build_timeline_payload
 from gear_optimizer.gamedata import stat_curves
 from gear_optimizer.solver.ftff_combos import ftff_shortlist, reachable_ftff_keys
-from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, GaInputs, one_swap_neighborhood
+from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, GaInputs
 from gear_optimizer.solver.timing_envelope import TimedSong
 
 from . import device, fields, kernels
@@ -31,64 +31,14 @@ def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
     return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
 
-def _polish_runs_best(
-    num_runs: int,
-    slot_start: np.ndarray,
-    slot_count: np.ndarray,
-    flags,
-    shortlist: tuple,
-    check: Callable[[str], None],
-) -> None:
-    """Exact 1-swap local search on each run's tracked best, the memetic finisher: 94.7% of all GA misses sit exactly one
-    swap from the true optimum (tools/dev/measure_ga_miss.py, 8 songs x 96 seeds), so making every run's answer 1-swap
-    locally optimal removes nearly all of them for about one extra generation of GPU work per pass.
-
-    Each pass evaluates the full neighborhood of every run's best; strictly better genomes replace it (a tie keeps it).
-    It ends when no run improves: run bests are strictly increasing integers bounded by the song's optimum. It consumes
-    the population and the evaluation state, so it runs after the candidate pack."""
-    prev = fields.ga_run_best.to_numpy()[:num_runs]
-    while True:
-        check("before GA 1-swap polish pass")
-        if np.any(prev[:, 0] <= 0):
-            bad = int(np.argmin(prev[:, 0]))
-            raise RuntimeError(f"GA 1-swap polish: run {bad} has no tracked best (score={int(prev[bad, 0])})")
-        hoods = [one_swap_neighborhood(best[1 : 1 + MAX_SLOTS], slot_start, slot_count, MAX_SLOTS) for best in prev]
-        k_max = max(hood.shape[0] for hood in hoods)
-        if k_max == 0:
-            return
-        # Every neighborhood padded to k_max with copies of the best (a tie never replaces it): uniform blocks per chunk.
-        hoods = [
-            np.concatenate([hood, np.tile(best[1 : 1 + MAX_SLOTS], (k_max - hood.shape[0], 1))])
-            for hood, best in zip(hoods, prev, strict=True)
-        ]
-        for offset in range(0, k_max, MAX_GENOMES):
-            k = min(MAX_GENOMES, k_max - offset)
-            group_runs = max(1, MAX_GENOMES // k)
-            for run in range(0, num_runs, group_runs):
-                group = hoods[run : run + group_runs]
-                kernels.load_population_kernel(
-                    np.ascontiguousarray(np.concatenate([hood[offset : offset + k] for hood in group]), dtype=np.int32),
-                    len(group) * k,
-                )
-                kernels.evaluate_kernel(len(group) * k, flags, *shortlist)
-                kernels.update_runs_best_kernel(run, len(group), k)
-        cur = fields.ga_run_best.to_numpy()[:num_runs]
-        if not np.any(cur[:, 0] > prev[:, 0]):
-            return
-        prev = cur
-
-
 def _run_ga(inputs: GaInputs, seed: int, payload, check: Callable[[str], None]) -> np.ndarray:
     num_runs, n_genomes = inputs.num_runs, inputs.n_genomes
     device.ensure_ready()
     device.upload_timeline(inputs.timed_song.timeline_key, payload)
     device.upload_items(inputs.item_stats, inputs.slot_start, inputs.slot_count, inputs.base_fixed_stats_arr)
-    fields.ga_init_heuristic_topk.from_numpy(np.ascontiguousarray(inputs.init_heuristic_topk, dtype=np.int32))
+    device.upload_init_topk(inputs.init_heuristic_topk)
     shortlist = device.upload_shortlist(inputs.ftff_shortlist)
     flags = gpu_color_flags(inputs.color_flags)
-    no_best = np.zeros((MAX_GA_RUNS, fields.GA_RUN_BEST_COLS), dtype=np.int32)
-    no_best[:, [0, 1 + MAX_SLOTS]] = -1
-    fields.ga_run_best.from_numpy(no_best)
     batch_runs = max(1, _BATCH_GENOMES // n_genomes)
     for run in range(0, num_runs, batch_runs):
         batch = min(batch_runs, num_runs - run)
@@ -103,7 +53,6 @@ def _run_ga(inputs: GaInputs, seed: int, payload, check: Callable[[str], None]) 
             else:
                 kernels.update_runs_best_kernel(run, batch, n_genomes)
         kernels.pack_candidates_kernel(run, batch, n_genomes)
-    _polish_runs_best(num_runs, inputs.slot_start, inputs.slot_count, flags, shortlist, check)
     kernels.pack_run_bests_kernel(num_runs, flags)
     return fields.ga_fg_candidates.to_numpy()[:num_runs]
 

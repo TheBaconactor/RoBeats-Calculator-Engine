@@ -1,5 +1,5 @@
 """The GA's inputs and policy, and what it computes on the host: the heuristic seed items it starts from and the 1-swap
-neighborhood its polish evaluates. The GA itself runs on the GPU (gpu.ga)."""
+neighborhood the FG beam search evaluates. The GA itself runs on the GPU (gpu.ga)."""
 
 from dataclasses import dataclass
 

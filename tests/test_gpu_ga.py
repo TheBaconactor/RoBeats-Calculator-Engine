@@ -49,20 +49,6 @@ def test_a_table_repeats_exactly_and_holds_what_the_host_computes():
         assert np.all(np.diff(run[1:, 0]) <= 0), "the population rows go down in score"
 
 
-def test_a_polished_best_has_no_better_neighbor():
-    inputs = ga_inputs(num_runs=1, generations=2)
-    best = _run(inputs)[0, 0]
-    polished = best[1:10]
-    from gear_optimizer.solver.genetic_pipeline import one_swap_neighborhood
-
-    neighbors = one_swap_neighborhood(polished, inputs.slot_start, inputs.slot_count, 9)
-    n = min(len(neighbors), fields.MAX_GENOMES)
-    flags = gpu_color_flags(inputs.color_flags)
-    kernels.load_population_kernel(np.ascontiguousarray(neighbors[:n], dtype=np.int32), n)
-    kernels.evaluate_kernel(n, flags, *device.upload_shortlist(inputs.ftff_shortlist))
-    assert fields.chunk_best_results.to_numpy()[:n, 0].max() - 1 <= best[0]
-
-
 def test_the_batch_width_changes_nothing(monkeypatch):
     inputs = ga_inputs(num_runs=6, n_genomes=32)
     monkeypatch.setattr(ga, "_BATCH_GENOMES", 6 * 32)

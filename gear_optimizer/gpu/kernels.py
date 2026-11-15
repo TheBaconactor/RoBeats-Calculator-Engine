@@ -10,7 +10,16 @@ from gear_optimizer.solver.genetic_pipeline import (
 )
 
 from . import fields
-from .fields import GA_FG_CANDIDATES_PER_RUN, GA_FTFF_LANES, GA_RESULT_COLS, GA_WINNER_COLS, ITEM_STAT_DIM, MAX_SLOTS
+from .fields import (
+    GA_FG_CANDIDATES_PER_RUN,
+    GA_FTFF_LANES,
+    GA_RESULT_COLS,
+    GA_RUN_BEST_COLS,
+    GA_WINNER_COLS,
+    ITEM_STAT_DIM,
+    MAX_GENOMES,
+    MAX_SLOTS,
+)
 from .runtime import ti
 from .scoring import (
     GpuColorFlags,
@@ -113,7 +122,13 @@ def upload_surfaces_kernel(
 @ti.kernel
 def start_batch_kernel(run_start: ti.i32, n_runs: ti.i32, n_genomes: ti.i32, seed: ti.u32, heuristic_copies: ti.i32):
     """A batch's initial populations and RNG states, by run id and genome: the same for any batch width. A run's first
-    heuristic_copies genomes draw from the top items of each slot."""
+    heuristic_copies genomes draw from the top items of each slot. Its tracked best resets here, on the device."""
+    for r in range(n_runs):
+        rid = run_start + r
+        for c in ti.static(range(GA_RUN_BEST_COLS)):
+            fields.ga_run_best[rid, c] = 0
+        fields.ga_run_best[rid, 0] = -1
+        fields.ga_run_best[rid, 1 + MAX_SLOTS] = -1
     for r, g in ti.ndrange(n_runs, n_genomes):
         run_id = run_start + r
         genome = r * n_genomes + g
@@ -172,14 +187,6 @@ def _base_stats7(ids: ti.types.vector(MAX_SLOTS, ti.i32), flags: GpuColorFlags) 
 
 
 @ti.func
-def _aggregate_stats(n_genomes: ti.i32, flags: GpuColorFlags):
-    for g in range(n_genomes):
-        b = _base_stats7(ti.Vector([fields.population_indices[g, s] for s in ti.static(range(MAX_SLOTS))]), flags)
-        for i in ti.static(range(7)):
-            fields.genome_base_stats[g][i] = ti.cast(b[i], ti.i16)
-
-
-@ti.func
 def _memo_slot(g: ti.i32) -> ti.i32:
     h = ti.u32(2166136261)
     for i in ti.static(range(7)):
@@ -189,59 +196,94 @@ def _memo_slot(g: ti.i32) -> ti.i32:
 
 
 @ti.func
-def _find_representatives(n_genomes: ti.i32):
-    """Each genome's row to evaluate: a memo hit restores its result, a miss takes the first miss of its memo slot when
-    their stats are equal (O(n); misses of other stats sharing a slot are simply evaluated). Collisions evict memo
-    entries, never alias results."""
+def _prepare_evals(n_genomes: ti.i32):
+    """The next evaluation's book-keeping: the search list and the memo slots the last generation's misses claimed.
+    The sentinel tops every claimant, so a slot's owner is only ever a claimant of this generation or no claimant."""
     fields.ga_search_count[0] = 0
-    # Separate top-level loops provide a device barrier before owner selection and before the owners are read.
-    for slot in range(fields.GA_EVAL_CACHE_SIZE):
-        fields.ga_eval_cache_owner[slot] = n_genomes
+    for i in range(fields.ga_eval_dirty_count[0]):
+        fields.ga_eval_cache_owner[fields.ga_eval_dirty_slots[i]] = MAX_GENOMES
+    for _ in range(1):
+        fields.ga_eval_dirty_count[0] = 0
+
+
+@ti.func
+def _memo_lookup(g: ti.i32):
+    """One genome's memo lookup: a hit restores its winner; a miss zeroes it and claims the slot."""
+    fields.ga_eval_incumbent_score[g] = 0
+    fields.ga_survivor_count[g] = 0
+    stats = fields.genome_base_stats[g]
+    slot = _memo_slot(g)
+    hit = fields.ga_eval_cache_results[slot][0] != 0
+    for i in ti.static(range(7)):
+        if stats[i] != fields.ga_eval_cache_stats[slot][i]:
+            hit = False
+    if hit:
+        for i in ti.static(range(GA_WINNER_COLS)):
+            fields.chunk_best_results[g, i] = fields.ga_eval_cache_results[slot][i]
+    else:
+        for i in ti.static(range(GA_WINNER_COLS)):
+            fields.chunk_best_results[g, i] = 0
+        entry = ti.atomic_add(fields.ga_eval_dirty_count[0], 1)
+        fields.ga_eval_dirty_slots[entry] = slot
+        ti.atomic_min(fields.ga_eval_cache_owner[slot], g)
+
+
+@ti.func
+def _aggregate_and_lookup(n_genomes: ti.i32, flags: GpuColorFlags):
+    """Each genome's stats and its memo lookup in one pass: a thread's own write is visible to its own read."""
     for g in range(n_genomes):
-        fields.ga_eval_incumbent_score[g] = 0
-        fields.ga_survivor_count[g] = 0
-        stats = fields.genome_base_stats[g]
-        slot = _memo_slot(g)
-        hit = fields.ga_eval_cache_results[slot][0] != 0
+        b = _base_stats7(ti.Vector([fields.population_indices[g, s] for s in ti.static(range(MAX_SLOTS))]), flags)
         for i in ti.static(range(7)):
-            if stats[i] != fields.ga_eval_cache_stats[slot][i]:
-                hit = False
-        if hit:
-            for i in ti.static(range(GA_WINNER_COLS)):
-                fields.chunk_best_results[g, i] = fields.ga_eval_cache_results[slot][i]
-        else:
-            for i in ti.static(range(GA_WINNER_COLS)):
-                fields.chunk_best_results[g, i] = 0
-            ti.atomic_min(fields.ga_eval_cache_owner[slot], g)
+            fields.genome_base_stats[g][i] = ti.cast(b[i], ti.i16)
+        _memo_lookup(g)
+
+
+@ti.func
+def _resolve_representatives(n_genomes: ti.i32):
+    """Each miss's row to evaluate: the claimant of its memo slot when their stats are equal."""
     for g in range(n_genomes):
         rep = g
         if fields.chunk_best_results[g, 0] == 0:
             owner = fields.ga_eval_cache_owner[_memo_slot(g)]
-            same = True
-            for i in ti.static(range(7)):
-                if fields.genome_base_stats[g][i] != fields.genome_base_stats[owner][i]:
-                    same = False
-            if same:
-                rep = owner
+            if owner < n_genomes:
+                same = True
+                for i in ti.static(range(7)):
+                    if fields.genome_base_stats[g][i] != fields.genome_base_stats[owner][i]:
+                        same = False
+                if same:
+                    rep = owner
         fields.ga_exact_eval_rep_idx[g] = rep
 
 
 @ti.func
+def _find_representatives(n_genomes: ti.i32):
+    """Each genome's row to evaluate: a memo hit restores its result, a miss claims its memo slot and takes the first
+    miss of that slot when their stats are equal (O(n); misses of other stats sharing a slot are simply evaluated).
+    Collisions evict memo entries, never alias results."""
+    _prepare_evals(n_genomes)
+    # Separate top-level loops provide a device barrier before owner selection and before the owners are read.
+    for g in range(n_genomes):
+        _memo_lookup(g)
+    _resolve_representatives(n_genomes)
+
+
+@ti.func
 def _scatter_results(n_genomes: ti.i32):
-    """Each duplicate's winner from its representative, then the new results into the memo."""
+    """Each duplicate's winner from its representative, then the claimed rows' results into the memo, in one pass: a
+    slot's owner is always a hit or a searched representative, so every row read is final before this dispatch."""
     for g in range(n_genomes):
         rep = fields.ga_exact_eval_rep_idx[g]
         if rep != g:
             for i in ti.static(range(GA_WINNER_COLS)):
                 fields.chunk_best_results[g, i] = fields.chunk_best_results[rep, i]
-    # One deterministic writer per slot; lookup completed before this dispatch.
-    for slot in range(fields.GA_EVAL_CACHE_SIZE):
-        g = fields.ga_eval_cache_owner[slot]
-        if g < n_genomes:
-            for i in ti.static(range(7)):
-                fields.ga_eval_cache_stats[slot][i] = ti.cast(fields.genome_base_stats[g][i], ti.i32)
-            for i in ti.static(range(GA_WINNER_COLS)):
-                fields.ga_eval_cache_results[slot][i] = fields.chunk_best_results[g, i]
+        if g < fields.ga_eval_dirty_count[0]:
+            slot = fields.ga_eval_dirty_slots[g]
+            owner = fields.ga_eval_cache_owner[slot]
+            if owner < n_genomes:
+                for i in ti.static(range(7)):
+                    fields.ga_eval_cache_stats[slot][i] = ti.cast(fields.genome_base_stats[owner][i], ti.i32)
+                for i in ti.static(range(GA_WINNER_COLS)):
+                    fields.ga_eval_cache_results[slot][i] = fields.chunk_best_results[owner, i]
 
 
 @ti.func
@@ -394,8 +436,9 @@ def _finish_lanes(n_genomes: ti.i32):
 def evaluate_kernel(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, counts: _I32_ARRAY, combos: _I32_ARRAY):
     """The exact evaluation of the population in one launch: memo hits restored, each unique uncached row searched,
     duplicates scattered. Each step's top-level loop is a dispatch of its own, with a barrier before the next."""
-    _aggregate_stats(n_genomes, flags)
-    _find_representatives(n_genomes)
+    _prepare_evals(n_genomes)
+    _aggregate_and_lookup(n_genomes, flags)
+    _resolve_representatives(n_genomes)
     _reference_search(n_genomes, flags, starts, counts, combos)
     _search_combos(n_genomes, flags, starts, counts, combos)
     _finish_lanes(n_genomes)
@@ -417,7 +460,8 @@ def _result_row(genome: ti.i32) -> ti.types.vector(GA_RESULT_COLS, ti.i32):
 
 @ti.func
 def _refresh_scores_and_runs_best(run_start: ti.i32, n_runs: ti.i32, n_genomes: ti.i32):
-    """Every genome's score from its winner (-1 without one), and each run's best row where the run improved."""
+    """Every genome's score from its winner (-1 without one), and each run's best row where the run improved. The
+    best-genome index is kept for the breeder's elite so it does not rescan the scores."""
     for g in range(n_runs * n_genomes):
         fields.ga_scores[g] = fields.chunk_best_results[g, 0] - 1
     for r in range(n_runs):
@@ -430,6 +474,7 @@ def _refresh_scores_and_runs_best(run_start: ti.i32, n_runs: ti.i32, n_genomes: 
                 best_score = score
                 best_g = start + local_g
         run_id = run_start + r
+        fields.ga_gen_best[run_id] = best_g
         if best_score > fields.ga_run_best[run_id, 0]:
             result = _result_row(best_g)
             fields.ga_run_best[run_id, 0] = result[0]
@@ -533,21 +578,15 @@ def _base_stats_dominate(a: ti.i32, b: ti.i32) -> ti.i32:
 
 
 @ti.func
-def _breed_next_generation(n_runs: ti.i32, n_genomes: ti.i32):
-    """Each run's first genome is its best (the first of the best scores); every other comes from a tournament of each
-    parent, a uniform crossover, a mutation at _MUTATION_RATE_FP and the repairs."""
+def _breed_next_generation(run_start_id: ti.i32, n_runs: ti.i32, n_genomes: ti.i32):
+    """Each run's first genome is its best (the first of the best scores, already found by the scores refresh); every
+    other comes from a tournament of each parent, a uniform crossover, a mutation at _MUTATION_RATE_FP and the repairs."""
     for g in range(n_runs * n_genomes):
         run: ti.i32 = g // n_genomes
         local_g: ti.i32 = g - run * n_genomes
         run_start: ti.i32 = run * n_genomes
         if local_g == 0:
-            elite: ti.i32 = run_start
-            elite_score: ti.i32 = -1
-            for local_idx in range(n_genomes):
-                score: ti.i32 = fields.ga_scores[run_start + local_idx]
-                if score > elite_score:
-                    elite_score = score
-                    elite = run_start + local_idx
+            elite: ti.i32 = fields.ga_gen_best[run_start_id + run]
             for s in ti.static(range(MAX_SLOTS)):
                 fields.population_next_indices[g, s] = fields.population_indices[elite, s]
             continue
@@ -604,10 +643,12 @@ def _breed_next_generation(n_runs: ti.i32, n_genomes: ti.i32):
 
 @ti.kernel
 def next_generation_kernel(run_start: ti.i32, n_runs: ti.i32, n_genomes: ti.i32):
-    """One transition in one dispatch: the scores and run bests of the evaluated population (before it changes), the next
+    """One transition in one launch: the scores and run bests of the evaluated population (before it changes), the next
     generation, and the swap."""
     _refresh_scores_and_runs_best(run_start, n_runs, n_genomes)
-    _breed_next_generation(n_runs, n_genomes)
+    _breed_next_generation(run_start, n_runs, n_genomes)
+    # A parity-flipped (2, MAX_GENOMES, MAX_SLOTS) buffer was tried here instead of this copy: ~0.2 ms/call, inside
+    # noise — the GPU hides the copy behind the breed. Revisit if the copy ever shows up in a profile.
     for g, s in ti.ndrange(n_runs * n_genomes, ti.static(MAX_SLOTS)):
         fields.population_indices[g, s] = fields.population_next_indices[g, s]
 
@@ -703,8 +744,8 @@ def pack_candidates_kernel(run_start: ti.i32, n_runs: ti.i32, n_genomes: ti.i32)
 
 @ti.kernel
 def pack_run_bests_kernel(n_runs: ti.i32, flags: GpuColorFlags):
-    """Row 0 of each run's candidate table: its best across generations (after the polish, which consumes the population),
-    minis sorted, pre-gem stats recomputed from the item ids."""
+    """Row 0 of each run's candidate table: its best across generations, minis sorted, pre-gem stats recomputed from
+    the item ids."""
     for r in range(n_runs):
         for c in ti.static(range(fields.GA_RUN_BEST_COLS)):
             fields.ga_fg_candidates[r, 0, c] = fields.ga_run_best[r, c]
