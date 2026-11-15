@@ -74,9 +74,20 @@ def early_great_gap_bound(perfect_floor: np.ndarray, great_floor: np.ndarray) ->
     token tables at one hit). The clamp is monotone and 1-Lipschitz, so a width is at most the number of notes whose
     Great floor lies below the cutoff and whose Perfect floor does not. That count only rises just past a value of
     either floor, so its maximum over those values bounds it at every cutoff, for every fill and fever time."""
-    cutoffs = np.concatenate((perfect_floor, great_floor))
-    gaps = np.searchsorted(great_floor, cutoffs, side="right") - np.searchsorted(perfect_floor, cutoffs, side="right")
-    return int(gaps.max(initial=0))
+    # The count only changes at a floor's values: one merge walk over both sorted floors keeps the gap
+    # (Great floors <= v) - (Perfect floors <= v) at every v, O(n) for the searchsorted pair's O(n log n).
+    gap, best, i, j = 0, 0, 0, 0
+    n_g, n_p = great_floor.shape[0], perfect_floor.shape[0]
+    while i < n_g or j < n_p:
+        v = great_floor[i] if j >= n_p or (i < n_g and great_floor[i] <= perfect_floor[j]) else perfect_floor[j]
+        while i < n_g and great_floor[i] <= v:
+            i += 1
+        while j < n_p and perfect_floor[j] <= v:
+            j += 1
+        gap = i - j
+        if gap > best:
+            best = gap
+    return int(best)
 
 
 def pair_mod_bound(n: int, smallest_later_fill: int, eg_gap_bound: int) -> int:
