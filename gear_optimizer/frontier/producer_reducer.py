@@ -10,6 +10,7 @@ from math import ceil
 
 import numpy as np
 import psutil
+from numba import jit
 
 from .producer_kernels import frontiers_of_fever_times
 from .producer_precompute import FeverEnds, Geometry, SongArrays
@@ -66,16 +67,9 @@ class StampWorkspace:
             self.bit_epoch = 0
 
 
-def early_great_gap_bound(perfect_floor: np.ndarray, great_floor: np.ndarray) -> int:
-    """An upper bound of the kernel prepass's `max_eg_width` over every geometry of a song.
-
-    Each width the prepass measures is the end a cutoff reaches on the Great floor less the end it reaches on the
-    Perfect floor, both clamped alike (FeverEnds: `eg_perfect_e` - `perfect_e`, `eg_late_e` - `late_e`, and the two
-    token tables at one hit). The clamp is monotone and 1-Lipschitz, so a width is at most the number of notes whose
-    Great floor lies below the cutoff and whose Perfect floor does not. That count only rises just past a value of
-    either floor, so its maximum over those values bounds it at every cutoff, for every fill and fever time."""
-    # The count only changes at a floor's values: one merge walk over both sorted floors keeps the gap
-    # (Great floors <= v) - (Perfect floors <= v) at every v, O(n) for the searchsorted pair's O(n log n).
+@jit(nopython=True, cache=True)
+def _gap_bound_merge(perfect_floor: np.ndarray, great_floor: np.ndarray) -> int:
+    """Max over every value v of (Great floors <= v) - (Perfect floors <= v), one merge walk."""
     gap, best, i, j = 0, 0, 0, 0
     n_g, n_p = great_floor.shape[0], perfect_floor.shape[0]
     while i < n_g or j < n_p:
@@ -87,7 +81,21 @@ def early_great_gap_bound(perfect_floor: np.ndarray, great_floor: np.ndarray) ->
         gap = i - j
         if gap > best:
             best = gap
-    return int(best)
+    return best
+
+
+def early_great_gap_bound(perfect_floor: np.ndarray, great_floor: np.ndarray) -> int:
+    """An upper bound of the kernel prepass's `max_eg_width` over every geometry of a song.
+
+    Each width the prepass measures is the end a cutoff reaches on the Great floor less the end it reaches on the
+    Perfect floor, both clamped alike (FeverEnds: `eg_perfect_e` - `perfect_e`, `eg_late_e` - `late_e`, and the two
+    token tables at one hit). The clamp is monotone and 1-Lipschitz, so a width is at most the number of notes whose
+    Great floor lies below the cutoff and whose Perfect floor does not. That count only rises just past a value of
+    either floor, so its maximum over those values bounds it at every cutoff, for every fill and fever time."""
+    # The count only changes at a floor's values: one merge walk over both sorted floors keeps the gap
+    # (Great floors <= v) - (Perfect floors <= v) at every v. O(n) for the searchsorted pair's O(n log n) --
+    # compiled: the same loop interpreted costs ~10x the vectorized searches at n ~ 3000.
+    return int(_gap_bound_merge(perfect_floor, great_floor))
 
 
 def pair_mod_bound(n: int, smallest_later_fill: int, eg_gap_bound: int) -> int:
