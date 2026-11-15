@@ -7,14 +7,9 @@ prototypes, or proposals that were never adopted. Use the parent
 
 ## Files
 
-- [Global adaptive-core database audit](adaptive_core_database_audit_2026-09-11.md) — stored Base/FG witnesses, regional winner preservation, and remaining selection limits
-- [Adaptive regional core search](adaptive_region_core_search.md) — regional handoff, canonical feedback, and score-versus-time measurements
-
-- [Shared-budget core search](shared_budget_core_search.md) — 2026-09-11 real-catalog bound probe, numerical proof, and benchmark scope
 - `inventory_coverage_complexity.md` — NP-completeness proof, reduction analysis, structural theorems for the inventory coverage problem
 - `math_first_rewrite_proposal.md` — mathematical reduction directions for the exact optimizer
-- `frontier_census_evidence_2026-07-04.md` — methodology and evidence for the retained-frontier census
-- `frontier_census_results_2026-07-04/` — machine-readable census outputs
+- `INNER_EVALUATION_REDUCTIONS.md` — patch report on removing repeated exact inner-evaluation work
 
 ## Bundles
 
