@@ -1798,19 +1798,16 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
                         rows += 1
                 if lo_e < eg_e:
                     rows = _points_skyline(packet, 0, rows)
-                # Into the family's queue: drop the rows the packet dominates, then append it. The packet is scanned
-                # in ascending normal Greats, so a queued row's possible dominators end at the first packet row past
-                # its count (a dominator must have normal Greats <= its own).
-                porder = np.argsort(packet[:rows, 1])
+                # Into the family's queue: drop the rows the packet dominates, then append it.
                 write = head
                 for queued in range(head, tails[family]):
-                    q_normal = queue[family, queued, 1]
                     dominated = False
-                    for pi in range(rows):
-                        p = porder[pi]
-                        if packet[p, 1] > q_normal:
-                            break
-                        if packet[p, 0] >= queue[family, queued, 0] and packet[p, 2] <= queue[family, queued, 2]:
+                    for p in range(rows):
+                        if (
+                            packet[p, 0] >= queue[family, queued, 0]
+                            and packet[p, 1] <= queue[family, queued, 1]
+                            and packet[p, 2] <= queue[family, queued, 2]
+                        ):
                             dominated = True
                             break
                     if not dominated:
