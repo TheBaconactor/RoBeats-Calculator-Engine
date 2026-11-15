@@ -29,7 +29,7 @@ flowchart TD
     F --> G["Startup CPU work: timeline and FG frontier caches"]
     G --> I["pipeline.workers.solve_queue: one process per worker"]
     I --> J["Song preparation"]
-    J --> K["GA and fused FG owner score (the worker's GPU executor)"]
+    J --> K["GA (one of the run's GPU processes), then the FG turn"]
     K --> L["Decode and host-only exact FG materialization"]
     L --> N["Canonicalization (pipeline.storing)"]
     N --> O["Atomic SQLite persistence"]
@@ -44,16 +44,21 @@ flowchart TD
 5. build or verify timeline and Force Great response-frontier caches; and
 6. solve the queue of `domain.jobs.SongTask`s (one per song run) with `pipeline.workers.solve_queue`.
 
-The parent process runs no GPU work: each worker owns its Taichi/Vulkan runtime
-(a GPU executor thread, initialized on the worker's main thread on macOS).
+The parent process runs no GPU work and the workers load no Taichi: the run's
+few GPU processes each own a Taichi/Vulkan runtime (a GPU executor thread,
+initialized on the process's main thread on macOS) and run the workers' GAs.
 
 ## Execution and ownership
 
 `gear_optimizer/pipeline/workers.py` solves the queue on `Workers` processes
 (config.ini). Each worker takes the next task from a shared queue, solves it
-(`pipeline/solve.py`: preparation, the GA and FG turn on its GPU executor, the
-host-only finish) and stores it (`pipeline/storing.py`), the path the
-service's persistent worker takes for one request. Workers report on a pipe of
+(`pipeline/solve.py`: preparation, the GA on whichever of the run's GPU
+processes takes it first, the FG turn and the host-only finish) and stores it
+(`pipeline/storing.py`), the path the service's persistent worker takes for one
+request with its own GPU executor. A Taichi runtime commits ~1.3 GiB up front on
+Windows, so the run holds a fixed few (`_GPU_PROCESSES`), not one per worker;
+the workers also run with one OpenBLAS thread, whose per-core buffers otherwise
+commit ~0.7 GiB per process. Workers report on a pipe of
 their own; the parent counts progress, replaces a worker that left for memory
 or died in a song (that song fails), and stops them all on a stop request or a
 lost GPU. GA seeds are per song, mode and run, so results do not depend on the
@@ -61,9 +66,9 @@ number of workers or on which worker took a song.
 
 ```mermaid
 flowchart LR
-    A["Prep thread: song preparation"] --> B["GpuExecutor.call: GA and fused FG owner score"]
-    B --> C["Finish thread: decode, FG planning, host-only FG materialization"]
-    C --> D["Post-processor process"]
+    A["Worker: song preparation"] --> B["A GPU process: the GA"]
+    B --> C["Worker: FG turn, decode, FG planning, host-only FG materialization"]
+    C --> D["Worker: canonicalize and store"]
     D --> E[("SQLite")]
 ```
 
@@ -78,8 +83,8 @@ The main execution owners are:
 - `gear_optimizer/pipeline/fg.py` for Force Great preparation, planning and
   results;
 - `gear_optimizer/pipeline/storing.py` for storing a solved song;
-- `gear_optimizer/gpu/executor.py` for all GPU execution: in each
-  worker one owner thread initializes Taichi and runs every GPU call.
+- `gear_optimizer/gpu/executor.py` for all GPU execution: in each GPU
+  process one owner thread initializes Taichi and runs every GPU call.
 
 Force Great payload materialization is CPU-only and runs on the worker's main
 thread; it never initializes or accesses the GPU.
