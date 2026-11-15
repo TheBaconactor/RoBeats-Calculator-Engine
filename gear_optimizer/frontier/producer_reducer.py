@@ -10,7 +10,7 @@ from math import ceil
 
 import numpy as np
 import psutil
-from numba import jit
+from numba import njit
 
 from .producer_kernels import frontiers_of_fever_times
 from .producer_precompute import FeverEnds, Geometry, SongArrays
@@ -67,7 +67,7 @@ class StampWorkspace:
             self.bit_epoch = 0
 
 
-@jit(nopython=True, cache=True)
+@njit(cache=True, nogil=True)
 def _gap_bound_merge(perfect_floor: np.ndarray, great_floor: np.ndarray) -> int:
     """Max over every value v of (Great floors <= v) - (Perfect floors <= v), one merge walk."""
     gap, best, i, j = 0, 0, 0, 0
