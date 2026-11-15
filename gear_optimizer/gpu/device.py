@@ -15,6 +15,24 @@ from .scoring import float64_words
 
 _ready = False
 _timeline_key: tuple | None = None
+# Byte-identical inputs already on the device need no second transfer: each label's last uploaded copies, and the
+# shortlist's device arrays (reused as kernel arguments).
+_ga_uploads: dict[str, tuple[np.ndarray, ...]] = {}
+_shortlist_arrays: tuple | None = None
+
+
+def _uploads_unchanged(label: str, arrays: tuple[np.ndarray, ...]) -> bool:
+    last = _ga_uploads.get(label)
+    if last is not None and all(np.array_equal(a, b) for a, b in zip(last, arrays, strict=True)):
+        return True
+    _ga_uploads.pop(label, None)
+    return False
+
+
+def _uploads_commit(label: str, arrays: tuple[np.ndarray, ...]) -> None:
+    """The label's just-transferred arrays as its last known device copies: recorded only after the upload succeeded,
+    so a failed transfer cannot leave a hit on data the device never got."""
+    _ga_uploads[label] = tuple(np.asarray(a).copy() for a in arrays)
 
 
 def _pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
@@ -42,6 +60,8 @@ def ensure_ready() -> None:
         return
     init_taichi()
     fields.allocate_fields()
+    # No claimant yet on any memo slot: the sentinel must top every claim's atomic_min, whatever n_genomes is.
+    fields.ga_eval_cache_owner.fill(fields.MAX_GENOMES)
     all_curves = stat_curves()
     curves = all_curves.f32
     fields.ref_pp_field.from_numpy(curves["Perfect Points"])
@@ -60,10 +80,12 @@ def ensure_ready() -> None:
 
 def hard_reset(reason: str) -> None:
     """Taichi reset (frees its Vulkan resources; every field is gone): the next ensure_ready starts over."""
-    global _ready, _timeline_key
+    global _ready, _timeline_key, _shortlist_arrays
     reset_taichi(reason=reason)
     _ready = False
     _timeline_key = None
+    _ga_uploads.clear()
+    _shortlist_arrays = None
 
 
 def upload_timeline(key: tuple, payload: TimelineFrontierGridPayload) -> None:
@@ -92,24 +114,48 @@ def upload_timeline(key: tuple, payload: TimelineFrontierGridPayload) -> None:
 
 
 def upload_items(item_stats: np.ndarray, slot_start: np.ndarray, slot_count: np.ndarray, base_fixed_stats: np.ndarray) -> None:
+    """The song's item table on the device, skipped when the pool did not change (same-color songs, repeat solves)."""
     n_items = len(item_stats)
     if n_items > fields.MAX_ITEMS:
         raise ValueError(f"Too many items: {n_items} > {fields.MAX_ITEMS}")
-    kernels.upload_items_kernel(
+    arrays = (
         np.ascontiguousarray(item_stats[:, : fields.ITEM_STAT_DIM], dtype=np.int32),
-        n_items,
         np.ascontiguousarray(slot_start, dtype=np.int32),
         np.ascontiguousarray(slot_count, dtype=np.int32),
+        np.asarray(base_fixed_stats, dtype=np.int32),
     )
-    fields.base_fixed_stats.from_numpy(np.asarray(base_fixed_stats, dtype=np.int32))
+    if _uploads_unchanged("items", arrays):
+        return
+    kernels.upload_items_kernel(arrays[0], n_items, arrays[1], arrays[2])
+    fields.base_fixed_stats.from_numpy(arrays[3])
+    _uploads_commit("items", arrays)
+
+
+def upload_init_topk(topk: np.ndarray) -> None:
+    """The heuristic seed items on the device, skipped while the pool's topk is unchanged."""
+    array = np.ascontiguousarray(topk, dtype=np.int32)
+    if _uploads_unchanged("topk", (array,)):
+        return
+    fields.ga_init_heuristic_topk.from_numpy(array)
+    _uploads_commit("topk", (array,))
 
 
 def upload_shortlist(shortlist: FtffShortlist) -> tuple:
-    """A song's FT/FF combo shortlist on the device: search_combos_kernel's arguments."""
+    """A song's FT/FF combo shortlist on the device: search_combos_kernel's arguments. An unchanged shortlist keeps its
+    device arrays."""
+    global _shortlist_arrays
+    keys = tuple(
+        np.ascontiguousarray(values, dtype=np.int32)
+        for values in (shortlist.start, shortlist.count, shortlist.combos)
+    )
+    if _uploads_unchanged("shortlist", keys):
+        return _shortlist_arrays
     arrays = []
-    for values in (shortlist.start, shortlist.count, shortlist.combos):
+    for values in keys:
         array = ti.ndarray(dtype=ti.i32, shape=(max(1, len(values)),))
         if len(values):
-            array.from_numpy(np.ascontiguousarray(values, dtype=np.int32))
+            array.from_numpy(values)
         arrays.append(array)
-    return tuple(arrays)
+    _shortlist_arrays = tuple(arrays)
+    _uploads_commit("shortlist", keys)
+    return _shortlist_arrays

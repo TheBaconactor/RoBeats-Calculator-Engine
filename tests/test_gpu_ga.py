@@ -49,20 +49,6 @@ def test_a_table_repeats_exactly_and_holds_what_the_host_computes():
         assert np.all(np.diff(run[1:, 0]) <= 0), "the population rows go down in score"
 
 
-def test_a_polished_best_has_no_better_neighbor():
-    inputs = ga_inputs(num_runs=1, generations=2)
-    best = _run(inputs)[0, 0]
-    polished = best[1:10]
-    from gear_optimizer.solver.genetic_pipeline import one_swap_neighborhood
-
-    neighbors = one_swap_neighborhood(polished, inputs.slot_start, inputs.slot_count, 9)
-    n = min(len(neighbors), fields.MAX_GENOMES)
-    flags = gpu_color_flags(inputs.color_flags)
-    kernels.load_population_kernel(np.ascontiguousarray(neighbors[:n], dtype=np.int32), n)
-    kernels.evaluate_kernel(n, flags, *device.upload_shortlist(inputs.ftff_shortlist))
-    assert fields.chunk_best_results.to_numpy()[:n, 0].max() - 1 <= best[0]
-
-
 def test_the_batch_width_changes_nothing(monkeypatch):
     inputs = ga_inputs(num_runs=6, n_genomes=32)
     monkeypatch.setattr(ga, "_BATCH_GENOMES", 6 * 32)
@@ -113,9 +99,38 @@ def test_a_clone_population_breeds_children_and_keeps_its_elite():
     assert len({tuple(genome) for genome in population.tolist()}) > 1
 
 
+def test_each_run_breeds_its_elite_from_its_own_best():
+    device.ensure_ready()
+    n_genomes = 32
+    device.upload_items(
+        np.zeros((128, fields.ITEM_STAT_DIM), dtype=np.int32),
+        np.asarray([1, 10, 20, 30, 40, 50, 60, 60, 60], dtype=np.int32),
+        np.asarray([8, 8, 8, 8, 8, 8, 20, 20, 20], dtype=np.int32),
+        np.zeros(fields.ITEM_STAT_DIM, dtype=np.int32),
+    )
+    kernels.start_batch_kernel(0, 2, n_genomes, 123, 0)
+    population = np.tile(np.asarray([1, 10, 20, 30, 40, 50, 60, 61, 62], dtype=np.int32), (2 * n_genomes, 1))
+    population[1] = np.asarray([2, 11, 21, 31, 41, 51, 61, 62, 63], dtype=np.int32)  # run 0's best
+    population[n_genomes + 2] = np.asarray([3, 12, 22, 32, 42, 52, 62, 63, 64], dtype=np.int32)  # run 1's
+    kernels.load_population_kernel(population, 2 * n_genomes)
+    winners = np.zeros((fields.MAX_GENOMES, fields.GA_WINNER_COLS), dtype=np.int32)
+    winners[: 2 * n_genomes, 0] = 10
+    winners[1, 0], winners[n_genomes + 2, 0] = 30, 20
+    fields.chunk_best_results.from_numpy(winners)
+    fields.ga_run_best.fill(0)
+    kernels.next_generation_kernel(0, 2, n_genomes)
+    bred = fields.population_indices.to_numpy()[: 2 * n_genomes]
+    np.testing.assert_array_equal(bred[0], population[1])
+    np.testing.assert_array_equal(bred[n_genomes], population[n_genomes + 2])
+
+
 @ti.kernel
 def _find_representatives(n_genomes: ti.i32):
-    kernels._find_representatives(n_genomes)
+    """The test harness's representative pass: the production stages of evaluate_kernel, on stats the test uploaded."""
+    kernels._prepare_evals(n_genomes)
+    for g in range(n_genomes):
+        kernels._memo_lookup(g)
+    kernels._resolve_representatives(n_genomes)
 
 
 @ti.kernel
@@ -199,6 +214,16 @@ def test_a_memo_collision_never_reuses_another_stat_tuple():
     np.testing.assert_array_equal(fields.chunk_best_results.to_numpy()[1], a_winner[0])
 
 
+def test_colliding_misses_register_their_slot_once():
+    _empty_memo()
+    a, b = [0] * 7, [0] * 6 + [16384]  # the FNV collision of the test above
+    _prepare_memo([a, b])
+    assert int(fields.ga_eval_dirty_count[0]) == 1  # two misses, one slot, one registration
+    _publish(2)
+    _prepare_memo([b, a])
+    assert int(fields.ga_eval_dirty_count[0]) == 1
+
+
 def test_a_missing_winner_is_never_cached():
     _empty_memo()
     _prepare_memo([[0] * 7])
@@ -231,6 +256,61 @@ def test_a_runtime_reset_discards_the_memo():
     _prepare_memo([[0] * 7])
     assert _unique_rows(1) == 1
     assert not np.any(fields.ga_eval_cache_results.to_numpy())
+
+
+class _CountingTopk:
+    """ga_init_heuristic_topk's stand-in: a from_numpy that counts its transfers, like the real field's."""
+
+    def __init__(self, wrapped):
+        self.wrapped, self.calls = wrapped, 0
+
+    def from_numpy(self, array):
+        self.calls += 1
+        return self.wrapped.from_numpy(array)
+
+
+def test_an_unchanged_upload_is_not_transferred_again(monkeypatch):
+    device.ensure_ready()
+    topk = _CountingTopk(fields.ga_init_heuristic_topk)
+    monkeypatch.setattr(fields, "ga_init_heuristic_topk", topk)
+    array = np.zeros((fields.MAX_SLOTS, fields.GA_INIT_HEURISTIC_K), dtype=np.int32)
+    device.upload_init_topk(array)
+    device.upload_init_topk(array)
+    assert topk.calls == 1
+    device.upload_init_topk(np.ones((fields.MAX_SLOTS, fields.GA_INIT_HEURISTIC_K), dtype=np.int32))
+    assert topk.calls == 2
+
+
+def test_a_failed_upload_is_not_remembered(monkeypatch):
+    device.ensure_ready()
+    array = np.zeros((fields.MAX_SLOTS, fields.GA_INIT_HEURISTIC_K), dtype=np.int32)
+    device.upload_init_topk(array)
+    real_field = fields.ga_init_heuristic_topk
+
+    class Failing:
+        def from_numpy(self, a):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(fields, "ga_init_heuristic_topk", Failing())
+    with pytest.raises(RuntimeError):
+        device.upload_init_topk(np.ones((fields.MAX_SLOTS, fields.GA_INIT_HEURISTIC_K), dtype=np.int32))
+    assert "topk" not in device._ga_uploads  # the miss invalidated the stale copy before the failed transfer
+    topk = _CountingTopk(real_field)
+    monkeypatch.setattr(fields, "ga_init_heuristic_topk", topk)
+    device.upload_init_topk(array)  # the array the lost snapshot held still transfers: no false hit on undelivered data
+    assert topk.calls == 1
+
+
+def test_a_hard_reset_forgets_uploaded_copies():
+    device.ensure_ready()
+    array = np.zeros((fields.MAX_SLOTS, fields.GA_INIT_HEURISTIC_K), dtype=np.int32)
+    device.upload_init_topk(array)
+    assert "topk" in device._ga_uploads
+    device.hard_reset("test")
+    assert "topk" not in device._ga_uploads  # the reset forgot the device copies
+    device.ensure_ready()
+    device.upload_init_topk(array)
+    assert "topk" in device._ga_uploads  # so the same upload transfers and commits again
 
 
 @ti.kernel

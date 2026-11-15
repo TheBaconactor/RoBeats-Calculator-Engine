@@ -75,6 +75,9 @@ _FIELDS = {
     "ga_eval_cache_stats": (ti.i32, GA_EVAL_CACHE_SIZE, 7),
     "ga_eval_cache_results": (ti.i32, GA_EVAL_CACHE_SIZE, GA_WINNER_COLS),
     "ga_eval_cache_owner": (ti.i32, GA_EVAL_CACHE_SIZE),
+    # The memo slots a generation's misses claimed, so the owner reset and the result writeback walk only those.
+    "ga_eval_dirty_slots": (ti.i32, MAX_GENOMES),
+    "ga_eval_dirty_count": (ti.i32, 1),
     "ga_exact_eval_rep_idx": (ti.i32, MAX_GENOMES),
     "ga_eval_incumbent_score": (ti.i32, MAX_GENOMES),
     # The combos of a row that can reach its incumbent; a count past GA_FTFF_LANES: too many to list, the threads stride the
@@ -85,8 +88,10 @@ _FIELDS = {
     "ga_search_count": (ti.i32, 1),
     "ga_lane_best_results": (ti.i32, (MAX_GENOMES, GA_FTFF_LANES, GA_WINNER_COLS)),
     "chunk_best_results": (ti.i32, (MAX_GENOMES, GA_WINNER_COLS)),
-    # What the runs hand back: each run's best across generations, and its candidate table (row 0: that best).
+    # What the runs hand back: each run's best across generations, and its candidate table (row 0: that best). The
+    # generation's best genome index is kept for the breeder's elite so it does not rescan the scores it refreshed.
     "ga_run_best": (ti.i32, (MAX_GA_RUNS, GA_RUN_BEST_COLS)),
+    "ga_gen_best": (ti.i32, MAX_GA_RUNS),
     "ga_fg_candidates": (ti.i32, (MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN + 1, GA_FG_CANDIDATE_COLS)),
 }
 
