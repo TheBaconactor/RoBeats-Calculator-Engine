@@ -294,11 +294,10 @@ def test_a_failed_upload_is_not_remembered(monkeypatch):
     monkeypatch.setattr(fields, "ga_init_heuristic_topk", Failing())
     with pytest.raises(RuntimeError):
         device.upload_init_topk(np.ones((fields.MAX_SLOTS, fields.GA_INIT_HEURISTIC_K), dtype=np.int32))
-    # The failed transfer never reached the snapshot: the last committed copy is still the earlier array.
-    np.testing.assert_array_equal(device._ga_uploads["topk"][0], array)
+    assert "topk" not in device._ga_uploads  # the miss invalidated the stale copy before the failed transfer
     topk = _CountingTopk(real_field)
     monkeypatch.setattr(fields, "ga_init_heuristic_topk", topk)
-    device.upload_init_topk(np.ones((fields.MAX_SLOTS, fields.GA_INIT_HEURISTIC_K), dtype=np.int32))  # the failed transfer is retried, not skipped
+    device.upload_init_topk(array)  # the array the lost snapshot held still transfers: no false hit on undelivered data
     assert topk.calls == 1
 
 

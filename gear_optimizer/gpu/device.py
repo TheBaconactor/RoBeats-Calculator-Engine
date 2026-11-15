@@ -23,7 +23,10 @@ _shortlist_arrays: tuple | None = None
 
 def _uploads_unchanged(label: str, arrays: tuple[np.ndarray, ...]) -> bool:
     last = _ga_uploads.get(label)
-    return last is not None and all(np.array_equal(a, b) for a, b in zip(last, arrays, strict=True))
+    if last is not None and all(np.array_equal(a, b) for a, b in zip(last, arrays, strict=True)):
+        return True
+    _ga_uploads.pop(label, None)
+    return False
 
 
 def _uploads_commit(label: str, arrays: tuple[np.ndarray, ...]) -> None:
