@@ -223,9 +223,12 @@ def _memo_lookup(g: ti.i32):
     else:
         for i in ti.static(range(GA_WINNER_COLS)):
             fields.chunk_best_results[g, i] = 0
-        entry = ti.atomic_add(fields.ga_eval_dirty_count[0], 1)
-        fields.ga_eval_dirty_slots[entry] = slot
-        ti.atomic_min(fields.ga_eval_cache_owner[slot], g)
+        # The claimant that observes the unclaimed sentinel registers the slot once; colliding claims win or lose the
+        # atomic_min together, so the dirty list and the scatter's writeback see each slot exactly once.
+        prev = ti.atomic_min(fields.ga_eval_cache_owner[slot], g)
+        if prev == MAX_GENOMES:
+            entry = ti.atomic_add(fields.ga_eval_dirty_count[0], 1)
+            fields.ga_eval_dirty_slots[entry] = slot
 
 
 @ti.func
@@ -253,18 +256,6 @@ def _resolve_representatives(n_genomes: ti.i32):
                 if same:
                     rep = owner
         fields.ga_exact_eval_rep_idx[g] = rep
-
-
-@ti.func
-def _find_representatives(n_genomes: ti.i32):
-    """Each genome's row to evaluate: a memo hit restores its result, a miss claims its memo slot and takes the first
-    miss of that slot when their stats are equal (O(n); misses of other stats sharing a slot are simply evaluated).
-    Collisions evict memo entries, never alias results."""
-    _prepare_evals(n_genomes)
-    # Separate top-level loops provide a device barrier before owner selection and before the owners are read.
-    for g in range(n_genomes):
-        _memo_lookup(g)
-    _resolve_representatives(n_genomes)
 
 
 @ti.func

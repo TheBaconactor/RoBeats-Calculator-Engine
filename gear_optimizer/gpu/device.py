@@ -23,10 +23,13 @@ _shortlist_arrays: tuple | None = None
 
 def _uploads_unchanged(label: str, arrays: tuple[np.ndarray, ...]) -> bool:
     last = _ga_uploads.get(label)
-    if last is not None and all(np.array_equal(a, b) for a, b in zip(last, arrays, strict=True)):
-        return True
+    return last is not None and all(np.array_equal(a, b) for a, b in zip(last, arrays, strict=True))
+
+
+def _uploads_commit(label: str, arrays: tuple[np.ndarray, ...]) -> None:
+    """The label's just-transferred arrays as its last known device copies: recorded only after the upload succeeded,
+    so a failed transfer cannot leave a hit on data the device never got."""
     _ga_uploads[label] = tuple(np.asarray(a).copy() for a in arrays)
-    return False
 
 
 def _pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
@@ -122,6 +125,7 @@ def upload_items(item_stats: np.ndarray, slot_start: np.ndarray, slot_count: np.
         return
     kernels.upload_items_kernel(arrays[0], n_items, arrays[1], arrays[2])
     fields.base_fixed_stats.from_numpy(arrays[3])
+    _uploads_commit("items", arrays)
 
 
 def upload_init_topk(topk: np.ndarray) -> None:
@@ -130,6 +134,7 @@ def upload_init_topk(topk: np.ndarray) -> None:
     if _uploads_unchanged("topk", (array,)):
         return
     fields.ga_init_heuristic_topk.from_numpy(array)
+    _uploads_commit("topk", (array,))
 
 
 def upload_shortlist(shortlist: FtffShortlist) -> tuple:
@@ -149,4 +154,5 @@ def upload_shortlist(shortlist: FtffShortlist) -> tuple:
             array.from_numpy(values)
         arrays.append(array)
     _shortlist_arrays = tuple(arrays)
+    _uploads_commit("shortlist", keys)
     return _shortlist_arrays
