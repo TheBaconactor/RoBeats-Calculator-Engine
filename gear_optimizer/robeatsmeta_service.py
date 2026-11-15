@@ -464,7 +464,10 @@ class _SolveWorker:
         if proc is None:
             return
         with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)  # with its GPU children
+            if hasattr(os, "killpg"):
+                os.killpg(proc.pid, signal.SIGKILL)  # with its GPU children
+            else:
+                proc.kill()  # Windows: no killpg; TerminateProcess leaves any grandchildren
         try:
             proc.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
