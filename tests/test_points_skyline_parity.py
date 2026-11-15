@@ -84,17 +84,14 @@ def test_points_skyline_offset_windows() -> None:
 
 
 def test_points_skyline_packed_range_guard() -> None:
-    # Spans wider than the int64 packed key allows must fold rather than wrap the sort key.
-    rows = np.asarray(
-        [
-            [-(1 << 62), 0, 0],
-            [(1 << 62), 5, 5],
-            [0, 3, 3],
-            [7, -(1 << 60), 1],
-            [3, (1 << 60), 2],
-        ],
-        dtype=np.int64,
-    )
+    # The packed-key guard lives inside _points_skyline_sorted, which only runs after the fold's kept set passes 64 -
+    # so exercise it with >64 mutually non-dominated rows whose coordinate spans overflow an int64 sort key: the
+    # sorted path must refuse the packed key and fold the window instead of wrapping it.
+    m = 120
+    rows = np.empty((m, 3), dtype=np.int64)
+    rows[:, 0] = np.arange(m, dtype=np.int64) - (1 << 62)
+    rows[:, 1] = np.arange(m, dtype=np.int64)
+    rows[:, 2] = np.arange(m, dtype=np.int64) * (1 << 55)
     _assert_parity(rows)
 
 

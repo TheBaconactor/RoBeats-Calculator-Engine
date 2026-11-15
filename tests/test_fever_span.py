@@ -72,7 +72,7 @@ def test_fever_span_zero_width_events():
     assert fever_span(times, (3, 5), 250.0) == _reference_fever_span(times, (3, 5), 250.0)
 
 
-def test_fever_span_real_chart(tmp_path):
+def test_fever_span_real_chart():
     pytest.importorskip("gear_optimizer.chart")
     from gear_optimizer.chart import load_chart
     from gear_optimizer.settings import paths
