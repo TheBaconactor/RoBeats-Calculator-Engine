@@ -370,7 +370,7 @@ def fever_span(times, fills, duration):
         fewest, highest = 0, 0
     for a in range(fill_lo - 1, min(fill_hi, n)):
         most[a], least[a] = 0, 0
-    neg, pos = -(1 << 60), 1 << 60
+    neg_inf, pos_inf = -(1 << 60), 1 << 60
     # Waiting intervals in activation order: (first end, last end, most[a] - a, least[a] - a); first ends ascend.
     w_first = np.empty(n + 1, dtype=np.int64)
     w_last = np.empty(n + 1, dtype=np.int64)
@@ -378,83 +378,83 @@ def fever_span(times, fills, duration):
     w_lo = np.empty(n + 1, dtype=np.int64)
     w_count = 0
     # The active a's as (expiry, value) deques: expiry ascends with insertion, so the front is always the first to die.
-    r_exp = np.empty(n + 1, dtype=np.int64)
-    r_val = np.empty(n + 1, dtype=np.int64)
-    l_exp = np.empty(n + 1, dtype=np.int64)
-    l_val = np.empty(n + 1, dtype=np.int64)
-    r_h = r_t = l_h = l_t = 0
-    # Each end's best: r_at[e] the most (most[a] - a) over a live with e in [first_a, last_a], l_at the least.
-    r_at = np.full(n + 1, neg, dtype=np.int64)
-    l_at = np.full(n + 1, pos, dtype=np.int64)
-    # The output window's deques over ends: max of r_at[e] + e for most, min of l_at[e] + e for least.
-    o_idx = np.empty(n + 1, dtype=np.int64)
-    o_val = np.empty(n + 1, dtype=np.int64)
-    u_idx = np.empty(n + 1, dtype=np.int64)
-    u_val = np.empty(n + 1, dtype=np.int64)
-    o_h = o_t = u_h = u_t = 0
-    ready = 0
-    pending = 0
-    pf = 0
-    pl = 0
+    most_exp = np.empty(n + 1, dtype=np.int64)
+    most_val = np.empty(n + 1, dtype=np.int64)
+    least_exp = np.empty(n + 1, dtype=np.int64)
+    least_val = np.empty(n + 1, dtype=np.int64)
+    most_h = most_t = least_h = least_t = 0
+    # Each end's best: most_at[e] the most (most[a] - a) over a live with e in [first_a, last_a], least_at the least.
+    most_at = np.full(n + 1, neg_inf, dtype=np.int64)
+    least_at = np.full(n + 1, pos_inf, dtype=np.int64)
+    # The output window's deques over ends: max of most_at[e] + e for most, min of least_at[e] + e for least.
+    win_max_idx = np.empty(n + 1, dtype=np.int64)
+    win_max_val = np.empty(n + 1, dtype=np.int64)
+    win_min_idx = np.empty(n + 1, dtype=np.int64)
+    win_min_val = np.empty(n + 1, dtype=np.int64)
+    win_max_h = win_max_t = win_min_h = win_min_t = 0
+    wait_read = 0
+    pending_end = 0
+    first_ptr = 0
+    last_ptr = 0
     for x in range(n + 1):
-        while ready < w_count and w_first[ready] <= x:
-            vh, vl, exp = w_hi[ready], w_lo[ready], w_last[ready]
-            while r_t > r_h and r_val[r_t - 1] <= vh:
-                r_t -= 1
-            r_val[r_t], r_exp[r_t] = vh, exp
-            r_t += 1
-            while l_t > l_h and l_val[l_t - 1] >= vl:
-                l_t -= 1
-            l_val[l_t], l_exp[l_t] = vl, exp
-            l_t += 1
-            ready += 1
-        while r_h < r_t and r_exp[r_h] < x:
-            r_h += 1
-        while l_h < l_t and l_exp[l_h] < x:
-            l_h += 1
-        r_at[x] = r_val[r_h] if r_h < r_t else neg
-        l_at[x] = l_val[l_h] if l_h < l_t else pos
+        while wait_read < w_count and w_first[wait_read] <= x:
+            v_hi, v_lo, expiry = w_hi[wait_read], w_lo[wait_read], w_last[wait_read]
+            while most_t > most_h and most_val[most_t - 1] <= v_hi:
+                most_t -= 1
+            most_val[most_t], most_exp[most_t] = v_hi, expiry
+            most_t += 1
+            while least_t > least_h and least_val[least_t - 1] >= v_lo:
+                least_t -= 1
+            least_val[least_t], least_exp[least_t] = v_lo, expiry
+            least_t += 1
+            wait_read += 1
+        while most_h < most_t and most_exp[most_h] < x:
+            most_h += 1
+        while least_h < least_t and least_exp[least_h] < x:
+            least_h += 1
+        most_at[x] = most_val[most_h] if most_h < most_t else neg_inf
+        least_at[x] = least_val[least_h] if least_h < least_t else pos_inf
         right = x - fill_lo
-        while pending <= right and pending <= n:
-            rv, lv = r_at[pending], l_at[pending]
-            if rv > neg:
-                vv = rv + pending
-                while o_t > o_h and o_val[o_t - 1] <= vv:
-                    o_t -= 1
-                o_idx[o_t], o_val[o_t] = pending, vv
-                o_t += 1
-            if lv < pos:
-                vv = lv + pending
-                while u_t > u_h and u_val[u_t - 1] >= vv:
-                    u_t -= 1
-                u_idx[u_t], u_val[u_t] = pending, vv
-                u_t += 1
-            pending += 1
+        while pending_end <= right and pending_end <= n:
+            most_v, least_v = most_at[pending_end], least_at[pending_end]
+            if most_v > neg_inf:
+                cand = most_v + pending_end
+                while win_max_t > win_max_h and win_max_val[win_max_t - 1] <= cand:
+                    win_max_t -= 1
+                win_max_idx[win_max_t], win_max_val[win_max_t] = pending_end, cand
+                win_max_t += 1
+            if least_v < pos_inf:
+                cand = least_v + pending_end
+                while win_min_t > win_min_h and win_min_val[win_min_t - 1] >= cand:
+                    win_min_t -= 1
+                win_min_idx[win_min_t], win_min_val[win_min_t] = pending_end, cand
+                win_min_t += 1
+            pending_end += 1
         left = x - fill_hi
-        while o_h < o_t and o_idx[o_h] < left:
-            o_h += 1
-        while u_h < u_t and u_idx[u_h] < left:
-            u_h += 1
+        while win_max_h < win_max_t and win_max_idx[win_max_h] < left:
+            win_max_h += 1
+        while win_min_h < win_min_t and win_min_idx[win_min_h] < left:
+            win_min_h += 1
         if x < n:
-            if o_h < o_t and o_val[o_h] > most[x]:
-                most[x] = o_val[o_h]
-            if u_h < u_t and u_val[u_h] < least[x]:
-                least[x] = u_val[u_h]
+            if win_max_h < win_max_t and win_max_val[win_max_h] > most[x]:
+                most[x] = win_max_val[win_max_h]
+            if win_min_h < win_min_t and win_min_val[win_min_h] < least[x]:
+                least[x] = win_min_val[win_min_h]
             if most[x] >= 0:
-                while pf < n and latest[pf] < earliest[x] + duration:
-                    pf += 1
-                first = min(max(pf, x + 1), n)
-                while pl < n and earliest[pl] < latest[x] + duration:
-                    pl += 1
-                last = max(min(pl, n), first)
+                while first_ptr < n and latest[first_ptr] < earliest[x] + duration:
+                    first_ptr += 1
+                first = min(max(first_ptr, x + 1), n)
+                while last_ptr < n and earliest[last_ptr] < latest[x] + duration:
+                    last_ptr += 1
+                last = max(min(last_ptr, n), first)
                 w_first[w_count], w_last[w_count] = first, last
                 w_hi[w_count], w_lo[w_count] = most[x] - x, least[x] - x
                 w_count += 1
         if x >= n - fill_hi:
-            if l_at[x] < pos and l_at[x] + x < fewest:
-                fewest = l_at[x] + x
-            if r_at[x] > neg and r_at[x] + x > highest:
-                highest = r_at[x] + x
+            if least_at[x] < pos_inf and least_at[x] + x < fewest:
+                fewest = least_at[x] + x
+            if most_at[x] > neg_inf and most_at[x] + x > highest:
+                highest = most_at[x] + x
     return fewest, highest
 
 

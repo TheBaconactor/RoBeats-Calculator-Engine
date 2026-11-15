@@ -1520,24 +1520,16 @@ def _points_append(buf, base: int, write: int, cf: int, cn: int, cq: int) -> int
 
 
 @njit(cache=True, nogil=True)
-def _points_skyline(buf, start: int, end: int) -> int:
-    """Reduce rows [start, end) to their Pareto skyline in place (the dominance of `_points_append`); returns
-    the new end. A packet spanning several fever ends can hold points one end dominates with another's, and the queue's
-    unions keep a packet verbatim when it is the only operand.
+def _points_skyline_sorted(buf, start: int, end: int) -> int:
+    """The skyline of rows [start, end) by one sorted pass: a row's dominators (body fever >= its own, normal and
+    fever Greats <= its own) all precede it under (normal Greats, -body fever, fever Greats) order, so a point is
+    dominated iff the best body fever an earlier point reaches at its fever-Great count is at least its own - one
+    Fenwick prefix-maximum per row decides, and kept rows update the tree. O(m log m).
 
-    Sorted by (normal Greats, -body fever, fever Greats) a row's dominators all precede it: a point is dominated iff
-    the best body fever an earlier point reaches at its fever-Great count is at least its own, so each row is decided
-    by one Fenwick prefix-maximum over its compressed fever-Great coordinate and an update on the kept ones. O(m log m)
-    with the sort; the few-row case keeps the quadratic `_points_append` scan."""
+    Not `_skyline_hulls`: that one prunes further to per-normal-Great upper hulls (which drops Pareto-optimal but
+    hull-interior rows) and emits hull order; callers here need the exact Pareto set in the rows' original order, so
+    this keeps the first occurrence of an exact duplicate (stable mergesort) just as `_points_append` does."""
     m = end - start
-    if m < 32:
-        kept = start
-        for idx in range(start, end):
-            cf = buf[idx, 0]
-            cn = buf[idx, 1]
-            cq = buf[idx, 2]
-            kept = _points_append(buf, start, int(kept), int(cf), int(cn), int(cq))
-        return int(kept)
     n_lo, n_hi = buf[start, 1], buf[start, 1]
     f_lo, f_hi = buf[start, 0], buf[start, 0]
     q_lo, q_hi = buf[start, 2], buf[start, 2]
@@ -1548,6 +1540,8 @@ def _points_skyline(buf, start: int, end: int) -> int:
         f_hi = max(f_hi, buf[idx, 0])
         q_lo = min(q_lo, buf[idx, 2])
         q_hi = max(q_hi, buf[idx, 2])
+    # The sort key packs the three coordinates into one int64, so the product of their ranges must fit: huge spans
+    # (an int64 subtraction wraps to a negative range) refuse the packed path and take the fold instead.
     n_rng = n_hi - n_lo + 1
     f_rng = f_hi - f_lo + 1
     q_rng = q_hi - q_lo + 1
@@ -1557,7 +1551,6 @@ def _points_skyline(buf, start: int, end: int) -> int:
             keys[i] = ((buf[start + i, 1] - n_lo) * f_rng + (f_hi - buf[start + i, 0])) * q_rng + (
                 buf[start + i, 2] - q_lo
             )
-        # Stable so an exact duplicate keeps its first occurrence, like `_points_append`.
         order = np.argsort(keys, kind="mergesort")
         q_sorted = np.empty(m, dtype=np.int64)
         for i in range(m):
@@ -1604,6 +1597,34 @@ def _points_skyline(buf, start: int, end: int) -> int:
         cn = buf[idx, 1]
         cq = buf[idx, 2]
         kept = _points_append(buf, start, int(kept), int(cf), int(cn), int(cq))
+    return int(kept)
+
+
+@njit(cache=True, nogil=True)
+def _points_skyline(buf, start: int, end: int) -> int:
+    """Reduce rows [start, end) to their Pareto skyline in place (the dominance of `_points_append`); returns
+    the new end. A packet spanning several fever ends can hold points one end dominates with another's, and the queue's
+    unions keep a packet verbatim when it is the only operand.
+
+    The incremental fold costs O(m x kept), which is O(m) when the skyline stays small - the common case, packets
+    and state windows reduce to a handful of rows. Only when the kept set itself grows past the crossover measured
+    below (~64 rows: where an insertion's kept-set scan exceeds a Fenwick update's amortized cost) does the fold go
+    quadratic, so at that point the unprocessed tail is slid down behind the kept prefix and the window is finished
+    by `_points_skyline_sorted`. Rows already dropped are dominated by a kept row, so re-reducing kept prefix + tail
+    yields the same set; the prefix and the tail each keep original order, so the output order is unchanged too."""
+    kept = start
+    for idx in range(start, end):
+        cf = buf[idx, 0]
+        cn = buf[idx, 1]
+        cq = buf[idx, 2]
+        kept = _points_append(buf, start, int(kept), int(cf), int(cn), int(cq))
+        if kept - start > 64:
+            remaining = end - (idx + 1)
+            for i in range(remaining):
+                buf[kept + i, 0] = buf[idx + 1 + i, 0]
+                buf[kept + i, 1] = buf[idx + 1 + i, 1]
+                buf[kept + i, 2] = buf[idx + 1 + i, 2]
+            return _points_skyline_sorted(buf, start, int(kept + remaining))
     return int(kept)
 
 
@@ -2361,6 +2382,8 @@ def _points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_sta
     rank_order = np.argsort(rank_keys)
     # A dominator shares the candidate's fever/Great overlap pair (fever mask & Great mask, lo and hi words), so kept
     # rows are chained by that pair and a candidate scans only its own pair's chain instead of every kept row.
+    # Invariant: every kept row hangs on exactly the chain of the slot holding its pair key; group_next links kept
+    # positions, and an unused slot's head is always -1.
     group_cap = 16
     while group_cap < 2 * rows:
         group_cap *= 2
