@@ -94,8 +94,8 @@ def _stop_this_process(message: str) -> None:
 
 
 def _init_gpu() -> None:
-    """Taichi init + the GA kernel warmups, on the owner thread. A run's workers warm up side by side: only Taichi's init
-    and the offline cache dump at shutdown hold the cross-process cache lock."""
+    """Taichi init + the GA kernel warmups, on the owner thread. Processes sharing the offline cache warm up side by
+    side: only Taichi's init and the offline cache dump at shutdown hold the cross-process cache lock."""
     from . import ga
 
     ga.warmup()

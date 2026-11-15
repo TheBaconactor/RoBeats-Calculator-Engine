@@ -48,7 +48,7 @@ def prepare_fg_static(song: NativeSong) -> None:
 
 
 def fg_turn(song: NativeSong, selection: GaSelection) -> tuple[GaSelection, dict]:
-    """In the GA turn (GPU owner): the GA's selection and its FG score rows, with the FG search's board candidates added
+    """After the GA, on the host: the GA's selection and its FG score rows, with the FG search's board candidates added
     to both: the best LOADOUTS_PER_SONG_LIMIT loadouts the search scored outside the selection whose FG score beats their
     own Base score (re-solved on the GPU). A candidate whose Base score beats the selection's best becomes its best. The
     search widens with the GA's runs, i.e. the reasoning level."""
