@@ -107,9 +107,8 @@ def test_promotion_merges_every_attached_result_in_the_sources_board_order(tmp_p
     conn = schema.connect(source, write=True)
     # c's FG result does not beat its score: attached, off the FG board (a version 18 view would drop it).
     db.store_results(conn, PRECISE, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 90, 80)])
+    db.promote(conn, target, PRECISE, "Song A", "T5")
     conn.close()
-
-    db.promote(source, target, PRECISE, "Song A", "T5")
 
     conn = schema.connect(target)
     boards = db.load_boards(conn, PRECISE, "Song A", "T5")

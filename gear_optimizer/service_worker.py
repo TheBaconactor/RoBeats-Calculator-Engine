@@ -7,7 +7,6 @@ import contextlib
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 from gear_optimizer.core.macos_background import make_process_background_only, reassert_process_background_only
@@ -32,7 +31,7 @@ def solve(request: dict[str, Any], executor: Any) -> list[dict[str, Any]]:
     from gear_optimizer.pipeline.storing import store_solve
 
     engine_paths = paths()
-    chart_path, result_db = engine_paths.bin_path("service_request.txt"), engine_paths.database
+    chart_path = engine_paths.bin_path("service_request.txt")
     chart_path.write_text(request["chartText"], encoding="utf-8")
     depth, multi_start = reasoning_search(request["reasoning"])
     run = RunSettings(search_depth=depth, multi_start=multi_start)
@@ -44,20 +43,16 @@ def solve(request: dict[str, Any], executor: Any) -> list[dict[str, Any]]:
     if request["uploaded"]:
         run_startup_cpu_work(charts_by_mode={mode: [str(chart_path)]}, curves=context.curves)
     set_memory_watchdog_limit(compute_memory_guard_limit(run))
-    try:
-        schema.ensure(result_db)
-        with contextlib.closing(schema.connect(result_db, write=True)) as conn:
-            for task in tasks:
-                store_solve(conn, solve_song(task, executor), dict(catalog.gears), dict(catalog.minis))
-        entries = legacy.read_best_loadouts(result_db, mode, request["songName"], "T5", limit=LOADOUTS_PER_SONG_LIMIT)
+    # The request's results database is read only here, so it lives in memory: no file to create, sync and unlink.
+    with contextlib.closing(schema.connect(":memory:", write=True)) as conn:
+        for task in tasks:
+            store_solve(conn, solve_song(task, executor), dict(catalog.gears), dict(catalog.minis))
+        entries = legacy.best_loadouts(conn, mode, request["songName"], "T5", limit=LOADOUTS_PER_SONG_LIMIT)
         if not entries:
             raise RuntimeError("optimizer produced no T5 loadout")
         if request["promoteTo"]:
-            db.promote(result_db, request["promoteTo"], mode, request["songName"], "T5")
+            db.promote(conn, request["promoteTo"], mode, request["songName"], "T5")
         return entries
-    finally:
-        for path in (result_db, Path(f"{result_db}-wal"), Path(f"{result_db}-shm")):
-            path.unlink(missing_ok=True)
 
 
 def main() -> int:

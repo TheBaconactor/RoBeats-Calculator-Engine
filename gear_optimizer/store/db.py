@@ -177,17 +177,13 @@ def store_results(
 
 
 def promote(
-    source: str | os.PathLike[str], target: str | os.PathLike[str], mode: str, song: str, tier: str
+    source: sqlite3.Connection, target: str | os.PathLike[str], mode: str, song: str, tier: str
 ) -> None:
-    """Merge a song's results stored in another database (an isolated solve's) into `target`, every attached
+    """Merge a song's results held by another database (an isolated solve's) into `target`, every attached
     result included: the source's meta board first in board order (new loadouts are numbered in it), then its FG
     board, then any other loadout."""
-    conn = schema.connect(source)
-    try:
-        rows = {row.loadout.loadout_hash: row for row in load_rows(conn, mode, song, tier)}
-        boards = load_boards(conn, mode, song, tier)
-    finally:
-        conn.close()
+    rows = {row.loadout.loadout_hash: row for row in load_rows(source, mode, song, tier)}
+    boards = load_boards(source, mode, song, tier)
     order = dict.fromkeys([x.loadout_hash for x in boards.meta + boards.fg] + sorted(rows))
     conn = schema.connect(target, write=True)
     try:
