@@ -30,6 +30,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 import numpy as np
 
@@ -81,7 +82,7 @@ HIDDEN_COMBO_THRESHOLD_STAT = 0
 HIDDEN_GREAT_POINTS_STAT = 0
 
 
-def _fail(msg: str) -> "NoReturn":  # type: ignore[name-defined]
+def _fail(msg: str) -> NoReturn:
     raise SystemExit(f"[verify_fg_game_oracle] {msg}")
 
 
@@ -303,8 +304,8 @@ class BezierDist:
         return bezier_val(self.y0, self.y1, self.y2, self.y3, t)
 
 
-NEG_80_40 = BezierDist(0, 0, 0.4, 0.1, 1, 0.8, 1, 1)
-NEG_40_0 = BezierDist(0, 0, 0.8, 0, 0.9, 0.8, 1, 1)
+NEG_80_40 = BezierDist(0, 0, 0.8, 0, 0.9, 0.8, 1, 1)
+NEG_40_0 = BezierDist(0, 0, 0.4, 0.1, 1, 0.8, 1, 1)
 POS_0_40 = BezierDist(0, 0, 0, 0.4, 0.7, 0.9, 1, 1)
 POS_40_80 = BezierDist(0, 0, 0.2, 0.1, 0.4, 1, 1, 1)
 POS_80_160 = BezierDist(0, 0, 0, 0.5, 0.6, 1, 1, 1)
@@ -368,14 +369,17 @@ def score_from_game_source(
 ) -> int:
     pp_points = math.floor(gear_curve(50, 100, 200, 350, 450, int(stats["Perfect Points"])))
     fever_mul = gear_curve(1, 1.25, 3, 4.75, 5.25, int(stats["Fever Multiplier"]))
+    single_color = not secondary_color or primary_color == secondary_color
     primary_val = int(stats.get(primary_color, 0))
-    secondary_val = int(stats.get(secondary_color, 0)) if secondary_color else 0
+    secondary_val = primary_val if single_color else int(stats.get(secondary_color, 0))
     perfect_base = int(pp_points + math.floor(2 * primary_val) + math.floor(secondary_val))
     great_points = math.floor(gear_curve(35, 75, 150, 225, 300, HIDDEN_GREAT_POINTS_STAT))
-    great_base = int(
-        great_points
-        + (2 * primary_val if primary_color == secondary_color else math.floor((4.0 / 3.0) * primary_val) + math.floor((2.0 / 3.0) * secondary_val))
+    elem_great = (
+        2 * primary_val
+        if single_color
+        else math.floor((4.0 / 3.0) * primary_val) + math.floor((2.0 / 3.0) * secondary_val)
     )
+    great_base = int(great_points + elem_great)
 
     score = 0
     total_notes = int(fever_mask.shape[0])

@@ -12,8 +12,8 @@ from typing import Any
 
 from ..core.gem_defs import element_gem_count
 from ..core.utils import get_selected_element
+from ..frontier.fg_cache_types import require_response_surface
 from ..gamedata import ELEMENTS, STATS, StatCurves, Stats
-from gear_optimizer.store.fg_payload import require_response_surface
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, gems
 

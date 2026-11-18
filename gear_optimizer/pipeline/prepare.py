@@ -10,6 +10,8 @@ import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.domain.jobs import SongTask
+from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
+from gear_optimizer.gamedata import STATS
 from gear_optimizer.pipeline.fg import prepare_fg_static
 from gear_optimizer.pipeline.song import (
     NativeSong,
@@ -18,7 +20,7 @@ from gear_optimizer.pipeline.song import (
     NativeSongRuntimeState,
 )
 from gear_optimizer.solver.base_stats import build_stats_array
-from gear_optimizer.solver.ftff_combos import ftff_shortlist, reachable_ftff_keys
+from gear_optimizer.solver.ftff_combos import FtffShortlist, ftff_shortlist, reachable_ftff_keys
 from gear_optimizer.solver.ga_selection import effective_tables
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
@@ -28,16 +30,31 @@ from gear_optimizer.solver.song_preparation import build_prepared_song_core
 # pool; the least recently used goes first.
 _PREP_CACHE_MAX = 32
 _PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray, tuple[np.ndarray, np.ndarray], np.ndarray]]" = OrderedDict()
+_SHORTLIST_CACHE: "OrderedDict[tuple, FtffShortlist]" = OrderedDict()
+_last_gears_digest: tuple[object, bytes] | None = None
+
+
+def _gears_digest_bytes(gears) -> bytes:
+    global _last_gears_digest
+    cached = _last_gears_digest
+    if cached is not None and cached[0] is gears:
+        return cached[1]
+    digest = hashlib.blake2b(digest_size=16)
+    for gear in sorted(gears.values(), key=lambda g: g.name):
+        stats_tuple = tuple(gear.stats.get(s, 0) for s in STATS)
+        digest.update(f"{gear.name}\0{gear.slot}\0{stats_tuple}\n".encode())
+    raw = digest.digest()
+    _last_gears_digest = (gears, raw)
+    return raw
 
 
 def _catalog_digest(gears, song_minis) -> str:
     """The items a song's pools are built from: a request's own catalog (a custom pool) must not reuse the cached
     pools of another catalog with the same colors."""
-    digest = hashlib.blake2b(digest_size=16)
-    for gear in sorted(gears.values(), key=lambda g: g.name):
-        digest.update(repr((gear.name, gear.slot, sorted(gear.stats.items()))).encode())
+    digest = hashlib.blake2b(_gears_digest_bytes(gears), digest_size=16)
     for mini in sorted(song_minis, key=lambda m: m.name):
-        digest.update(repr((mini.name, sorted(mini.stats.items()), mini.targets_song)).encode())
+        stats_tuple = tuple(mini.stats.get(s, 0) for s in STATS)
+        digest.update(f"{mini.name}\0{int(bool(mini.targets_song))}\0{stats_tuple}\n".encode())
     return digest.hexdigest()
 
 
@@ -99,7 +116,20 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     color_flags = build_color_flags(primary, secondary, primary)
     # The timeline frontier payload is hydrated here (host side, no Taichi), so the GPU owner's upload at the GA turn hits
     # memory; a payload the startup cache lacks is built and persisted here, off the owner.
-    payload = build_or_load_timeline_frontier_payload(timed_song, context.curves).payload
+    frontier_load = build_or_load_timeline_frontier_payload(timed_song, context.curves)
+    payload = frontier_load.payload
+    ephemeral = frontier_cache_is_ephemeral()
+    shortlist_key = (frontier_load.cache_key, tuple(sorted(color_flags.items())))
+    cached_shortlist = None if ephemeral else _SHORTLIST_CACHE.get(shortlist_key)
+    if cached_shortlist is not None and cached_shortlist[0] is reach:
+        _SHORTLIST_CACHE.move_to_end(shortlist_key)
+        shortlist = cached_shortlist[1]
+    else:
+        shortlist = ftff_shortlist(payload, reach=reach, color_flags=color_flags)
+        if not ephemeral:
+            _SHORTLIST_CACHE[shortlist_key] = (reach, shortlist)
+            if len(_SHORTLIST_CACHE) > _PREP_CACHE_MAX:
+                _SHORTLIST_CACHE.popitem(last=False)
     song = NativeSong(
         config=NativeSongConfig(
             song_name=task.song_name,
@@ -120,7 +150,7 @@ def prepare_native_song(task: SongTask) -> NativeSong:
             base_fixed_stats_arr=base_fixed_stats,
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_copies=_INIT_HEURISTIC_COPIES,
-            ftff_shortlist=ftff_shortlist(payload, reach=reach, color_flags=color_flags),
+            ftff_shortlist=shortlist,
             minis_by_name={mini.name: mini for mini in core.minis},
             meta_primary_color=primary,
             meta_secondary_color=secondary,

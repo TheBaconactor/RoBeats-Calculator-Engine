@@ -7,10 +7,9 @@ import os
 import sqlite3
 import time
 from collections.abc import Collection, Iterable, Iterator, Sequence
-from dataclasses import dataclass
 
 from . import schema
-from .boards import FG_ORDER, META_ORDER, Row, merge
+from .boards import FG_ORDER, META_ORDER, Boards, Row, merge
 from .records import (
     Loadout,
     Traces,
@@ -23,12 +22,6 @@ from .records import (
 from .tables import MODELESS_COLUMNS, MODELESS_ROW_COLUMNS, insert_rows, truncate_wal
 
 _BOARDS = {"meta": ("meta_board", META_ORDER), "fg": ("fg_board", FG_ORDER)}
-
-
-@dataclass(frozen=True, slots=True)
-class Boards:
-    meta: list[Loadout]
-    fg: list[Loadout]
 
 
 def load_boards(conn: sqlite3.Connection, mode: str, song: str, tier: str) -> Boards:
@@ -149,7 +142,14 @@ def load_rows(conn: sqlite3.Connection, mode: str, song: str, tier: str) -> list
 
 
 def store_results(
-    conn: sqlite3.Connection, mode: str, song: str, tier: str, results: Sequence[Row], *, now: float | None = None
+    conn: sqlite3.Connection,
+    mode: str,
+    song: str,
+    tier: str,
+    results: Sequence[Row],
+    *,
+    now: float | None = None,
+    checkpoint: bool = True,
 ) -> None:
     """Merge one solve's results into a song's boards and mark the song processed (one transaction)."""
     strays = {(r.loadout.mode, r.loadout.song, r.loadout.tier) for r in results} - {(mode, song, tier)}
@@ -164,31 +164,52 @@ def store_results(
             last_meta = conn.execute("SELECT MAX(meta_seq) FROM loadouts").fetchone()[0]
             last_fg = conn.execute("SELECT MAX(fg_seq) FROM loadouts").fetchone()[0]
             next_seq = ((last_meta or 0) + 1, (last_fg or 0) + 1)
-            merged = merge(load_rows(conn, mode, song, tier), results, now=int(now), next_seq=next_seq)
-            conn.execute(
-                "DELETE FROM loadouts WHERE timing_mode = ? AND song_name = ? AND team_buff = ?", (mode, song, tier)
-            )
-            insert_rows(conn, merged)
+            existing = load_rows(conn, mode, song, tier)
+            merged = merge(existing, results, now=int(now), next_seq=next_seq)
+            if sorted(existing, key=lambda r: r.loadout.loadout_hash) != sorted(
+                merged, key=lambda r: r.loadout.loadout_hash
+            ):
+                conn.execute(
+                    "DELETE FROM loadouts WHERE timing_mode = ? AND song_name = ? AND team_buff = ?",
+                    (mode, song, tier),
+                )
+                insert_rows(conn, merged)
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
-    truncate_wal(conn)
+    if checkpoint:
+        truncate_wal(conn)
 
 
 def promote(
-    source: str | os.PathLike[str], target: str | os.PathLike[str], mode: str, song: str, tier: str
+    source: str | os.PathLike[str] | sqlite3.Connection,
+    target: str | os.PathLike[str],
+    mode: str,
+    song: str,
+    tier: str,
 ) -> None:
     """Merge a song's results stored in another database (an isolated solve's) into `target`, every attached
     result included: the source's meta board first in board order (new loadouts are numbered in it), then its FG
     board, then any other loadout."""
-    conn = schema.connect(source)
-    try:
-        rows = {row.loadout.loadout_hash: row for row in load_rows(conn, mode, song, tier)}
-        boards = load_boards(conn, mode, song, tier)
-    finally:
-        conn.close()
-    order = dict.fromkeys([x.loadout_hash for x in boards.meta + boards.fg] + sorted(rows))
+    if isinstance(source, sqlite3.Connection):
+        rows_list = load_rows(source, mode, song, tier)
+    else:
+        conn = schema.connect(source)
+        try:
+            rows_list = load_rows(conn, mode, song, tier)
+        finally:
+            conn.close()
+    rows = {row.loadout.loadout_hash: row for row in rows_list}
+    meta_board = sorted(
+        (row.loadout for row in rows_list if row.loadout.on_meta),
+        key=lambda x: (-x.score, -(x.fg_score or 0), -x.meta.updated, x.meta.seq),
+    )
+    fg_board = sorted(
+        (row.loadout for row in rows_list if row.loadout.on_fg),
+        key=lambda x: (-x.fg_score, -x.score, -x.fg.updated, x.fg.seq),
+    )
+    order = dict.fromkeys([x.loadout_hash for x in meta_board + fg_board] + sorted(rows))
     conn = schema.connect(target, write=True)
     try:
         store_results(conn, mode, song, tier, [rows[h] for h in order])

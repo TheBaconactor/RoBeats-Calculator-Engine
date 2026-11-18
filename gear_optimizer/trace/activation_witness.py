@@ -30,48 +30,71 @@ class LabelHitIntervals(NamedTuple):
     secondary_high: np.ndarray
 
 
-def exact_label_hit_intervals(
+class SongWitnessTemplate(NamedTuple):
+    """Validated per-note hit bounds and lane-start tables of one song, reused across every section witness."""
+
+    fixed_timing: bool
+    chart: np.ndarray
+    perfect_high: np.ndarray
+    great_high: np.ndarray
+    raw_perfect_low: np.ndarray
+    raw_great_low: np.ndarray
+    great_early_high: np.ndarray
+    great_late_low: np.ndarray
+    perfect_opens_after: np.ndarray
+    unique_lanes: np.ndarray
+    dense_lane: np.ndarray
+    first_note_from: np.ndarray
+
+
+def song_witness_template(
     *,
-    is_great: Sequence[bool] | np.ndarray,
     timestamps: Sequence[float] | np.ndarray,
     perfect_floor_timestamps: Sequence[float] | np.ndarray,
     perfect_candidate_timestamps: Sequence[float] | np.ndarray,
     great_floor_timestamps: Sequence[float] | np.ndarray,
     great_candidate_timestamps: Sequence[float] | np.ndarray,
-) -> LabelHitIntervals:
-    """The exact hit intervals of a concrete Perfect/Great label stream.
-
-    A Great's two bands are disjoint: the Perfect band between them is never a Great hit, although the outer envelope
-    spans it. The candidate offset tells the normal (+40 ms) from the held-tail (+80 ms) window without note types in
-    the stats-free response trace.
-
-    ``perfect_floor_timestamps`` and ``great_floor_timestamps`` are the monotone prefix-max envelopes fever-end search
-    owns, not per-note hit-window lows (as such they would lose a held tail's wider early reach): they are validated
-    here, and the raw per-note intervals are rebuilt from the quantized chart time and the note's window width.
-    """
-    labels = np.asarray(is_great, dtype=np.bool_).reshape(-1)
+    lanes: Sequence[int] | np.ndarray | None = None,
+) -> SongWitnessTemplate:
+    """Validate a song's hit-window envelopes once and precompute its per-note intervals and lane tables."""
     chart = np.asarray(timestamps, dtype=np.float32).reshape(-1)
     perfect_floor = np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1)
     perfect_high = np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1)
     great_floor = np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1)
     great_high = np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1)
-    n = int(labels.shape[0])
-    if any(int(values.shape[0]) != n for values in (chart, perfect_floor, perfect_high, great_floor, great_high)):
+    n = int(chart.shape[0])
+    if any(int(values.shape[0]) != n for values in (perfect_floor, perfect_high, great_floor, great_high)):
         raise ValueError("exact label hit-interval arrays must have one row per note")
 
-    chart_ms = np.asarray(quantize_to_int_ms(chart), dtype=np.int64)
+    unique_lanes = np.empty(0, dtype=np.int64)
+    dense_lane = np.empty(0, dtype=np.int64)
+    first_note_from = np.empty((0, 0), dtype=np.int32)
+    if lanes is not None:
+        lane_arr = np.asarray(lanes, dtype=np.int64).reshape(-1)
+        if lane_arr.shape[0] != n:
+            raise ValueError("exact label hit-interval arrays must have one row per note")
+        unique_lanes, dense_lane = np.unique(lane_arr, return_inverse=True)
+        n_lanes = unique_lanes.shape[0]
+        first_note_from = np.full((n + 1, n_lanes), n, dtype=np.int32)
+        for i in range(n - 1, -1, -1):
+            first_note_from[i] = first_note_from[i + 1]
+            first_note_from[i, dense_lane[i]] = i
+
     if (
         np.array_equal(perfect_floor, chart)
         and np.array_equal(perfect_high, chart)
         and np.array_equal(great_floor, chart)
         and np.array_equal(great_high, chart)
     ):
-        # Fixed timing (zero ms): every label is hit on its one fixed time. A Great still changes score and fill,
-        # but cannot move its input.
         empty_low = np.full(n, np.float32(np.inf), dtype=np.float32)
         empty_high = np.full(n, np.float32(-np.inf), dtype=np.float32)
-        return LabelHitIntervals(labels, chart.copy(), chart.copy(), empty_low, empty_high)
+        opens_after = np.minimum.accumulate(chart[::-1])[::-1] if n else chart.copy()
+        return SongWitnessTemplate(
+            True, chart, chart, empty_high, chart, chart, chart, empty_low, opens_after,
+            unique_lanes, dense_lane, first_note_from,
+        )
 
+    chart_ms = np.asarray(quantize_to_int_ms(chart), dtype=np.int64)
     perfect_upper_ms = np.rint(np.asarray(perfect_high, dtype=np.float64) * 1000.0).astype(np.int64) - chart_ms
     tap, tail = judgment_bounds(1), judgment_bounds(HELD_TAIL_WINDOW_SCALE)
     if not np.isin(perfect_upper_ms, (tap.perfect.latest, tail.perfect.latest)).all():
@@ -99,12 +122,56 @@ def exact_label_hit_intervals(
 
     great_early_high = great_early_high_ms.astype(np.float32) * np.float32(0.001)
     great_late_low = great_late_low_ms.astype(np.float32) * np.float32(0.001)
+    opens_after = np.minimum.accumulate(raw_perfect_low[::-1])[::-1] if n else raw_perfect_low.copy()
+    return SongWitnessTemplate(
+        False, chart, perfect_high, great_high, raw_perfect_low, raw_great_low, great_early_high, great_late_low,
+        opens_after, unique_lanes, dense_lane, first_note_from,
+    )
+
+
+def exact_label_hit_intervals(
+    *,
+    is_great: Sequence[bool] | np.ndarray,
+    timestamps: Sequence[float] | np.ndarray,
+    perfect_floor_timestamps: Sequence[float] | np.ndarray,
+    perfect_candidate_timestamps: Sequence[float] | np.ndarray,
+    great_floor_timestamps: Sequence[float] | np.ndarray,
+    great_candidate_timestamps: Sequence[float] | np.ndarray,
+) -> LabelHitIntervals:
+    """The exact hit intervals of a concrete Perfect/Great label stream.
+
+    A Great's two bands are disjoint: the Perfect band between them is never a Great hit, although the outer envelope
+    spans it. The candidate offset tells the normal (+40 ms) from the held-tail (+80 ms) window without note types in
+    the stats-free response trace.
+
+    ``perfect_floor_timestamps`` and ``great_floor_timestamps`` are the monotone prefix-max envelopes fever-end search
+    owns, not per-note hit-window lows (as such they would lose a held tail's wider early reach): they are validated
+    here, and the raw per-note intervals are rebuilt from the quantized chart time and the note's window width.
+    """
+    labels = np.asarray(is_great, dtype=np.bool_).reshape(-1)
+    chart = np.asarray(timestamps, dtype=np.float32).reshape(-1)
+    if int(labels.shape[0]) != int(chart.shape[0]):
+        raise ValueError("exact label hit-interval arrays must have one row per note")
+    tpl = song_witness_template(
+        timestamps=chart,
+        perfect_floor_timestamps=perfect_floor_timestamps,
+        perfect_candidate_timestamps=perfect_candidate_timestamps,
+        great_floor_timestamps=great_floor_timestamps,
+        great_candidate_timestamps=great_candidate_timestamps,
+    )
+    if tpl.fixed_timing:
+        n = int(labels.shape[0])
+        return LabelHitIntervals(
+            labels, tpl.chart.copy(), tpl.chart.copy(),
+            np.full(n, np.float32(np.inf), dtype=np.float32),
+            np.full(n, np.float32(-np.inf), dtype=np.float32),
+        )
     return LabelHitIntervals(
         labels,
-        np.where(labels, raw_great_low, raw_perfect_low).astype(np.float32),
-        np.where(labels, great_early_high, perfect_high).astype(np.float32),
-        np.where(labels, great_late_low, np.float32(np.inf)).astype(np.float32),
-        np.where(labels, great_high, np.float32(-np.inf)).astype(np.float32),
+        np.where(labels, tpl.raw_great_low, tpl.raw_perfect_low).astype(np.float32),
+        np.where(labels, tpl.great_early_high, tpl.perfect_high).astype(np.float32),
+        np.where(labels, tpl.great_late_low, np.float32(np.inf)).astype(np.float32),
+        np.where(labels, tpl.great_high, np.float32(-np.inf)).astype(np.float32),
     )
 
 
@@ -210,4 +277,76 @@ def chart_prefix_witness(
     played = np.bincount(lane_of_note[:i], minlength=section_lanes.shape[0])[lanes_in_order].tolist()
     return ChartPrefixWitness(
         tuple((order + start).tolist()), tuple(zip(section_lanes[lanes_in_order].tolist(), played, strict=True))
+    )
+
+
+def section_prefix_witness(
+    tpl: SongWitnessTemplate,
+    *,
+    run_start: int,
+    run_end: int,
+    late_great: bool,
+    activation_index: int,
+    activation_hit_timestamp: float,
+    fever_fill_denom: float,
+    preactivation_fill: int,
+    section_start: int,
+    predecessor_hit_timestamp: float | None,
+) -> ChartPrefixWitness | None:
+    """`chart_prefix_witness` for one section from a `SongWitnessTemplate`, touching only `[section_start:end]`."""
+    start, a = section_start, activation_index
+    n = int(tpl.chart.shape[0])
+    a_is_great = (run_start <= a < run_end) or late_great
+    if not 0.5 * preactivation_fill < fever_fill_denom <= 0.5 * (preactivation_fill + (1 if a_is_great else 2)):
+        return None
+    hit = float(np.float32(activation_hit_timestamp))
+    first_clock = -np.inf if predecessor_hit_timestamp is None else predecessor_hit_timestamp
+    if first_clock > hit:
+        return None
+
+    if tpl.fixed_timing or run_end <= a + 1:
+        open_end = (a + 1) + int(np.searchsorted(tpl.perfect_opens_after[a + 1 :], hit, side="right"))
+    elif run_end < n and tpl.perfect_opens_after[run_end] <= hit:
+        open_end = run_end + int(np.searchsorted(tpl.perfect_opens_after[run_end:], hit, side="right"))
+    else:
+        tail = tpl.raw_great_low[a + 1 : run_end].copy()
+        if run_end < n:
+            tail[-1] = min(tail[-1], tpl.perfect_opens_after[run_end])
+        tail = np.minimum.accumulate(tail[::-1])[::-1]
+        open_end = (a + 1) + int(np.searchsorted(tail, hit, side="right"))
+    end = max(a + 1, min(n, _HEAD_NOTES), open_end)
+
+    span = end - start
+    i = a - start
+    if tpl.fixed_timing:
+        p_lo = tpl.chart[start:end].astype(np.float64)
+        bands = (p_lo, p_lo, np.full(span, np.inf, dtype=np.float64), np.full(span, -np.inf, dtype=np.float64))
+    else:
+        sec_great = np.zeros(span, dtype=np.bool_)
+        g0, g1 = max(0, run_start - start), max(0, min(end, run_end) - start)
+        if g0 < g1:
+            sec_great[g0:g1] = True
+        if late_great:
+            sec_great[i] = True
+        bands = (
+            np.where(sec_great, tpl.raw_great_low[start:end], tpl.raw_perfect_low[start:end]).astype(np.float64),
+            np.where(sec_great, tpl.great_early_high[start:end], tpl.perfect_high[start:end]).astype(np.float64),
+            np.where(sec_great, tpl.great_late_low[start:end], np.float32(np.inf)).astype(np.float64),
+            np.where(sec_great, tpl.great_high[start:end], np.float32(-np.inf)).astype(np.float64),
+        )
+    if not (bands[0][i] <= hit <= bands[1][i] or bands[2][i] <= hit <= bands[3][i]):
+        return None
+
+    first_at = tpl.first_note_from[start]
+    present_u = np.flatnonzero(first_at < n)
+    ordered_u = present_u[np.argsort(first_at[present_u], kind="mergesort")]
+    rank_of_dense = np.empty(tpl.unique_lanes.shape[0], dtype=np.int64)
+    rank_of_dense[ordered_u] = np.arange(ordered_u.shape[0], dtype=np.int64)
+    note_ranks = rank_of_dense[tpl.dense_lane[start:end]]
+    ok, order = _prefix_order(bands, note_ranks, i, max(0, min(a, _HEAD_NOTES) - start), hit, first_clock)
+    if not ok:
+        return None
+    played = np.bincount(note_ranks[:i], minlength=ordered_u.shape[0]).tolist()
+    return ChartPrefixWitness(
+        tuple((order + start).tolist()), tuple(zip(tpl.unique_lanes[ordered_u].tolist(), played, strict=True))
     )

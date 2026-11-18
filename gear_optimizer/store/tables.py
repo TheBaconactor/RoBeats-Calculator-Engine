@@ -107,6 +107,9 @@ def create_tables(conn: sqlite3.Connection) -> None:
 def truncate_wal(conn: sqlite3.Connection) -> None:
     """End a write session: checkpoint the write-ahead log and truncate it to zero bytes. A reader still on the log
     makes it give up after TRUNCATE_WAIT_MS (the committed write stands; the next write session truncates)."""
+    db_file = next((row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
+    if not db_file:
+        return
     timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
     conn.execute(f"PRAGMA busy_timeout = {TRUNCATE_WAIT_MS}")
     try:

@@ -48,7 +48,9 @@ def solve(request: dict[str, Any], executor: Any) -> list[dict[str, Any]]:
         schema.ensure(result_db)
         with contextlib.closing(schema.connect(result_db, write=True)) as conn:
             for task in tasks:
-                store_solve(conn, solve_song(task, executor), dict(catalog.gears), dict(catalog.minis))
+                store_solve(
+                    conn, solve_song(task, executor), dict(catalog.gears), dict(catalog.minis), checkpoint=False
+                )
         entries = legacy.read_best_loadouts(result_db, mode, request["songName"], "T5", limit=LOADOUTS_PER_SONG_LIMIT)
         if not entries:
             raise RuntimeError("optimizer produced no T5 loadout")
@@ -69,29 +71,33 @@ def main() -> int:
     with open(os.devnull, "w", encoding="utf-8") as devnull, contextlib.redirect_stdout(devnull):
         sys.__stdout__ = devnull
         configure_default_logging()
-        os.environ.setdefault("TI_ENABLE_PYBUF", "0")
         apply_service_frontier_threads()
         reassert_process_background_only()
         from gear_optimizer.gpu.executor import is_fatal_gpu_error, start_gpu_executor
 
         executor = None
-        for line in sys.stdin:
-            try:
-                request = json.loads(line)
-                if executor is None:
-                    executor = start_gpu_executor()
-                    reassert_process_background_only()
-                answer = {"ok": True, "loadouts": solve(request, executor)}
-            except Exception as exc:
-                # A failed request leaves nothing behind; the worker keeps serving unless its GPU is gone.
-                answer = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": is_fatal_gpu_error(exc)}
-            except BaseException as exc:
-                answer = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": True}
-            answers.write(json.dumps(answer, separators=(",", ":")) + "\n")
-            answers.flush()
-            # Past the memory guard's limit the worker exits after answering; the service starts a fresh one.
-            if answer.get("restart") or memory_release_requested():
-                break
+        try:
+            for line in sys.stdin:
+                try:
+                    request = json.loads(line)
+                    if executor is None:
+                        executor = start_gpu_executor()
+                        reassert_process_background_only()
+                    answer = {"ok": True, "loadouts": solve(request, executor)}
+                except Exception as exc:
+                    # A failed request leaves nothing behind; the worker keeps serving unless its GPU is gone.
+                    answer = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": is_fatal_gpu_error(exc)}
+                except BaseException as exc:
+                    answer = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": True}
+                answers.write(json.dumps(answer, separators=(",", ":")) + "\n")
+                answers.flush()
+                # Past the memory guard's limit the worker exits after answering; the service starts a fresh one.
+                if answer.get("restart") or memory_release_requested():
+                    break
+        finally:
+            stop = getattr(executor, "stop", None)
+            if stop is not None:
+                stop()
     return 0
 
 

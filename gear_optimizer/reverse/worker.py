@@ -75,16 +75,22 @@ def _compile_kernels(catalog: Catalog, curves: StatCurves) -> None:
 
 def main() -> int:
     from gear_optimizer.core.logging_config import configure_default_logging
+    from gear_optimizer.core.memory import (
+        compute_memory_guard_limit,
+        memory_release_requested,
+        set_memory_watchdog_limit,
+    )
+    from gear_optimizer.settings import read_run_settings
 
     answers = sys.stdout
     with open(os.devnull, "w", encoding="utf-8") as devnull, contextlib.redirect_stdout(devnull):
         sys.__stdout__ = devnull
         configure_default_logging()
-        os.environ.setdefault("TI_ENABLE_PYBUF", "0")
         from gear_optimizer.gpu.executor import is_fatal_gpu_error
 
         catalog, curves = load_catalog(paths().game_export), stat_curves()
         _compile_kernels(catalog, curves)
+        set_memory_watchdog_limit(compute_memory_guard_limit(read_run_settings()))
         songs: OrderedDict[str, ReverseSong] = OrderedDict()
         for line in sys.stdin:
             try:
@@ -96,10 +102,15 @@ def main() -> int:
                 reply = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "restart": True}
             answers.write(json.dumps(reply, separators=(",", ":"), default=str) + "\n")
             answers.flush()
-            if reply.get("restart"):
+            if reply.get("restart") or memory_release_requested():
                 break
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from gear_optimizer.gpu.runtime import finalize_taichi
+
+    try:
+        raise SystemExit(main())
+    finally:
+        finalize_taichi("reverse worker shutdown")

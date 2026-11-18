@@ -25,7 +25,6 @@ import os
 import threading
 from typing import Any
 
-import numba
 import numpy as np
 
 from gear_optimizer.core.jit_setup import jit
@@ -58,6 +57,8 @@ class GemMemo:
     key_groups: dict[int, np.ndarray] = field(default_factory=dict)
     frontier_shapes: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.float64))
     shapes_done: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.bool_))
+    frontier_idx_ref: np.ndarray | None = None
+    pool_ref: SurfacePool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +227,10 @@ def gem_groups(
     every FT/FF split of the gem budget (FT gems raise Beat, FF gems Vibe); `memo`: what earlier batches of the song and
     its colors left."""
     memo = GemMemo() if memo is None else memo
+    if memo.frontier_idx_ref is not frontier_idx_by_stat:
+        memo.key_groups.clear()
+        memo.shapes_done = np.empty(0, dtype=np.bool_)
+        memo.frontier_idx_ref = frontier_idx_by_stat
     base_components = np.ascontiguousarray(base_components, dtype=np.int32)
     packed = base_components[:, 5].astype(np.int64) * (1 << 32) + base_components[:, 6]
     packed_keys, first_rows, key_of = np.unique(packed, return_index=True, return_inverse=True)
@@ -242,13 +247,20 @@ def gem_groups(
             for color in (primary_color, secondary_color)
         )
         element_value = ELEMENT_GEM_GAIN * (2 * int(primary_color == selected_color) + int(secondary_color == selected_color))
-        rows, counts = zip(*_fg_cpu_search_executor().map(
-            lambda chunk: _kept_splits(
-                chunk, residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, element_value
-            ),
-            np.array_split(keys[new_keys], min(_FG_CPU_SEARCH_WORKERS, len(new_keys))),
-        ))
-        kept = np.split(np.concatenate(rows), np.cumsum(np.concatenate(counts))[:-1])
+        split_workers = min(_FG_CPU_SEARCH_WORKERS, len(new_keys))
+        if split_workers <= 1:
+            flat_rows, flat_counts = _kept_splits(
+                keys[new_keys], residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, element_value
+            )
+            kept = np.split(flat_rows, np.cumsum(flat_counts)[:-1])
+        else:
+            rows, counts = zip(*_fg_cpu_search_executor().map(
+                lambda chunk: _kept_splits(
+                    chunk, residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, element_value
+                ),
+                np.array_split(keys[new_keys], split_workers),
+            ))
+            kept = np.split(np.concatenate(rows), np.cumsum(np.concatenate(counts))[:-1])
         memo.key_groups.update(zip(packed_keys[new_keys].tolist(), kept, strict=True))
     key_rows = [memo.key_groups[key] for key in packed_keys.tolist()]
     return GemGroups(
@@ -279,9 +291,10 @@ def gem_winners(
     order = np.lexsort(groups.loadouts[:, 2::-1].T)
     memo = groups.memo
     frontier_count = pool.frontier_offsets.shape[0]
-    if memo.shapes_done.shape[0] != frontier_count:
+    if memo.pool_ref is not pool or memo.shapes_done.shape[0] != frontier_count:
         memo.frontier_shapes = np.zeros((frontier_count, 4), dtype=np.float64)
         memo.shapes_done = np.zeros(frontier_count, dtype=np.bool_)
+        memo.pool_ref = pool
     _frontier_shapes(
         groups.groups[:, 3], pool.frontier_offsets, pool.frontier_lengths, pool.pattern_ids, pool.counts, pool.head_coeffs,
         groups.body_total, memo.frontier_shapes, memo.shapes_done,
@@ -344,23 +357,39 @@ def _surface_score(words, surface, notes, primary_val, secondary_val, pp_factor,
     score = body_fever * fever_val + (body_total - body_fever) * combo_val
 
     great_or = int(words[4]) | int(words[5]) | int(words[6]) | int(words[7])
-    great_base = 0.0
-    if body_great > 0 or great_or != 0:
-        great_base = float(
-            primary_val * 2 + 150 if single_color else
-            int(np.floor(float(primary_val) * (4.0 / 3.0))) + int(np.floor(float(secondary_val) * (2.0 / 3.0))) + 150
-        )
-        great_combo_val = int(np.floor(great_base * combo_mul))
-        great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
-        if body_great > 0:
-            body_normal_penalty = combo_val - great_combo_val
-            if body_normal_penalty < 0:
-                body_normal_penalty = 0
-            body_fever_penalty = fever_val - great_fever_val
-            if body_fever_penalty < 0:
-                body_fever_penalty = 0
-            score -= (body_great - body_fever_great) * body_normal_penalty
-            score -= body_fever_great * body_fever_penalty
+    if body_great == 0 and great_or == 0:
+        for i in range(head_len):
+            scaling = combo_ramp[i]
+            if ((int(words[i >> 5]) >> (i & 31)) & 1) != 0:
+                score += int(np.floor(base_value * scaling * fever_mul))
+            else:
+                score += int(np.floor(base_value * scaling))
+        return score
+
+    great_base = float(
+        primary_val * 2 + 150 if single_color else
+        int(np.floor(float(primary_val) * (4.0 / 3.0))) + int(np.floor(float(secondary_val) * (2.0 / 3.0))) + 150
+    )
+    great_combo_val = int(np.floor(great_base * combo_mul))
+    great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
+    if body_great > 0:
+        body_normal_penalty = combo_val - great_combo_val
+        if body_normal_penalty < 0:
+            body_normal_penalty = 0
+        body_fever_penalty = fever_val - great_fever_val
+        if body_fever_penalty < 0:
+            body_fever_penalty = 0
+        score -= (body_great - body_fever_great) * body_normal_penalty
+        score -= body_fever_great * body_fever_penalty
+
+    if great_or == 0:
+        for i in range(head_len):
+            scaling = combo_ramp[i]
+            if ((int(words[i >> 5]) >> (i & 31)) & 1) != 0:
+                score += int(np.floor(base_value * scaling * fever_mul))
+            else:
+                score += int(np.floor(base_value * scaling))
+        return score
 
     for i in range(head_len):
         wi = i >> 5
@@ -382,7 +411,7 @@ def _surface_score(words, surface, notes, primary_val, secondary_val, pp_factor,
     return score
 
 
-@numba.njit(cache=True, nogil=True, inline="always")
+@jit(inline="always")
 def _surface_shape(body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf):
     """The (A, E, F, G) of a surface's upper bound at one stat line, every head note at its Perfect value: base value x
     _shape_value at its combo and fever (body fever and normal notes, head normal and fever notes, their combo ramp sums).
@@ -391,19 +420,19 @@ def _surface_shape(body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf):
     return body_fever + ramp_fever, body_normal + ramp_normal, n_hf - ramp_fever, n_hn - ramp_normal
 
 
-@numba.njit(cache=True, nogil=True, inline="always")
+@jit(inline="always")
 def _shape_value(shape, combo, fever):
     a, e, f, g = shape
     return combo * (a * fever + e) + f * fever + g
 
 
-@numba.njit(cache=True, nogil=True, inline="always")
+@jit(inline="always")
 def _block_bound(block, delta, shape):
     """The surface bound at a block's best corner (base value, combo, fever), with the margin of _budget_bound."""
     return (block[0] + delta) * _shape_value(shape, block[1], block[2]) + 1025.0
 
 
-@numba.njit(cache=True, nogil=True, inline="always")
+@jit(inline="always")
 def _surface_ceiling(live, frontier_shape, shape, great_shape):
     """At least a surface's bound less what its Greats lose at each live block (live: _live_summary): a block's frontier
     bound less base value x the shape's distance from the frontier's, at the lowest of each over the blocks."""
@@ -417,7 +446,7 @@ def _surface_ceiling(live, frontier_shape, shape, great_shape):
     )
 
 
-@numba.njit(cache=True, nogil=True, inline="always")
+@jit(inline="always")
 def _budget_bound(c, delta, shape):
     """The surface bound over a budget's columns: each term of _column_bound at its most (c, the terms' maxima as a value
     and its slope in delta)."""
@@ -427,7 +456,7 @@ def _budget_bound(c, delta, shape):
     )
 
 
-@numba.njit(cache=True, nogil=True, inline="always")
+@jit(inline="always")
 def _column_bound(combo, column, delta, shape):
     """The surface bound over a column of blocks of one combo: column, (the most base value, the most base value x fever
     as a chord in delta: intercept, slope). Each term of the block bound at the column's most of it."""
@@ -687,6 +716,10 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                 body_fever = int(surface_counts[sr, 0])
                 body_great = int(surface_counts[sr, 1])
                 body_fever_great = int(surface_counts[sr, 2])
+                p_words = pattern_words[pattern_row]
+                no_greats = body_great == 0 and (
+                    int(p_words[4]) | int(p_words[5]) | int(p_words[6]) | int(p_words[7])
+                ) == 0
                 coeffs = head_coeffs[pattern_row]
                 shape = _surface_shape(body_fever, body_total - body_fever, coeffs[0], coeffs[1], coeffs[2], coeffs[3])
                 # What the Greats lose at the least, as a shape: each is worth gap x its multipliers less, past the score's
@@ -745,21 +778,69 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                             secondary_base = (
                                 cur_secondary + g_cm * cm_s_delta + g_fm * fm_s_delta + leftover_after_fm * ov_s_delta
                             )
-                            for g_pp in range(g_pp_max + 1):
-                                pp_base_value = float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
-                                if pp_base_value * pair_value + 1024.0 - pair_loss < threshold:
+                            if no_greats:
+                                best_gp = 0
+                                best_bv = float(base_linear_common) + pp_ref_cache[0]
+                                for gp in range(1, g_pp_max + 1):
+                                    bv = float(base_linear_common + gp * delta_pp_vs_ov) + pp_ref_cache[gp]
+                                    if bv > best_bv:
+                                        best_bv = bv
+                                        best_gp = gp
+                                if best_bv * pair_value + 1024.0 < threshold:
                                     continue
                                 score = _surface_score(
-                                    pattern_words[pattern_row], (body_fever, body_great, body_fever_great),
-                                    (head_len, body_total), primary_base + g_pp * pp_primary_delta,
-                                    secondary_base + g_pp * pp_secondary_delta, pp_ref_cache[g_pp],
-                                    (cm_mul, cm_ramp, fm_mul), single_color,
+                                    p_words, (body_fever, 0, 0), (head_len, body_total),
+                                    primary_base + best_gp * pp_primary_delta,
+                                    secondary_base + best_gp * pp_secondary_delta,
+                                    pp_ref_cache[best_gp], (cm_mul, cm_ramp, fm_mul), single_color,
                                 )
-                                if score > best_score or (
-                                    score == best_score and (g_cm, g_fm, g_pp) < (best_cm, best_fm, best_pp)
+                                if score < best_score or (
+                                    score == best_score and (g_cm, g_fm) > (best_cm, best_fm)
                                 ):
-                                    best_score, best_pp, best_cm, best_fm = score, g_pp, g_cm, g_fm
+                                    continue
+                                win_gp = best_gp
+                                if best_gp > 0:
+                                    score_floor = float(score)
+                                    rec_bv = -1.0e30
+                                    for gp in range(best_gp):
+                                        bv = float(base_linear_common + gp * delta_pp_vs_ov) + pp_ref_cache[gp]
+                                        if bv <= rec_bv:
+                                            continue
+                                        rec_bv = bv
+                                        if bv * pair_value + 1024.0 < score_floor:
+                                            continue
+                                        tie_score = _surface_score(
+                                            p_words, (body_fever, 0, 0), (head_len, body_total),
+                                            primary_base + gp * pp_primary_delta,
+                                            secondary_base + gp * pp_secondary_delta,
+                                            pp_ref_cache[gp], (cm_mul, cm_ramp, fm_mul), single_color,
+                                        )
+                                        if tie_score == score:
+                                            win_gp = gp
+                                            break
+                                if score > best_score or (
+                                    score == best_score and (g_cm, g_fm, win_gp) < (best_cm, best_fm, best_pp)
+                                ):
+                                    best_score, best_pp, best_cm, best_fm = score, win_gp, g_cm, g_fm
                                     threshold = float(max(best_score, candidate_best))
+                            else:
+                                for g_pp in range(g_pp_max + 1):
+                                    pp_base_value = (
+                                        float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
+                                    )
+                                    if pp_base_value * pair_value + 1024.0 - pair_loss < threshold:
+                                        continue
+                                    score = _surface_score(
+                                        p_words, (body_fever, body_great, body_fever_great),
+                                        (head_len, body_total), primary_base + g_pp * pp_primary_delta,
+                                        secondary_base + g_pp * pp_secondary_delta, pp_ref_cache[g_pp],
+                                        (cm_mul, cm_ramp, fm_mul), single_color,
+                                    )
+                                    if score > best_score or (
+                                        score == best_score and (g_cm, g_fm, g_pp) < (best_cm, best_fm, best_pp)
+                                    ):
+                                        best_score, best_pp, best_cm, best_fm = score, g_pp, g_cm, g_fm
+                                        threshold = float(max(best_score, candidate_best))
 
                 if best_score > group_best_score:
                     group_best_score, group_best_surface = best_score, ls
@@ -774,6 +855,20 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                 row[5] = residual_budget - group_best_pp - group_best_cm - group_best_fm
             candidate_best = max(candidate_best, group_best_score)
     return out, winners
+
+
+def configure_fg_cpu_search_workers(max_workers: int) -> None:
+    """Set the per-process thread count used by ``_score_on_cpu_cores``."""
+    global _FG_CPU_SEARCH_WORKERS, _fg_cpu_search_pool
+    target = max(1, int(max_workers))
+    with _fg_cpu_search_pool_lock:
+        if target == _FG_CPU_SEARCH_WORKERS:
+            return
+        old_pool = _fg_cpu_search_pool
+        _FG_CPU_SEARCH_WORKERS = target
+        _fg_cpu_search_pool = None
+    if old_pool is not None:
+        old_pool.shutdown(wait=False)
 
 
 def _fg_cpu_search_executor() -> ThreadPoolExecutor:

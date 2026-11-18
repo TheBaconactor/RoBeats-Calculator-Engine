@@ -10,6 +10,7 @@ import numpy as np
 from gear_optimizer.gamedata import SongMini
 from gear_optimizer.solver.genetic_pipeline import GaInputs
 from gear_optimizer.solver.item_registry import ItemRegistry
+from gear_optimizer.solver.timing_envelope import TimedSong
 
 
 @dataclass
@@ -30,6 +31,38 @@ class NativeSongGPUInputs(GaInputs):
     # The GA selection's effective-loadout tables for the song's colors (solver.ga_selection.effective_tables).
     fg_gear_name_rank: np.ndarray
     fg_mini_sig_id: np.ndarray
+
+    def as_ga_inputs(self) -> GaInputs:
+        """Compact GA-only inputs without host item registries or cached FG envelopes."""
+        timed = self.timed_song
+        slim_timed = TimedSong(
+            chart=timed.chart,
+            mode=timed.mode,
+            baseline_hash=timed.baseline_hash,
+            hit_timestamps=timed.hit_timestamps,
+            perfect_candidates=timed.perfect_candidates,
+            perfect_floor=timed.perfect_floor,
+            great_floor=timed.great_floor,
+            great_candidates=timed.great_candidates,
+            late_great_floor=timed.late_great_floor,
+            exit_ceiling=timed.exit_ceiling,
+        )
+        slim_timed.__dict__["timeline_key"] = timed.timeline_key
+        return GaInputs(
+            timed_song=slim_timed,
+            curves=self.curves,
+            color_flags=self.color_flags,
+            gens_per_run=self.gens_per_run,
+            num_runs=self.num_runs,
+            n_genomes=self.n_genomes,
+            item_stats=self.item_stats,
+            slot_start=self.slot_start,
+            slot_count=self.slot_count,
+            base_fixed_stats_arr=self.base_fixed_stats_arr,
+            init_heuristic_topk=self.init_heuristic_topk,
+            init_heuristic_copies=self.init_heuristic_copies,
+            ftff_shortlist=self.ftff_shortlist,
+        )
 
 
 @dataclass

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "robeats-calculator-engine"
 version = "2.0.0"
@@ -21,12 +25,15 @@ Homepage = "https://github.com/TheBaconactor/RoBeats-Calculator-Engine"
 Repository = "https://github.com/TheBaconactor/RoBeats-Calculator-Engine"
 Issues = "https://github.com/TheBaconactor/RoBeats-Calculator-Engine/issues"
 
+[tool.setuptools.packages.find]
+include = ["gear_optimizer*", "general_meta*"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"
 
 # Include all Python files
-include = ["gear_optimizer/**/*.py", "tests/**/*.py", "tools/**/*.py", "*.py"]
+include = ["gear_optimizer/**/*.py", "general_meta/**/*.py", "tests/**/*.py", "tools/**/*.py", "*.py"]
 
 [tool.ruff.lint]
 # Start with a minimal safe set, expand as cleanup progresses

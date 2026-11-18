@@ -636,6 +636,25 @@ def test_a_data_refresh_builds_every_chart_in_both_modes_and_rereads_the_list(da
     assert built == ["pass"] and len(service.list_official_songs()) == 3
 
 
+def test_a_data_refresh_prebuilds_a_configured_library(data_root, monkeypatch):
+    from gear_optimizer.frontier import startup_prebuild
+
+    library = data_root / "Library"
+    for difficulty in ("Easy", "Normal", "Hard"):
+        (library / f"{difficulty} Songs").mkdir(parents=True)
+    lib_chart = library / "Hard Songs" / "lib.txt"
+    lib_chart.write_text("Song Name\tLibrary Chart\nSong Data\n1000\t0\t0\t1\n", encoding="utf-8")
+    _write_chart(data_root, "Normal", "Ignored Private Chart")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(library))
+    seen: list[dict] = []
+    monkeypatch.setattr(startup_prebuild, "run_startup_cpu_work", lambda **kwargs: seen.append(kwargs))
+
+    service._build_frontier_caches()
+
+    (call,) = seen
+    assert call["charts_by_mode"] == {"precise": (str(lib_chart),), "non-precise": (str(lib_chart),)}
+
+
 def _lookup_handler(monkeypatch, body: dict, path: str = "/reverse") -> tuple[service.RoBeatsMetaServiceHandler, list]:
     answers: list = []
     handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
@@ -710,7 +729,19 @@ def test_a_lookup_worker_that_does_not_warm_up_leaves_the_service_running(data_r
     assert "the lookup worker did not warm up" in caplog.text
 
 
-@pytest.mark.parametrize("body", ({"score": 5}, {"targetSongId": "Feeding [Hard]"}, {"targetSongId": "Feeding [Hard]", "score": True}, {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"}, {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"}))
+@pytest.mark.parametrize(
+    "body",
+    (
+        {"score": 5},
+        {"targetSongId": "Feeding [Hard]"},
+        {"targetSongId": "Feeding [Hard]", "score": True},
+        {"targetSongId": "Feeding [Hard]", "score": 5, "matchMode": "Solo"},
+        {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": "all"},
+        {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": 100.5},
+        {"targetSongId": "Feeding [Hard]", "score": 5, "gearMultiplier": 0},
+        {"targetSongId": "Feeding [Hard]", "score": 5, "accuracy": float("nan")},
+    ),
+)
 def test_a_lookup_with_a_row_no_menu_shows_is_refused(data_root, monkeypatch, body):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
     handler, answers = _lookup_handler(monkeypatch, body)

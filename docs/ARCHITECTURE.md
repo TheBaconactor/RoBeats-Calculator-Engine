@@ -98,8 +98,8 @@ thread; it never initializes or accesses the GPU.
 - `gear_optimizer/gpu/ga.py` runs a song's GA; `gear_optimizer/gpu/device.py` holds a process's GPU state and a song's uploads.
 - `gear_optimizer/gpu/fields.py` declares the device fields; `gear_optimizer/gpu/kernels.py` and `gear_optimizer/gpu/scoring.py` run on them.
 
-Only `gear_optimizer/gpu/` imports Taichi; the rest of the engine submits work to
-its executor.
+Only `gear_optimizer/gpu/` and `gear_optimizer/reverse/gpu_lines.py` import Taichi; the solver, frontier, trace, and
+store layers run without loading it.
 
 ### Exact score and timing authority
 
@@ -109,12 +109,11 @@ its executor.
 - `gear_optimizer/frontier/timeline_producer.py` constructs exact,
   non-dominated timing surfaces.
 - `gear_optimizer/solver/timing_envelope.py` applies the selected timing model:
-  `non-precise` (the default: Perfects at chart time, early Greats only to order tied notes) or `precise`
-  (hits anywhere inside their judgment windows, event-time fever). Official Non-Precise service solves populate
-  the canonical catalog; Precise solves stay isolated. Changing an existing Precise catalog requires rebuilding
-  it from Non-Precise solves: the database does not store timing mode, and best-score merging cannot replace higher
-  Precise scores with their Non-Precise counterparts. Hit guidance describes the selected mode's judgment and fever
-  boundaries; neither mode promises the retired Frame-Safe guarantee at every frame timing.
+  `non-precise` (Perfects at chart time, early Greats only to order tied notes) or `precise`
+  (hits anywhere inside their judgment windows, event-time fever). Clean official solves promote into the
+  canonical catalog (`evolution.db`), where schema v20 stores both timing modes side by side; uploaded charts stay
+  isolated. Hit guidance describes the selected mode's judgment and fever boundaries; neither mode promises the
+  retired Frame-Safe guarantee at every frame timing.
 
 CPU exact scoring is a production canonicalization boundary as well as a parity
 oracle. It is not a silent recovery path for failed GPU execution.
@@ -179,12 +178,11 @@ sequenceDiagram
     participant Database
 
     Client->>Service: POST /optimize
-    Service->>Workspace: Create isolated data, config, and bin paths
-    Service->>Optimizer: Launch main.py in a child process
-    Optimizer->>Database: Persist canonical results
-    Service->>Database: Read retained T5 loadouts
+    Service->>Workspace: Select warm solver (official) or isolated worker (upload)
+    Service->>Optimizer: Send JSON request over stdin to service_worker.py
+    Optimizer->>Database: Persist canonical results (and promote clean official solves)
+    Optimizer-->>Service: Return retained T5 loadouts over stdout
     Service-->>Client: Return optimization response
-    Service->>Workspace: Remove per-request state
 ```
 
 Non-loopback binding requires `ROBEATSMETA_OPTIMIZER_API_TOKEN`. Each solve gets

@@ -103,12 +103,33 @@ def _mini_set_effect_signature(
     if any(name not in minis_by_name for name in mini_names):
         return ("names", mini_names)
 
+    if not songs:
+        return ("song-aware-stats",)
+    minis = [minis_by_name[name] for name in mini_names]
+    primary, secondary = songs[0].primary, songs[0].secondary
+    targeted_songs = frozenset().union(*(mini.song_targets for mini in minis))
+    base_pp = base_cm = base_fm = base_ft = base_ff = 0
+    base_elems = [0] * len(elements)
+    for mini in minis:
+        stats = ascended_mini_stats(mini, "", primary, secondary)
+        base_pp += stats["Perfect Points"]
+        base_cm += stats["Combo Multiplier"]
+        base_fm += stats["Fever Multiplier"]
+        base_ft += stats["Fever Time"]
+        base_ff += stats["Fever Fill Rate"]
+        for idx, element in enumerate(elements):
+            base_elems[idx] += stats.get(element, 0)
+    base_tail = (base_pp, base_cm, base_fm, base_ft, base_ff, *base_elems)
+
     per_song_stats: list[tuple[Any, ...]] = []
     for song in songs:
+        if song.name not in targeted_songs and song.primary == primary and song.secondary == secondary:
+            per_song_stats.append((song.name, *base_tail))
+            continue
         pp = cm = fm = ft = ff = 0
         elem_totals = [0] * len(elements)
-        for name in mini_names:
-            stats = ascended_mini_stats(minis_by_name[name], song.name, song.primary, song.secondary)
+        for mini in minis:
+            stats = ascended_mini_stats(mini, song.name, song.primary, song.secondary)
             pp += stats["Perfect Points"]
             cm += stats["Combo Multiplier"]
             fm += stats["Fever Multiplier"]

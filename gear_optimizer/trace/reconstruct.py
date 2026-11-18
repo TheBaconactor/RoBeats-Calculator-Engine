@@ -9,9 +9,16 @@ from typing import Any, NamedTuple
 import numpy as np
 
 from gear_optimizer.solver.scoring.fg_policy import FGSongInputs
+from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.frontier.producer_batch import action_table, early_exit_min_fill, song_arrays
 from gear_optimizer.frontier.types import FgResponseSurface
-from .activation_witness import chart_prefix_witness, exact_label_hit_intervals
+from .activation_witness import (
+    SongWitnessTemplate,
+    chart_prefix_witness,
+    exact_label_hit_intervals,
+    section_prefix_witness,
+    song_witness_template,
+)
 from .section_kernels import SectionContext, fever_end, section_rows
 
 
@@ -42,6 +49,7 @@ class FgTraceEdgeOptionsCache:
 
     tables: dict[Any, _SectionTable] = field(default_factory=dict)
     options: int = 0
+    song_prep: tuple[Any, ...] | None = None
 
     def add(self, key: tuple[Any, ...], table: _SectionTable) -> None:
         if self.options + len(table.rows) > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS:
@@ -149,7 +157,9 @@ def _centered_hit_window_for_exit(
     raise ValueError("centered FG trace witness changed the response surface")
 
 
-def _stored_section(table: _SectionTable, index: int, context: SectionContext) -> dict[str, Any]:
+def _stored_section(
+    table: _SectionTable, index: int, context: SectionContext, witness_tpl: SongWitnessTemplate | None = None
+) -> dict[str, Any]:
     """An accepted option as a stored trace section: with its centered activation witness and exact schedule."""
     k, next_state, activation_idx, late_great, run_start, run_count, early_great_start, early_great_end, target_end, \
         early_exit = table.rows[index].tolist()
@@ -162,31 +172,46 @@ def _stored_section(table: _SectionTable, index: int, context: SectionContext) -
         context.exit_ceiling_timestamps if early_exit else None,
     )
     run_end = min(n, run_start + run_count)
-    is_great = np.zeros(n, dtype=np.bool_)
-    is_great[run_start:run_end] = True
-    if late_great:
-        is_great[activation_idx] = True
-    labels = exact_label_hit_intervals(
-        is_great=is_great,
-        timestamps=timestamps,
-        perfect_floor_timestamps=context.perfect_floor_timestamps,
-        perfect_candidate_timestamps=context.perfect_candidate_timestamps,
-        great_floor_timestamps=context.great_floor_timestamps,
-        great_candidate_timestamps=context.great_candidate_timestamps,
-    )
     preactivation_event_count = activation_idx - section_start
     preactivation_great_count = max(0, min(activation_idx, run_end) - max(section_start, run_start))
     preactivation_fill = 2 * preactivation_event_count - preactivation_great_count
-    witness = chart_prefix_witness(
-        labels=labels,
-        lanes=context.lanes,
-        activation_index=activation_idx,
-        activation_hit_timestamp=hit,
-        fever_fill_denom=context.fever_fill_denom,
-        preactivation_fill=preactivation_fill,
-        section_start=section_start,
-        predecessor_hit_timestamp=None if section_start == 0 else float(context.perfect_floor_timestamps[section_start - 1]),
-    )
+    predecessor_hit = None if section_start == 0 else float(context.perfect_floor_timestamps[section_start - 1])
+    if witness_tpl is not None:
+        witness = section_prefix_witness(
+            witness_tpl,
+            run_start=run_start,
+            run_end=run_end,
+            late_great=bool(late_great),
+            activation_index=activation_idx,
+            activation_hit_timestamp=hit,
+            fever_fill_denom=context.fever_fill_denom,
+            preactivation_fill=preactivation_fill,
+            section_start=section_start,
+            predecessor_hit_timestamp=predecessor_hit,
+        )
+    else:
+        is_great = np.zeros(n, dtype=np.bool_)
+        is_great[run_start:run_end] = True
+        if late_great:
+            is_great[activation_idx] = True
+        labels = exact_label_hit_intervals(
+            is_great=is_great,
+            timestamps=timestamps,
+            perfect_floor_timestamps=context.perfect_floor_timestamps,
+            perfect_candidate_timestamps=context.perfect_candidate_timestamps,
+            great_floor_timestamps=context.great_floor_timestamps,
+            great_candidate_timestamps=context.great_candidate_timestamps,
+        )
+        witness = chart_prefix_witness(
+            labels=labels,
+            lanes=context.lanes,
+            activation_index=activation_idx,
+            activation_hit_timestamp=hit,
+            fever_fill_denom=context.fever_fill_denom,
+            preactivation_fill=preactivation_fill,
+            section_start=section_start,
+            predecessor_hit_timestamp=predecessor_hit,
+        )
     if witness is None:
         raise UnplayableTrace(f"no play reaches note {activation_idx} in chart order before its fever")
     chart_time = float(timestamps[activation_idx])
@@ -262,19 +287,36 @@ def reconstruct_force_greats_response_trace(
         return ()
     raw_fever_fill, real_fever_time = float(raw_fever_fill), float(real_fever_time)
     use_forced_great_timing = bool(inputs.use_forced_great_timing)
-    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = song_arrays(
-        inputs.timestamps, inputs.perfect_candidates, inputs.great_candidates, inputs.perfect_floor,
-        inputs.great_floor, inputs.late_great_floor, inputs.exit_ceiling, inputs.lanes,
-    )
-    if max(1, ceil(raw_fever_fill)) < early_exit_min_fill(floor_ts, perfect_ts):
+    # The ordered edge list and validated song witness template are independent of the target surface, so the up-to-51
+    # surfaces of one song reuse them.
+    shared_tables = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
+    prep_arrays = (inputs.timestamps, inputs.perfect_candidates, inputs.great_candidates, inputs.perfect_floor,
+                   inputs.great_floor, inputs.late_great_floor, inputs.exit_ceiling, inputs.lanes)
+    if (
+        shared_tables.song_prep is not None
+        and all(a is b for a, b in zip(shared_tables.song_prep[0], prep_arrays, strict=True))
+    ):
+        _, parsed_arrays, min_fill, witness_tpl = shared_tables.song_prep
+    else:
+        parsed_arrays = song_arrays(*prep_arrays)
+        ts_0, perfect_0, great_0, floor_0, great_floor_0, _, _, lane_0 = parsed_arrays
+        min_fill = early_exit_min_fill(floor_0, perfect_0)
+        witness_tpl = song_witness_template(
+            timestamps=ts_0,
+            perfect_floor_timestamps=floor_0,
+            perfect_candidate_timestamps=perfect_0,
+            great_floor_timestamps=great_floor_0,
+            great_candidate_timestamps=great_0,
+            lanes=lane_0,
+        )
+        shared_tables.song_prep = (prep_arrays, parsed_arrays, min_fill, witness_tpl)
+    ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = parsed_arrays
+    if max(1, ceil(raw_fever_fill)) < min_fill:
         exit_ceiling_ts = np.full_like(exit_ceiling_ts, -np.inf)  # as the search: no early exits at this fill
     context = SectionContext(
         ts, floor_ts, perfect_ts, great_floor_ts, great_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr,
         raw_fever_fill, real_fever_time, use_forced_great_timing,
     )
-
-    # The ordered edge list is independent of the target surface, so the up-to-51 surfaces of one song reuse it.
-    shared_tables = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
     table_prefix = (non_fever_base, raw_fever_fill, real_fever_time, use_forced_great_timing)
     memo: set[tuple[int, bool, tuple[int, ...]]] = set()
     unplayable: list[UnplayableTrace] = []
@@ -309,7 +351,7 @@ def reconstruct_force_greats_response_trace(
                     continue
             try:
                 # The centered witness is computed only here, for sections accepted into the final trace.
-                return (_stored_section(table, index, context), *tail)
+                return (_stored_section(table, index, context, witness_tpl), *tail)
             except UnplayableTrace as exc:  # no hit plays this section: the next option may price the same surface
                 unplayable.append(exc)
         memo.add(key)
@@ -323,6 +365,9 @@ def reconstruct_force_greats_response_trace(
     return tuple({**row, "section": idx + 1} for idx, row in enumerate(trace))
 
 
+_last_base_edge_cache: tuple[tuple[Any, ...], FGSongInputs, FgTraceEdgeOptionsCache] | None = None
+
+
 def reconstruct_base_trace(
     inputs: FGSongInputs,
     *,
@@ -333,10 +378,21 @@ def reconstruct_base_trace(
 ) -> tuple[dict, ...]:
     """The physical trace of a Base surface: the FG reconstruction of the same surface without Greats, so without
     forced-Great timing (and its late-Great floor)."""
+    global _last_base_edge_cache
+    key = (inputs.timestamps, inputs.perfect_candidates, inputs.perfect_floor, inputs.exit_ceiling, inputs.lanes)
+    last = _last_base_edge_cache
+    if last is not None and all(a is b for a, b in zip(last[0], key, strict=True)):
+        base_inputs, edge_cache = last[1], last[2]
+    else:
+        base_inputs = replace(inputs, late_great_floor=None, use_forced_great_timing=False)
+        edge_cache = FgTraceEdgeOptionsCache()
+        if not frontier_cache_is_ephemeral():
+            _last_base_edge_cache = (key, base_inputs, edge_cache)
     return reconstruct_force_greats_response_trace(
-        inputs=replace(inputs, late_great_floor=None, use_forced_great_timing=False),
+        inputs=base_inputs,
         non_fever_base=0,
         target_surface=FgResponseSurface(*head_words, 0, 0, 0, 0, body_fever, 0, 0),
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
+        edge_options_cache=edge_cache,
     )

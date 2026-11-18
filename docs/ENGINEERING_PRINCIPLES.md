@@ -6,7 +6,7 @@ Use it when changing behavior, refactoring APIs, or updating contributor guidanc
 ## Engineering workflow
 
 - `tools/dev` and CI are enforcement harnesses.
-- Benchmarks (`tests/benchmark_*.py`) and replay scripts are evaluation harnesses.
+- Verification tools (`tools/verify`) and test suites (`tests`) are evaluation harnesses.
 
 ## Repository knowledge
 
@@ -40,10 +40,10 @@ Use it when changing behavior, refactoring APIs, or updating contributor guidanc
 ## Ownership and API boundaries
 
 - Prefer one authoritative owner per concern.
-- Keep config and env parsing centralized in `gear_optimizer/core/`.
-- Keep persistence, schema, and SQL ownership in `gear_optimizer/data/`.
+- Keep config and env parsing centralized in `gear_optimizer/settings.py` and `gear_optimizer/core/`.
+- Keep persistence, schema, and SQL ownership in `gear_optimizer/store/`.
 - Keep orchestration in app and pipeline layers rather than scattering control flow across helpers.
-- Keep scoring math, kernel contracts, and GPU evaluation ownership in `gear_optimizer/solver/`.
+- Keep scoring math in `gear_optimizer/solver/` and Taichi/Vulkan execution in `gear_optimizer/gpu/`.
 - Keep docs and decision history in `docs/`.
 - Do not duplicate env parsing, scoring constants, persistence rules, or reporting semantics across layers just to make a local patch easier.
 - If multiple callers need the same behavior, extract or route to the owner instead of cloning logic.

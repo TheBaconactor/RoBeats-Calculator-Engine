@@ -12,6 +12,7 @@ Rationale:
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import re
 import subprocess
@@ -21,6 +22,7 @@ from urllib.parse import unquote
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_SKIP_DIR_PARTS = {".git", ".venv", ".calc", "bin", "node_modules", "venv"}
 _GITHUB_MATH_TEXT_UNDERSCORE = re.compile(r"\\text\{[^}]*_[^}]*\}")
 _SENSITIVE_PLAYER_EXPORT_KEY = re.compile(
     r'"(?:localPlayerId|playerId|playerName)"\s*:'
@@ -54,7 +56,7 @@ _MAINTAINED_DOCS = (
 def test_github_math_text_labels_do_not_use_underscores() -> None:
     offenders: list[str] = []
     for path in sorted(_REPO_ROOT.rglob("*.md")):
-        if any(part in {".git", ".venv", "bin", "node_modules", "venv"} for part in path.parts):
+        if any(part in _SKIP_DIR_PARTS for part in path.relative_to(_REPO_ROOT).parts):
             continue
         for line_number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(),
@@ -74,7 +76,7 @@ def test_github_math_text_labels_do_not_use_underscores() -> None:
 def test_repository_does_not_contain_player_identity_exports() -> None:
     offenders: list[str] = []
     for path in sorted(_REPO_ROOT.rglob("*.json")):
-        if any(part in {".git", ".venv", "bin", "node_modules", "venv"} for part in path.parts):
+        if any(part in _SKIP_DIR_PARTS for part in path.relative_to(_REPO_ROOT).parts):
             continue
         if _SENSITIVE_PLAYER_EXPORT_KEY.search(
             path.read_text(encoding="utf-8", errors="ignore")
@@ -116,10 +118,7 @@ def test_repository_document_links_resolve() -> None:
         )
 
     for source in sorted(_REPO_ROOT.rglob("*.md")):
-        if any(
-            part in {".git", ".venv", "bin", "node_modules", "venv"}
-            for part in source.parts
-        ):
+        if any(part in _SKIP_DIR_PARTS for part in source.relative_to(_REPO_ROOT).parts):
             continue
         relative_path = str(source.relative_to(_REPO_ROOT))
         text = source.read_text(encoding="utf-8")
@@ -213,3 +212,31 @@ def test_the_cpu_layers_never_load_taichi() -> None:
     tiers = "import gear_optimizer.solver.team_buff_tiers, gear_optimizer.solver.scoring.exact_rescore"
     code = f"{imports}; {tiers}; import sys; assert 'taichi' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], cwd=_REPO_ROOT, check=True)
+
+
+def test_runtime_numba_modules_route_through_jit_setup() -> None:
+    """Every non-producer module using Numba must import jit_setup before numba so NUMBA_CACHE_DIR is active."""
+    producer_exempt = {
+        Path("gear_optimizer/frontier/producer_kernels.py"),
+        Path("gear_optimizer/frontier/producer_precompute.py"),
+        Path("gear_optimizer/frontier/producer_reducer.py"),
+    }
+    jit_setup_path = Path("gear_optimizer/core/jit_setup.py")
+    offenders: list[str] = []
+    for path in sorted((_REPO_ROOT / "gear_optimizer").rglob("*.py")):
+        rel = path.relative_to(_REPO_ROOT)
+        if rel in producer_exempt or rel == jit_setup_path:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(rel))
+        saw_jit_setup = False
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.endswith("jit_setup"):
+                saw_jit_setup = True
+            elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("numba"):
+                if node.module == "numba" or not saw_jit_setup:
+                    offenders.append(f"{rel}: imports from {node.module} before or instead of jit_setup")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "numba" and not saw_jit_setup:
+                        offenders.append(f"{rel}: imports numba before gear_optimizer.core.jit_setup")
+    assert not offenders, "Numba cache isolation bypassed:\n" + "\n".join(offenders)

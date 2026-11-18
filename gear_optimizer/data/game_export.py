@@ -42,6 +42,7 @@ class Catalog:
 
     gears: Mapping[str, Gear]
     minis: Mapping[str, Mini]
+    songs: frozenset[str] = frozenset()
 
 
 def _items(section: Mapping[str, Any], key: str) -> Iterator[dict[str, Any]]:
@@ -107,7 +108,11 @@ def read_catalog(path: Path) -> Catalog:
     minis = [_mini(raw, song_names) for raw in _items(payload["minis"], "minis")]
     _unique((gear.name for gear in gears), "gear")
     _unique((mini.name for mini in minis), "mini")
-    return Catalog({gear.name: gear for gear in gears}, {mini.name: mini for mini in minis})
+    return Catalog(
+        {gear.name: gear for gear in gears},
+        {mini.name: mini for mini in minis},
+        frozenset(song_names.values()),
+    )
 
 
 _CATALOG_CACHE: dict[Path, tuple[tuple[int, int], Catalog]] = {}
@@ -120,7 +125,7 @@ def load_catalog(path: Path) -> Catalog:
 
 def game_song_names(path: Path) -> set[str]:
     """Every Song Name the export describes."""
-    return set(_song_names(json.loads(Path(path).read_text(encoding="utf-8"))).values())
+    return set(load_catalog(path).songs)
 
 
 def _custom_stats(item: Mapping[str, Any], keys: Mapping[str, str]) -> dict[str, int]:
@@ -130,6 +135,8 @@ def _custom_stats(item: Mapping[str, Any], keys: Mapping[str, str]) -> dict[str,
 def custom_catalog(catalog: Catalog, pool: Mapping[str, list]) -> Catalog:
     """The catalog of one solve: without the items a validated pool excludes (case-insensitive; a name the catalog no
     longer has is ignored), with its custom items. A custom mini targets no song."""
+    if not (pool["excludeGear"] or pool["excludeMinis"] or pool["customGear"] or pool["customMinis"]):
+        return catalog
     excluded_gear = {name.casefold() for name in pool["excludeGear"]}
     excluded_minis = {name.casefold() for name in pool["excludeMinis"]}
     gears = {name: gear for name, gear in catalog.gears.items() if name.casefold() not in excluded_gear}
@@ -138,4 +145,4 @@ def custom_catalog(catalog: Catalog, pool: Mapping[str, list]) -> Catalog:
         gears[item["name"]] = Gear(item["name"], item["type"], _custom_stats(item, CUSTOM_GEAR_STATS))
     for item in pool["customMinis"]:
         minis[item["name"]] = Mini(item["name"], item["type"], _custom_stats(item, CUSTOM_MINI_STATS), {}, frozenset())
-    return Catalog(gears, minis)
+    return Catalog(gears, minis, catalog.songs)

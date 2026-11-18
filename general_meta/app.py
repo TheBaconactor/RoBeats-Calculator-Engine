@@ -20,8 +20,9 @@ from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.gamedata import Mini
 from gear_optimizer.settings import paths
 from gear_optimizer.stats import GEM_KINDS
-from gear_optimizer.store.db import load_boards
-from gear_optimizer.store.legacy import served_rows
+from gear_optimizer.store.boards import Boards, served_rows
+from gear_optimizer.store.db import iter_board, load_boards
+from gear_optimizer.store.records import Loadout
 from gear_optimizer.store.schema import connect
 
 from .analysis import ELEMENT_ORDER, RankedSet, Row, Song, ranked_sets, relevant_elements
@@ -36,8 +37,9 @@ def _songs_by_colors() -> dict[tuple[str, str], list[Song]]:
     """The official charts' songs grouped by (primary, secondary) color: Hard, Normal, then Easy, in folder order."""
     songs: dict[tuple[str, str], list[Song]] = {}
     for difficulty in ("Hard", "Normal", "Easy"):
-        for root, _, files in os.walk(paths().chart_dir(difficulty)):
-            for fname in files:
+        for root, dirs, files in os.walk(paths().chart_dir(difficulty)):
+            dirs.sort()
+            for fname in sorted(files):
                 if not fname.lower().endswith(".txt"):
                     continue
                 header = read_header(os.path.join(root, fname))
@@ -45,6 +47,13 @@ def _songs_by_colors() -> dict[tuple[str, str], list[Song]]:
                 if name and primary:
                     songs.setdefault((primary, secondary), []).append(Song(name, difficulty, primary, secondary))
     return songs
+
+
+def _rows_from_boards(boards: Boards) -> list[Row]:
+    meta, fg = served_rows(boards)
+    listed = {x.loadout_hash for x in meta}
+    served = [(x, x.meta) for x in meta] + [(x, x.fg) for x in fg if x.loadout_hash not in listed]
+    return [Row(x.loadout_hash, x.score, x.fg_score or 0, x.gear, x.minis, result.gems) for x, result in served]
 
 
 def _song_rows(conn: sqlite3.Connection, song_name: str) -> list[Row]:
@@ -56,10 +65,7 @@ def _song_rows(conn: sqlite3.Connection, song_name: str) -> list[Row]:
     host application re-solves a tier's gems on demand when a user opens it. Real per-tier gems at build time would
     need the timeline + FG response frontier caches and ``build_team_buff_tier_db_batches`` per tier.
     """
-    meta, fg = served_rows(load_boards(conn, PRECISE, song_name, OPTIMIZER_BASELINE_TEAM_BUFF))
-    listed = {x.loadout_hash for x in meta}
-    served = [(x, x.meta) for x in meta] + [(x, x.fg) for x in fg if x.loadout_hash not in listed]
-    return [Row(x.loadout_hash, x.score, x.fg_score or 0, x.gear, x.minis, result.gems) for x, result in served]
+    return _rows_from_boards(load_boards(conn, PRECISE, song_name, OPTIMIZER_BASELINE_TEAM_BUFF))
 
 
 def _known_mini_names(ranked: RankedSet, minis_by_name: Mapping[str, Mini]) -> list[str]:
@@ -82,10 +88,14 @@ def _category_result(
     team_buff_tiers: list[str],
     conn: sqlite3.Connection,
     catalog: Catalog,
+    preloaded_rows: Mapping[str, list[Row]] | None = None,
 ) -> dict:
     """One elemental category (primary/secondary): its ranked sets at every TeamBuff tier."""
     names = dict.fromkeys(song.name for song in songs)  # a song in two folders is read once
-    rows_by_song = {name: rows for name in names if (rows := _song_rows(conn, name))}
+    if preloaded_rows is None:
+        rows_by_song = {name: rows for name in names if (rows := _song_rows(conn, name))}
+    else:
+        rows_by_song = {name: rows for name in names if (rows := preloaded_rows.get(name))}
     sets = [
         (ranked, _known_mini_names(ranked, catalog.minis))
         for ranked in ranked_sets(songs, rows_by_song, catalog.minis, catalog.gears)
@@ -147,9 +157,25 @@ def run_general_meta(database: Path) -> dict:
     canonical = [(p, s) for p in ELEMENT_ORDER for s in ELEMENT_ORDER]
     extra = sorted(set(songs_by_colors) - set(canonical))
     with contextlib.closing(connect(database)) as conn:
+        boards_by_song: dict[str, tuple[list[Loadout], list[Loadout]]] = {}
+        for loadout in iter_board(conn, "meta", mode=PRECISE, tier=OPTIMIZER_BASELINE_TEAM_BUFF):
+            boards_by_song.setdefault(loadout.song, ([], []))[0].append(loadout)
+        for loadout in iter_board(conn, "fg", mode=PRECISE, tier=OPTIMIZER_BASELINE_TEAM_BUFF):
+            boards_by_song.setdefault(loadout.song, ([], []))[1].append(loadout)
+        preloaded_rows = {
+            song_name: rows
+            for song_name, (meta_rows, fg_rows) in boards_by_song.items()
+            if (rows := _rows_from_boards(Boards(meta_rows, fg_rows)))
+        }
         results = {
             f"{primary}/{secondary}": _category_result(
-                primary, secondary, songs_by_colors.get((primary, secondary), []), team_buff_tiers, conn, catalog
+                primary,
+                secondary,
+                songs_by_colors.get((primary, secondary), []),
+                team_buff_tiers,
+                conn,
+                catalog,
+                preloaded_rows,
             )
             for primary, secondary in canonical + extra
         }

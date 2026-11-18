@@ -30,7 +30,11 @@ from ..data.loadout_equivalence import (
 )
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
 from gear_optimizer.data.loadout_hashing import compact_gear_names, compact_mini_names
-from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
+from ..solver.scoring.exact_rescore import (
+    score_stats_exact_with_timeline_trace,
+    score_stats_fixed_timing_exact,
+    score_stats_fixed_timing_exact_batch,
+)
 from gear_optimizer.trace.reconstruct import UnplayableTrace
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats
@@ -42,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 # The stats a score reads, besides the song's and the selected element.
 _SCORE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
+_FG_TRACE_KEYS = frozenset(("raw_fever_fill", "real_fever_time", "frontier_trace", "non_fever_base"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +69,15 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
     if len(fg_by_index) != len(solve.fg):
         raise ValueError(f"{solve.song}: two FG results for one loadout")
     fixed_tier = team_buff_effect(solve.tier, primary)
+    use_fast_meta = _meta_score is _DEFAULT_META_SCORE
+    fixed_scores = (
+        score_stats_fixed_timing_exact_batch([loadout.stats for loadout in solve.loadouts], song, curves)
+        if use_fast_meta and song.mode == "non-precise"
+        else None
+    )
+    base_trace_memo: dict[tuple, dict[str, Any]] = {}
+    encoded_meta_by_id: dict[int, bytes] = {}
+    encoded_fg_by_key: dict[tuple[Any, ...], bytes] = {}
     out: list[Row] = []
     seen: set[str] = set()
     for i in row_order(len(solve.loadouts), [i for i, fg in solve.fg if fg.score > fg.paired]):
@@ -76,8 +90,22 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
         def stats_of(element: str, allocation: tuple[int, ...], solved: Mapping[str, int]) -> tuple[int, ...]:
             return stored_stats(fixed_tier, ident, gears, song_view, element, allocation, solved, (primary, secondary))
 
+        perfect_time = sum(gears[n].perfect_time for n in ident.gear)
         try:
-            score, meta_trace = _meta_score(loadout.stats, song, curves, sum(gears[n].perfect_time for n in ident.gear))
+            if not use_fast_meta:
+                score, meta_trace = _meta_score(loadout.stats, song, curves, perfect_time)
+            elif fixed_scores is not None:
+                score, meta_trace = int(fixed_scores[i]), None
+            else:
+                replay = score_stats_exact_with_timeline_trace(
+                    loadout.stats,
+                    song,
+                    curves,
+                    perfect_time,
+                    copy=False,
+                    memo=base_trace_memo,
+                )
+                score, meta_trace = int(replay["score"]), replay["TimelineFrontier"]
         except UnplayableTrace as exc:
             logger.warning(
                 "%s: no row for loadout %s, its Base play is unplayable: %s", solve.song, ident.loadout_hash, exc
@@ -116,7 +144,28 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
             meta=meta,
             fg=fg,
         )
-        out.append(Row(record, encode_trace(meta_trace), encode_trace(fg_trace)))
+        if meta_trace is None:
+            meta_blob = None
+        else:
+            meta_id = id(meta_trace)
+            meta_blob = encoded_meta_by_id.get(meta_id)
+            if meta_blob is None:
+                meta_blob = encoded_meta_by_id[meta_id] = encode_trace(meta_trace)
+        if fg_trace is None:
+            fg_blob = None
+        elif fg_trace.keys() == _FG_TRACE_KEYS:
+            fg_key = (
+                fg_trace["raw_fever_fill"],
+                fg_trace["real_fever_time"],
+                id(fg_trace["frontier_trace"]),
+                fg_trace["non_fever_base"],
+            )
+            fg_blob = encoded_fg_by_key.get(fg_key)
+            if fg_blob is None:
+                fg_blob = encoded_fg_by_key[fg_key] = encode_trace(fg_trace)
+        else:
+            fg_blob = encode_trace(fg_trace)
+        out.append(Row(record, meta_blob, fg_blob))
     return out
 
 
@@ -174,6 +223,9 @@ def _meta_score(
         return int(score_stats_fixed_timing_exact(stats, song, curves)), None
     replay = score_stats_exact_with_timeline_trace(stats, song, curves, perfect_time)
     return int(replay["score"]), replay["TimelineFrontier"]
+
+
+_DEFAULT_META_SCORE = _meta_score
 
 
 def _fg_trace(solved: SolvedFg, song: TimedSong) -> dict[str, Any]:

@@ -10,7 +10,7 @@ from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_NORMAL
 from gear_optimizer.solver.ftff_combos import FtffShortlist, ftff_combo_arrays
 
 from . import fields, kernels
-from .runtime import init_taichi, reset_taichi, ti
+from .runtime import init_taichi, register_reset_hook, reset_taichi, ti
 from .scoring import float64_words
 
 _ready = False
@@ -78,14 +78,26 @@ def ensure_ready() -> None:
     _ready = True
 
 
-def hard_reset(reason: str) -> None:
-    """Taichi reset (frees its Vulkan resources; every field is gone): the next ensure_ready starts over."""
+def _clear_device_state() -> None:
     global _ready, _timeline_key, _shortlist_arrays
-    reset_taichi(reason=reason)
     _ready = False
     _timeline_key = None
     _ga_uploads.clear()
     _shortlist_arrays = None
+
+
+register_reset_hook(_clear_device_state)
+
+
+def hard_reset(reason: str) -> None:
+    """Taichi reset (frees its Vulkan resources; every field is gone): the next ensure_ready starts over."""
+    reset_taichi(reason=reason)
+    _clear_device_state()
+
+
+def has_timeline(key: tuple) -> bool:
+    """Whether `key`'s timeline frontier is already uploaded on the initialized device."""
+    return _ready and key == _timeline_key
 
 
 def upload_timeline(key: tuple, payload: TimelineFrontierGridPayload) -> None:

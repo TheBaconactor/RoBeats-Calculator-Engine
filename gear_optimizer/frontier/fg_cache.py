@@ -114,11 +114,16 @@ def scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgRespons
     total_notes = int(arrays["total_notes"])
     if int(arrays["first_surface_head_len"]) != min(total_notes, 100):
         raise ValueError("FG response frontier scoring bundle has invalid surface head coefficient metadata")
-    rows, patterns = arrays["surface_rows"], arrays["surface_patterns"]
-    pattern_ids = rows[0].astype(np.int32)
-    if pattern_ids.size and not 0 <= pattern_ids.min() <= pattern_ids.max() < patterns.shape[1]:
-        raise ValueError("FG response surface row references an invalid head-pattern ID")
+    patterns = arrays.pop("surface_patterns")
+    pattern_count = patterns.shape[1]
     pattern_words, head_coeffs = unpack_surface_patterns(patterns.T)
+    del patterns
+    rows = arrays.pop("surface_rows")
+    if rows.shape[1] and not (0 <= int(rows[0].min()) <= int(rows[0].max()) < pattern_count):
+        raise ValueError("FG response surface row references an invalid head-pattern ID")
+    counts = np.ascontiguousarray(rows[1:4].T, dtype=np.int32)
+    pattern_ids = rows[0].astype(np.int32)
+    del rows
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_stat=frontier_idx_by_stat,
@@ -130,7 +135,7 @@ def scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgRespons
             frontier_lengths=arrays["first_counts"],
             pattern_ids=pattern_ids,
             pattern_words=pattern_words,
-            counts=np.ascontiguousarray(rows[1:4].T, dtype=np.int32),
+            counts=counts,
             head_coeffs=head_coeffs,
             head_greats=surface_head_greats(pattern_words),
         ),

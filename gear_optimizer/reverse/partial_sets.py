@@ -23,7 +23,7 @@ from gear_optimizer.data.game_export import Catalog
 from gear_optimizer.gamedata import MINI_FIRST_CAP, MINI_LEVEL_STEP, MINI_RANKS, ascension_element_bonus, mini_level_cap
 from gear_optimizer.rules import GEM_BUDGET
 
-from .loadouts import GEAR_SLOTS, PRIMARY, SECONDARY, LoadoutSpace, holds_bit
+from .loadouts import GEAR_SLOTS, PRIMARY, SECONDARY, LoadoutSpace
 
 _LEVELS = mini_level_cap(MINI_RANKS)
 _ASCENSIONS = 11
@@ -107,13 +107,36 @@ def _level_sums(elements, minis, caps, scratch, out):
 
 
 @jit(nopython=True, cache=True)
+def _holds_bit(words, value):
+    return (
+        value >= 0
+        and (value >> 6) < words.shape[0]
+        and bool((words[value >> 6] >> np.uint64(value & 63)) & np.uint64(1))
+    )
+
+
+@jit(nopython=True, cache=True)
 def _levels_for(elements, minis, caps, need, out):
     """Levels, highest first, whose element values sum to need, into out; whether there are."""
+    m0, m1, m2 = minis[0], minis[1], minis[2]
+    min1, min2 = elements[m1, 1], elements[m2, 1]
+    max1, max2 = elements[m1, caps[1]], elements[m2, caps[2]]
+    if need < elements[m0, 1] + min1 + min2 or need > elements[m0, caps[0]] + max1 + max2:
+        return False
     for first in range(caps[0], 0, -1):
+        rem1 = need - elements[m0, first]
+        if rem1 > max1 + max2:
+            break
+        if rem1 < min1 + min2:
+            continue
         for second in range(caps[1], 0, -1):
-            rest = need - elements[minis[0], first] - elements[minis[1], second]
+            rest = rem1 - elements[m1, second]
+            if rest > max2:
+                break
+            if rest < min2:
+                continue
             for third in range(caps[2], 0, -1):
-                value = elements[minis[2], third]
+                value = elements[m2, third]
                 if value == rest:
                     out[0], out[1], out[2] = first, second, third
                     return True
@@ -246,7 +269,7 @@ def _settled(target, sums, room, gems_of, fixed, mini_ascension, minis_of, out):
                 if gem_value[row] == 0 or (count == 0 and row > 5):
                     continue
                 need = target[5] - given - count * gem_value[row]
-                if holds_bit(bits, need) and _levels_for(mini_elements, minis, caps, need, levels):
+                if _holds_bit(bits, need) and _levels_for(mini_elements, minis, caps, need, levels):
                     progress = (stat_gems + point_gems + count) / GEM_BUDGET
                     for m in range(3):
                         progress += levels[m] / caps[m] + ranks[m] / MINI_RANKS

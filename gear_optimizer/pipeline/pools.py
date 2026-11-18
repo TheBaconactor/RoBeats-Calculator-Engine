@@ -51,6 +51,23 @@ def _timing_neutral_relevant_dominates(candidate, other, primary_color, secondar
     return strictly_better
 
 
+def _five_axis_dominates(cand_sig, other_sig) -> bool:
+    return (
+        cand_sig[0] >= other_sig[0]
+        and cand_sig[1] >= other_sig[1]
+        and cand_sig[2] >= other_sig[2]
+        and cand_sig[5] >= other_sig[5]
+        and cand_sig[6] >= other_sig[6]
+        and (
+            cand_sig[0] > other_sig[0]
+            or cand_sig[1] > other_sig[1]
+            or cand_sig[2] > other_sig[2]
+            or cand_sig[5] > other_sig[5]
+            or cand_sig[6] > other_sig[6]
+        )
+    )
+
+
 def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=""):
     """
     Exact-safe pre-GA gear pruning for the current single-song pool initialization path.
@@ -64,26 +81,27 @@ def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=
         return gear_items
 
     unique_rows = []
+    buckets: dict[tuple[int, int], list[tuple[int, tuple[int, ...]]]] = {}
     seen_signatures = set()
     for row in gear_items:
         sig = _relevant_row_projection(row, primary_color, secondary_color)
         if sig in seen_signatures:
             continue
         seen_signatures.add(sig)
+        idx = len(unique_rows)
         unique_rows.append(row)
+        buckets.setdefault((sig[3], sig[4]), []).append((idx, sig))
 
-    pruned = []
-    for idx, row in enumerate(unique_rows):
-        dominated = False
-        for other_idx, other in enumerate(unique_rows):
-            if other_idx == idx:
-                continue
-            if _timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
-                dominated = True
-                break
-        if not dominated:
-            pruned.append(row)
-    return pruned
+    keep = [True] * len(unique_rows)
+    for bucket in buckets.values():
+        if len(bucket) <= 1:
+            continue
+        for pos, (idx, sig) in enumerate(bucket):
+            for other_pos, (_other_idx, other_sig) in enumerate(bucket):
+                if other_pos != pos and _five_axis_dominates(other_sig, sig):
+                    keep[idx] = False
+                    break
+    return [row for idx, row in enumerate(unique_rows) if keep[idx]]
 
 
 def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=""):
@@ -99,6 +117,7 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
         return mini_items
 
     capped_rows = []
+    buckets: dict[tuple[int, int], list[tuple[int, tuple[int, ...]]]] = {}
     multiplicities = {}
     for row in mini_items:
         sig = _relevant_row_projection(row, primary_color, secondary_color)
@@ -106,28 +125,33 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
         if seen >= 3:
             continue
         multiplicities[sig] = seen + 1
+        idx = len(capped_rows)
         capped_rows.append(row)
+        buckets.setdefault((sig[3], sig[4]), []).append((idx, sig))
 
-    survivors = list(capped_rows)
-    while len(survivors) > 3:
-        removed_any = False
-        for idx, row in enumerate(survivors):
-            dominators = 0
-            for other_idx, other in enumerate(survivors):
-                if other_idx == idx:
-                    continue
-                if _timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
-                    dominators += 1
-                    if dominators >= 3:
-                        break
-            if dominators >= 3:
-                del survivors[idx]
-                removed_any = True
+    keep = [True] * len(capped_rows)
+    for bucket in buckets.values():
+        if len(bucket) <= 3:
+            continue
+        survivors = list(bucket)
+        while len(survivors) > 3:
+            removed_any = False
+            for pos, (idx, sig) in enumerate(survivors):
+                dominators = 0
+                for other_pos, (_other_idx, other_sig) in enumerate(survivors):
+                    if other_pos != pos and _five_axis_dominates(other_sig, sig):
+                        dominators += 1
+                        if dominators >= 3:
+                            break
+                if dominators >= 3:
+                    keep[idx] = False
+                    del survivors[pos]
+                    removed_any = True
+                    break
+            if not removed_any:
                 break
-        if not removed_any:
-            break
 
-    return survivors
+    return [row for idx, row in enumerate(capped_rows) if keep[idx]]
 
 
 # (primary, secondary, slots) -> (the gear catalog the pools were built from, pools). The entry keeps

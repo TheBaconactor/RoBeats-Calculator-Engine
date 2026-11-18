@@ -32,6 +32,7 @@ def materialize_force_payload_from_response_frontier(
     curves: StatCurves,
     trace_cache: FgTraceMaterializationCache,
     perfect_time: int,
+    copy_trace: bool = True,
 ) -> dict[str, Any]:
     if paired_base_score <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
@@ -98,7 +99,7 @@ def materialize_force_payload_from_response_frontier(
             # timing graph places the fever window.
             "raw_fever_fill": fever_fill_denominator,
             "real_fever_time": result.real_fever_time,
-            "frontier_trace": [dict(row) for row in base_trace],
+            "frontier_trace": [dict(row) for row in base_trace] if copy_trace else list(base_trace),
             "non_fever_base": result.non_fever_base,
         },
     }

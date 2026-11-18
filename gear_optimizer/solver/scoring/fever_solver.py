@@ -16,7 +16,8 @@ from ...gamedata import Stats, StatCurves
 from ...rules import MAX_STAT
 from ...stats import GEM_KINDS, apply_gems
 from ..base_stats import STAT_NAMES, loadout_totals
-from ..gem_search import gem_groups, gem_winners
+from ..gem_search import GemMemo, gem_groups, gem_winners
+from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 from gear_optimizer.frontier.timeline_producer import TimelineFrontierGridPayload
 from gear_optimizer.frontier.types import SurfacePool
@@ -37,7 +38,7 @@ class GemSolve:
 
 
 def solve_best_fever_combination_batch(
-    stats_list, song: TimedSong, curves: StatCurves, *, selected_color: str
+    stats_list, song: TimedSong, curves: StatCurves, *, selected_color: str, memo: GemMemo | None = None
 ) -> list[GemSolve]:
     """Each pre-gem stat row's best gem allocation, one GemSolve per row in order; a tie goes to the search's first
     FT/FF split, then its first surface, then the fewest CM, FM and PP gems."""
@@ -54,6 +55,7 @@ def solve_best_fever_combination_batch(
         selected_color=selected_color,
         frontier_idx_by_stat=frontier_idx_by_stat,
         total_notes=int(chart.total_notes),
+        memo=memo,
     )
     solves = []
     for row, winner in zip(
@@ -74,10 +76,12 @@ def _base_surface_pool(song: TimedSong, curves: StatCurves) -> tuple[np.ndarray,
     (one per distinct surface range of the payload) and the surfaces, without Greats. A song's batches share it: the
     timeline cache serves them one payload object."""
     global _last_base_pool
+    ephemeral = frontier_cache_is_ephemeral()
     payload = build_or_load_timeline_frontier_payload(song, curves).payload
-    last = _last_base_pool
-    if last is not None and last[0] is payload:
-        return last[1], last[2]
+    if not ephemeral:
+        last = _last_base_pool
+        if last is not None and last[0] is payload:
+            return last[1], last[2]
     used = int(payload.frontier_pool_used)
     cell_ranges = np.stack((payload.grid_frontier_offset[0].ravel(), payload.grid_frontier_count[0].ravel()), axis=1)
     ranges, frontier_idx = np.unique(cell_ranges, axis=0, return_inverse=True)
@@ -101,5 +105,6 @@ def _base_surface_pool(song: TimedSong, curves: StatCurves) -> tuple[np.ndarray,
         head_greats=np.zeros((heads.shape[0], 2), dtype=np.int32),
     )
     frontier_idx = frontier_idx.reshape(MAX_STAT + 1, MAX_STAT + 1).astype(np.int32)
-    _last_base_pool = (payload, frontier_idx, pool)
+    if not ephemeral:
+        _last_base_pool = (payload, frontier_idx, pool)
     return frontier_idx, pool
