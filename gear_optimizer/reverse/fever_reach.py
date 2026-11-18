@@ -538,20 +538,31 @@ def pattern_words(low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return words
 
 
+def _walk_time_bounds(
+    chart: Chart, perfect_time: int, *, include_greats: bool
+) -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
+    """Perfect-only `(earliest, latest)` event bounds for `walk_cell` and, when `include_greats` is set, the all-Great
+    `(great_early, great_late)` bounds built from the same quantized timestamps."""
+    hit = quantize_to_int_ms(chart.timestamps).astype(np.int64)
+    tap, tail = judgment_bounds(1, perfect_time), judgment_bounds(HELD_TAIL_WINDOW_SCALE, perfect_time)
+    is_tail = chart.note_types == HELD_TAIL_TYPE
+    times = (
+        np.sort(hit + np.where(is_tail, tail.perfect.earliest, tap.perfect.earliest) - 1),
+        np.sort(hit + np.where(is_tail, tail.perfect.latest, tap.perfect.latest)),
+    )
+    if not include_greats:
+        return times, times
+    greats_pair = (
+        np.sort(hit + np.where(is_tail, tail.early_great.earliest, tap.early_great.earliest) - 1),
+        np.sort(hit + np.where(is_tail, tail.late_great.latest, tap.late_great.latest)),
+    )
+    return times, greats_pair
+
+
 def fever_surfaces(chart: Chart, curves: StatCurves, perfect_time: int, greats: int = 0) -> FeverSurfaces:
     """The timelines of every cell of `chart` of a play at this Perfect Time with at most `greats` Greats."""
     durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
-    times = event_times(chart, perfect_time, greats=0)
-    if greats > 0:
-        positions = np.arange(times[0].shape[0])
-        great_early, great_late = great_times(chart, perfect_time)
-        greats_pair = (great_early, great_late)
-        times = (
-            np.maximum(great_early, times[0][np.maximum(positions - greats, 0)]),
-            np.minimum(great_late, times[1][np.minimum(positions + greats, times[0].shape[0] - 1)]),
-        )
-    else:
-        greats_pair = times
+    times, greats_pair = _walk_time_bounds(chart, perfect_time, include_greats=greats > 0)
     walk = times, greats_pair, thresholds.astype(np.float64), durations * 1000.0, greats
     # The first Fever Time is walked alone: numba resolves a kernel's argument types once per process, and two threads at that
     # at once abort it. The turns' rows in Fever Time order are the rows of one walk of the grid.

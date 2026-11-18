@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from math import ceil
+import threading
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -365,7 +366,7 @@ def reconstruct_force_greats_response_trace(
     return tuple({**row, "section": idx + 1} for idx, row in enumerate(trace))
 
 
-_last_base_edge_cache: tuple[tuple[Any, ...], FGSongInputs, FgTraceEdgeOptionsCache] | None = None
+_base_edge_local = threading.local()
 
 
 def reconstruct_base_trace(
@@ -378,16 +379,15 @@ def reconstruct_base_trace(
 ) -> tuple[dict, ...]:
     """The physical trace of a Base surface: the FG reconstruction of the same surface without Greats, so without
     forced-Great timing (and its late-Great floor)."""
-    global _last_base_edge_cache
     key = (inputs.timestamps, inputs.perfect_candidates, inputs.perfect_floor, inputs.exit_ceiling, inputs.lanes)
-    last = _last_base_edge_cache
+    last = getattr(_base_edge_local, "last", None)
     if last is not None and all(a is b for a, b in zip(last[0], key, strict=True)):
         base_inputs, edge_cache = last[1], last[2]
     else:
         base_inputs = replace(inputs, late_great_floor=None, use_forced_great_timing=False)
         edge_cache = FgTraceEdgeOptionsCache()
         if not frontier_cache_is_ephemeral():
-            _last_base_edge_cache = (key, base_inputs, edge_cache)
+            _base_edge_local.last = (key, base_inputs, edge_cache)
     return reconstruct_force_greats_response_trace(
         inputs=base_inputs,
         non_fever_base=0,

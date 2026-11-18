@@ -46,13 +46,13 @@ def _install(monkeypatch, base_scores: dict[str, int], fg_scores: dict[str, int]
         names = [stat["__name__"] for stat in stats if "__name__" in stat]
         return {**real_total(fixed, *[{k: v for k, v in s.items() if k != "__name__"} for s in stats]), "__name__": names[0]}
 
-    def fake_solve(rows, song, curves, *, selected_color):
+    def fake_solve(rows, song, curves, *, selected_color, memo=None):
         return [
             GemSolve((1, 2, 3, 4, 5, 6), {"Perfect Points": 7, "__name__": row["__name__"]}, base_scores[loadout_of(row)])
             for row in rows
         ]
 
-    def fake_replays(rows, song, curves, selected_color, trace_cache, perfect_times):
+    def fake_replays(rows, song, curves, selected_color, trace_cache, perfect_times, *, memo=None):
         out = []
         for row in rows:
             score = fg_scores.get(loadout_of(row))
@@ -63,7 +63,7 @@ def _install(monkeypatch, base_scores: dict[str, int], fg_scores: dict[str, int]
     monkeypatch.setattr(tbt, "solve_best_fever_combination_batch", fake_solve)
     monkeypatch.setattr(tbt, "build_fixed_timing_fg_replays", fake_replays)
     monkeypatch.setattr(tbt, "score_stats_exact_with_timeline_trace",
-                        lambda stats, song, curves, perfect_time: {"TimelineFrontier": {"frontier_trace": [{"fresh": True}]}})
+                        lambda stats, song, curves, perfect_time, *, memo=None: {"TimelineFrontier": {"frontier_trace": [{"fresh": True}]}})
     monkeypatch.setattr(tbt, "fg_response_frontier_bundle_cache_key", lambda _song, _curves: ())
     monkeypatch.setattr(tbt, "release_fg_response_song_memory", lambda _key: None)
 
@@ -113,7 +113,7 @@ def test_details_carry_the_tiers_solve_never_the_stored_allocation(monkeypatch, 
 def test_a_tier_without_a_fresh_trace_drops_the_stored_one(monkeypatch, song):
     _install(monkeypatch, {"a": 30})
     monkeypatch.setattr(tbt, "score_stats_exact_with_timeline_trace",
-                        lambda stats, song, curves, perfect_time: {"TimelineFrontier": {"frontier_trace": []}})
+                        lambda stats, song, curves, perfect_time, *, memo=None: {"TimelineFrontier": {"frontier_trace": []}})
 
     (row,) = tbt.build_team_buff_tier_db_batches(entries=[_entry("a")], song=song, curves=None, tiers=("T1",),
                                                  replay_surface="meta")["T1"]

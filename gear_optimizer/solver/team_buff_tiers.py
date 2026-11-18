@@ -48,9 +48,6 @@ from .song_config import baseline_fixed_stats
 from .timing_envelope import TimedSong
 
 logger = logging.getLogger(__name__)
-_DEFAULT_SOLVE_BASE = solve_best_fever_combination_batch
-_DEFAULT_FG_REPLAYS = build_fixed_timing_fg_replays
-_DEFAULT_TRACE_SCORE = score_stats_exact_with_timeline_trace
 
 
 def _item_names(items: list) -> list[str]:
@@ -181,12 +178,7 @@ def _resolve_tier(
     primary = song.chart.primary
     pre_gem = [total(fixed_stats, *(item.stats for item in row.items)) for row in rows]
     bases, base_scores = [], []
-    solves = (
-        solve_best_fever_combination_batch(pre_gem, song, curves, selected_color=primary, memo=base_memo)
-        if solve_best_fever_combination_batch is _DEFAULT_SOLVE_BASE
-        else solve_best_fever_combination_batch(pre_gem, song, curves, selected_color=primary)
-    )
-    for solve in solves:
+    for solve in solve_best_fever_combination_batch(pre_gem, song, curves, selected_color=primary, memo=base_memo):
         pp, cm, fm, ft, ff, element = solve.gems
         bases.append({"Stats": dict(solve.stats), "GemCounts": build_gem_counts(pp, cm, fm, element), "FT": ft, "FF": ff})
         base_scores.append(solve.score)
@@ -199,10 +191,8 @@ def _resolve_tier(
     else:
         fg_pre_gem = [pre_gem[i] for i in fg_rows]
         fg_pt = [rows[i].perfect_time for i in fg_rows]
-        replays = (
-            build_fixed_timing_fg_replays(fg_pre_gem, song, curves, primary, trace_cache, fg_pt, memo=fg_memo)
-            if build_fixed_timing_fg_replays is _DEFAULT_FG_REPLAYS
-            else build_fixed_timing_fg_replays(fg_pre_gem, song, curves, primary, trace_cache, fg_pt)
+        replays = build_fixed_timing_fg_replays(
+            fg_pre_gem, song, curves, primary, trace_cache, fg_pt, memo=fg_memo
         )
         for i, force in zip(fg_rows, replays, strict=True):
             # A loadout without an FG result (its plan is unplayable at this timing) ranks nowhere on the FG board.
@@ -225,12 +215,8 @@ def _tier_details(
     details = {key: value for key, value in entry["details"].items() if key not in stale} | base
     details["Stats"], details["GemCounts"] = dict(base["Stats"]), dict(base["GemCounts"])
     if song.mode != "non-precise":
-        replay = (
-            score_stats_exact_with_timeline_trace(
-                details["Stats"], song, curves, perfect_time, memo=base_trace_memo
-            )
-            if score_stats_exact_with_timeline_trace is _DEFAULT_TRACE_SCORE
-            else score_stats_exact_with_timeline_trace(details["Stats"], song, curves, perfect_time)
+        replay = score_stats_exact_with_timeline_trace(
+            details["Stats"], song, curves, perfect_time, memo=base_trace_memo
         )
         frontier = replay["TimelineFrontier"]
         if frontier.get("frontier_trace"):

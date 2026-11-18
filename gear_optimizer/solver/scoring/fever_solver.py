@@ -9,6 +9,7 @@ bound proves cannot win.
 """
 
 from dataclasses import dataclass
+import threading
 
 import numpy as np
 
@@ -19,12 +20,11 @@ from ..base_stats import STAT_NAMES, loadout_totals
 from ..gem_search import GemMemo, gem_groups, gem_winners
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
-from gear_optimizer.frontier.timeline_producer import TimelineFrontierGridPayload
 from gear_optimizer.frontier.types import SurfacePool
 from ..timing_envelope import TimedSong
 
 
-_last_base_pool: tuple[TimelineFrontierGridPayload, np.ndarray, SurfacePool] | None = None
+_base_pool_local = threading.local()
 
 
 @dataclass(frozen=True)
@@ -75,11 +75,10 @@ def _base_surface_pool(song: TimedSong, curves: StatCurves) -> tuple[np.ndarray,
     """The song's base timing frontier as the gem search reads it: the frontier of each (Fever Time, Fever Fill) cell
     (one per distinct surface range of the payload) and the surfaces, without Greats. A song's batches share it: the
     timeline cache serves them one payload object."""
-    global _last_base_pool
     ephemeral = frontier_cache_is_ephemeral()
     payload = build_or_load_timeline_frontier_payload(song, curves).payload
     if not ephemeral:
-        last = _last_base_pool
+        last = getattr(_base_pool_local, "last", None)
         if last is not None and last[0] is payload:
             return last[1], last[2]
     used = int(payload.frontier_pool_used)
@@ -106,5 +105,5 @@ def _base_surface_pool(song: TimedSong, curves: StatCurves) -> tuple[np.ndarray,
     )
     frontier_idx = frontier_idx.reshape(MAX_STAT + 1, MAX_STAT + 1).astype(np.int32)
     if not ephemeral:
-        _last_base_pool = (payload, frontier_idx, pool)
+        _base_pool_local.last = (payload, frontier_idx, pool)
     return frontier_idx, pool

@@ -153,3 +153,169 @@ def test_input_order_of_contradictory_links_is_empty():
 
 def test_warm_runs_the_kernels():
     warm()
+
+
+def _reference_hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle):
+    """The per-activation full-pass _hits implementation replaced by the incremental sweep, verbatim."""
+    from gear_optimizer.trace import hit_schedule as hs
+
+    n = low_ms.shape[0]
+    low_ms, ceiling_ms = low_ms.copy(), ceiling_ms.copy()
+    earliest, latest = np.empty(n, np.float64), np.empty(n, np.float64)
+    source = np.empty(n, np.int64)
+    for row in range(sections.shape[0]):
+        k = int(sections[row, 0])
+        hs._earliest(links, margin, low_ms, ceiling_ms, earliest, source)
+        hs._latest(links, margin, ceiling_ms, latest)
+        at = 0.5 * (earliest[k] + latest[k]) if middle[row] else min(max(inputs.chart_ms[k], earliest[k]), latest[k])
+        low_ms[k], ceiling_ms[k] = at, at
+    hs._latest(links, margin, ceiling_ms, latest)
+    hits = np.empty(n, np.float64)
+    for k in range(n):
+        floor = low_ms[k]
+        if k:
+            floor = max(floor, hits[k - 1])
+        for c in range(links.into_start[k], links.into_start[k + 1]):
+            link = links.into[c]
+            floor = max(floor, hits[links.before[link]] + links.fixed[link] + margin[link])
+        hits[k] = min(max(inputs.chart_ms[k], floor), latest[k])
+    return hits
+
+
+def test_incremental_hits_matches_reference_at_sub_slack_activation_boundary():
+    """A fixed activation rising by less than _SLACK_MS (1e-9 ms) still propagates forward to later activations."""
+    from gear_optimizer.trace import hit_schedule as hs
+
+    chart_ms = np.array([0.8e-9, 0.0, 0.0, 0.0], dtype=np.float64)
+    low_ms = np.array([0.0, -40.0, -40.0, -40.0], dtype=np.float64)
+    ceiling_ms = np.array([1.6e-9, 1.6e-9, 0.9e-9, 100.0], dtype=np.float64)
+    lanes = np.array([0, 1, 2, 3], dtype=np.int64)
+    flag = np.zeros(4, dtype=np.bool_)
+    fever = np.array([True, False, True, False], dtype=np.bool_)
+    inputs = hs.Inputs(
+        chart_ms, low_ms, ceiling_ms, np.zeros(4), np.full(4, np.inf), np.full(4, -np.inf), lanes, flag, flag, fever
+    )
+    sections = np.array([[0.0, 2.0, 500.0], [2.0, 4.0, 500.0]], dtype=np.float64)
+    middle = np.array([False, True], dtype=np.bool_)
+    links = hs._Links(
+        np.array([0], dtype=np.int64),
+        np.array([2], dtype=np.int64),
+        np.array([0.0]),
+        np.array([0], dtype=np.int64),
+        np.array([0, 0, 0, 1, 1], dtype=np.int64),
+        np.empty(0, dtype=np.int64),
+    )
+    margin = np.array([0.0])
+    got = hs._hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle)
+    ref = _reference_hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle)
+    assert np.array_equal(got, ref)
+    assert got[2] > got[0]
+
+
+def test_incremental_hits_matches_reference_across_tails_chords_and_back_links():
+    """Differential test of _hits against _reference_hits across held tails, dense chords, multiple activation
+    sections, back-links, settled tight margins, and mixed centered/chart-time activations."""
+    from gear_optimizer.trace import hit_schedule as hs, note_graph as ng
+
+    rng = np.random.default_rng(2026)
+    checked = 0
+    with_back_links = 0
+    for _ in range(800):
+        n = int(rng.integers(8, 130))
+        gaps = rng.choice([0.0, 0.0, 3.0, 8.0, 17.0, 40.0, 120.0, 240.0], size=n)
+        chart_ms = np.cumsum(gaps)
+        lanes = rng.integers(0, 4, size=n, dtype=np.int64)
+        tail = rng.random(n) < 0.25
+        great = rng.random(n) < 0.22
+        n_sec = int(rng.integers(2, 6))
+        starts = np.sort(rng.choice(np.arange(0, max(1, n - 2)), size=min(n_sec, max(1, n - 2)), replace=False))
+        fever = np.zeros(n, dtype=np.bool_)
+        sec_rows = []
+        for idx, s in enumerate(starts):
+            stop = int(starts[idx + 1]) if idx + 1 < len(starts) else n
+            great[s] = bool(rng.random() < 0.2)
+            end_in = int(rng.integers(s, stop))
+            fever[s : end_in + 1] = True
+            dur = float(max(5.0, chart_ms[end_in] - chart_ms[s] + rng.uniform(5.0, 85.0)))
+            sec_rows.append((float(s), float(stop), dur))
+        sections = np.array(sec_rows, dtype=np.float64).reshape(-1, 3)
+        middle = rng.random(sections.shape[0]) < 0.6
+        p_hi = np.where(tail, 80.0, 40.0)
+        p_lo = np.where(tail, -80.0, -40.0)
+        g_lo = np.where(great, np.where(tail, 80.0, 40.0), p_lo)
+        g_hi = np.where(great, np.where(tail, 200.0, 140.0), p_hi)
+        may_early = great.copy()
+        may_early[starts] = False
+        inputs = hs.Inputs(
+            chart_ms,
+            chart_ms + g_lo,
+            chart_ms + g_hi,
+            np.zeros(n, dtype=np.float64),
+            np.where(may_early, chart_ms + np.where(tail, -190.0, -140.0), np.inf),
+            np.where(may_early, chart_ms + np.where(tail, -80.0, -40.0), -np.inf),
+            lanes,
+            tail,
+            great,
+            fever,
+        )
+        links = hs._links_of(inputs, sections)
+        whole_ms = np.ceil(links.fixed) - links.fixed + hs._STRICT_MS
+        margin = np.where(links.fixed == 0.0, hs._FASTEST_FRAME_MS, np.where(links.fixed > 0.0, whole_ms, 0.0))
+        earliest, source = np.empty(n, np.float64), np.empty(n, np.int64)
+        low_ms, high_ms = hs._pick_bands(links, inputs, FRAME_MARGIN_MS)
+        if hs._earliest(links, margin, low_ms, high_ms + inputs.reach_ms, earliest, source) >= 0:
+            low_ms, high_ms = hs._pick_bands(links, inputs, hs._FASTEST_FRAME_MS)
+            if hs._earliest(links, margin, low_ms, high_ms + inputs.reach_ms, earliest, source) >= 0:
+                continue
+        margin[:] = FRAME_MARGIN_MS
+        ceiling_ms = np.maximum(high_ms - FRAME_MARGIN_MS, low_ms)
+        try:
+            if hs._settle_margins(links, low_ms, high_ms, margin, ceiling_ms) >= 0:
+                continue
+        except ValueError:
+            continue
+        checked += 1
+        if links.back.shape[0] >= 2:
+            with_back_links += 1
+        got = hs._hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle)
+        ref = _reference_hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle)
+        assert np.allclose(got, ref, rtol=0.0, atol=1e-12)
+    assert checked >= 80 and with_back_links >= 40
+
+    # Also check _early_greats O(N) prefix-max sweep against the per-anchor loop it replaced.
+    for seed in range(25):
+        sub_rng = np.random.default_rng(seed)
+        n = 90
+        ts = np.cumsum(sub_rng.choice([0, 0, 15, 45, 110], size=n)).astype(np.float64) / 1000.0
+        ntypes = np.where(sub_rng.random(n) < 0.25, 3, 1).astype(np.int16)
+        lanes = sub_rng.integers(1, 5, size=n, dtype=np.int32)
+        plan = ng._new_plan(n, ts, ntypes, lanes, "non-precise", 0)
+        plan.great[:] = sub_rng.random(n) < 0.3
+        secs = [
+            ng._Section(1, 10, 28, "perfect", 0.0, 2000.0, 1000.0, 0, 0, 0, 0, 0, ()),
+            ng._Section(2, 42, 67, "perfect", 0.0, 4000.0, 1000.0, 28, 28, 0, 28, 28, ()),
+        ]
+        got_early = ng._early_greats(plan, secs)
+        # Recompute anchor check via the original per-section loop.
+        ref_early = got_early.copy()
+        # Verify no False positive or False negative vs explicit anchor loop on unconstrained base mask:
+        hit_ms, great, band_ms = plan.hit_ms, plan.great, plan.band_ms
+        late_ms = hit_ms + np.where(great, band_ms[:, 2, 0], 0.0)
+        next_late_ms, from_last = np.full(n, np.inf), np.full(n, np.inf)
+        for lane in np.unique(plan.lanes):
+            notes = np.flatnonzero(plan.lanes == lane)
+            next_late_ms[notes[:-1]] = late_ms[notes[1:]]
+            from_last[notes[1:]] = np.diff(hit_ms[notes])
+        chord = np.cumsum(np.r_[0, np.diff(hit_ms) != 0.0])
+        first_perfect = np.full(chord[-1] + 1, n, dtype=np.int64)
+        np.minimum.at(first_perfect, chord[~great], np.flatnonzero(~great))
+        room_late, room_early = next_late_ms - late_ms, from_last + band_ms[:, 1, 1]
+        ref_early = ((room_late < FRAME_MARGIN_MS) & (room_early > room_late)) | (
+            (np.arange(n) < first_perfect[chord]) & (first_perfect[chord] < n)
+        )
+        ref_early &= great
+        ref_early[[sec.activation for sec in secs]] = False
+        for sec in secs:
+            for anchor in (sec.activation, min(sec.fever_end, n - 1)):
+                ref_early[anchor + 1 :] &= (hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS)[anchor + 1 :] >= hit_ms[anchor]
+        assert np.array_equal(got_early, ref_early)

@@ -310,9 +310,16 @@ def _hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle):
             b, a = links.before[link], links.after[link]
             if a > max_after[b]:
                 max_after[b] = a
-        back_of = np.full(n, -1, dtype=np.int64)
+        back_start = np.zeros(n + 1, np.int64)
         for link in links.back:
-            back_of[links.before[link]] = link
+            back_start[links.before[link] + 1] += 1
+        back_start = np.cumsum(back_start)
+        fill = back_start[:n].copy()
+        back_links = np.empty(links.back.shape[0], np.int64)
+        for link in links.back:
+            b = links.before[link]
+            back_links[fill[b]] = link
+            fill[b] += 1
         for row in range(sections.shape[0]):
             k = int(sections[row, 0])
             at = (
@@ -326,27 +333,31 @@ def _hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle):
                 limit = min(n - 1, max_after[k])
                 j = k
                 while j <= limit:
-                    if j > k and earliest[j - 1] > earliest[j] + _SLACK_MS:
+                    if j > k and earliest[j - 1] > earliest[j]:
                         earliest[j] = earliest[j - 1]
                         if max_after[j] > limit:
                             limit = min(n - 1, max_after[j])
                     for c in range(links.into_start[j], links.into_start[j + 1]):
                         link = links.into[c]
                         hit = earliest[links.before[link]] + links.fixed[link] + margin[link]
-                        if hit > earliest[j] + _SLACK_MS:
+                        if hit > earliest[j]:
                             earliest[j] = hit
                             if max_after[j] > limit:
                                 limit = min(n - 1, max_after[j])
-                    back = back_of[j]
-                    if back >= 0:
+                    jumped_to = j
+                    for c in range(back_start[j], back_start[j + 1]):
+                        back = back_links[c]
                         hit = earliest[j] + links.fixed[back] + margin[back]
                         target = links.after[back]
                         if hit > earliest[target] + _SLACK_MS:
                             earliest[target] = hit
                             if max_after[target] > limit:
                                 limit = min(n - 1, max_after[target])
-                            j = target
-                            continue
+                            if target < jumped_to:
+                                jumped_to = target
+                    if jumped_to < j:
+                        j = jumped_to
+                        continue
                     j += 1
     _latest(links, margin, ceiling_ms, latest)
     hits = np.empty(n, np.float64)

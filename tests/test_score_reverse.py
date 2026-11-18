@@ -460,3 +460,41 @@ def test_listed_casual_classes_deduplicate_across_timelines():
     assert len(keys) == len(set(keys))
     low, high = _casual_window(PlayInfo(score=100, gear_multiplier=0.005))
     assert 0.0 < low < high and np.isinf(high)
+
+
+def test_small_positive_gear_multipliers_complete_reverse_classification(song):
+    """0 < gearMultiplier <= 0.005 with Gear Power and no explicit casualScore produces an unbounded upper Casual
+    window; the complete reverse_score path (both _classes_of and _no_great_place) classifies without OverflowError."""
+    power = gear_power(STORED, song.chart)
+    n = song.chart.total_notes
+    acc_1 = round(100.0 * (1.0 - 1.0 / (4.0 * n)), 2)
+    acc_2 = round(100.0 * (1.0 - 2.0 / (4.0 * n)), 2)
+    acc_5 = round(100.0 * (1.0 - 5.0 / (4.0 * n)), 2)
+    assert lost_quarters(PlayInfo(score=500, accuracy=acc_1), n) == (1, 1)
+    in_range = reverse_score(
+        PlayInfo(score=500, accuracy=acc_1, gear_multiplier=0.004, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert in_range.verdict in ("sets", "lines", "unresolved", "exploited")
+
+    # Multi-Great listed classes (2 Greats) and spanned classes (5 Greats) with 0 < gearMultiplier <= 0.005.
+    assert lost_quarters(PlayInfo(score=500, accuracy=acc_2), n) == (2, 2)
+    two_greats = reverse_score(
+        PlayInfo(score=500, accuracy=acc_2, gear_multiplier=0.005, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert two_greats.verdict in ("sets", "lines", "unresolved", "exploited")
+
+    assert lost_quarters(PlayInfo(score=500, accuracy=acc_5), n) == (5, 5)
+    five_greats = reverse_score(
+        PlayInfo(score=500, accuracy=acc_5, gear_multiplier=0.003, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert five_greats.verdict in ("sets", "lines", "unresolved", "exploited")
+
+    # Lower bound above every reachable Casual score -> _casual_evidence / _no_great_place returns "exploited".
+    over = reverse_score(
+        PlayInfo(score=5_000, accuracy=acc_1, gear_multiplier=0.005, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert over.verdict == "exploited" and over.evidence

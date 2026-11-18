@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+import hashlib
 
-from gear_optimizer.gamedata import Gear, SongMini, song_secondary
+from gear_optimizer.gamedata import STATS, Gear, SongMini, song_secondary
 
 
 def _relevant_row_projection(row: Gear | SongMini, primary_color, secondary_color=""):
@@ -154,17 +156,28 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
     return [row for idx, row in enumerate(capped_rows) if keep[idx]]
 
 
-# (primary, secondary, slots) -> (the gear catalog the pools were built from, pools). The entry keeps
-# that catalog alive, so the identity check can never match a different, later catalog.
-_PRUNED_GEAR_POOL_CACHE: dict[tuple[str, str, tuple[str, ...]], tuple[Mapping[str, Gear], dict[str, list[Gear]]]] = {}
+def gears_digest_bytes(gears: Mapping[str, Gear]) -> bytes:
+    """Content digest of a gear catalog (keys, names, slots, Perfect Time, and stats)."""
+    digest = hashlib.blake2b(digest_size=16)
+    for key in sorted(gears):
+        gear = gears[key]
+        stats = gear.stats
+        stats_tuple = tuple(stats.get(s, 0) for s in STATS)
+        digest.update(f"{key}\0{gear.name}\0{gear.slot}\0{gear.perfect_time}\0{stats_tuple}\n".encode())
+    return digest.digest()
+
+
+_PRUNED_GEAR_POOL_MAX = 32
+_PRUNED_GEAR_POOL_CACHE: OrderedDict[tuple[str, str, tuple[str, ...], bytes], dict[str, list[Gear]]] = OrderedDict()
 
 
 def _get_pruned_gear_pool(gears: Mapping[str, Gear], slots, p_color, s_color=None) -> dict[str, list[Gear]]:
     slots_key = tuple(str(s) for s in slots)
-    cache_key = (str(p_color or ""), str(s_color or ""), slots_key)
+    cache_key = (str(p_color or ""), str(s_color or ""), slots_key, gears_digest_bytes(gears))
     cached = _PRUNED_GEAR_POOL_CACHE.get(cache_key)
-    if cached is not None and cached[0] is gears:
-        return cached[1]
+    if cached is not None:
+        _PRUNED_GEAR_POOL_CACHE.move_to_end(cache_key)
+        return cached
 
     gear_pool: dict[str, list[Gear]] = {s: [] for s in slots_key}
     for gear in gears.values():
@@ -173,9 +186,9 @@ def _get_pruned_gear_pool(gears: Mapping[str, Gear], slots, p_color, s_color=Non
     for s in slots_key:
         gear_pool[s] = prune_gear_pool_lossless_for_song(gear_pool[s], p_color, s_color)
 
-    if len(_PRUNED_GEAR_POOL_CACHE) >= 8:
-        _PRUNED_GEAR_POOL_CACHE.clear()
-    _PRUNED_GEAR_POOL_CACHE[cache_key] = (gears, gear_pool)
+    _PRUNED_GEAR_POOL_CACHE[cache_key] = gear_pool
+    if len(_PRUNED_GEAR_POOL_CACHE) > _PRUNED_GEAR_POOL_MAX:
+        _PRUNED_GEAR_POOL_CACHE.popitem(last=False)
     return gear_pool
 
 

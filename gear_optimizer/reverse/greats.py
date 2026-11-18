@@ -72,14 +72,25 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
     head fever and only the sum of positions matters; then the lowest and highest Casual loss of the head). timelines: per
     Casual timeline, its score with no Greats and what a Great costs at each head note there. A body Great costs 100 outside
     the Casual fever, 300 inside."""
+    casual_low, casual_high = casual
+    if not (casual_low <= casual_high):
+        return np.empty((0, CLASS_COLUMNS), dtype=np.int64)
     rows: set[tuple[int, ...]] = set()
     listed = np.empty((_LISTED_SETS, 3), dtype=np.int64)
     listed_memo: dict[tuple[bytes, int, int, int], list[list[int]] | None] = {}
     spans: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
     wider: dict[tuple[int, int], list[int]] = {}
     for clean, losses in timelines:
-        lost_low, lost_high = int(np.ceil(clean - casual[1])), int(np.floor(clean - casual[0]))
         max_loss = int(losses.max()) if losses.shape[0] else 0
+        max_total_loss = greats * max(300, max_loss)
+        score_low = max(casual_low, float(clean - max_total_loss))
+        score_high = min(casual_high, float(clean))
+        if score_low > score_high:
+            continue
+        lost_low = max(0, int(np.ceil(clean - score_high)))
+        lost_high = min(max_total_loss, int(np.floor(clean - score_low)))
+        if lost_low > lost_high:
+            continue
         key: bytes | None = None
         for head in range(min(greats, _HEAD_SPANNED) + 1):
             body = greats - head

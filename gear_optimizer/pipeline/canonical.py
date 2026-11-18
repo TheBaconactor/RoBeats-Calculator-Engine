@@ -17,7 +17,7 @@ loadouts whose FG result beat the base score it was solved against (FG stage ord
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,7 +32,6 @@ from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, Stat
 from gear_optimizer.data.loadout_hashing import compact_gear_names, compact_mini_names
 from ..solver.scoring.exact_rescore import (
     score_stats_exact_with_timeline_trace,
-    score_stats_fixed_timing_exact,
     score_stats_fixed_timing_exact_batch,
 )
 from gear_optimizer.trace.reconstruct import UnplayableTrace
@@ -60,7 +59,16 @@ class Identity:
     reps: tuple[str, ...]
 
 
-def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[str, Mini]) -> list[Row]:
+MetaScorer = Callable[[Mapping[str, int], TimedSong, StatCurves, int], tuple[int, dict[str, Any] | None]]
+
+
+def canonical_rows(
+    solve: SongSolve,
+    gears: Mapping[str, Gear],
+    minis: Mapping[str, Mini],
+    *,
+    meta_scorer: MetaScorer | None = None,
+) -> list[Row]:
     """The store rows of `solve` (`gears`/`minis`: the catalogs it was solved with)."""
     song, curves = solve.timed, solve.curves
     primary, secondary = song.chart.primary, song.chart.secondary
@@ -69,15 +77,14 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
     if len(fg_by_index) != len(solve.fg):
         raise ValueError(f"{solve.song}: two FG results for one loadout")
     fixed_tier = team_buff_effect(solve.tier, primary)
-    use_fast_meta = _meta_score is _DEFAULT_META_SCORE
     fixed_scores = (
         score_stats_fixed_timing_exact_batch([loadout.stats for loadout in solve.loadouts], song, curves)
-        if use_fast_meta and song.mode == "non-precise"
+        if meta_scorer is None and song.mode == "non-precise"
         else None
     )
     base_trace_memo: dict[tuple, dict[str, Any]] = {}
-    encoded_meta_by_id: dict[int, bytes] = {}
-    encoded_fg_by_key: dict[tuple[Any, ...], bytes] = {}
+    encoded_meta_by_id: dict[int, tuple[Any, bytes]] = {}
+    encoded_fg_by_key: dict[tuple[Any, ...], tuple[Any, bytes]] = {}
     out: list[Row] = []
     seen: set[str] = set()
     for i in row_order(len(solve.loadouts), [i for i, fg in solve.fg if fg.score > fg.paired]):
@@ -92,8 +99,8 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
 
         perfect_time = sum(gears[n].perfect_time for n in ident.gear)
         try:
-            if not use_fast_meta:
-                score, meta_trace = _meta_score(loadout.stats, song, curves, perfect_time)
+            if meta_scorer is not None:
+                score, meta_trace = meta_scorer(loadout.stats, song, curves, perfect_time)
             elif fixed_scores is not None:
                 score, meta_trace = int(fixed_scores[i]), None
             else:
@@ -148,21 +155,28 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
             meta_blob = None
         else:
             meta_id = id(meta_trace)
-            meta_blob = encoded_meta_by_id.get(meta_id)
-            if meta_blob is None:
-                meta_blob = encoded_meta_by_id[meta_id] = encode_trace(meta_trace)
+            cached_meta = encoded_meta_by_id.get(meta_id)
+            if cached_meta is None:
+                meta_blob = encode_trace(meta_trace)
+                encoded_meta_by_id[meta_id] = (meta_trace, meta_blob)
+            else:
+                meta_blob = cached_meta[1]
         if fg_trace is None:
             fg_blob = None
         elif fg_trace.keys() == _FG_TRACE_KEYS:
+            frontier_obj = fg_trace["frontier_trace"]
             fg_key = (
                 fg_trace["raw_fever_fill"],
                 fg_trace["real_fever_time"],
-                id(fg_trace["frontier_trace"]),
+                id(frontier_obj),
                 fg_trace["non_fever_base"],
             )
-            fg_blob = encoded_fg_by_key.get(fg_key)
-            if fg_blob is None:
-                fg_blob = encoded_fg_by_key[fg_key] = encode_trace(fg_trace)
+            cached_fg = encoded_fg_by_key.get(fg_key)
+            if cached_fg is None:
+                fg_blob = encode_trace(fg_trace)
+                encoded_fg_by_key[fg_key] = (frontier_obj, fg_blob)
+            else:
+                fg_blob = cached_fg[1]
         else:
             fg_blob = encode_trace(fg_trace)
         out.append(Row(record, meta_blob, fg_blob))
@@ -212,20 +226,6 @@ def stored_stats(
     if changed:
         raise ValueError(f"the canonical minis of {ident.loadout_hash} change scoring stats {changed}")
     return tuple(int(stats[s]) for s in STATS)
-
-
-def _meta_score(
-    stats: Mapping[str, int], song: TimedSong, curves: StatCurves, perfect_time: int
-) -> tuple[int, dict[str, Any] | None]:
-    """The exact score of the meta stats and, for precise, the TimelineFrontier witness (the exact replay
-    validates it physically at the build's Perfect Time when it reconstructs it)."""
-    if song.mode == "non-precise":
-        return int(score_stats_fixed_timing_exact(stats, song, curves)), None
-    replay = score_stats_exact_with_timeline_trace(stats, song, curves, perfect_time)
-    return int(replay["score"]), replay["TimelineFrontier"]
-
-
-_DEFAULT_META_SCORE = _meta_score
 
 
 def _fg_trace(solved: SolvedFg, song: TimedSong) -> dict[str, Any]:

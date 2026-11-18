@@ -88,3 +88,73 @@ def test_fever_span_real_chart():
         for threshold, quarters, duration in ((20.0, 24, 1500.0), (5.0, 8, 400.0), (80.0, 120, 6000.0)):
             fills = (int(np.ceil(threshold)), int(np.ceil(threshold + quarters / 2.0)))
             assert fever_span(times, fills, duration) == _reference_fever_span(times, fills, duration)
+
+
+def test_casual_classes_handles_unbounded_and_extreme_windows() -> None:
+    from gear_optimizer.reverse.greats import HEAD_LISTED, casual_classes
+
+    losses = np.array([60, 80, 100, 120, 140], dtype=np.int64)
+    timelines = [(10_000, losses), (10_300, losses)]
+    for greats in (1, 2, 5):
+        unbounded = casual_classes((9_600.0, np.inf), timelines, greats=greats, listed_up_to=HEAD_LISTED)
+        bounded = casual_classes((9_600.0, 10_300.0), timelines, greats=greats, listed_up_to=HEAD_LISTED)
+        assert np.array_equal(unbounded, bounded)
+        huge = casual_classes((9_600.0, 1.0e100), timelines, greats=greats, listed_up_to=HEAD_LISTED)
+        assert np.array_equal(huge, bounded)
+    assert casual_classes((20_000.0, np.inf), timelines, greats=2, listed_up_to=HEAD_LISTED).shape == (0, 9)
+
+
+def test_fever_surfaces_matches_single_threaded_reference_with_greats() -> None:
+    from gear_optimizer.chart import Chart
+    from gear_optimizer.gamedata import stat_curves
+    from gear_optimizer.reverse.fever_reach import (
+        CELLS,
+        _distinct,
+        _walk_grid,
+        event_times,
+        fever_surfaces,
+        great_times,
+        pattern_words,
+    )
+    from gear_optimizer.score import HEAD_NOTES
+    from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, fever_axes
+
+    rng = np.random.default_rng(123)
+    n = 135
+    ts = (np.cumsum(rng.choice([0, 10, 35, 90, 180], size=n)) * 0.001 + 0.5).astype(np.float32)
+    ntypes = np.where(rng.random(n) < 0.25, HELD_TAIL_TYPE, 1).astype(np.int16)
+    lanes = rng.integers(1, 5, size=n, dtype=np.int32)
+    chart = Chart(
+        {"Song Name": "SynthReach", "Primary Color": "Rush", "Secondary Color": "Flow"},
+        ts,
+        ntypes,
+        lanes,
+        float(ts[-1]),
+        int((ntypes != 1).sum()),
+    )
+    curves = stat_curves()
+    durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
+
+    for perfect_time in (0, 13):
+        for greats in (0, 2, 4):
+            got = fever_surfaces(chart, curves, perfect_time, greats=greats)
+            ref_rows = _walk_grid(
+                event_times(chart, perfect_time),
+                great_times(chart, perfect_time),
+                thresholds.astype(np.float64),
+                durations * 1000.0,
+                greats,
+                (0, durations.shape[0]),
+            )
+            first, ids, order = _distinct((ref_rows[:, 0], ref_rows[:, 1], ref_rows[:, 2]))
+            patterns, pattern_ids, _ = _distinct((ref_rows[first, 0], ref_rows[first, 1]))
+            ref_words = pattern_words(ref_rows[first[patterns], 0], ref_rows[first[patterns], 1])
+            pairs = ids[order].astype(np.int64) * CELLS + ref_rows[order, 3]
+            pairs = pairs[np.concatenate(([True], pairs[1:] != pairs[:-1]))]
+            assert np.array_equal(got.words, ref_words)
+            assert np.array_equal(got.pattern, pattern_ids)
+            assert np.array_equal(got.body_fever, ref_rows[first, 2].astype(np.int32))
+            assert np.array_equal(got.cell_start, np.searchsorted(pairs // CELLS, np.arange(first.shape[0] + 1)))
+            assert np.array_equal(got.cells, (pairs % CELLS).astype(np.int32))
+            assert got.coeffs.shape == (ref_words.shape[0], 4)
+            assert min(chart.total_notes, HEAD_NOTES) == 100

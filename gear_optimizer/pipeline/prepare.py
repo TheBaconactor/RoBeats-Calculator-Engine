@@ -13,6 +13,7 @@ from gear_optimizer.domain.jobs import SongTask
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.gamedata import STATS
 from gear_optimizer.pipeline.fg import prepare_fg_static
+from gear_optimizer.pipeline.pools import gears_digest_bytes
 from gear_optimizer.pipeline.song import (
     NativeSong,
     NativeSongConfig,
@@ -31,27 +32,12 @@ from gear_optimizer.solver.song_preparation import build_prepared_song_core
 _PREP_CACHE_MAX = 32
 _PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray, tuple[np.ndarray, np.ndarray], np.ndarray]]" = OrderedDict()
 _SHORTLIST_CACHE: "OrderedDict[tuple, FtffShortlist]" = OrderedDict()
-_last_gears_digest: tuple[object, bytes] | None = None
-
-
-def _gears_digest_bytes(gears) -> bytes:
-    global _last_gears_digest
-    cached = _last_gears_digest
-    if cached is not None and cached[0] is gears:
-        return cached[1]
-    digest = hashlib.blake2b(digest_size=16)
-    for gear in sorted(gears.values(), key=lambda g: g.name):
-        stats_tuple = tuple(gear.stats.get(s, 0) for s in STATS)
-        digest.update(f"{gear.name}\0{gear.slot}\0{stats_tuple}\n".encode())
-    raw = digest.digest()
-    _last_gears_digest = (gears, raw)
-    return raw
 
 
 def _catalog_digest(gears, song_minis) -> str:
-    """The items a song's pools are built from: a request's own catalog (a custom pool) must not reuse the cached
-    pools of another catalog with the same colors."""
-    digest = hashlib.blake2b(_gears_digest_bytes(gears), digest_size=16)
+    """The items a song's pools are built from: a request's own catalog (a custom pool) or in-place mapping changes
+    must never reuse the cached pools of another catalog."""
+    digest = hashlib.blake2b(gears_digest_bytes(gears), digest_size=16)
     for mini in sorted(song_minis, key=lambda m: m.name):
         stats_tuple = tuple(mini.stats.get(s, 0) for s in STATS)
         digest.update(f"{mini.name}\0{int(bool(mini.targets_song))}\0{stats_tuple}\n".encode())
@@ -65,17 +51,18 @@ _SLOTS = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
 
 def _ga_registry(gears, song_minis, primary: str, secondary: str, base_fixed_stats: np.ndarray):
     """The song's item registry, its GPU arrays, the GA's initial-heuristic top-k items, the FG effective-loadout tables
-    (gear name rank, mini signature id; the GA selects the primary element) and the reachable pre-gem (FT, FF) keys, cached
-    per pool key: the fixed stats follow from the primary color."""
+    (gear name rank, mini signature id; the GA selects the primary element), the reachable pre-gem (FT, FF) keys, and the
+    content-derived pool key."""
     from gear_optimizer.pipeline.pools import initialize_pools
     from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, build_ga_init_heuristic_topk
 
     # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
     targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
-    pool_key = (primary, secondary, _SLOTS, targeting_minis, _catalog_digest(gears, song_minis))
+    fixed_key = tuple(int(x) for x in base_fixed_stats.ravel())
+    pool_key = (primary, secondary, _SLOTS, targeting_minis, fixed_key, _catalog_digest(gears, song_minis))
     if pool_key in _PREP_CACHE:
         _PREP_CACHE.move_to_end(pool_key)
-        return _PREP_CACHE[pool_key]
+        return *_PREP_CACHE[pool_key], pool_key
     gear_pool, mini_pool = initialize_pools(gears, song_minis, primary, list(_SLOTS), s_color=secondary)
     registry = ItemRegistry(gear_pool, mini_pool, list(_SLOTS))
     gpu_data = registry.to_gpu_arrays()
@@ -93,7 +80,7 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str, base_fixed_sta
     )
     if len(_PREP_CACHE) > _PREP_CACHE_MAX:
         _PREP_CACHE.popitem(last=False)
-    return prepared
+    return *prepared, pool_key
 
 
 def prepare_native_song(task: SongTask) -> NativeSong:
@@ -109,7 +96,7 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     timed_song = core.song
     primary, secondary = timed_song.chart.primary, timed_song.chart.secondary
     base_fixed_stats = np.asarray(build_stats_array(core.fixed_stats), dtype=np.int32)
-    registry, gpu_data, init_heuristic_topk, (fg_gear_name_rank, fg_mini_sig_id), reach = _ga_registry(
+    registry, gpu_data, init_heuristic_topk, (fg_gear_name_rank, fg_mini_sig_id), reach, pool_key = _ga_registry(
         context.gears, core.minis, primary, secondary, base_fixed_stats
     )
     num_runs = max(1, context.multi_start)
@@ -119,15 +106,14 @@ def prepare_native_song(task: SongTask) -> NativeSong:
     frontier_load = build_or_load_timeline_frontier_payload(timed_song, context.curves)
     payload = frontier_load.payload
     ephemeral = frontier_cache_is_ephemeral()
-    shortlist_key = (frontier_load.cache_key, tuple(sorted(color_flags.items())))
-    cached_shortlist = None if ephemeral else _SHORTLIST_CACHE.get(shortlist_key)
-    if cached_shortlist is not None and cached_shortlist[0] is reach:
+    shortlist_key = (frontier_load.cache_key, tuple(sorted(color_flags.items())), pool_key)
+    shortlist = None if ephemeral else _SHORTLIST_CACHE.get(shortlist_key)
+    if shortlist is not None:
         _SHORTLIST_CACHE.move_to_end(shortlist_key)
-        shortlist = cached_shortlist[1]
     else:
         shortlist = ftff_shortlist(payload, reach=reach, color_flags=color_flags)
         if not ephemeral:
-            _SHORTLIST_CACHE[shortlist_key] = (reach, shortlist)
+            _SHORTLIST_CACHE[shortlist_key] = shortlist
             if len(_SHORTLIST_CACHE) > _PREP_CACHE_MAX:
                 _SHORTLIST_CACHE.popitem(last=False)
     song = NativeSong(

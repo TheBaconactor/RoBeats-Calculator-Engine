@@ -106,19 +106,26 @@ def _build_response_frontier_cache_payload(
     )
 
 
-def scoring_bundle(cache_key: tuple, arrays: dict[str, np.ndarray]) -> FgResponseFrontierScoringBundle:
-    """A bundle file's arrays (fg_cache_store.read_bundle) as a scoring bundle over every stat key it holds."""
+def scoring_bundle(
+    cache_key: tuple, arrays: dict[str, np.ndarray], *, consume: bool = False
+) -> FgResponseFrontierScoringBundle:
+    """A bundle file's arrays (fg_cache_store.read_bundle) as a scoring bundle over every stat key it holds.
+
+    By default ``arrays`` is left intact so callers may inspect or re-convert it. Internal loaders that own a freshly
+    read dictionary pass ``consume=True`` to drop transient ``surface_patterns`` / ``surface_rows`` buffers while
+    unpacking and keep peak RSS down on large charts.
+    """
     stat_key_rows = arrays["stat_keys"].astype(np.int32).reshape((-1, 2))
     frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[stat_key_rows[:, 0], stat_key_rows[:, 1]] = arrays["frontier_ids"]
     total_notes = int(arrays["total_notes"])
     if int(arrays["first_surface_head_len"]) != min(total_notes, 100):
         raise ValueError("FG response frontier scoring bundle has invalid surface head coefficient metadata")
-    patterns = arrays.pop("surface_patterns")
+    patterns = arrays.pop("surface_patterns") if consume else arrays["surface_patterns"]
     pattern_count = patterns.shape[1]
     pattern_words, head_coeffs = unpack_surface_patterns(patterns.T)
     del patterns
-    rows = arrays.pop("surface_rows")
+    rows = arrays.pop("surface_rows") if consume else arrays["surface_rows"]
     if rows.shape[1] and not (0 <= int(rows[0].min()) <= int(rows[0].max()) < pattern_count):
         raise ValueError("FG response surface row references an invalid head-pattern ID")
     counts = np.ascontiguousarray(rows[1:4].T, dtype=np.int32)
@@ -169,7 +176,8 @@ def load_response_frontier_scoring_bundle(
             "FG response frontier scoring bundle is missing. Startup cache prebuild must build "
             "the candidate-independent all-FT/FF bundle before runtime scoring."
         )
-    bundle = scoring_bundle(bundle_key, arrays)
+    bundle = scoring_bundle(bundle_key, arrays, consume=True)
+    del arrays
     missing = _missing_stat_keys(bundle, keys)
     if len(missing):
         raise ValueError(
