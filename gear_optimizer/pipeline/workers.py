@@ -240,7 +240,7 @@ class _GpuClient:
         self._worker, self._calls, self._replies, self._stop = worker, calls, replies, stop
         self._sent = 0
 
-    def call(self, fn, *args):
+    def call(self, fn, *args, on_submitted: Callable[[], None] | None = None):
         from gear_optimizer.pipeline.song import NativeSongGPUInputs
 
         if args and isinstance(args[0], NativeSongGPUInputs):
@@ -248,6 +248,8 @@ class _GpuClient:
         self._sent += 1
         tag = (os.getpid(), self._sent)
         self._calls.put((self._worker, tag, fn, args))
+        if on_submitted is not None:
+            on_submitted()
         while True:
             try:
                 reply_tag, result, error = self._replies.get(timeout=_POLL_S)

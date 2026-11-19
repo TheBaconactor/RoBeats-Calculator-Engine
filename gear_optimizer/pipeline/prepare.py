@@ -1,5 +1,5 @@
-"""A queue task prepared into a NativeSong: its item pools, registry and GPU inputs (cached per song colors and
-catalog), and its GA-invariant FG preparation."""
+"""A queue task prepared into a NativeSong: its item pools, registry, timeline frontier payload and GPU inputs (cached
+per song colors and catalog). The FG scoring bundle loads during the GA (pipeline.solve.run_ga)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.domain.jobs import SongTask
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.gamedata import STATS
-from gear_optimizer.pipeline.fg import prepare_fg_static
 from gear_optimizer.pipeline.pools import gears_digest_bytes
 from gear_optimizer.pipeline.song import (
     NativeSong,
@@ -84,8 +83,8 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str, base_fixed_sta
 
 
 def prepare_native_song(task: SongTask) -> NativeSong:
-    """The task's song ready for its GA: the GA inputs (the meta GA selects the song's primary element), the FG
-    static preparation, and the timeline frontier payload built or loaded here, off the GPU owner thread."""
+    """The task's song ready for its GA: the GA inputs (the meta GA selects the song's primary element) and the timeline
+    frontier payload built or loaded here, off the GPU owner thread."""
     from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
@@ -146,5 +145,4 @@ def prepare_native_song(task: SongTask) -> NativeSong:
         ),
         runtime=NativeSongRuntimeState(),
     )
-    prepare_fg_static(song)
     return song

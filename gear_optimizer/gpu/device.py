@@ -16,9 +16,12 @@ from .scoring import float64_words
 _ready = False
 _timeline_key: tuple | None = None
 # Byte-identical inputs already on the device need no second transfer: each label's last uploaded copies, and the
-# shortlist's device arrays (reused as kernel arguments).
+# reusable shortlist combos buffer (grow-only, so new songs never reallocate or sync).
 _ga_uploads: dict[str, tuple[np.ndarray, ...]] = {}
-_shortlist_arrays: tuple | None = None
+_shortlist_combos = None
+_shortlist_uploaded: tuple[np.ndarray, ...] | None = None
+_SHORTLIST_MIN_CAPACITY = 1 << 20  # 4 MB: covers most songs on first alloc; grows 1.5x for larger charts.
+_EMPTY_I32 = np.zeros(1, dtype=np.int32)
 
 
 def _uploads_unchanged(label: str, arrays: tuple[np.ndarray, ...]) -> bool:
@@ -79,11 +82,12 @@ def ensure_ready() -> None:
 
 
 def _clear_device_state() -> None:
-    global _ready, _timeline_key, _shortlist_arrays
+    global _ready, _timeline_key, _shortlist_combos, _shortlist_uploaded
     _ready = False
     _timeline_key = None
     _ga_uploads.clear()
-    _shortlist_arrays = None
+    _shortlist_combos = None
+    _shortlist_uploaded = None
 
 
 register_reset_hook(_clear_device_state)
@@ -106,21 +110,22 @@ def upload_timeline(key: tuple, payload: TimelineFrontierGridPayload) -> None:
     global _timeline_key
     if key == _timeline_key:
         return
-    fields.ga_eval_cache_results.fill(0)
+    _timeline_key = None
 
     def cell(array: np.ndarray, dtype) -> np.ndarray:
         return np.ascontiguousarray(np.asarray(array, dtype=dtype)[0])
 
-    fields.song_head_len[0] = int(payload.grid_head_len[0, 0, 0])
-    fields.grid_frontier_count.from_numpy(cell(payload.grid_frontier_count, np.int32))
-    fields.grid_frontier_offset.from_numpy(cell(payload.grid_frontier_offset, np.int32))
     used = int(payload.frontier_pool_used)
-    kernels.upload_surfaces_kernel(
+    span = max(1, used)
+    kernels.upload_timeline_kernel(
+        int(payload.grid_head_len[0, 0, 0]),
+        cell(payload.grid_frontier_count, np.int32),
+        cell(payload.grid_frontier_offset, np.int32),
         used,
-        cell(payload.grid_frontier_body_fever_pool, np.int32)[:used],
-        cell(payload.grid_frontier_body_normal_pool, np.int32)[:used],
-        cell(payload.grid_frontier_masks_bits_pool, np.uint32)[:used],
-        cell(payload.grid_frontier_head_coeffs_pool, np.int16)[:used],
+        cell(payload.grid_frontier_body_fever_pool, np.int32)[:span],
+        cell(payload.grid_frontier_body_normal_pool, np.int32)[:span],
+        cell(payload.grid_frontier_masks_bits_pool, np.uint32)[:span],
+        cell(payload.grid_frontier_head_coeffs_pool, np.int16)[:span],
     )
     _timeline_key = key
 
@@ -134,12 +139,11 @@ def upload_items(item_stats: np.ndarray, slot_start: np.ndarray, slot_count: np.
         np.ascontiguousarray(item_stats[:, : fields.ITEM_STAT_DIM], dtype=np.int32),
         np.ascontiguousarray(slot_start, dtype=np.int32),
         np.ascontiguousarray(slot_count, dtype=np.int32),
-        np.asarray(base_fixed_stats, dtype=np.int32),
+        np.ascontiguousarray(base_fixed_stats, dtype=np.int32),
     )
     if _uploads_unchanged("items", arrays):
         return
-    kernels.upload_items_kernel(arrays[0], n_items, arrays[1], arrays[2])
-    fields.base_fixed_stats.from_numpy(arrays[3])
+    kernels.upload_items_kernel(arrays[0], n_items, arrays[1], arrays[2], arrays[3])
     _uploads_commit("items", arrays)
 
 
@@ -153,21 +157,29 @@ def upload_init_topk(topk: np.ndarray) -> None:
 
 
 def upload_shortlist(shortlist: FtffShortlist) -> tuple:
-    """A song's FT/FF combo shortlist on the device: search_combos_kernel's arguments. An unchanged shortlist keeps its
-    device arrays."""
-    global _shortlist_arrays
+    """A song's FT/FF combo shortlist on the device: evaluate_kernel's trailing argument. Writes start/count into fixed
+    fields and copies combos asynchronously into a grow-only device buffer; unchanged read-only shortlists skip."""
+    global _shortlist_combos, _shortlist_uploaded
     keys = tuple(
         np.ascontiguousarray(values, dtype=np.int32)
         for values in (shortlist.start, shortlist.count, shortlist.combos)
     )
-    if _uploads_unchanged("shortlist", keys):
-        return _shortlist_arrays
-    arrays = []
-    for values in keys:
-        array = ti.ndarray(dtype=ti.i32, shape=(max(1, len(values)),))
-        if len(values):
-            array.from_numpy(values)
-        arrays.append(array)
-    _shortlist_arrays = tuple(arrays)
-    _uploads_commit("shortlist", keys)
-    return _shortlist_arrays
+    if (
+        _shortlist_combos is not None
+        and _shortlist_uploaded is not None
+        and all(a is b and not a.flags.writeable for a, b in zip(keys, _shortlist_uploaded, strict=True))
+    ):
+        return (_shortlist_combos,)
+    _shortlist_uploaded = None
+    n_combos = len(keys[2])
+    if _shortlist_combos is None or _shortlist_combos.shape[0] < n_combos:
+        cap = max(
+            n_combos,
+            _SHORTLIST_MIN_CAPACITY if _shortlist_combos is None else _shortlist_combos.shape[0] * 3 // 2,
+        )
+        _shortlist_combos = ti.ndarray(dtype=ti.i32, shape=(cap,))
+    combos_src = keys[2] if n_combos else _EMPTY_I32
+    kernels.upload_shortlist_kernel(keys[0], keys[1], combos_src, n_combos, _shortlist_combos)
+    if all(not a.flags.writeable for a in keys):
+        _shortlist_uploaded = keys
+    return (_shortlist_combos,)

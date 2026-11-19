@@ -13,6 +13,7 @@ and the process stops itself (the service then fails the solve). Standalone runs
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import logging
 import os
 import queue
@@ -152,15 +153,25 @@ class GpuExecutor:
             logger.warning("[GpuExecutor] Stop timed out; the owner thread is still alive.")
         self._thread = None
 
-    def call(self, fn: Callable[..., Any], *args: Any) -> Any:
-        """fn(*args) on the owner thread, once the GPU init is done: its result, or its exception. GpuFatalError if
-        the init failed or timed out (the executor is stopped)."""
+    def call(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        on_submitted: Callable[[], None] | None = None,
+    ) -> Any:
+        """fn(*args) on the owner thread, once the GPU init is done: its result, or its exception. When `on_submitted`
+        is given, `fn` receives it as `on_submitted=` bound to the caller's contextvars so host work runs while
+        submitted GPU work executes. GpuFatalError if the init failed or timed out (the executor is stopped)."""
         if not self._ready.wait(_INIT_TIMEOUT_S) or self._init_error is not None:
             error = self._init_error
             self.stop()
             raise GpuFatalError(f"GPU executor Taichi init failed or timed out ({error})")
+        kwargs: dict[str, Any] = {}
+        if on_submitted is not None:
+            ctx = contextvars.copy_context()
+            kwargs["on_submitted"] = lambda: ctx.run(on_submitted)
         future: concurrent.futures.Future = concurrent.futures.Future()
-        self._calls.put((future, fn, args))
+        self._calls.put((future, fn, args, kwargs))
         done, _ = concurrent.futures.wait([future], timeout=self._call_timeout_s)
         if not done:
             message = f"GPU call {fn.__name__} timed out after {self._call_timeout_s:.1f}s"
@@ -186,11 +197,11 @@ class GpuExecutor:
         finally:
             self._ready.set()
         while (item := self._calls.get()) is not _STOP:
-            future, fn, args = item
+            future, fn, args, kwargs = item
             try:
                 if self._abort.is_set():
                     raise RuntimeError(f"GpuExecutor aborted: {self._abort_reason}")
-                future.set_result(fn(*args))
+                future.set_result(fn(*args, **kwargs))
             except BaseException as exc:
                 future.set_exception(exc)
         _finalize_gpu()

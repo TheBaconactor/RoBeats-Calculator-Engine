@@ -99,6 +99,8 @@ def ftff_shortlist(payload, *, reach: np.ndarray, color_flags: dict[str, int]) -
     if reach_keys.shape[0]:
         _shortlist_keep(slot_of_key, combo_index, frontier, surfaces, weights, keep_bits)
     start, count, combos = _decode_keep(keep_bits, reach_keys, total_keys)
+    for values in (start, count, combos):
+        values.setflags(write=False)
     return FtffShortlist(start, count, combos)
 
 

@@ -32,6 +32,34 @@ def test_calls_run_in_order_on_the_owner_thread_which_finalizes_the_gpu_on_stop(
     assert not executor.is_running
 
 
+def test_on_submitted_runs_on_owner_thread_with_caller_contextvars(gpu, tmp_path):
+    from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral, temporary_frontier_cache_scope
+
+    observed = {}
+
+    def fn(value, *, on_submitted=None):
+        assert on_submitted is not None
+        on_submitted()
+        return value * 2
+
+    executor = GpuExecutor()
+    executor.start()
+    try:
+        with temporary_frontier_cache_scope(tmp_path):
+            result = executor.call(
+                fn,
+                21,
+                on_submitted=lambda: observed.update(
+                    ephemeral=frontier_cache_is_ephemeral(),
+                    thread=threading.current_thread().name,
+                ),
+            )
+    finally:
+        executor.stop()
+    assert result == 42
+    assert observed == {"ephemeral": True, "thread": "GpuExecutorThread"}
+
+
 def test_a_failed_gpu_init_is_fatal_and_stops_the_executor(gpu, monkeypatch):
     def init():
         raise RuntimeError("no Vulkan device")

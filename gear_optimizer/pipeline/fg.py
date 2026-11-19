@@ -1,9 +1,9 @@
 """A song's Force Greats stage, around its GA.
 
-Before the GA: the song's FG scoring bundle (prepare_fg_static). In the GA turn: the FG score rows of the loadouts the
-GA selected, keyed by their pre-gem totals (equal totals score alike; score_payload_fg). After it (finish_fg, host
-only): the stored surface, i.e. the best LOADOUTS_PER_SONG_LIMIT selected loadouts by the GA's Base score, one per
-effective loadout, with their validated FG results, as the song's SongSolve.
+During the GA: the song's FG scoring bundle (prepare_fg_static, overlapped once GA work is submitted). In the GA turn: the FG
+score rows of the loadouts the GA selected, keyed by their pre-gem totals (equal totals score alike; score_payload_fg).
+After it (finish_fg, host only): the stored surface, i.e. the best LOADOUTS_PER_SONG_LIMIT selected loadouts by the GA's
+Base score, one per effective loadout, with their validated FG results, as the song's SongSolve.
 """
 
 from __future__ import annotations

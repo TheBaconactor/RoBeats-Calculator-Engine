@@ -178,3 +178,11 @@ def test_a_stop_ends_the_wait_with_the_stop_abort(gpu_process):
     with pytest.raises(RuntimeError) as raised:
         first.call(threading.Event().wait, 1)
     assert is_stop_abort_exception(raised.value)
+
+
+def test_gpu_client_runs_on_submitted_locally_without_pickling(gpu_process):
+    first, _second, _replies, _stop = gpu_process
+    ran = []
+    # Local closure is unpicklable: _GpuClient must run it in the caller while the GPU side executes `pow`.
+    assert first.call(pow, 3, 4, on_submitted=lambda: ran.append(threading.current_thread().ident)) == 81
+    assert ran == [threading.current_thread().ident]

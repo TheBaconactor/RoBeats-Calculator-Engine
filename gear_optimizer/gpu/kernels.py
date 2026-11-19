@@ -88,25 +88,39 @@ def upload_items_kernel(
     n_items: ti.i32,
     starts: ti.types.ndarray(dtype=ti.i32, ndim=1),
     counts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    base_fixed: ti.types.ndarray(dtype=ti.i32, ndim=1),
 ):
-    """The first n_items rows of the item table and the slot pools, without a padded MAX_ITEMS transfer."""
+    """The first n_items rows, slot pools and fixed stats, without padded transfers or a sync."""
     for i, j in ti.ndrange(n_items, ti.static(ITEM_STAT_DIM)):
         fields.item_stats[i, j] = items[i, j]
     for s in ti.static(range(MAX_SLOTS)):
         fields.slot_start[s] = starts[s]
         fields.slot_count[s] = counts[s]
+    for c in ti.static(range(ITEM_STAT_DIM)):
+        fields.base_fixed_stats[c] = base_fixed[c]
 
 
 @ti.kernel
-def upload_surfaces_kernel(
-    n: ti.i32,
+def upload_timeline_kernel(
+    head_len: ti.i32,
+    counts: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    offsets: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    used: ti.i32,
     body_fever: ti.types.ndarray(dtype=ti.i32, ndim=1),
     body_normal: ti.types.ndarray(dtype=ti.i32, ndim=1),
     masks: ti.types.ndarray(dtype=ti.u32, ndim=2),
     head_coeffs: ti.types.ndarray(dtype=ti.i16, ndim=2),
 ):
-    """The song's first n frontier surfaces, without a padded transfer of the pool."""
-    for i in range(n):
+    """The song's timeline frontier in one async launch: clears the evaluation memo, sets head length and the
+    (FT, FF) grid, and loads the first `used` surfaces without padded transfers or host syncs."""
+    for i in range(fields.GA_EVAL_CACHE_SIZE):
+        fields.ga_eval_cache_results[i] = ti.Vector.zero(ti.i32, GA_WINNER_COLS)
+    for _ in range(1):
+        fields.song_head_len[0] = head_len
+    for ft, ff in fields.grid_frontier_count:
+        fields.grid_frontier_count[ft, ff] = counts[ft, ff]
+        fields.grid_frontier_offset[ft, ff] = offsets[ft, ff]
+    for i in range(used):
         fields.grid_frontier_body_fever_pool[i] = body_fever[i]
         fields.grid_frontier_body_normal_pool[i] = body_normal[i]
         for word in ti.static(range(4)):
@@ -117,6 +131,22 @@ def upload_surfaces_kernel(
             ti.cast(body_fever[i], ti.f32) + sigma_hf, ti.cast(body_normal[i], ti.f32) + sigma_hn,
             ti.cast(head_coeffs[i, 1], ti.f32) - sigma_hf, ti.cast(head_coeffs[i, 0], ti.f32) - sigma_hn,
         ])
+
+
+@ti.kernel
+def upload_shortlist_kernel(
+    starts: _I32_ARRAY,
+    counts: _I32_ARRAY,
+    combos: _I32_ARRAY,
+    n_combos: ti.i32,
+    combos_dev: _I32_ARRAY,
+):
+    """The song's FT/FF shortlist into fixed start/count fields and the reusable combos buffer, without a sync."""
+    for i in fields.shortlist_start:
+        fields.shortlist_start[i] = starts[i]
+        fields.shortlist_count[i] = counts[i]
+    for i in range(n_combos):
+        combos_dev[i] = combos[i]
 
 
 @ti.kernel
@@ -320,7 +350,7 @@ def _most_valuable_surface(combos: _I32_ARRAY, span, stats, flags: GpuColorFlags
 
 
 @ti.func
-def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, counts: _I32_ARRAY, combos: _I32_ARRAY):
+def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY):
     """What each unique uncached row needs before its combos are searched: an incumbent, its reference and the combos
     that can reach the incumbent.
 
@@ -334,7 +364,7 @@ def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRA
         if fields.ga_exact_eval_rep_idx[genome] == genome and fields.chunk_best_results[genome, 0] == 0:
             stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
             stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
-            span = ti.Vector([starts[stat_key], counts[stat_key]])
+            span = ti.Vector([fields.shortlist_start[stat_key], fields.shortlist_count[stat_key]])
             if span[1] > 0:
                 caps = ti.Vector([gems_to_cap(stats[1], STAT_GEM_GAIN_NORMAL), gems_to_cap(stats[2], STAT_GEM_GAIN_FEVER)])
                 top = _most_valuable_surface(combos, span, stats, flags, caps, 0)
@@ -367,7 +397,7 @@ def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRA
 
 
 @ti.func
-def _search_combos(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, counts: _I32_ARRAY, combos: _I32_ARRAY):
+def _search_combos(n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY):
     """The exact search of the listed combos, each thread its genome's lane, which keeps its lane's winner (the first of
     its best scores: combos ascend); finish_lanes reduces the lanes. A row with too many combos to list has every lane
     stride its shortlist.
@@ -387,10 +417,10 @@ def _search_combos(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, 
         best = ti.Vector.zero(ti.i32, GA_WINNER_COLS)
         stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
         listed = survivors <= lanes
-        n_combos: ti.i32 = survivors if listed else counts[stat_key]
+        n_combos: ti.i32 = survivors if listed else fields.shortlist_count[stat_key]
         local_c: ti.i32 = lane
         while local_c < n_combos:
-            combo_idx: ti.i32 = combos[starts[stat_key] + local_c]
+            combo_idx: ti.i32 = combos[fields.shortlist_start[stat_key] + local_c]
             if listed:
                 combo_idx = fields.ga_survivors[genome, local_c]
             # The threshold is the best exact score found for this genome (here or in another lane), not score + 1:
@@ -424,14 +454,14 @@ def _finish_lanes(n_genomes: ti.i32):
 
 
 @ti.kernel
-def evaluate_kernel(n_genomes: ti.i32, flags: GpuColorFlags, starts: _I32_ARRAY, counts: _I32_ARRAY, combos: _I32_ARRAY):
+def evaluate_kernel(n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY):
     """The exact evaluation of the population in one launch: memo hits restored, each unique uncached row searched,
     duplicates scattered. Each step's top-level loop is a dispatch of its own, with a barrier before the next."""
     _prepare_evals(n_genomes)
     _aggregate_and_lookup(n_genomes, flags)
     _resolve_representatives(n_genomes)
-    _reference_search(n_genomes, flags, starts, counts, combos)
-    _search_combos(n_genomes, flags, starts, counts, combos)
+    _reference_search(n_genomes, flags, combos)
+    _search_combos(n_genomes, flags, combos)
     _finish_lanes(n_genomes)
     _scatter_results(n_genomes)
 

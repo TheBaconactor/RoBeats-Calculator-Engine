@@ -313,6 +313,62 @@ def test_a_hard_reset_forgets_uploaded_copies():
     assert "topk" in device._ga_uploads  # so the same upload transfers and commits again
 
 
+def test_shortlist_upload_reuses_and_grows_device_buffer_and_handles_empty_and_mutations(monkeypatch):
+    from gear_optimizer.frontier.timeline_producer import GRID_SIZE
+    from gear_optimizer.solver.ftff_combos import FtffShortlist
+
+    device.ensure_ready()
+    device.hard_reset("fresh shortlist buffer")
+    device.ensure_ready()
+    n_keys = GRID_SIZE * GRID_SIZE
+
+    def make_sl(combos: np.ndarray, *, readonly: bool = True) -> FtffShortlist:
+        s = np.zeros(n_keys, dtype=np.int32)
+        c = np.zeros(n_keys, dtype=np.int32)
+        c[0] = len(combos)
+        arrs = (s, c, np.ascontiguousarray(combos, dtype=np.int32))
+        if readonly:
+            for a in arrs:
+                a.setflags(write=False)
+        return FtffShortlist(*arrs)
+
+    # Empty shortlist succeeds cleanly and allocates the reusable buffer.
+    (buf0,) = device.upload_shortlist(make_sl(np.empty(0, dtype=np.int32)))
+    assert buf0.shape[0] >= device._SHORTLIST_MIN_CAPACITY
+
+    # Read-only shortlist uploads once, then skips on repeat; shrinking reuses the same device buffer.
+    calls = 0
+    real_kernel = kernels.upload_shortlist_kernel
+
+    def counting_kernel(*args):
+        nonlocal calls
+        calls += 1
+        return real_kernel(*args)
+
+    monkeypatch.setattr(kernels, "upload_shortlist_kernel", counting_kernel)
+    small = make_sl(np.arange(128, dtype=np.int32))
+    (buf1,) = device.upload_shortlist(small)
+    assert buf1 is buf0 and calls == 1
+    (buf2,) = device.upload_shortlist(small)
+    assert buf2 is buf0 and calls == 1  # read-only cache hit skipped the upload
+
+    # Growing past capacity reallocates once; a smaller shortlist after it reuses the larger buffer.
+    big_n = buf0.shape[0] + 64
+    big_vals = np.arange(big_n, dtype=np.int32)
+    (buf3,) = device.upload_shortlist(make_sl(big_vals))
+    assert buf3 is not buf0 and buf3.shape[0] >= big_n and calls == 2
+    np.testing.assert_array_equal(buf3.to_numpy()[:big_n], big_vals)
+
+    # Mutating a writable shortlist in place never gets a false hit.
+    writable = make_sl(np.array([10, 20, 30], dtype=np.int32), readonly=False)
+    (buf4,) = device.upload_shortlist(writable)
+    assert buf4 is buf3 and calls == 3
+    writable.combos[1] = 99
+    (buf5,) = device.upload_shortlist(writable)
+    assert buf5 is buf3 and calls == 4
+    np.testing.assert_array_equal(buf5.to_numpy()[:3], [10, 99, 30])
+
+
 @ti.kernel
 def _score_every_pair(n_genomes: ti.i32, n_combos: ti.i32, flags: GpuColorFlags, out: ti.types.ndarray(dtype=ti.i32, ndim=3)):
     """out[genome, combo]: [best score, PP, CM, FM, element gems] of the combo, or -1 past the genome's FT/FF gem limits, by

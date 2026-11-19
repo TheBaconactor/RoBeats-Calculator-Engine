@@ -31,7 +31,13 @@ def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
     return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
 
-def _run_ga(inputs: GaInputs, seed: int, payload, check: Callable[[str], None]) -> np.ndarray:
+def _run_ga(
+    inputs: GaInputs,
+    seed: int,
+    payload,
+    check: Callable[[str], None],
+    on_submitted: Callable[[], None] | None = None,
+) -> np.ndarray:
     num_runs, n_genomes = inputs.num_runs, inputs.n_genomes
     device.ensure_ready()
     if payload is not None:
@@ -55,14 +61,25 @@ def _run_ga(inputs: GaInputs, seed: int, payload, check: Callable[[str], None]) 
                 kernels.update_runs_best_kernel(run, batch, n_genomes)
         kernels.pack_candidates_kernel(run, batch, n_genomes)
     kernels.pack_run_bests_kernel(num_runs, flags)
+    # Run host work before read_candidates_kernel blocks (holding the GIL): Vulkan has already auto-flushed the first
+    # 63 dispatches onto the GPU, so host I/O and decode overlap GPU execution without threads or GIL contention.
+    if on_submitted is not None:
+        on_submitted()
     out = np.empty((num_runs, GA_FG_CANDIDATES_PER_RUN + 1, GA_FG_CANDIDATE_COLS), dtype=np.int32)
     kernels.read_candidates_kernel(num_runs, out)
     return out
 
 
-def run_ga(inputs: GaInputs, ga_seed: int, abort_requested: Callable[[], bool]) -> np.ndarray:
+def run_ga(
+    inputs: GaInputs,
+    ga_seed: int,
+    abort_requested: Callable[[], bool],
+    *,
+    on_submitted: Callable[[], None] | None = None,
+) -> np.ndarray:
     """The song's candidate table, (runs, GA_FG_CANDIDATES_PER_RUN + 1, GA_FG_CANDIDATE_COLS): each run's best across
-    generations in row 0, the top scores of its final population after it. On the Taichi/Vulkan owner thread."""
+    generations in row 0, the top scores of its final population after it. On the Taichi/Vulkan owner thread. If
+    `on_submitted` is given, it runs after all GA kernels are enqueued and before the blocking candidate readback."""
     if inputs.num_runs > MAX_GA_RUNS:
         raise ValueError(f"the GA holds {MAX_GA_RUNS} runs, the song asks for {inputs.num_runs}")
 
@@ -76,7 +93,9 @@ def run_ga(inputs: GaInputs, ga_seed: int, abort_requested: Callable[[], bool]) 
         try:
             if timeline_key is None or not device.has_timeline(timeline_key):
                 payload = payload or build_or_load_timeline_frontier_payload(inputs.timed_song, inputs.curves).payload
-            return _run_ga(inputs, ga_seed & 0xFFFFFFFF, payload, check)
+            if on_submitted is None:
+                return _run_ga(inputs, ga_seed & 0xFFFFFFFF, payload, check)
+            return _run_ga(inputs, ga_seed & 0xFFFFFFFF, payload, check, on_submitted)
         except Exception as exc:
             if attempt >= _VULKAN_RETRIES or not _is_vulkan_semaphore_failure(exc):
                 raise

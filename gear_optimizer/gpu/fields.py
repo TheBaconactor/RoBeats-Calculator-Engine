@@ -59,6 +59,9 @@ _FIELDS = {
     "grid_frontier_body_normal_pool": (ti.i32, MAX_TIMELINE_FRONTIER_SURFACES),
     "grid_frontier_masks_bits_pool": (ti.u32, (MAX_TIMELINE_FRONTIER_SURFACES, 4)),
     "grid_frontier_shape_pool": (ti.f32, MAX_TIMELINE_FRONTIER_SURFACES, 4),  # A, E, F, G (scoring)
+    # The song's FT/FF shortlist index: per pre-gem (FT, FF) key, its span in the device's shortlist combos buffer.
+    "shortlist_start": (ti.i32, GRID_SIZE * GRID_SIZE),
+    "shortlist_count": (ti.i32, GRID_SIZE * GRID_SIZE),
     # The song's items.
     "item_stats": (ti.i32, (MAX_ITEMS, ITEM_STAT_DIM)),
     "base_fixed_stats": (ti.i32, ITEM_STAT_DIM),

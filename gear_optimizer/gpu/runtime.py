@@ -25,7 +25,8 @@ _ti_materialized_once = False
 _ti_lock = threading.RLock()
 _offline_cache_dir: str | None = None
 _reset_hooks: list[Callable[[], None]] = []
-_GPU_BLOCK_DIM = 256  # The benchmark-validated choice for these kernels (Vulkan allows 1..1024).
+# Apple Silicon's SIMD width is 32 (256 stalls register-heavy GA kernels); keep 256 on other Vulkan GPUs.
+_GPU_BLOCK_DIM = 32 if sys.platform == "darwin" else 256
 logger = logging.getLogger(__name__)
 
 os.environ.setdefault("TI_ENABLE_PYBUF", "0")
