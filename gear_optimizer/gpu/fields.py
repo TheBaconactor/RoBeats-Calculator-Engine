@@ -15,7 +15,8 @@ MAX_ITEMS = 65536  # Items per song (id 0 is the empty slot).
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_GA_RUNS = 128  # Runs per song.
 MAX_FTFF_COMBOS = (GEM_BUDGET + 1) * (GEM_BUDGET + 2) // 2
-GA_FTFF_LANES = 64  # A genome's search threads: one per listed combo, each a stride of its shortlist past that.
+GA_FTFF_LANES = 32  # A genome's search threads: one per listed combo, each a stride of its shortlist past that.
+GA_REF_LANES = 16  # Parallel shortlist-scan lanes per compacted uncached genome (reference, incumbent, survivor filter).
 GA_EVAL_CACHE_SIZE = 16384  # Device memo of evaluations; full stats verify every hit.
 GA_WINNER_COLS = 6  # score + 1 (0: none), FT/FF combo, PP, CM, FM and element gems
 GA_RESULT_COLS = 7  # score, FT, FF, PP, CM, FM and element gems
@@ -23,7 +24,7 @@ GA_RUN_BEST_COLS = 1 + MAX_SLOTS + GA_RESULT_COLS  # score, item ids, result
 GA_FG_CANDIDATES_PER_RUN = 64
 GA_FG_CANDIDATE_COLS = GA_RUN_BEST_COLS + 7  # the run-best columns, then the pre-gem stats
 
-# A row's reference (kernels._reference_search, scoring.reference_bound): `base` is its surface's base value without
+# A row's reference (kernels._build_reference, scoring.reference_bound): `base` is its surface's base value without
 # (CM, FM) gems, `scale` what it reaches at most over its value at the corners of those multipliers (low or high combo,
 # low or high fever), and the inverses those of its lowest and highest base value.
 GemReference = ti.types.struct(
@@ -82,6 +83,12 @@ _FIELDS = {
     "ga_eval_dirty_slots": (ti.i32, MAX_GENOMES),
     "ga_eval_dirty_count": (ti.i32, 1),
     "ga_exact_eval_rep_idx": (ti.i32, MAX_GENOMES),
+    # Compacted unique uncached representatives for this generation and their parallel reference-scan scratch.
+    "ga_rep_list": (ti.i32, MAX_GENOMES),
+    "ga_rep_count": (ti.i32, 1),
+    "ga_ref_lane_val": (ti.f32, (MAX_GENOMES, GA_REF_LANES)),
+    "ga_ref_lane_top": (ti.i32, (MAX_GENOMES, GA_REF_LANES, 4)),  # pool_idx, budget, base_init, max_budget
+    "ga_rep_pair": (ti.i32, (MAX_GENOMES, 2)),
     "ga_eval_incumbent_score": (ti.i32, MAX_GENOMES),
     # The combos of a row that can reach its incumbent; a count past GA_FTFF_LANES: too many to list, the threads stride the
     # row's shortlist. The search's threads, packed so that active threads share SIMD groups: genome * lanes + lane.

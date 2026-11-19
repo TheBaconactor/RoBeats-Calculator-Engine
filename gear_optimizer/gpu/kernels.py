@@ -13,6 +13,7 @@ from . import fields
 from .fields import (
     GA_FG_CANDIDATES_PER_RUN,
     GA_FTFF_LANES,
+    GA_REF_LANES,
     GA_RESULT_COLS,
     GA_RUN_BEST_COLS,
     GA_WINNER_COLS,
@@ -227,13 +228,14 @@ def _memo_slot(g: ti.i32) -> ti.i32:
 
 @ti.func
 def _prepare_evals(n_genomes: ti.i32):
-    """The next evaluation's book-keeping: the search list and the memo slots the last generation's misses claimed.
-    The sentinel tops every claimant, so a slot's owner is only ever a claimant of this generation or no claimant."""
+    """The next evaluation's book-keeping: the search list, rep list and the memo slots the last generation's misses
+    claimed. The sentinel tops every claimant, so a slot's owner is only ever a claimant of this generation or none."""
     for i in range(fields.ga_eval_dirty_count[0]):
         fields.ga_eval_cache_owner[fields.ga_eval_dirty_slots[i]] = MAX_GENOMES
     for _ in range(1):
         fields.ga_search_count[0] = 0
         fields.ga_eval_dirty_count[0] = 0
+        fields.ga_rep_count[0] = 0
 
 
 @ti.func
@@ -273,7 +275,8 @@ def _aggregate_and_lookup(n_genomes: ti.i32, flags: GpuColorFlags):
 
 @ti.func
 def _resolve_representatives(n_genomes: ti.i32):
-    """Each miss's row to evaluate: the claimant of its memo slot when their stats are equal."""
+    """Each miss's row to evaluate: the claimant of its memo slot when their stats are equal, with unique uncached
+    representatives compacted into ga_rep_list so reference and reduction passes pack active threads together."""
     for g in range(n_genomes):
         rep = g
         if fields.chunk_best_results[g, 0] == 0:
@@ -285,6 +288,9 @@ def _resolve_representatives(n_genomes: ti.i32):
                         same = False
                 if same:
                     rep = owner
+            if rep == g:
+                slot = ti.atomic_add(fields.ga_rep_count[0], 1)
+                fields.ga_rep_list[slot] = g
         fields.ga_exact_eval_rep_idx[g] = rep
 
 
@@ -324,76 +330,158 @@ def _combo_option(combo_idx: ti.i32, stats: ti.types.vector(7, ti.i32), flags: G
 
 
 @ti.func
-def _most_valuable_surface(combos: _I32_ARRAY, span, stats, flags: GpuColorFlags, pair, least_budget: ti.i32):
-    """[surface, its residual budget, its 2 x primary + secondary, the largest budget] over the combos of a shortlist
-    `span` (first, count): the surface of the highest value at the (CM, FM) gems `pair`, of a combo with least_budget."""
+def _scan_best_surface(
+    n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY, at_pair: ti.template()
+):
+    """Parallel shortlist scan (GA_REF_LANES threads per compacted uncached rep): each lane finds its highest-value
+    surface at capped multipliers (pass 1) or at the rep's reference (CM, FM) pair (pass 2), plus its max budget."""
     weights = gem_weights(flags)
     w_ov: ti.i32 = weights[3]
-    pair_cost: ti.i32 = (pair[0] * (w_ov - weights[1])) + (pair[1] * (w_ov - weights[2]))
-    combo_mul: ti.f32 = lookup_ref_cm(stats[1] + (pair[0] * STAT_GEM_GAIN_NORMAL))
-    fever_mul: ti.f32 = lookup_ref_fm(stats[2] + (pair[1] * STAT_GEM_GAIN_FEVER))
-    pp_base: ti.f32 = lookup_ref_pp(stats[0])
-    top_value: ti.f32 = -1.0e30
-    top = ti.Vector([0, 0, 0], dt=ti.i32)
-    largest_budget: ti.i32 = 0
-    for k in range(span[1]):
-        option = _combo_option(combos[span[0] + k], stats, flags)
-        largest_budget = ti.max(largest_budget, option[2])
-        if option[2] >= least_budget:
-            base: ti.f32 = ti.cast(option[3] + (option[2] * w_ov) - pair_cost, ti.f32) + pp_base
-            for pool_idx in range(option[0], option[0] + option[1]):
-                value = base * shape_value(fields.grid_frontier_shape_pool[pool_idx], combo_mul, fever_mul)
-                if value > top_value:
-                    top_value = value
-                    top = ti.Vector([pool_idx, option[2], option[3]])
-    return ti.Vector([top[0], top[1], top[2], largest_budget])
+    ref_lanes = ti.static(GA_REF_LANES)
+    for tid in range(n_genomes * ref_lanes):
+        r = tid // ref_lanes
+        if r >= fields.ga_rep_count[0]:
+            continue
+        lane = tid - r * ref_lanes
+        genome = fields.ga_rep_list[r]
+        stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
+        stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
+        span_start = fields.shortlist_start[stat_key]
+        span_cnt = fields.shortlist_count[stat_key]
+        pair0 = ti.i32(0)
+        pair1 = ti.i32(0)
+        least_budget = ti.i32(0)
+        if ti.static(at_pair):
+            pair0 = fields.ga_rep_pair[r, 0]
+            pair1 = fields.ga_rep_pair[r, 1]
+            least_budget = pair0 + pair1
+        else:
+            pair0 = gems_to_cap(stats[1], STAT_GEM_GAIN_NORMAL)
+            pair1 = gems_to_cap(stats[2], STAT_GEM_GAIN_FEVER)
+        pair_cost: ti.i32 = (pair0 * (w_ov - weights[1])) + (pair1 * (w_ov - weights[2]))
+        combo_mul: ti.f32 = lookup_ref_cm(stats[1] + (pair0 * STAT_GEM_GAIN_NORMAL))
+        fever_mul: ti.f32 = lookup_ref_fm(stats[2] + (pair1 * STAT_GEM_GAIN_FEVER))
+        pp_base: ti.f32 = lookup_ref_pp(stats[0])
+        top_value: ti.f32 = -1.0e30
+        top_pool = ti.i32(0)
+        top_budget = ti.i32(0)
+        top_init = ti.i32(0)
+        largest_budget = ti.i32(0)
+        k = lane
+        while k < span_cnt:
+            option = _combo_option(combos[span_start + k], stats, flags)
+            largest_budget = ti.max(largest_budget, option[2])
+            if option[2] >= least_budget:
+                base: ti.f32 = ti.cast(option[3] + (option[2] * w_ov) - pair_cost, ti.f32) + pp_base
+                for pool_idx in range(option[0], option[0] + option[1]):
+                    value = base * shape_value(fields.grid_frontier_shape_pool[pool_idx], combo_mul, fever_mul)
+                    if value > top_value:
+                        top_value = value
+                        top_pool, top_budget, top_init = pool_idx, option[2], option[3]
+            k += ref_lanes
+        fields.ga_ref_lane_val[r, lane] = top_value
+        fields.ga_ref_lane_top[r, lane, 0] = top_pool
+        fields.ga_ref_lane_top[r, lane, 1] = top_budget
+        fields.ga_ref_lane_top[r, lane, 2] = top_init
+        fields.ga_ref_lane_top[r, lane, 3] = largest_budget
 
 
 @ti.func
-def _reference_search(n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY):
-    """What each unique uncached row needs before its combos are searched: an incumbent, its reference and the combos
-    that can reach the incumbent.
+def _reduce_ref_lanes(r: ti.i32) -> ti.types.vector(4, ti.i32):
+    """Reduce rep `r`'s GA_REF_LANES scan results to [top_pool, top_budget, top_init, largest_budget]."""
+    top_value: ti.f32 = -1.0e30
+    top_pool = ti.i32(0)
+    top_budget = ti.i32(0)
+    top_init = ti.i32(0)
+    largest_budget = ti.i32(0)
+    for lane in range(ti.static(GA_REF_LANES)):
+        largest_budget = ti.max(largest_budget, fields.ga_ref_lane_top[r, lane, 3])
+        value = fields.ga_ref_lane_val[r, lane]
+        if value > top_value:
+            top_value = value
+            top_pool = fields.ga_ref_lane_top[r, lane, 0]
+            top_budget = fields.ga_ref_lane_top[r, lane, 1]
+            top_init = fields.ga_ref_lane_top[r, lane, 2]
+    return ti.Vector([top_pool, top_budget, top_init, largest_budget])
 
-    The surface most valuable at capped multipliers is searched over the largest residual budget of the row's combos, at
-    the base value of its own budget: so its best bound caps its value at every (CM, FM) pair any combo can spend
-    (scoring.gem_reference), and each other surface's follows through their ratios (scoring.reference_bound). A combo of
-    that budget can spend the best pair, and what the surface most valuable there, nearly always the row's winner, is sure
-    to score at it is the incumbent."""
+
+@ti.func
+def _build_reference(n_genomes: ti.i32, flags: GpuColorFlags):
+    """Reduce pass 1's GA_REF_LANES winners per compacted rep and search that surface over the rep's largest residual
+    budget to produce its upper-bound reference (ga_gem_reference) and target (CM, FM) pair (ga_rep_pair)."""
     w_ov: ti.i32 = gem_weights(flags)[3]
-    for genome in range(n_genomes):
-        if fields.ga_exact_eval_rep_idx[genome] == genome and fields.chunk_best_results[genome, 0] == 0:
-            stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
-            stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
-            span = ti.Vector([fields.shortlist_start[stat_key], fields.shortlist_count[stat_key]])
-            if span[1] > 0:
-                caps = ti.Vector([gems_to_cap(stats[1], STAT_GEM_GAIN_NORMAL), gems_to_cap(stats[2], STAT_GEM_GAIN_FEVER)])
-                top = _most_valuable_surface(combos, span, stats, flags, caps, 0)
-                base: ti.i32 = top[2] + (top[1] * w_ov)
-                wide = search_context(top[3], stats, base - (top[3] * w_ov), flags, top[0])
-                best = surface_search(wide, 0, False)
-                pair = ti.Vector([best[2], best[3]])
-                top = _most_valuable_surface(combos, span, stats, flags, pair, pair[0] + pair[1])
-                incumbent = pair_floor(search_context(top[1], stats, top[2], flags, top[0]), pair[0], pair[1])
-                reference = gem_reference(wide, base, best[0])
-                fields.ga_eval_incumbent_score[genome] = incumbent
-                fields.ga_gem_reference[genome] = reference
-                survivors = ti.i32(0)
-                for k in range(span[1]):
-                    combo_idx: ti.i32 = combos[span[0] + k]
-                    option = _combo_option(combo_idx, stats, flags)
-                    option_base: ti.f32 = ti.cast(option[3] + (option[2] * w_ov), ti.f32)
-                    reaches = ti.i32(0)
-                    for pool_idx in range(option[0], option[0] + option[1]):
-                        bound = reference_bound(reference, option_base, fields.grid_frontier_shape_pool[pool_idx])
-                        if bound >= ti.cast(incumbent, ti.f32):
-                            reaches = 1
-                    if reaches != 0:
-                        if survivors < GA_FTFF_LANES:
-                            fields.ga_survivors[genome, survivors] = combo_idx
-                            slot = ti.atomic_add(fields.ga_search_count[0], 1)
-                            fields.ga_search_list[slot] = (genome * GA_FTFF_LANES) + survivors
-                        survivors += 1
-                fields.ga_survivor_count[genome] = survivors
+    for r in range(n_genomes):
+        if r >= fields.ga_rep_count[0]:
+            continue
+        genome = fields.ga_rep_list[r]
+        stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
+        stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
+        if fields.shortlist_count[stat_key] <= 0:
+            continue
+        top = _reduce_ref_lanes(r)
+        base: ti.i32 = top[2] + (top[1] * w_ov)
+        wide = search_context(top[3], stats, base - (top[3] * w_ov), flags, top[0])
+        best = surface_search(wide, 0, False)
+        fields.ga_rep_pair[r, 0] = best[2]
+        fields.ga_rep_pair[r, 1] = best[3]
+        fields.ga_gem_reference[genome] = gem_reference(wide, base, best[0])
+
+
+@ti.func
+def _set_incumbent(n_genomes: ti.i32, flags: GpuColorFlags):
+    """Reduce pass 2's GA_REF_LANES winners per compacted rep into its incumbent score floor."""
+    for r in range(n_genomes):
+        if r >= fields.ga_rep_count[0]:
+            continue
+        genome = fields.ga_rep_list[r]
+        stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
+        stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
+        if fields.shortlist_count[stat_key] <= 0:
+            continue
+        top = _reduce_ref_lanes(r)
+        fields.ga_eval_incumbent_score[genome] = pair_floor(
+            search_context(top[1], stats, top[2], flags, top[0]),
+            fields.ga_rep_pair[r, 0],
+            fields.ga_rep_pair[r, 1],
+        )
+
+
+@ti.func
+def _filter_survivors(n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY):
+    """Parallel survivor filter (GA_REF_LANES threads per compacted rep): lists every combo whose reference bound can
+    reach the rep's incumbent, packing search tasks into ga_search_list (exact tie-breaking stays order-independent)."""
+    w_ov: ti.i32 = gem_weights(flags)[3]
+    ref_lanes = ti.static(GA_REF_LANES)
+    lanes = ti.static(GA_FTFF_LANES)
+    for tid in range(n_genomes * ref_lanes):
+        r = tid // ref_lanes
+        if r >= fields.ga_rep_count[0]:
+            continue
+        lane = tid - r * ref_lanes
+        genome = fields.ga_rep_list[r]
+        stats = ti.cast(fields.genome_base_stats[genome], ti.i32)
+        stat_key: ti.i32 = ti.min(stats[5], MAX_STAT) * (MAX_STAT + 1) + ti.min(stats[6], MAX_STAT)
+        span_start = fields.shortlist_start[stat_key]
+        span_cnt = fields.shortlist_count[stat_key]
+        incumbent = ti.cast(fields.ga_eval_incumbent_score[genome], ti.f32)
+        reference = fields.ga_gem_reference[genome]
+        k = lane
+        while k < span_cnt:
+            combo_idx: ti.i32 = combos[span_start + k]
+            option = _combo_option(combo_idx, stats, flags)
+            option_base: ti.f32 = ti.cast(option[3] + (option[2] * w_ov), ti.f32)
+            reaches = ti.i32(0)
+            for pool_idx in range(option[0], option[0] + option[1]):
+                if reference_bound(reference, option_base, fields.grid_frontier_shape_pool[pool_idx]) >= incumbent:
+                    reaches = 1
+                    break
+            if reaches != 0:
+                survivor_idx = ti.atomic_add(fields.ga_survivor_count[genome], 1)
+                if survivor_idx < lanes:
+                    fields.ga_survivors[genome, survivor_idx] = combo_idx
+                    slot = ti.atomic_add(fields.ga_search_count[0], 1)
+                    fields.ga_search_list[slot] = (genome * lanes) + survivor_idx
+            k += ref_lanes
 
 
 @ti.func
@@ -455,12 +543,16 @@ def _finish_lanes(n_genomes: ti.i32):
 
 @ti.kernel
 def evaluate_kernel(n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY):
-    """The exact evaluation of the population in one launch: memo hits restored, each unique uncached row searched,
-    duplicates scattered. Each step's top-level loop is a dispatch of its own, with a barrier before the next."""
+    """The exact evaluation of the population in one launch: memo hits restored, each unique uncached rep searched in
+    parallel, duplicates scattered. Each step's top-level loop is a dispatch of its own, with a barrier before the next."""
     _prepare_evals(n_genomes)
     _aggregate_and_lookup(n_genomes, flags)
     _resolve_representatives(n_genomes)
-    _reference_search(n_genomes, flags, combos)
+    _scan_best_surface(n_genomes, flags, combos, False)
+    _build_reference(n_genomes, flags)
+    _scan_best_surface(n_genomes, flags, combos, True)
+    _set_incumbent(n_genomes, flags)
+    _filter_survivors(n_genomes, flags, combos)
     _search_combos(n_genomes, flags, combos)
     _finish_lanes(n_genomes)
     _scatter_results(n_genomes)

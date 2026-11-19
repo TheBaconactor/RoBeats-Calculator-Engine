@@ -82,26 +82,23 @@ def _base_surface_pool(song: TimedSong, curves: StatCurves) -> tuple[np.ndarray,
         if last is not None and last[0] is payload:
             return last[1], last[2]
     used = int(payload.frontier_pool_used)
-    cell_ranges = np.stack((payload.grid_frontier_offset[0].ravel(), payload.grid_frontier_count[0].ravel()), axis=1)
-    ranges, frontier_idx = np.unique(cell_ranges, axis=0, return_inverse=True)
-    heads, first_rows, pattern_ids = np.unique(
-        np.asarray(payload.grid_frontier_masks_bits_pool[0, :used, :4], dtype=np.uint32),
-        axis=0,
-        return_index=True,
-        return_inverse=True,
+    packed_ranges = (
+        (payload.grid_frontier_offset[0].ravel().astype(np.int64) << 32)
+        | payload.grid_frontier_count[0].ravel().astype(np.int64)
     )
-    pattern_words = np.zeros((heads.shape[0], 8), dtype=np.uint32)
-    pattern_words[:, :4] = heads
+    unique_ranges, frontier_idx = np.unique(packed_ranges, return_inverse=True)
+    pattern_words = np.zeros((used, 8), dtype=np.uint32)
+    pattern_words[:, :4] = payload.grid_frontier_masks_bits_pool[0, :used, :4]
     counts = np.zeros((used, 3), dtype=np.int32)
     counts[:, 0] = payload.grid_frontier_body_fever_pool[0, :used]
     pool = SurfacePool(
-        frontier_offsets=ranges[:, 0].astype(np.int32),
-        frontier_lengths=ranges[:, 1].astype(np.int32),
-        pattern_ids=pattern_ids.reshape(-1).astype(np.int32),
+        frontier_offsets=(unique_ranges >> 32).astype(np.int32),
+        frontier_lengths=(unique_ranges & 0xFFFFFFFF).astype(np.int32),
+        pattern_ids=np.arange(used, dtype=np.int32),
         pattern_words=pattern_words,
         counts=counts,
-        head_coeffs=payload.grid_frontier_head_coeffs_pool[0, first_rows, :].astype(np.int32),
-        head_greats=np.zeros((heads.shape[0], 2), dtype=np.int32),
+        head_coeffs=payload.grid_frontier_head_coeffs_pool[0, :used, :].astype(np.int32),
+        head_greats=np.zeros((used, 2), dtype=np.int32),
     )
     frontier_idx = frontier_idx.reshape(MAX_STAT + 1, MAX_STAT + 1).astype(np.int32)
     if not ephemeral:

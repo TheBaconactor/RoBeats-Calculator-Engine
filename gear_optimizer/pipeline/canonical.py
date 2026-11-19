@@ -82,6 +82,11 @@ def canonical_rows(
         if meta_scorer is None and song.mode == "non-precise"
         else None
     )
+    timeline_frontier = None
+    if meta_scorer is None and fixed_scores is None and solve.loadouts:
+        from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
+
+        timeline_frontier = build_or_load_timeline_frontier_payload(song, curves)
     base_trace_memo: dict[tuple, dict[str, Any]] = {}
     encoded_meta_by_id: dict[int, tuple[Any, bytes]] = {}
     encoded_fg_by_key: dict[tuple[Any, ...], tuple[Any, bytes]] = {}
@@ -111,6 +116,7 @@ def canonical_rows(
                     perfect_time,
                     copy=False,
                     memo=base_trace_memo,
+                    frontier=timeline_frontier,
                 )
                 score, meta_trace = int(replay["score"]), replay["TimelineFrontier"]
         except UnplayableTrace as exc:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from math import ceil
@@ -20,11 +19,21 @@ from .activation_witness import (
     section_prefix_witness,
     song_witness_template,
 )
-from .section_kernels import SectionContext, fever_end, section_rows
+from .section_kernels import SectionContext, centered_hit_window_for_exit, fitting_edges, section_rows
 
 
 _EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-_action_table = lru_cache(maxsize=64)(action_table)
+_EMPTY_F32 = np.empty(0, dtype=np.float32)
+
+
+@lru_cache(maxsize=64)
+def _action_table_arrays(raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
+    actions, later_fill, first_fill, later_forced, first_forced = action_table(
+        raw_fever_fill=raw_fever_fill, non_fever_base=non_fever_base, use_forced_great_timing=use_forced_great_timing
+    )
+    return tuple(np.asarray(col, dtype=np.int64) for col in (actions, later_fill, first_fill, later_forced, first_forced))
+
+
 _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS = 262_144
 
 
@@ -68,9 +77,15 @@ def _edge_of_surface(surface: FgResponseSurface) -> tuple[int, ...]:
 
 def _fitting_edges(edges: np.ndarray, remaining: tuple[int, ...]) -> np.ndarray:
     """The rows of `edges` that fit in the surface `remaining`: their notes in it and their counts within it."""
-    left = np.array(remaining, dtype=np.uint64)
-    return np.flatnonzero(
-        (np.bitwise_or.reduce(edges[:, :4] & ~left[:4], axis=1) == 0) & (edges[:, 4:] <= left[4:]).all(axis=1)
+    return fitting_edges(
+        edges,
+        np.uint64(remaining[0]),
+        np.uint64(remaining[1]),
+        np.uint64(remaining[2]),
+        np.uint64(remaining[3]),
+        np.uint64(remaining[4]),
+        np.uint64(remaining[5]),
+        np.uint64(remaining[6]),
     )
 
 
@@ -91,28 +106,6 @@ def _fever_start_fields(*, start_time: float, chart_time: float, activation_idx:
     return {"fever_start_source": source, "fever_start_note_index": note_idx, "fever_start_hit_ms": start_time * 1000.0}
 
 
-def _float32_order(value: float) -> int:
-    """A float32's place on the number line: neighbouring float32 values are neighbouring orders."""
-    bits = int(np.asarray(np.float32(value), dtype=np.float32).view(np.uint32))
-    return 0x80000000 - bits if bits & 0x80000000 else bits + 0x80000000
-
-
-def _hit_from_order(order: int) -> float:
-    bits = order - 0x80000000 if order >= 0x80000000 else 0x80000000 - order
-    return float(np.asarray(np.uint32(bits), dtype=np.uint32).view(np.float32))
-
-
-def _first_order(first: int, last: int, holds: Callable[[float], bool]) -> int:
-    """The first order in [first, last] whose hit satisfies the monotone `holds`; last + 1 if none does."""
-    while first <= last:
-        middle = (first + last) // 2
-        if holds(_hit_from_order(middle)):
-            last = middle - 1
-        else:
-            first = middle + 1
-    return first
-
-
 def _centered_hit_window_for_exit(
     n: int, activation_idx: int, legal_lo: float, legal_hi: float, real_fever_time: float, target_end_idx: int,
     perfect_floor_timestamps: np.ndarray, exit_ceiling_timestamps: np.ndarray | None = None,
@@ -121,40 +114,24 @@ def _centered_hit_window_for_exit(
     the notes reach at their earliest hits (the floor). With `exit_ceiling_timestamps` (an early exit) the notes before
     the target still reach inside the cutoff at their earliest hits, and the cutoff stays at or before the exit ceiling
     of the target, so the target and every later note can be hit past it."""
-    target = max(0, min(target_end_idx, n))
-
-    def exit_index(hit: float) -> int:
-        # The same earliest-Perfect floor the surface boundary used (issue #42), so the witness reproduces the end.
-        return fever_end(hit, activation_idx, perfect_floor_timestamps, real_fever_time, n)
-
-    def reaches_target(hit: float) -> bool:
-        return exit_index(hit) >= target
-
-    def within_target(hit: float) -> bool:
-        if exit_ceiling_timestamps is None:
-            return exit_index(hit) <= target
-        return float(np.float32(hit + real_fever_time)) <= float(exit_ceiling_timestamps[target])
-
-    lowest, highest = float(np.float32(legal_lo)), float(np.float32(legal_hi))
-    if lowest < legal_lo:
-        lowest = float(np.nextafter(np.float32(lowest), np.float32(np.inf)))
-    if highest > legal_hi:
-        highest = float(np.nextafter(np.float32(highest), np.float32(-np.inf)))
-    min_order, max_order = _float32_order(lowest), _float32_order(highest)
-    first_order = _first_order(min_order, max_order, reaches_target)
-    last_order = _first_order(min_order, max_order, lambda hit: not within_target(hit)) - 1
-    if first_order > last_order:
+    status, hit, first_hit, last_hit = centered_hit_window_for_exit(
+        n,
+        activation_idx,
+        legal_lo,
+        legal_hi,
+        real_fever_time,
+        target_end_idx,
+        perfect_floor_timestamps,
+        _EMPTY_F32 if exit_ceiling_timestamps is None else exit_ceiling_timestamps,
+    )
+    if status == 0:
+        return hit, first_hit, last_hit
+    if status == 1:
+        target = max(0, min(target_end_idx, n))
         # The producer prices a section's end at its latest hit in float64, which can lie between two float32 hits.
         raise UnplayableTrace(
             f"no float32 hit of note {activation_idx} in [{legal_lo:.9f}, {legal_hi:.9f}] s ends its fever at note {target}"
         )
-
-    first_hit, last_hit = _hit_from_order(first_order), _hit_from_order(last_order)
-    midpoint = _float32_order(float(np.float32((first_hit + last_hit) * 0.5)))
-    for order in (min(max(midpoint, first_order), last_order), (first_order + last_order) // 2):
-        hit = _hit_from_order(order)
-        if reaches_target(hit) and within_target(hit):
-            return hit, first_hit, last_hit
     raise ValueError("centered FG trace witness changed the response surface")
 
 
@@ -261,7 +238,7 @@ def _stored_section(
 
 
 def section_table(
-    context: SectionContext, actions: list[int], fills: list[int], forced: list[int], state: int, first: bool
+    context: SectionContext, actions: np.ndarray, fills: np.ndarray, forced: np.ndarray, state: int, first: bool
 ) -> _SectionTable:
     """The candidate fever sections after state `state` (the first section when `first`), per action of the frontier's
     action table (its `fills` and `forced` counts for this kind of section)."""
@@ -326,11 +303,12 @@ def reconstruct_force_greats_response_trace(
         key = (*table_prefix, state, first)
         table = shared_tables.tables.get(key)
         if table is None:
-            actions, later_fill, first_fill, later_forced, first_forced = _action_table(
-                raw_fever_fill=raw_fever_fill, non_fever_base=non_fever_base, use_forced_great_timing=use_forced_great_timing
+            actions, later_fill, first_fill, later_forced, first_forced = _action_table_arrays(
+                raw_fever_fill, non_fever_base, use_forced_great_timing
             )
             fills, forced = (first_fill, first_forced) if first else (later_fill, later_forced)
-            table = section_table(context, actions, fills, forced, state, first)
+            rows, edges, hits = section_rows(context, actions, fills, forced, first, state)
+            table = _SectionTable(0 if first else state + 1, edges, rows, hits)
             shared_tables.add(key, table)
         return table
 

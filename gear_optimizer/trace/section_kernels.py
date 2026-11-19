@@ -265,3 +265,118 @@ def section_rows(context, actions, fills, forced, first, state):
         for early_end in range(exits[index], end):
             count = _emit(store, count, family, n, (early_end, -1, -1, early_end, 1, lows[index]))
     return store[0][:count], store[1][:count], store[2][:count]
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def fitting_edges(
+    edges: np.ndarray,
+    r0: np.uint64,
+    r1: np.uint64,
+    r2: np.uint64,
+    r3: np.uint64,
+    r4: np.uint64,
+    r5: np.uint64,
+    r6: np.uint64,
+) -> np.ndarray:
+    """Indices of rows in `edges` (uint64 (m, 7)) whose head masks lie inside (r0..r3) and body counts within (r4..r6)."""
+    m = edges.shape[0]
+    out = np.empty(m, dtype=np.int64)
+    count = 0
+    nr0, nr1, nr2, nr3 = ~r0, ~r1, ~r2, ~r3
+    for i in range(m):
+        if (
+            ((edges[i, 0] & nr0) | (edges[i, 1] & nr1) | (edges[i, 2] & nr2) | (edges[i, 3] & nr3)) == np.uint64(0)
+            and edges[i, 4] <= r4
+            and edges[i, 5] <= r5
+            and edges[i, 6] <= r6
+        ):
+            out[count] = i
+            count += 1
+    return out[:count]
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _f32_to_order(value: np.float32, fbuf: np.ndarray, ubuf: np.ndarray) -> np.int64:
+    fbuf[0] = value
+    bits = np.int64(ubuf[0])
+    if bits & 0x80000000:
+        return 0x80000000 - bits
+    return bits + 0x80000000
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _order_to_f32(order: np.int64, fbuf: np.ndarray, ubuf: np.ndarray) -> float:
+    bits = order - 0x80000000 if order >= 0x80000000 else 0x80000000 - order
+    ubuf[0] = np.uint32(bits)
+    return float(fbuf[0])
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def centered_hit_window_for_exit(
+    n: int,
+    activation_idx: int,
+    legal_lo: float,
+    legal_hi: float,
+    real_fever_time: float,
+    target_end_idx: int,
+    perfect_floor_timestamps: np.ndarray,
+    exit_ceiling_timestamps: np.ndarray,
+) -> tuple[int, float, float, float]:
+    """Centered float32 activation hit in [legal_lo, legal_hi] ending fever at target_end_idx (status: 0=ok,
+    1=unplayable, 2=midpoint mismatch). Empty exit_ceiling_timestamps means no early-exit ceiling check."""
+    target = min(max(target_end_idx, 0), n)
+    use_ceiling = exit_ceiling_timestamps.shape[0] > 0
+    fbuf = np.empty(1, dtype=np.float32)
+    ubuf = fbuf.view(np.uint32)
+    lowest = float(np.float32(legal_lo))
+    highest = float(np.float32(legal_hi))
+    if lowest < legal_lo:
+        lowest = float(np.nextafter(np.float32(lowest), np.float32(np.inf)))
+    if highest > legal_hi:
+        highest = float(np.nextafter(np.float32(highest), np.float32(-np.inf)))
+    min_order = _f32_to_order(np.float32(lowest), fbuf, ubuf)
+    max_order = _f32_to_order(np.float32(highest), fbuf, ubuf)
+
+    lo, hi = min_order, max_order
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if fever_end(_order_to_f32(mid, fbuf, ubuf), activation_idx, perfect_floor_timestamps, real_fever_time, n) >= target:
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    first_order = lo
+
+    lo, hi = min_order, max_order
+    ceil_limit = float(exit_ceiling_timestamps[target]) if use_ceiling else 0.0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        hit = _order_to_f32(mid, fbuf, ubuf)
+        within = (
+            float(np.float32(hit + real_fever_time)) <= ceil_limit
+            if use_ceiling
+            else fever_end(hit, activation_idx, perfect_floor_timestamps, real_fever_time, n) <= target
+        )
+        if not within:
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    last_order = lo - 1
+    if first_order > last_order:
+        return 1, 0.0, 0.0, 0.0
+
+    first_hit = _order_to_f32(first_order, fbuf, ubuf)
+    last_hit = _order_to_f32(last_order, fbuf, ubuf)
+    midpoint = _f32_to_order(np.float32((first_hit + last_hit) * 0.5), fbuf, ubuf)
+    c0 = min(max(midpoint, first_order), last_order)
+    c1 = (first_order + last_order) // 2
+    for candidate in (c0, c1):
+        hit = _order_to_f32(candidate, fbuf, ubuf)
+        reaches = fever_end(hit, activation_idx, perfect_floor_timestamps, real_fever_time, n) >= target
+        within = (
+            float(np.float32(hit + real_fever_time)) <= ceil_limit
+            if use_ceiling
+            else fever_end(hit, activation_idx, perfect_floor_timestamps, real_fever_time, n) <= target
+        )
+        if reaches and within:
+            return 0, hit, first_hit, last_hit
+    return 2, 0.0, 0.0, 0.0

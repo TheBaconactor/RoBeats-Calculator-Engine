@@ -71,11 +71,12 @@ def score_stats_exact_with_timeline_trace(
     *,
     copy: bool = True,
     memo: dict[tuple, dict[str, Any]] | None = None,
+    frontier: Any = None,
 ) -> dict[str, Any]:
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
     total_notes = song.chart.total_notes
-    frontier_result = build_or_load_timeline_frontier_payload(song, curves)
+    frontier_result = build_or_load_timeline_frontier_payload(song, curves) if frontier is None else frontier
     payload = frontier_result.payload
     primary, secondary = song.chart.primary, song.chart.secondary
     row = _stats_row(stats)

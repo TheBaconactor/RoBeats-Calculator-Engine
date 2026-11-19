@@ -1,6 +1,6 @@
 """Taichi scoring: the score of a gem allocation on a surface of the song's timeline frontier, and exact_gem_search, the
-GA's per-cell gem search: every (CM, FM) pair whose admissible bound can beat the best so far, bounded by rows and runs of
-_FM_RUN pairs first (PP from the PP/element prefix-argmax table).
+GA's per-cell gem search: every (CM, FM) pair whose admissible bound can beat the best so far, bounded in 2D tiles of
+_TILE_CM x _TILE_FM pairs and rows first (PP from the PP/element prefix-argmax table).
 
 A surface's shape (A, E, F, G) gives its notes' sum before the score's floors: base value x (combo x (A x fever + E) + F x
 fever + G). Each note's score is at most its share of that, so a bound is that sum, with _BOUND_MARGIN over the float order,
@@ -17,8 +17,9 @@ from gear_optimizer.rules import ELEMENT_GEM_GAIN, MAX_STAT, STAT_GEM_ELEMENT_GA
 from . import fields
 from .runtime import ti
 
-# FM gem counts per run bound in the exact search's pair loop.
-_FM_RUN = 8
+# (CM, FM) tile dimensions for 2D block pruning in surface_search.
+_TILE_CM = 6
+_TILE_FM = 6
 _BOUND_MARGIN = 1024.0
 _HEAD_MARGIN = 128.0  # Over the head's sum: float32 shapes hold it in sums with the body's notes.
 FLOAT32_ERROR = 3.0e-7  # Relative: four float32 rounding steps of 2**-24, the multipliers' and the products'.
@@ -172,13 +173,15 @@ def search_context(
 
 
 @ti.func
-def _note_score(base: ti.i32, combo_stat: ti.i32, note: ti.i32, fever_stat: ti.i32, in_fever: ti.u32) -> ti.i32:
+def _score_note(
+    base: ti.i32, base_f: ti.f32, combo_stat: ti.i32, note: ti.i32, fever_stat: ti.i32, fm_f: ti.f32, in_fever: ti.u32
+) -> ti.i32:
     """A note's score, as score.py: base x combo x fever floored, in the game's float64 and operation order. float32
     settles it unless an integer lies within its error. Base values are integers: the Perfect Points curve is. All values
     are positive, so floors truncate."""
-    rough: ti.f32 = ti.cast(base, ti.f32) * fields.note_combo[combo_stat, note]
+    rough: ti.f32 = base_f * fields.note_combo[combo_stat, note]
     if in_fever != ti.u32(0):
-        rough *= fields.ref_fm_field[fever_stat]
+        rough *= fm_f
     whole: ti.f32 = ti.floor(rough)
     score = ti.cast(whole, ti.i32)
     if ti.abs(rough - whole - 0.5) >= 0.5 - (rough * FLOAT32_ERROR):
@@ -190,22 +193,42 @@ def _note_score(base: ti.i32, combo_stat: ti.i32, note: ti.i32, fever_stat: ti.i
 
 
 @ti.func
+def _note_score(base: ti.i32, combo_stat: ti.i32, note: ti.i32, fever_stat: ti.i32, in_fever: ti.u32) -> ti.i32:
+    return _score_note(base, ti.cast(base, ti.f32), combo_stat, note, fever_stat, fields.ref_fm_field[fever_stat], in_fever)
+
+
+@ti.func
 def _surface_score(ctx: SearchContext, base: ti.i32, combo_stat: ti.i32, fever_stat: ti.i32, floor: ti.i32) -> ti.i32:
     """The exact score of a surface; -1 if it stays below `floor`, which the notes past the head and the head's sum before
     floors can tell."""
     body_fever = fields.grid_frontier_body_fever_pool[ctx.pool_idx]
     body_normal = fields.grid_frontier_body_normal_pool[ctx.pool_idx]
-    score = (body_fever * _note_score(base, combo_stat, COMBO_RAMP_NOTES, fever_stat, ti.u32(1))) + (
-        body_normal * _note_score(base, combo_stat, COMBO_RAMP_NOTES, fever_stat, ti.u32(0))
+    base_f = ti.cast(base, ti.f32)
+    fm_f = fields.ref_fm_field[fever_stat]
+    score = (body_fever * _score_note(base, base_f, combo_stat, COMBO_RAMP_NOTES, fever_stat, fm_f, ti.u32(1))) + (
+        body_normal * _score_note(base, base_f, combo_stat, COMBO_RAMP_NOTES, fever_stat, fm_f, ti.u32(0))
     )
     head_shape = ctx.shape - ti.Vector([ti.cast(body_fever, ti.f32), ti.cast(body_normal, ti.f32), 0.0, 0.0])
-    head_sum = ti.cast(base, ti.f32) * shape_value(head_shape, fields.ref_cm_field[combo_stat], fields.ref_fm_field[fever_stat])
+    head_sum = base_f * shape_value(head_shape, fields.ref_cm_field[combo_stat], fm_f)
     if score + ti.cast(head_sum + _HEAD_MARGIN, ti.i32) < floor:
         score = -1
     else:
-        for note in range(fields.song_head_len[0]):
-            word = fields.grid_frontier_masks_bits_pool[ctx.pool_idx, note >> 5]
-            score += _note_score(base, combo_stat, note, fever_stat, (word >> ti.cast(note & 31, ti.u32)) & ti.u32(1))
+        head_len = fields.song_head_len[0]
+        m0 = fields.grid_frontier_masks_bits_pool[ctx.pool_idx, 0]
+        m1 = fields.grid_frontier_masks_bits_pool[ctx.pool_idx, 1]
+        m2 = fields.grid_frontier_masks_bits_pool[ctx.pool_idx, 2]
+        m3 = fields.grid_frontier_masks_bits_pool[ctx.pool_idx, 3]
+        for note in range(head_len):
+            wi = note >> 5
+            word = m0
+            if wi == 1:
+                word = m1
+            elif wi == 2:
+                word = m2
+            elif wi == 3:
+                word = m3
+            in_fever = (word >> ti.cast(note & 31, ti.u32)) & ti.u32(1)
+            score += _score_note(base, base_f, combo_stat, note, fever_stat, fm_f, in_fever)
     return score
 
 
@@ -293,48 +316,62 @@ def surface_search(ctx: SearchContext, floor: ti.i32, exact: ti.template()) -> t
     incumbent: a result under it cannot win) is not scored. Else the scores are the pairs' bounds: no result on the
     surface passes the best of them, and a seed pair's bound starts the pruning.
 
-    Along a row, an FM gem replaces an element gem and gains less base value (a song's element gem is worth the most), so
-    a run's best base value is at its fewest FM gems (PP's share never falls with more leftover) and its highest fever
-    multiplier at the most."""
+    When CM and FM gems each gain no more base value than an element gem (every real GA solve), a 2D tile's best base
+    value lies at its fewest (CM, FM) gems (PP's share never falls with more leftover) and its highest multipliers at
+    its most, so one corner bound skips dead _TILE_CM x _TILE_FM tiles before entering rows or pairs."""
     best = ti.Vector([-1, 0, 0, 0, 0], dt=ti.i32)
-    seed = ti.Vector([-1, -1], dt=ti.i32)
     if ti.static(not exact):
         seed = _seed_pair(ctx)
         g_pp: ti.i32 = _best_pp_gems(ctx, ctx.budget - seed[0] - seed[1])
         best = ti.Vector([ti.cast(pair_bound(ctx, seed[0], seed[1]), ti.i32), g_pp, seed[0], seed[1], ctx.budget - seed[0] - seed[1] - g_pp])
     floor_value: ti.f32 = ti.cast(floor, ti.f32)
-    g_cm: ti.i32 = 0
-    while g_cm <= ctx.max_cm_gems:
-        combo_mul: ti.f32 = lookup_ref_cm(ctx.cur_cm + (g_cm * STAT_GEM_GAIN_NORMAL))
-        alpha: ti.f32 = (combo_mul * ctx.shape[0]) + ctx.shape[2]
-        beta: ti.f32 = (combo_mul * ctx.shape[1]) + ctx.shape[3]
-        fm_top: ti.i32 = ti.min(ctx.max_fm_gems, ctx.budget - g_cm)
-        # The row is bounded whole, then in runs of _FM_RUN pairs: a run whose bound cannot beat the best so far or
-        # reach the floor holds no pair the loop would score.
-        g_fm: ti.i32 = 0
-        run_end: ti.i32 = fm_top
-        while g_fm <= fm_top:
-            run_fever: ti.f32 = lookup_ref_fm(ctx.cur_fm + (run_end * STAT_GEM_GAIN_FEVER))
-            run_bound: ti.f32 = _pair_base(ctx, g_cm, g_fm) * ((alpha * run_fever) + beta) + _BOUND_MARGIN
-            open_run = run_bound > ti.cast(best[0], ti.f32) and run_bound >= floor_value
-            if open_run and run_end - g_fm >= _FM_RUN:
-                run_end = g_fm + _FM_RUN - 1
-                continue
-            while open_run and g_fm <= run_end:
-                base_value: ti.f32 = _pair_base(ctx, g_cm, g_fm)
-                fever_mul: ti.f32 = lookup_ref_fm(ctx.cur_fm + (g_fm * STAT_GEM_GAIN_FEVER))
-                bound: ti.f32 = base_value * ((alpha * fever_mul) + beta) + _BOUND_MARGIN
-                if bound > ti.cast(best[0], ti.f32) and bound >= floor_value:
-                    score = ti.cast(bound, ti.i32)
-                    if ti.static(exact):
-                        score = pair_score(ctx, g_cm, g_fm, ti.max(best[0], floor))
-                    g_pp: ti.i32 = _best_pp_gems(ctx, ctx.budget - g_cm - g_fm)
-                    if _improves(score, g_cm, g_fm, g_pp, best):
-                        best = ti.Vector([score, g_pp, g_cm, g_fm, ctx.budget - g_cm - g_fm - g_pp])
-                g_fm += 1
-            g_fm = run_end + 1
-            run_end = ti.min(g_fm + _FM_RUN - 1, fm_top)
-        g_cm += 1
+    monotone = (ctx.w_cm <= ctx.w_ov) and (ctx.w_fm <= ctx.w_ov)
+    cm_step: ti.i32 = _TILE_CM if monotone else 1
+    fm_step: ti.i32 = _TILE_FM if monotone else 1
+    g_cm0: ti.i32 = 0
+    while g_cm0 <= ctx.max_cm_gems:
+        cm1: ti.i32 = ti.min(g_cm0 + cm_step - 1, ctx.max_cm_gems)
+        fm_max_band: ti.i32 = ti.min(ctx.max_fm_gems, ctx.budget - g_cm0)
+        band_cm: ti.f32 = lookup_ref_cm(ctx.cur_cm + (cm1 * STAT_GEM_GAIN_NORMAL))
+        b_alpha: ti.f32 = (band_cm * ctx.shape[0]) + ctx.shape[2]
+        b_beta: ti.f32 = (band_cm * ctx.shape[1]) + ctx.shape[3]
+        g_fm0: ti.i32 = 0
+        while g_fm0 <= fm_max_band:
+            fm1: ti.i32 = ti.min(g_fm0 + fm_step - 1, fm_max_band)
+            tile_fm: ti.f32 = lookup_ref_fm(ctx.cur_fm + (fm1 * STAT_GEM_GAIN_FEVER))
+            tile_bound: ti.f32 = _pair_base(ctx, g_cm0, g_fm0) * ((b_alpha * tile_fm) + b_beta) + _BOUND_MARGIN
+            if tile_bound > ti.cast(best[0], ti.f32) and tile_bound >= floor_value:
+                g_cm: ti.i32 = g_cm0
+                while g_cm <= cm1:
+                    row_fm1: ti.i32 = ti.min(fm1, ctx.budget - g_cm)
+                    if g_fm0 <= row_fm1:
+                        combo_mul: ti.f32 = lookup_ref_cm(ctx.cur_cm + (g_cm * STAT_GEM_GAIN_NORMAL))
+                        alpha: ti.f32 = (combo_mul * ctx.shape[0]) + ctx.shape[2]
+                        beta: ti.f32 = (combo_mul * ctx.shape[1]) + ctx.shape[3]
+                        row_fm: ti.f32 = lookup_ref_fm(ctx.cur_fm + (row_fm1 * STAT_GEM_GAIN_FEVER))
+                        row_bound: ti.f32 = _pair_base(ctx, g_cm, g_fm0) * ((alpha * row_fm) + beta) + _BOUND_MARGIN
+                        if row_bound > ti.cast(best[0], ti.f32) and row_bound >= floor_value:
+                            g_fm: ti.i32 = g_fm0
+                            while g_fm <= row_fm1:
+                                base_value: ti.f32 = _pair_base(ctx, g_cm, g_fm)
+                                fever_mul: ti.f32 = lookup_ref_fm(ctx.cur_fm + (g_fm * STAT_GEM_GAIN_FEVER))
+                                bound: ti.f32 = base_value * ((alpha * fever_mul) + beta) + _BOUND_MARGIN
+                                if bound > ti.cast(best[0], ti.f32) and bound >= floor_value:
+                                    score = ti.cast(bound, ti.i32)
+                                    if ti.static(exact):
+                                        score = _surface_score(
+                                            ctx, ti.cast(base_value, ti.i32),
+                                            _stat_index(ctx.cur_cm + (g_cm * STAT_GEM_GAIN_NORMAL)),
+                                            _stat_index(ctx.cur_fm + (g_fm * STAT_GEM_GAIN_FEVER)),
+                                            ti.max(best[0], floor),
+                                        )
+                                    g_pp: ti.i32 = _best_pp_gems(ctx, ctx.budget - g_cm - g_fm)
+                                    if _improves(score, g_cm, g_fm, g_pp, best):
+                                        best = ti.Vector([score, g_pp, g_cm, g_fm, ctx.budget - g_cm - g_fm - g_pp])
+                                g_fm += 1
+                    g_cm += 1
+            g_fm0 = fm1 + 1
+        g_cm0 = cm1 + 1
     return best
 
 
