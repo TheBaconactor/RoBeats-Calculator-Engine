@@ -570,14 +570,69 @@ def likeliest_loadouts(space, tables, fixed, points, vertices, query, found):
     from `step`, into found (search_targets' rows, the target's place left free), until found is full, a band passes what
     the target's openings may give up, or the work budget ends; returns the rows. query: (target, Gear Power or negative,
     the first band's width, items it may try)."""
+    items, starts, gems = space
+    element_rows, values, floors, layers, table_prices, removed, add, lows, highs = tables
+    vertex_values, vertex_prices = vertices
     target, power, step, allowed = query
-    scratch = _search_scratch(tables[3].shape[1] - 1, points.shape[0])
+    final, openings, walk = _search_scratch(layers.shape[1] - 1, points.shape[0])
+    base = target[5]
+    prices = vertex_prices[target[6]]
+    bound = vertex_values[target[6]]
+    for d in range(1, 5):
+        final[d] = target[d]
+        bound -= prices[d] * target[d]
+    first_stat, last_stat = (0, points.shape[0] - 1) if target[7] < 0 else (target[7], target[7])
+    gift = _gift(fixed, prices[0])
+    best_points = points_conjugate(points, prices[0])[0]
+    cap = element_rows.shape[0] * fixed.shape[0] * (last_stat - first_stat + 1)
+    saved_ints = np.empty((cap, 4), dtype=np.int64)
+    saved_rooms = np.empty(cap, dtype=np.float64)
+    n_open = 0
+    reach = -1.0
+    for e in range(element_rows.shape[0]):
+        arrays = (floors[e], layers[e, 0], table_prices[e], element_rows[e])
+        for f in range(fixed.shape[0]):
+            slack = bound - gift + 2.0 * fixed[f, 5] + fixed[f, 6] + prices[0] * fixed[f, 0] - base
+            if slack < 0.0:
+                continue
+            count = _openings(arrays, gems, points, (final, base, power, fixed[f], first_stat, last_stat), openings)
+            for k in range(count):
+                stat, value = openings[k, 0], openings[k, 1]
+                room = slack - best_points + points[stat] - prices[0] * stat
+                if room < 0.0:
+                    continue
+                reach = max(reach, room)
+                row = saved_ints[n_open]
+                row[0], row[1], row[2], row[3] = e, f, stat, value
+                saved_rooms[n_open] = room
+                n_open += 1
+    if n_open == 0:
+        return 0
+    short, order = shortfalls(items, starts, prices)
     least, most = -1.0, step
     written = tried = 0
     while written < found.shape[0] and tried <= allowed:
-        rows, used, _whole, _opened, reach = _target_loadouts(space, tables, fixed, points, vertices, (target, power, least, most, allowed - tried), scratch, found[written:])
-        written += rows
-        tried += used
+        band_allowed = allowed - tried
+        band_tried = 0
+        for idx in range(n_open):
+            room = saved_rooms[idx]
+            if room <= least or band_tried > band_allowed:
+                continue
+            e, f, stat, value = saved_ints[idx, 0], saved_ints[idx, 1], saved_ints[idx, 2], saved_ints[idx, 3]
+            walk_arrays = (values[e], removed, add, layers[e], lows, highs, element_rows[e])
+            final[0] = stat
+            rows, used, done = _walk_exact(
+                space,
+                walk_arrays,
+                (final, fixed[f], value, short, order, least, min(room, most)),
+                walk,
+                found[written:],
+                band_allowed - band_tried,
+            )
+            found[written : written + rows, 17] = f
+            written += rows
+            band_tried = band_tried + used if done else band_allowed + 1
+        tried += band_tried
         if most >= reach:
             break
         least, most = most, most * 2.0
@@ -621,6 +676,9 @@ def gem_gaps(found, space, fixed, tables, single_color, gaps, greats):
     stats = np.empty(7, dtype=np.int64)
     trial = np.empty(7, dtype=np.int64)
     counts = np.empty(gems.shape[0], dtype=np.int64)
+    memo_k1 = np.full(64, -1, dtype=np.int64)
+    memo_k2 = np.full(64, -1, dtype=np.int64)
+    memo_val = np.empty(64, dtype=np.float64)
     for r in range(found.shape[0]):
         row = found[r]
         stats[:] = fixed[row[17]][:7]
@@ -629,10 +687,28 @@ def gem_gaps(found, space, fixed, tables, single_color, gaps, greats):
         counts[:] = 0
         counts[:5] = row[9:14]
         counts[row[15]] = row[14]
+        held_mask = 0
         for kind in range(gems.shape[0]):
-            stats += counts[kind] * gems[kind][:7]
+            if counts[kind] != 0:
+                stats += counts[kind] * gems[kind][:7]
+                held_mask |= 1 << kind
         greats[r] = 2 * stats[5] + 150 if single_color else (4 * stats[5]) // 3 + (2 * stats[6]) // 3 + 150
-        gaps[r] = _gem_gap(stats, gems, counts, row[15], trial, tables)
+        k1 = (
+            ((stats[0] & 255) << 40)
+            | ((stats[1] & 255) << 32)
+            | ((stats[2] & 255) << 24)
+            | ((stats[3] & 255) << 16)
+            | ((stats[4] & 255) << 8)
+            | (row[15] & 255)
+        )
+        k2 = ((2 * stats[5] + stats[6]) << 16) | held_mask
+        slot = int(((k1 ^ (k2 * 0x517CC1B727220A95)) >> 58) & 63)
+        if memo_k1[slot] == k1 and memo_k2[slot] == k2:
+            gaps[r] = memo_val[slot]
+        else:
+            val = _gem_gap(stats, gems, counts, row[15], trial, tables)
+            memo_k1[slot], memo_k2[slot], memo_val[slot] = k1, k2, val
+            gaps[r] = val
 
 
 @jit(nopython=True, cache=True)

@@ -8,6 +8,7 @@ import os
 import struct
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -23,13 +24,22 @@ _ti_initialized = False
 _ti_materialized_once = False
 _ti_lock = threading.RLock()
 _offline_cache_dir: str | None = None
+_reset_hooks: list[Callable[[], None]] = []
 _GPU_BLOCK_DIM = 256  # The benchmark-validated choice for these kernels (Vulkan allows 1..1024).
 logger = logging.getLogger(__name__)
 
+os.environ.setdefault("TI_ENABLE_PYBUF", "0")
 # Taichi prints a version banner at import time. On Windows, spawned child processes can inherit an invalid console
 # handle that makes print() raise OSError [WinError 1]; quiet_stdio covers both Python-level and native writes.
 with quiet_stdio(not settings.output_enabled()):
     import taichi as ti  # noqa: E402
+
+
+def register_reset_hook(hook: Callable[[], None]) -> None:
+    """Register a state-clearing hook run under `_ti_lock` whenever `reset_taichi` tears down Taichi's SNodes."""
+    with _ti_lock:
+        if hook not in _reset_hooks:
+            _reset_hooks.append(hook)
 
 
 def _assert_darwin_main_thread_materialization() -> None:
@@ -149,7 +159,7 @@ def _select_vulkan_device() -> None:
         import taichi._lib.core as ti_core
 
         ti_core.set_vulkan_visible_device(target)
-        if auto_discrete:
+        if auto_discrete and settings.output_enabled():
             print(f"[Taichi] Using TAICHI_VULKAN_VISIBLE_DEVICE={target}", flush=True)
     except Exception:
         # Device selection only steers hybrid-GPU boxes; Taichi falls back to its default device.
@@ -157,13 +167,24 @@ def _select_vulkan_device() -> None:
 
 
 def _get_offline_cache_dir() -> str:
-    """<engine>/bin/taichi_cache/v2/ti_<version>/<key>, created; the key hashes this package's sources (paths and
-    contents), so only a change here (not every commit) pays the ~minute Vulkan warm-up compile."""
+    """<engine>/bin/taichi_cache/v2/ti_<version>/<key>, created; the key hashes every GPU kernel source and its
+    compile-time rule constants, so only a change there (not every commit) pays the Vulkan warm-up compile."""
     taichi_root = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.dirname(os.path.dirname(taichi_root))
-    sources = sorted(
-        os.path.join(root, name) for root, _dirs, files in os.walk(taichi_root) for name in files if name.endswith(".py")
+    pkg_root = os.path.dirname(taichi_root)
+    repo_root = os.path.dirname(pkg_root)
+    extra = (
+        os.path.join(pkg_root, "reverse", "gpu_lines.py"),
+        os.path.join(pkg_root, "rules.py"),
     )
+    sources = sorted({
+        *(
+            os.path.join(root, name)
+            for root, _dirs, files in os.walk(taichi_root)
+            for name in files
+            if name.endswith(".py")
+        ),
+        *(path for path in extra if os.path.isfile(path)),
+    })
     digest = hashlib.blake2b(digest_size=16)
     for path in sources:
         digest.update(os.path.relpath(path, repo_root).replace("\\", "/").encode("utf-8", errors="replace"))
@@ -259,3 +280,16 @@ def reset_taichi(*, reason: str | None = None) -> None:
             logger.warning("[Taichi] reset failed", exc_info=True)
 
         _ti_initialized = False
+        for hook in list(_reset_hooks):
+            hook()
+
+
+def finalize_taichi(reason: str) -> None:
+    """Persist the offline kernel cache and tear down Taichi under the cross-process cache lock."""
+    if not _ti_initialized:
+        return
+    try:
+        with offline_cache_lock():
+            reset_taichi(reason=reason)
+    except Exception as exc:
+        logger.warning("[Taichi] Shutdown finalize failed (offline cache may be stale): %s", exc)

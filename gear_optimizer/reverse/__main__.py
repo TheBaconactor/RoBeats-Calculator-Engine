@@ -10,6 +10,7 @@ from pathlib import Path
 from gear_optimizer.chart import load_chart, read_header
 from gear_optimizer.data.game_export import load_catalog
 from gear_optimizer.gamedata import stat_curves
+from gear_optimizer.gpu.runtime import finalize_taichi
 from gear_optimizer.settings import DIFFICULTIES, paths
 
 from .lookup import PlayInfo, prepare_song, reverse_score
@@ -17,8 +18,8 @@ from .lookup import PlayInfo, prepare_song, reverse_score
 
 def _chart_path(song: str) -> Path:
     for difficulty in DIFFICULTIES:
-        for path in paths().chart_dir(difficulty).glob("*.txt"):
-            if read_header(path)["Song Name"] == song:
+        for path in sorted(paths().chart_dir(difficulty).glob("*.txt")):
+            if read_header(path).get("Song Name") == song:
                 return path
     raise SystemExit(f"no chart has the Song Name {song!r}")
 
@@ -35,8 +36,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=8, help="the most stat lines to list")
     args = parser.parse_args()
     play = PlayInfo(args.score, args.accuracy, args.casual, args.multiplier, args.gear_power, args.mode)
-    song = prepare_song(load_chart(_chart_path(args.song)), load_catalog(paths().game_export), stat_curves())
-    reply = reverse_score(play, song, limit=args.limit)
+    try:
+        song = prepare_song(load_chart(_chart_path(args.song)), load_catalog(paths().game_export), stat_curves())
+        reply = reverse_score(play, song, limit=args.limit)
+    finally:
+        finalize_taichi("reverse CLI shutdown")
     print(json.dumps(asdict(reply), indent=1, default=str))
     return 0
 

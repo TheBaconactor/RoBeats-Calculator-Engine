@@ -28,6 +28,7 @@ from tools.verify.fake_players import fake_player, gear_power, play_info
 
 CHART = "Aether (Easy) by Geoxor.txt"
 STORED = dict(zip(STATS, (85, 59, 71, 66, 63, 35, 135, 73, 34, 707)))
+pytestmark = pytest.mark.gpu
 
 
 @pytest.fixture(scope="module")
@@ -307,7 +308,7 @@ def test_the_lookup_worker_compiles_its_kernels_before_it_reads_a_request(song):
     offsets = np.zeros(chart.total_notes)
     offsets[0], offsets[19] = 60.0, 140.0
     great = _simulated(song, STORED, Plan(offsets))
-    player = fake_player(random.Random(1), song, dict(load_catalog(paths().game_export).minis), "casual", "machine")
+    player = fake_player(random.Random(0), song, dict(load_catalog(paths().game_export).minis), "casual", "machine")
     below = play(chart, player.stats, player.perfect_time, Plan(np.zeros(chart.total_notes)), np.arange(-1000.0, float(chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0))
     path = str(paths().chart_dir("Easy") / CHART)
     requests = [{"chartPath": path, "score": 4_666_274}] + [
@@ -357,7 +358,7 @@ def test_a_partly_upgraded_players_row_names_a_partly_upgraded_set(song):
     """A row no max-level set gives comes back with a guess below max, minis at a rank, level and ascension and up to 90 gems,
     whose own stats replay frame by frame to the row's exact score."""
     catalog = load_catalog(paths().game_export)
-    player = fake_player(random.Random(1), song, dict(catalog.minis), "casual", "machine")
+    player = fake_player(random.Random(0), song, dict(catalog.minis), "casual", "machine")
     clock = np.arange(-1000.0, float(song.chart.timestamps[-1]) * 1000.0 + 2000.0, 1.0)
     played = play(song.chart, player.stats, player.perfect_time, Plan(np.zeros(song.chart.total_notes)), clock)
     reply = reverse_score(play_info(played, gear_power(player.stats, song.chart), "Compete"), song)
@@ -446,3 +447,54 @@ def test_a_force_great_plan_at_the_top_keeps_its_line_and_names_its_gear():
     assert set(reply.sets[0].minis) == {"Adventure Starlet", "Lester", "Tokyo Machine"}
     scored = factors(reply.sets[0].stats, other.curves, other.chart.primary, other.chart.secondary)
     assert fg_surface_score(scored, reply.sets[0].surface, other.chart.total_notes) == info.score
+
+
+def test_listed_casual_classes_deduplicate_across_timelines():
+    from gear_optimizer.reverse.greats import HEAD_LISTED, casual_classes
+    from gear_optimizer.reverse.lookup import _casual_window
+
+    losses = np.array([60, 80, 100, 120], dtype=np.int64)
+    timelines = [(10_000, losses), (10_200, losses), (10_400, losses)]
+    classes = casual_classes((9_500.0, 9_950.0), timelines, greats=2, listed_up_to=HEAD_LISTED)
+    keys = [tuple(row[:7].tolist()) for row in classes]
+    assert len(keys) == len(set(keys))
+    low, high = _casual_window(PlayInfo(score=100, gear_multiplier=0.005))
+    assert 0.0 < low < high and np.isinf(high)
+
+
+def test_small_positive_gear_multipliers_complete_reverse_classification(song):
+    """0 < gearMultiplier <= 0.005 with Gear Power and no explicit casualScore produces an unbounded upper Casual
+    window; the complete reverse_score path (both _classes_of and _no_great_place) classifies without OverflowError."""
+    power = gear_power(STORED, song.chart)
+    n = song.chart.total_notes
+    acc_1 = round(100.0 * (1.0 - 1.0 / (4.0 * n)), 2)
+    acc_2 = round(100.0 * (1.0 - 2.0 / (4.0 * n)), 2)
+    acc_5 = round(100.0 * (1.0 - 5.0 / (4.0 * n)), 2)
+    assert lost_quarters(PlayInfo(score=500, accuracy=acc_1), n) == (1, 1)
+    in_range = reverse_score(
+        PlayInfo(score=500, accuracy=acc_1, gear_multiplier=0.004, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert in_range.verdict in ("sets", "lines", "unresolved", "exploited")
+
+    # Multi-Great listed classes (2 Greats) and spanned classes (5 Greats) with 0 < gearMultiplier <= 0.005.
+    assert lost_quarters(PlayInfo(score=500, accuracy=acc_2), n) == (2, 2)
+    two_greats = reverse_score(
+        PlayInfo(score=500, accuracy=acc_2, gear_multiplier=0.005, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert two_greats.verdict in ("sets", "lines", "unresolved", "exploited")
+
+    assert lost_quarters(PlayInfo(score=500, accuracy=acc_5), n) == (5, 5)
+    five_greats = reverse_score(
+        PlayInfo(score=500, accuracy=acc_5, gear_multiplier=0.003, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert five_greats.verdict in ("sets", "lines", "unresolved", "exploited")
+
+    # Lower bound above every reachable Casual score -> _casual_evidence / _no_great_place returns "exploited".
+    over = reverse_score(
+        PlayInfo(score=5_000, accuracy=acc_1, gear_multiplier=0.005, gear_power=power, match_mode="Compete"),
+        song,
+    )
+    assert over.verdict == "exploited" and over.evidence

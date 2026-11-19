@@ -23,8 +23,8 @@ from __future__ import annotations
 from typing import NamedTuple
 
 import numpy as np
-from numba import njit
 
+from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.score import HEAD_NOTES
 from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS
 
@@ -65,7 +65,7 @@ class _Links(NamedTuple):
     back: np.ndarray
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def input_order(lane, rank, before, after):
     """The notes in input order, or no notes when the constraints contradict each other: each lane keeps its chart order,
     each `before` note goes ahead of its `after` note, and of the notes free to go the lowest `rank` goes first."""
@@ -105,7 +105,7 @@ def input_order(lane, rank, before, after):
     return ordered
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _scored_pairs(inputs, activation, wasted):
     """The inputs on two lanes whose order scores, as (m, 2) positions."""
     n = inputs.chart_ms.shape[0]
@@ -131,7 +131,7 @@ def _scored_pairs(inputs, activation, wasted):
     return pairs[:used]
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _links_of(inputs, sections):
     """The constraints of `inputs` and the fever `sections`: per window its activation's position, the next one's, its
     duration."""
@@ -177,7 +177,7 @@ def _links_of(inputs, sections):
     return _Links(before, after, fixed, into, np.cumsum(into_start), np.flatnonzero(before > after))
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _pick_bands(links, inputs, clearance_ms):
     """Each input's band's first and last hit: a Great goes early when the inputs after it, `clearance_ms` clear, leave it
     no late hit and the inputs before it, as early as they can be, leave it an early one."""
@@ -203,7 +203,7 @@ def _pick_bands(links, inputs, clearance_ms):
     return low_ms, high_ms
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _earliest(links, margin, low_ms, ceiling_ms, earliest, source):
     """Fills each input's earliest hit and what set it (-1 its band, -2 the input before it, else a link); returns the
     first input past its ceiling, or -1."""
@@ -231,7 +231,7 @@ def _earliest(links, margin, low_ms, ceiling_ms, earliest, source):
             return -1
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _latest(links, margin, ceiling_ms, latest):
     """Fills each input's latest hit."""
     n = ceiling_ms.shape[0]
@@ -253,7 +253,7 @@ def _latest(links, margin, ceiling_ms, latest):
             return
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _settle_margins(links, low_ms, high_ms, margin, ceiling_ms):
     """Lowers the margins along each path that overruns a band until none does; returns -1, or an input no margin frees."""
     n = low_ms.shape[0]
@@ -295,19 +295,70 @@ def _settle_margins(links, low_ms, high_ms, margin, ceiling_ms):
     raise ValueError("hit_schedule: the margins did not settle")
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle):
     """The hits under settled margins: the activations first, as their pick moves everything fever ties to them."""
     n = low_ms.shape[0]
     low_ms, ceiling_ms = low_ms.copy(), ceiling_ms.copy()
     earliest, latest = np.empty(n, np.float64), np.empty(n, np.float64)
     source = np.empty(n, np.int64)
-    for row in range(sections.shape[0]):
-        k = int(sections[row, 0])
+    if sections.shape[0]:
         _earliest(links, margin, low_ms, ceiling_ms, earliest, source)
         _latest(links, margin, ceiling_ms, latest)
-        at = 0.5 * (earliest[k] + latest[k]) if middle[row] else min(max(inputs.chart_ms[k], earliest[k]), latest[k])
-        low_ms[k], ceiling_ms[k] = at, at
+        max_after = np.arange(1, n + 1, dtype=np.int64)
+        for link in links.into:
+            b, a = links.before[link], links.after[link]
+            if a > max_after[b]:
+                max_after[b] = a
+        back_start = np.zeros(n + 1, np.int64)
+        for link in links.back:
+            back_start[links.before[link] + 1] += 1
+        back_start = np.cumsum(back_start)
+        fill = back_start[:n].copy()
+        back_links = np.empty(links.back.shape[0], np.int64)
+        for link in links.back:
+            b = links.before[link]
+            back_links[fill[b]] = link
+            fill[b] += 1
+        for row in range(sections.shape[0]):
+            k = int(sections[row, 0])
+            at = (
+                0.5 * (earliest[k] + latest[k])
+                if middle[row]
+                else min(max(inputs.chart_ms[k], earliest[k]), latest[k])
+            )
+            low_ms[k], ceiling_ms[k] = at, at
+            if at > earliest[k]:
+                earliest[k] = at
+                limit = min(n - 1, max_after[k])
+                j = k
+                while j <= limit:
+                    if j > k and earliest[j - 1] > earliest[j]:
+                        earliest[j] = earliest[j - 1]
+                        if max_after[j] > limit:
+                            limit = min(n - 1, max_after[j])
+                    for c in range(links.into_start[j], links.into_start[j + 1]):
+                        link = links.into[c]
+                        hit = earliest[links.before[link]] + links.fixed[link] + margin[link]
+                        if hit > earliest[j]:
+                            earliest[j] = hit
+                            if max_after[j] > limit:
+                                limit = min(n - 1, max_after[j])
+                    jumped_to = j
+                    for c in range(back_start[j], back_start[j + 1]):
+                        back = back_links[c]
+                        hit = earliest[j] + links.fixed[back] + margin[back]
+                        target = links.after[back]
+                        if hit > earliest[target] + _SLACK_MS:
+                            earliest[target] = hit
+                            if max_after[target] > limit:
+                                limit = min(n - 1, max_after[target])
+                            if target < jumped_to:
+                                jumped_to = target
+                    if jumped_to < j:
+                        j = jumped_to
+                        continue
+                    j += 1
     _latest(links, margin, ceiling_ms, latest)
     hits = np.empty(n, np.float64)
     for k in range(n):
@@ -321,7 +372,7 @@ def _hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle):
     return hits
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def schedule_hits(inputs, sections, middle):
     """Returns (the first input with no frame of its own at the fastest rate or -1, the hits). `middle`: per fever section,
     whether its activation sits in the middle of its free range."""

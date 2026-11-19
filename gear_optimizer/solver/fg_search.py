@@ -44,10 +44,15 @@ def search_fg_loadouts(
     def best_of(keys):  # the beam_width best, ties kept in order
         return sorted(keys, key=lambda k: -found[k][1].inner_row[0])[:beam_width]
 
+    expanded: set[tuple[int, ...]] = set()
     beam = best_of(found)
     while True:
+        to_expand = [k for k in beam if k not in expanded]
+        if not to_expand:
+            return found
+        expanded.update(to_expand)
         hood = np.concatenate(
-            [one_swap_neighborhood(np.asarray(found[k][0]), slot_start, slot_count, 9) for k in beam]
+            [one_swap_neighborhood(np.asarray(found[k][0]), slot_start, slot_count, 9) for k in to_expand]
         )
         fresh: dict[tuple[int, ...], tuple[int, ...]] = {}
         for genome, key in zip(hood.tolist(), map(tuple, totals(hood).tolist()), strict=True):

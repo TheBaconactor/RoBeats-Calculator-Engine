@@ -79,7 +79,23 @@ def bundle_without_surface(
     """The bundle with `surface` gone from every frontier: what a loadout scores when its plan on `surface` is unplayable."""
     pool = bundle.pool
     words = np.asarray(surface[:8], dtype=pool.pattern_words.dtype)
-    keep = ~((pool.pattern_words == words).all(axis=1)[pool.pattern_ids] & (pool.counts == surface[8:]).all(axis=1))
+    matching_patterns = np.flatnonzero((pool.pattern_words == words).all(axis=1))
+    if matching_patterns.size == 0:
+        return bundle
+    pat_match = (
+        pool.pattern_ids == int(matching_patterns[0])
+        if matching_patterns.size == 1
+        else np.isin(pool.pattern_ids, matching_patterns)
+    )
+    candidate_rows = np.flatnonzero(pat_match)
+    if candidate_rows.size == 0:
+        return bundle
+    body = np.asarray(surface[8:], dtype=pool.counts.dtype)
+    dropped_rows = candidate_rows[(pool.counts[candidate_rows] == body).all(axis=1)]
+    if dropped_rows.size == 0:
+        return bundle
+    keep = np.ones(pool.pattern_ids.shape[0], dtype=np.bool_)
+    keep[dropped_rows] = False
     kept_before = np.concatenate(([0], np.cumsum(keep, dtype=np.int32)), dtype=np.int32)
     offsets = kept_before[pool.frontier_offsets]
     return replace(bundle, pool=replace(
@@ -121,13 +137,14 @@ def fg_solve_results(
     curves: StatCurves,
     selected_color: str,
     scoring_bundle: FgResponseFrontierScoringBundle,
+    memo: GemMemo | None = None,
 ) -> list[FgResponseFrontierSolveResult]:
     """Each row of pre-gem stats' FG solve result."""
     song_inputs = song.fg_inputs
     totals = [loadout_totals(stats, song_inputs.primary_color, song_inputs.secondary_color) for stats in stats_rows]
     rows = score_fg_base_components(
         base_components=np.asarray(totals, dtype=np.int32), song=song, curves=curves, selected_color=selected_color,
-        scoring_bundle=scoring_bundle,
+        scoring_bundle=scoring_bundle, memo=memo,
     )
     return [
         fg_solve_result(score_row=rows[key], base_stats=dict(stats), selected_color=selected_color,

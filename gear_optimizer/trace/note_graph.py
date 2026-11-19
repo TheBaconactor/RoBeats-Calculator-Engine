@@ -17,7 +17,7 @@ hit may move, on "non-precise" Perfects stay on time. A plan no frame timing pla
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Mapping, NamedTuple, Sequence
 
@@ -211,9 +211,12 @@ def _early_greats(plan: NotePlan, sections: Sequence[_Section]) -> np.ndarray:
     early |= (np.arange(n) < first_perfect[chord]) & (first_perfect[chord] < n)
     early &= great
     early[[sec.activation for sec in sections]] = False
+    anchor_floor = np.full(n, -np.inf)
     for sec in sections:
         for anchor in (sec.activation, min(sec.fever_end, n - 1)):
-            early[anchor + 1 :] &= (hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS)[anchor + 1 :] >= hit_ms[anchor]
+            if anchor + 1 < n and hit_ms[anchor] > anchor_floor[anchor + 1]:
+                anchor_floor[anchor + 1] = hit_ms[anchor]
+    early &= hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS >= np.maximum.accumulate(anchor_floor)
     return early
 
 

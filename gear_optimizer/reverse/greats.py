@@ -72,31 +72,56 @@ def casual_classes(casual: tuple[float, float], timelines: list[tuple[int, np.nd
     head fever and only the sum of positions matters; then the lowest and highest Casual loss of the head). timelines: per
     Casual timeline, its score with no Greats and what a Great costs at each head note there. A body Great costs 100 outside
     the Casual fever, 300 inside."""
+    casual_low, casual_high = casual
+    if not (casual_low <= casual_high):
+        return np.empty((0, CLASS_COLUMNS), dtype=np.int64)
     rows: set[tuple[int, ...]] = set()
     listed = np.empty((_LISTED_SETS, 3), dtype=np.int64)
+    listed_memo: dict[tuple[bytes, int, int, int], list[list[int]] | None] = {}
     spans: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
     wider: dict[tuple[int, int], list[int]] = {}
     for clean, losses in timelines:
-        lost_low, lost_high = int(np.ceil(clean - casual[1])), int(np.floor(clean - casual[0]))
-        key = None
+        max_loss = int(losses.max()) if losses.shape[0] else 0
+        max_total_loss = greats * max(300, max_loss)
+        score_low = max(casual_low, float(clean - max_total_loss))
+        score_high = min(casual_high, float(clean))
+        if score_low > score_high:
+            continue
+        lost_low = max(0, int(np.ceil(clean - score_high)))
+        lost_high = min(max_total_loss, int(np.floor(clean - score_low)))
+        if lost_low > lost_high:
+            continue
+        key: bytes | None = None
         for head in range(min(greats, _HEAD_SPANNED) + 1):
             body = greats - head
+            head_cap = head * max_loss
             for inside in range(body + 1):
-                low, high = lost_low - 100 * (body - inside) - 300 * inside, lost_high - 100 * (body - inside) - 300 * inside
+                low = lost_low - 100 * (body - inside) - 300 * inside
+                high = lost_high - 100 * (body - inside) - 300 * inside
                 if high < 0:
                     break  # more of them inside leave the head less still
-                if head == 0 and low > 0:
+                if head == 0:
+                    if low <= 0:
+                        rows.add((0, body, 0, 0, -1, -1, -1, 0, 0))
                     continue
                 if head <= listed_up_to:
-                    found = _listed_head(losses, head, (low, high), listed)
-                    if found <= listed.shape[0]:
-                        for row in listed[:found].tolist():
+                    clamped_low, clamped_high = max(low, 0), min(high, head_cap)
+                    if clamped_low > clamped_high:
+                        continue
+                    key = key or losses.tobytes()
+                    lkey = (key, head, clamped_low, clamped_high)
+                    if lkey not in listed_memo:
+                        found = _listed_head(losses, head, (clamped_low, clamped_high), listed)
+                        listed_memo[lkey] = listed[:found].tolist() if found <= listed.shape[0] else None
+                    cached_rows = listed_memo[lkey]
+                    if cached_rows is not None:
+                        for row in cached_rows:
                             total = sum(note + 1 for note in row if note >= 0)
-                            rows.add((head, body, total, total, *row, low, high))
+                            rows.add((head, body, total, total, *row, 0, 0))
                         continue
                 key = key or losses.tobytes()
                 if key not in spans:
-                    spans[key] = _position_spans(losses, _HEAD_SPANNED, int(_HEAD_SPANNED * losses.max()))
+                    spans[key] = _position_spans(losses, _HEAD_SPANNED, int(_HEAD_SPANNED * max_loss))
                 fewest, most = spans[key][0][head], spans[key][1][head]
                 hits = [total for total in range(max(low, 0), min(high, most.shape[0] - 1) + 1) if most[total] >= 0]
                 if hits:
@@ -137,13 +162,16 @@ def _first_of_sum(cells, first, last, total):
 
 
 @jit(nopython=True, cache=True)
-def cell_lines(rows, power, points, cells_of, ceiling, out):
+def cell_lines(rows, power, points, cells_of, ceiling, max_rows):
     """The cells of rows (surface, CM, FM, base, class, Great points, Perfect Points stat, body Greats in fever) whose surface
-    reaches them under the vertices; Gear Power leaves their FT + FF, and a row with no stat takes all of them. Into out as lines
-    (row, CM, FM, FT, FF, base, vertex, stat); returns how many, out's rows + 1 when more exist. cells_of: (per surface the first
-    and last walked surface of its band, cell_start, cells sorted by FT + FF within a surface); ceiling: (vertex values, prices)."""
+    reaches them under the vertices; Gear Power leaves their FT + FF, and a row with no stat takes all of them. Returns
+    (lines (row, CM, FM, FT, FF, base, vertex, stat), how many: max_rows + 1 when more exist). cells_of: (per surface
+    the first and last walked surface of its band, cell_start, cells sorted by FT + FF within a surface); ceiling:
+    (vertex values, prices)."""
     bands, cell_start, cells = cells_of
     values, prices = ceiling
+    cap = min(max(rows.shape[0] * 2, 1024), max_rows) if max_rows > 0 else 0
+    out = np.empty((cap, 8), dtype=np.int64)
     found = 0
     for r in range(rows.shape[0]):
         u, cm, fm, base, stat = rows[r, 0], rows[r, 1], rows[r, 2], rows[r, 3], rows[r, 6]
@@ -166,12 +194,17 @@ def cell_lines(rows, power, points, cells_of, ceiling, out):
                         if lowest < base:
                             break
                 if lowest >= base:
+                    if found == max_rows:
+                        return out, found + 1
                     if found == out.shape[0]:
-                        return found + 1
+                        next_cap = min(out.shape[0] * 2, max_rows)
+                        grown = np.empty((next_cap, 8), dtype=np.int64)
+                        grown[:found] = out
+                        out = grown
                     line = out[found]
                     line[0], line[1], line[2], line[3], line[4], line[5], line[6], line[7] = r, cm, fm, ft, ff, base, vertex, stat
                     found += 1
-    return found
+    return out[:found], found
 
 
 @jit(nopython=True, cache=True)
@@ -225,6 +258,21 @@ def band_surfaces(surfaces, relief, sums, band, body_total):
     sorted by pattern, then body fever. surfaces: (pattern, body fever, cell_start, cells, per cell its chart-time body fever)."""
     pattern, body_fever, cell_start, cells, chart_fever = surfaces
     walked = pattern.shape[0]
+    if band == 0:
+        strictly_ordered = True
+        for u in range(1, walked):
+            if pattern[u] == pattern[u - 1] and body_fever[u] <= body_fever[u - 1]:
+                strictly_ordered = False
+                break
+        if strictly_ordered:
+            bands = np.empty((walked, 2), dtype=np.int64)
+            off = np.full(walked, body_total + 1, dtype=np.int64)
+            for u in range(walked):
+                bands[u, 0], bands[u, 1] = u, u + 1
+                bf = body_fever[u]
+                for k in range(cell_start[u], cell_start[u + 1]):
+                    off[u] = min(off[u], abs(bf - chart_fever[cells[k]]))
+            return pattern.copy(), body_fever.copy(), relief.copy(), sums.copy(), bands, off
     total = 0
     first = 0
     while first < walked:

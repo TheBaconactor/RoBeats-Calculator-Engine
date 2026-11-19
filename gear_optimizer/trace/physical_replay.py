@@ -6,8 +6,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from numba import njit
 
+from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.score import HEAD_NOTES
 from gear_optimizer.solver.timing_envelope import HELD_TAIL_TYPE, HELD_TAIL_WINDOW_SCALE, judgment_edges
 from .reconstruct import UnplayableTrace
@@ -23,8 +23,16 @@ from .note_graph import (
 
 @dataclass(frozen=True, slots=True)
 class PhysicalReplay:
-    event_order: tuple[int, ...]
-    fever_mask: tuple[bool, ...]
+    _event_order: np.ndarray
+    _fever_mask: np.ndarray
+
+    @property
+    def event_order(self) -> tuple[int, ...]:
+        return tuple(self._event_order.tolist())
+
+    @property
+    def fever_mask(self) -> tuple[bool, ...]:
+        return tuple(self._fever_mask.astype(bool).tolist())
 
 
 def _note_edges(note_types: np.ndarray, perfect_time: int) -> np.ndarray:
@@ -52,7 +60,7 @@ _REPLAY_ERR_FEVER_DURATION = 7
 _REPLAY_ERR_COMBO_ORDER = 8
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _judgment_code(delta_ms, edges):
     """The judgment of a hit at `delta_ms` on a note with these six edges (SPUtil.timedelta_to_result)."""
     if delta_ms > edges[0]:
@@ -70,7 +78,7 @@ def _judgment_code(delta_ms, edges):
     return _MISS_CODE
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _fever_walk(event_order, event_times_ms, result_codes, fever_fill_denominator, fever_time_seconds, fever_out):
     """The game's event-time powerbar (PlayerScore) over the events in `event_order`; writes 1/0 per note into
     `fever_out` and returns _REPLAY_OK or the error status.
@@ -111,7 +119,7 @@ def _fever_walk(event_order, event_times_ms, result_codes, fever_fill_denominato
     return _REPLAY_OK
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _replay_kernel(plan, edges, lanes, fever_fill_denominator, real_fever_time, replayed, check_combo_order):
     """One GIL-free pass over a plan: judge, order, lane-check and fever-replay it, and check its combo order.
 
@@ -251,7 +259,7 @@ def _replay_plan(
         )
     if status != _REPLAY_OK:
         raise AssertionError(f"{replay} physical replay kernel returned unknown status {status}")
-    return PhysicalReplay(tuple(event_order.tolist()), tuple(replay_fever.astype(bool).tolist()))
+    return PhysicalReplay(event_order, replay_fever)
 
 
 def validate_base_physical_replay(

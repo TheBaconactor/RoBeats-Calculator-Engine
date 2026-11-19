@@ -104,13 +104,9 @@ def _init_gpu() -> None:
 def _finalize_gpu() -> None:
     """Taichi finalized on the owner thread, with the Vulkan runtime fully alive: left to interpreter exit, the offline
     kernel cache dump races daemon-thread teardown and truncates (observed: 1-9 of ~40 kernels persisted per run)."""
-    try:
-        from . import device, runtime
+    from . import runtime
 
-        with runtime.offline_cache_lock():  # one process dumps the shared cache at a time
-            device.hard_reset("executor shutdown (persist offline kernel cache)")
-    except Exception as exc:
-        logger.warning("[GpuExecutor] Taichi shutdown finalize failed (offline cache may be stale): %s", exc)
+    runtime.finalize_taichi("executor shutdown (persist offline kernel cache)")
 
 
 class GpuExecutor:

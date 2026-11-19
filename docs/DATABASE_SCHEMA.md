@@ -85,12 +85,13 @@ entry numbers (`loadouts_meta_seq`, `loadouts_fg_seq`) so a write finds the next
 ## Python API
 
 ```python
+from gear_optimizer.core.timing_modes import PRECISE
 from gear_optimizer.store import db, schema
 
-conn = schema.connect(path)                       # read-only, version 20
-boards = db.load_boards(conn, song, "T5")         # typed Loadout lists in board order
-traces = db.load_traces(conn, song, "T5", [x.loadout_hash for x in boards.meta])
-for loadout in db.iter_board(conn, "fg", tier="T5"):  # catalog streams, song by song
+conn = schema.connect(path)                                   # read-only, version 20
+boards = db.load_boards(conn, PRECISE, song, "T5")            # typed Loadout lists in board order
+traces = db.load_traces(conn, PRECISE, song, "T5", [x.loadout_hash for x in boards.meta])
+for loadout in db.iter_board(conn, "fg", mode=PRECISE, tier="T5"):  # catalog streams, song by song
     ...
 ```
 

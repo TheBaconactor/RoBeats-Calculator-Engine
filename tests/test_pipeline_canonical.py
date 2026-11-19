@@ -102,19 +102,25 @@ def _fg(score, trace=None, gear=("Helmet", "Vest"), paired=1000, minis=("Chroma"
 
 
 @pytest.fixture
-def scored(monkeypatch):
-    """Canonicalization with the replays replaced: FG scores by the solved result's score (`scored` lists the meta scores
-    in row order)."""
-    meta_scores = []
-    monkeypatch.setattr(canonical, "_meta_score", lambda stats, song, curves, perfect_time: (meta_scores.pop(0), {"trace": 1}))
-    return meta_scores
+def scored():
+    """Explicit meta_scorer test double: `scored.scores` queues per-row scores (or UnplayableTrace)."""
+    scores: list = []
+
+    def scorer(stats, song, curves, perfect_time):
+        outcome = scores.pop(0)
+        if isinstance(outcome, UnplayableTrace):
+            raise outcome
+        return outcome, {"trace": len(scores) + 1}
+
+    scorer.scores = scores
+    return scorer
 
 
 def test_an_fg_result_stays_attached_whether_or_not_it_beats_the_meta_score(scored):
     for meta_score, fg_score in ((1000, 1500), (1500, 1500), (1600, 1500)):
-        scored.append(meta_score)
+        scored.scores.append(meta_score)
         helmet = _loadout(("Helmet", "Vest"), ("Chroma", "Marie"), meta_score)
-        (row,) = canonical_rows(_solve([helmet], [(0, _fg(fg_score))]), GEARS, MINIS)
+        (row,) = canonical_rows(_solve([helmet], [(0, _fg(fg_score))]), GEARS, MINIS, meta_scorer=scored)
         x = row.loadout
         assert (x.score, x.fg_score, x.mini_ascension, x.primary, x.secondary) == (
             meta_score,
@@ -132,38 +138,34 @@ def test_rows_follow_the_store_order_and_a_repeated_loadout_fails_loudly(scored)
     a = _loadout(("Helmet", "Vest"), ("Chroma", "Marie"), 900)
     b = _loadout(("Cap", "Vest"), ("Chroma", "Marie"), 800)
     c = _loadout(("Helmet", "Vest"), ("Marie", "Marie"), 700)
-    scored.extend([900, 800, 700])
+    scored.scores.extend([900, 800, 700])
     # c's FG result does not beat the base it was solved against: c keeps its surface place.
     fg = [(1, _fg(1100, gear=c.gear, paired=1200, minis=c.minis)), (2, _fg(1000, gear=b.gear, paired=800))]
-    rows = canonical_rows(_solve([a, c, b], fg), GEARS, MINIS)
+    rows = canonical_rows(_solve([a, c, b], fg), GEARS, MINIS, meta_scorer=scored)
     assert [r.loadout.loadout_hash for r in rows] == [
         loadout_identity(x, VIEW, "Flow", "Vibe").loadout_hash for x in (a, b, c)
     ]
-    scored.extend([900, 800])
+    # Freshly allocated trace dicts per row never collide on CPython object id reuse.
+    assert [decode_trace(r.meta_trace) for r in rows] == [{"trace": 3}, {"trace": 2}, {"trace": 1}]
+    scored.scores.extend([900, 800])
     twin = _loadout(("Helmet", "Vest"), ("Chroma Twin", "Marie"), 800)
     with pytest.raises(ValueError, match="holds loadout"):
-        canonical_rows(_solve([a, twin]), GEARS, MINIS)
+        canonical_rows(_solve([a, twin]), GEARS, MINIS, meta_scorer=scored)
 
 
 def test_a_replay_that_misses_the_gas_score_fails_loudly(scored):
-    scored.append(901)
+    scored.scores.append(901)
     with pytest.raises(ValueError, match="replays to 901, not the GA's 900"):
-        canonical_rows(_solve([_loadout(("Helmet", "Vest"), ("Chroma", "Marie"), 900)]), GEARS, MINIS)
+        canonical_rows(_solve([_loadout(("Helmet", "Vest"), ("Chroma", "Marie"), 900)]), GEARS, MINIS, meta_scorer=scored)
 
 
-def test_a_loadout_whose_base_play_no_hit_timing_plays_keeps_no_row(scored, monkeypatch):
+def test_a_loadout_whose_base_play_no_hit_timing_plays_keeps_no_row(scored):
     a = _loadout(("Helmet", "Vest"), ("Chroma", "Marie"), 900)
     b = _loadout(("Cap", "Vest"), ("Chroma", "Marie"), 800)
-    outcomes = [UnplayableTrace("no float32 hit of note 594 in [102.944999695, 102.984991981] s ends its fever"), 800]
-
-    def meta_score(stats, song, curves, perfect_time):
-        outcome = outcomes.pop(0)
-        if isinstance(outcome, UnplayableTrace):
-            raise outcome
-        return outcome, {"trace": 1}
-
-    monkeypatch.setattr(canonical, "_meta_score", meta_score)
-    rows = canonical_rows(_solve([a, b], [(0, _fg(1500))]), GEARS, MINIS)
+    scored.scores.extend(
+        [UnplayableTrace("no float32 hit of note 594 in [102.944999695, 102.984991981] s ends its fever"), 800]
+    )
+    rows = canonical_rows(_solve([a, b], [(0, _fg(1500))]), GEARS, MINIS, meta_scorer=scored)
     assert [r.loadout.loadout_hash for r in rows] == [loadout_identity(b, VIEW, "Flow", "Vibe").loadout_hash]
 
 

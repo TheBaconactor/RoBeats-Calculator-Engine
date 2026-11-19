@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections import namedtuple
 
 import numpy as np
-from numba import njit
 
+from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.frontier.producer_kernels import (
     HitTimes,
     activation_reachable_contiguous_run,
@@ -54,7 +54,7 @@ _ROW_COLUMNS = 10
 _KEY_END = 8
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def lower_bound(timestamps, value: float) -> int:
     """The first index whose float32 time is at or past float32(value)."""
     lo = 0
@@ -69,13 +69,13 @@ def lower_bound(timestamps, value: float) -> int:
     return lo
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def fever_end(hit, a, floor_timestamps, real_fever_time, n):
     """The first note past the fever of activation `a` hit at `hit`, by the notes' earliest hits: in (a, n]."""
     return min(max(lower_bound(floor_timestamps, hit + real_fever_time), a + 1), n)
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _region_section(context, times, section_start, run_start, k):
     """The section of k forced Greats from run_start, as (activation, late Great, run end, end, early-Great end, hit low,
     hit high; activation < 0: none). A crossing on a Great takes its minimal reachable run, kept when it ends later than
@@ -121,7 +121,7 @@ def _region_section(context, times, section_start, run_start, k):
     return a, 0, run_end, end, tail_end, min(float(ts[a]), float(perfect[a])), hit
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _section_families(context, times, actions, fills, forced, first, state):
     """Per action its Perfect activation, its late-Great activation and its region runs, each a family of sections:
     (forced Greats, activation, late Great, run start, run end, end, early-Great end, hit low, hit high)."""
@@ -188,7 +188,7 @@ def _section_families(context, times, actions, fills, forced, first, state):
     return families
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _same_section(first, second):
     for column in range(1, _KEY_END):
         if first[column] != second[column]:
@@ -196,7 +196,7 @@ def _same_section(first, second):
     return True
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def _emit(store, count, family, n, section):
     """Row `count` is `family`'s `section` (next state, tail start, tail end, witness end, early exit, hit low), unless a
     row already names the section; returns the next free row."""
@@ -225,7 +225,7 @@ def _emit(store, count, family, n, section):
     return count + 1
 
 
-@njit(cache=True, nogil=True)
+@jit(nopython=True, cache=True, nogil=True)
 def section_rows(context, actions, fills, forced, first, state):
     """The options of the section start after `state` (the first section when `first`), in emission order: per action of
     the frontier's action table (`fills` and `forced` for this kind of section) its families; per family the section to

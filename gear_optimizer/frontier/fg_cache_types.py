@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from gear_optimizer.rules import MAX_STAT
 
 from .cache import FRONTIER_PRODUCER_SOURCES, cache_version
-from .types import FgResponseFrontierResult, SurfacePool
+from .types import FgResponseFrontierResult, FgResponseSurface, SurfacePool
 
 # The FG response-frontier cache version: a hand-kept base version plus a fingerprint of every module that co-determines
 # the cached bundles (_FG_DP_SOURCES), so a logic change there rotates it by itself. Bump the base version when bundle
@@ -68,3 +69,28 @@ class FgResponseFrontierScoringBundle:
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool
+
+
+def _surface_container(container: Any) -> dict[str, Any]:
+    if not isinstance(container, dict):
+        return {}
+    for key in ("data", "force"):
+        nested = container.get(key)
+        if isinstance(nested, dict):
+            return nested
+    return container
+
+
+def require_response_surface(container: Any) -> FgResponseSurface:
+    """Return the canonical persisted Force Greats replay surface."""
+    payload = _surface_container(container)
+    surface = payload.get("response_surface")
+    if surface is None:
+        force_meta = payload.get("ForceGreats")
+        surface = force_meta.get("response_surface") if isinstance(force_meta, dict) else None
+    field_count = len(FgResponseSurface._fields)
+    if not isinstance(surface, (list, tuple)) or len(surface) != field_count:
+        raise ValueError(
+            f"FG payload requires a persisted {field_count}-value response_surface; got {surface!r}."
+        )
+    return FgResponseSurface(*[int(value) for value in surface])

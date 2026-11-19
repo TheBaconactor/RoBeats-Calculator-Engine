@@ -16,7 +16,7 @@ from gear_optimizer.solver.genetic_pipeline import GA_INIT_HEURISTIC_K, GaInputs
 from gear_optimizer.solver.timing_envelope import TimedSong
 
 from . import device, fields, kernels
-from .fields import MAX_GA_RUNS, MAX_GENOMES, MAX_SLOTS
+from .fields import GA_FG_CANDIDATE_COLS, GA_FG_CANDIDATES_PER_RUN, MAX_GA_RUNS, MAX_GENOMES, MAX_SLOTS
 from .runtime import ti
 from .scoring import gpu_color_flags
 
@@ -34,7 +34,8 @@ def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
 def _run_ga(inputs: GaInputs, seed: int, payload, check: Callable[[str], None]) -> np.ndarray:
     num_runs, n_genomes = inputs.num_runs, inputs.n_genomes
     device.ensure_ready()
-    device.upload_timeline(inputs.timed_song.timeline_key, payload)
+    if payload is not None:
+        device.upload_timeline(None if inputs.timed_song is None else inputs.timed_song.timeline_key, payload)
     device.upload_items(inputs.item_stats, inputs.slot_start, inputs.slot_count, inputs.base_fixed_stats_arr)
     device.upload_init_topk(inputs.init_heuristic_topk)
     shortlist = device.upload_shortlist(inputs.ftff_shortlist)
@@ -54,7 +55,9 @@ def _run_ga(inputs: GaInputs, seed: int, payload, check: Callable[[str], None]) 
                 kernels.update_runs_best_kernel(run, batch, n_genomes)
         kernels.pack_candidates_kernel(run, batch, n_genomes)
     kernels.pack_run_bests_kernel(num_runs, flags)
-    return fields.ga_fg_candidates.to_numpy()[:num_runs]
+    out = np.empty((num_runs, GA_FG_CANDIDATES_PER_RUN + 1, GA_FG_CANDIDATE_COLS), dtype=np.int32)
+    kernels.read_candidates_kernel(num_runs, out)
+    return out
 
 
 def run_ga(inputs: GaInputs, ga_seed: int, abort_requested: Callable[[], bool]) -> np.ndarray:
@@ -67,9 +70,12 @@ def run_ga(inputs: GaInputs, ga_seed: int, abort_requested: Callable[[], bool]) 
         if abort_requested():
             raise RuntimeError(f"GpuExecutor aborted: {where}")
 
-    payload = build_or_load_timeline_frontier_payload(inputs.timed_song, inputs.curves).payload
+    payload = None
+    timeline_key = None if inputs.timed_song is None else inputs.timed_song.timeline_key
     for attempt in range(_VULKAN_RETRIES + 1):
         try:
+            if timeline_key is None or not device.has_timeline(timeline_key):
+                payload = payload or build_or_load_timeline_frontier_payload(inputs.timed_song, inputs.curves).payload
             return _run_ga(inputs, ga_seed & 0xFFFFFFFF, payload, check)
         except Exception as exc:
             if attempt >= _VULKAN_RETRIES or not _is_vulkan_semaphore_failure(exc):

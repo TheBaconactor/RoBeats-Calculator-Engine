@@ -199,10 +199,10 @@ def _memo_slot(g: ti.i32) -> ti.i32:
 def _prepare_evals(n_genomes: ti.i32):
     """The next evaluation's book-keeping: the search list and the memo slots the last generation's misses claimed.
     The sentinel tops every claimant, so a slot's owner is only ever a claimant of this generation or no claimant."""
-    fields.ga_search_count[0] = 0
     for i in range(fields.ga_eval_dirty_count[0]):
         fields.ga_eval_cache_owner[fields.ga_eval_dirty_slots[i]] = MAX_GENOMES
     for _ in range(1):
+        fields.ga_search_count[0] = 0
         fields.ga_eval_dirty_count[0] = 0
 
 
@@ -747,3 +747,11 @@ def pack_run_bests_kernel(n_runs: ti.i32, flags: GpuColorFlags):
         stats = _base_stats7(ids, flags)
         for i in ti.static(range(7)):
             fields.ga_fg_candidates[r, 0, 1 + MAX_SLOTS + GA_RESULT_COLS + i] = stats[i]
+
+
+@ti.kernel
+def read_candidates_kernel(n_runs: ti.i32, out: ti.types.ndarray(dtype=ti.i32, ndim=3)):
+    """The first n_runs candidate tables, without reading back MAX_GA_RUNS padding."""
+    for r, row in ti.ndrange(n_runs, ti.static(GA_FG_CANDIDATES_PER_RUN + 1)):
+        for c in ti.static(range(fields.GA_FG_CANDIDATE_COLS)):
+            out[r, row, c] = fields.ga_fg_candidates[r, row, c]

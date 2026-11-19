@@ -19,12 +19,26 @@ FG_ORDER = "fg_score DESC, score DESC, fg_updated DESC, fg_seq"
 
 
 @dataclass(frozen=True, slots=True)
+class Boards:
+    meta: list[Loadout]
+    fg: list[Loadout]
+
+
+@dataclass(frozen=True, slots=True)
 class Row:
     """A stored loadout with its encoded replay witnesses (carried byte for byte through merges)."""
 
     loadout: Loadout
     meta_trace: bytes | None
     fg_trace: bytes | None
+
+
+def served_rows(boards: Boards, limit: int = LOADOUTS_PER_SONG_LIMIT) -> tuple[list[Loadout], list[Loadout]]:
+    """The rows best_loadouts serves, in the version 18 reader's orders (its query plans'): the meta board's best
+    `limit` by score, then FG score, then entry; the FG board's best `limit` by FG score, then loadout hash."""
+    meta = sorted(boards.meta, key=lambda x: (-x.score, -(x.fg_score or 0), x.meta.seq))[:limit]
+    fg = sorted(boards.fg, key=lambda x: (-x.fg_score, x.loadout_hash))[:limit]
+    return meta, fg
 
 
 @dataclass(slots=True)

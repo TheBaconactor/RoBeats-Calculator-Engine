@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from gear_optimizer.frontier.fg_cache import scoring_bundle_covering
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.fg_scoring import fg_solve_results, required_response_stat_keys
+from gear_optimizer.solver.gem_search import GemMemo
 from gear_optimizer.solver.scoring.exact_rescore import score_base_exact_batch
 from gear_optimizer.solver.timing_envelope import TimedSong
 
@@ -26,6 +27,8 @@ def build_fixed_timing_fg_replays(
     selected_color: str,
     trace_cache: FgTraceMaterializationCache,
     perfect_times: list[int],
+    *,
+    memo: GemMemo | None = None,
 ) -> list[dict[str, Any] | None]:
     """Each row of pre-gem stats' FG `force` payload at the song's timing, in order (the shape of a persisted FG row,
     carrying its frontier trace), or None when no hit timing plays its plan at the row's Perfect Time. Its paired base is
@@ -36,7 +39,9 @@ def build_fixed_timing_fg_replays(
     if not rows:
         return []
     bundle = scoring_bundle_covering(song, curves, required_response_stat_keys(rows))
-    results = fg_solve_results(rows, song=song, curves=curves, selected_color=selected_color, scoring_bundle=bundle)
+    results = fg_solve_results(
+        rows, song=song, curves=curves, selected_color=selected_color, scoring_bundle=bundle, memo=memo
+    )
     paired_base_scores = score_base_exact_batch([result.stats for result in results], song, curves)
     forces: list[dict[str, Any] | None] = []
     for result, paired_base, perfect_time in zip(results, paired_base_scores, perfect_times, strict=True):

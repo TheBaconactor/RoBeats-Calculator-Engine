@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gear_optimizer.gpu.runtime import init_taichi, ti
+from gear_optimizer.gpu.runtime import init_taichi, register_reset_hook, ti
 from gear_optimizer.gpu.scoring import FLOAT32_ERROR, float64_bits, float64_floor, float64_of, float64_product, float64_words, shape_value
 from gear_optimizer.rules import MAX_STAT
 
@@ -126,8 +126,8 @@ _FIELDS = {
     # The lists.
     "counters": (ti.i32, _COUNTERS),
     "live": (ti.i32, _MAX_TILES),
-    "pairs": (ti.i32, _MAX_PAIRS, 3),  # (surface << 16 | CM << 8 | FM, first base, last base)
-    "rows": (ti.i32, MAX_ROWS, READ_COLUMNS),
+    "pairs": (ti.i32, _MAX_PAIRS, 2),  # ((span - 1) << 25 | surface << 16 | CM << 8 | FM, first base)
+    "rows": (ti.i32, MAX_ROWS, 4),  # (surface, (stat + 1) << 16 | CM << 8 | FM, (great << 16) | base, klass)
 }
 
 
@@ -268,7 +268,8 @@ def _find_pairs(offset: ti.i32, surfaces: ti.i32, q: _Search, terms: ti.types.nd
                         packed: ti.i32 = (u << 16) | (cm << 8) | fm
                         for entry in range(entries):
                             start = first + (entry << _BASE_BITS)
-                            tables.pairs[slot + entry] = ti.Vector([packed, start, ti.min(start + _ENTRY_BASES - 1, last)])
+                            span_minus_1 = ti.min(_ENTRY_BASES - 1, last - start)
+                            tables.pairs[slot + entry] = ti.Vector([(span_minus_1 << 25) | packed, start])
     return ti.Vector([tables.counters[_PAIRS], tables.counters[_BASES]])
 
 
@@ -337,7 +338,12 @@ def _clean_score(q: _Search, pair: _Vec3i, base: ti.i32) -> ti.i32:
 def _row(pair: _Vec3i, base: ti.i32, klass: ti.i32, great: ti.i32, stat: ti.i32):
     slot = ti.atomic_add(tables.counters[_ROWS], 1)
     if slot < MAX_ROWS:
-        tables.rows[slot] = ti.Vector([tables.surface_id[pair[0]], (pair[1] << 8) | pair[2], base, klass, great, stat])
+        tables.rows[slot] = ti.Vector([
+            tables.surface_id[pair[0]],
+            ((stat + 1) << 16) | (pair[1] << 8) | pair[2],
+            (great << 16) | base,
+            klass,
+        ])
 
 
 @ti.func
@@ -524,8 +530,10 @@ def _thread(q: _Search, i: ti.i32) -> _Vec7i:
     work group then mostly all work or all idle, where an entry's 16 places side by side left most of a group waiting."""
     entries: ti.i32 = ti.min(tables.counters[_PAIRS], _MAX_PAIRS)
     entry = tables.pairs[i % entries]
-    base: ti.i32 = entry[1] + i // entries
-    u = entry[0] >> 16
+    offset: ti.i32 = i // entries
+    base: ti.i32 = entry[1] + offset
+    span_minus_1: ti.i32 = (entry[0] >> 25) & 15
+    u = (entry[0] >> 16) & 511
     cm = (entry[0] >> 8) & 255
     fm = entry[0] & 255
     combo: ti.f32 = tables.combo[cm]
@@ -539,13 +547,17 @@ def _thread(q: _Search, i: ti.i32) -> _Vec7i:
     head: ti.i32 = ti.cast(ti.cast(base, ti.f32) * shape_value(tables.head_terms[u], combo, fever), ti.i32)
     need_high: ti.i32 = body_high + head - q.score + _HEAD_FLOAT_POINTS
     need_low: ti.i32 = body_low + head - q.score - q.head_len - _HEAD_FLOAT_POINTS
-    live = base <= entry[2] and tables.counters[_ROWS] <= MAX_ROWS and need_high >= 0 and (q.greats > 0 or need_low <= 0)
+    live = (
+        offset <= span_minus_1
+        and tables.counters[_ROWS] <= MAX_ROWS
+        and need_high >= 0
+        and (q.greats > 0 or need_low <= 0)
+    )
     return ti.Vector([ti.cast(live, ti.i32), u, cm, fm, base, need_low, need_high])
 
 
-@ti.kernel
-def _find_rows(q: _Search) -> ti.i32:
-    """The rows of a chunk's pairs, a thread per base value of their entries; returns the rows of the search so far."""
+@ti.func
+def _find_rows_pass(q: _Search):
     ti.loop_config(block_dim=_ROWS_BLOCK)
     for i in range(ti.min(tables.counters[_PAIRS], _MAX_PAIRS) * _ENTRY_BASES):
         t = _thread(q, i)
@@ -556,7 +568,18 @@ def _find_rows(q: _Search) -> ti.i32:
                     _row(pair, t[4], 0, 0, -1)
             else:
                 _stat_rows(q, pair, t[4], ti.Vector([t[5], t[6]]), ti.Vector([tables.combo[t[2]], tables.fever[t[3]]]))
+
+
+@ti.kernel
+def _find_rows(q: _Search) -> ti.i32:
+    """The rows of a chunk's pairs, a thread per base value of their entries; returns the rows of the search so far."""
+    _find_rows_pass(q)
     return tables.counters[_ROWS]
+
+
+@ti.kernel
+def _find_rows_no_sync(q: _Search):
+    _find_rows_pass(q)
 
 
 @ti.kernel
@@ -580,8 +603,12 @@ def _forget_rows():
 def _read_rows(count: ti.i32, out: _I32_ARRAY):
     for i in range(count):
         row = tables.rows[i]
-        for column in ti.static(range(READ_COLUMNS)):
-            out[i, column] = row[column]
+        out[i, 0] = row[0]
+        out[i, 1] = row[1] & 65535
+        out[i, 2] = row[2] & 65535
+        out[i, 3] = row[3]
+        out[i, 4] = (row[2] >> 16) & 32767
+        out[i, 5] = (row[1] >> 16) - 1
 
 
 @ti.kernel
@@ -616,6 +643,18 @@ class SurfaceTables:
     body_fever: np.ndarray
     sums: np.ndarray  # per surface, FT + FF as 32-bit words of bits
     relief: np.ndarray
+    terms: np.ndarray
+    bits: np.ndarray
+    counts: np.ndarray
+
+
+def _sum_spans(bits: np.ndarray) -> np.ndarray:
+    """Per surface the lowest and highest FT + FF of its bits."""
+    if bits.shape[0] == 0:
+        return np.empty((0, 2), dtype=np.int32)
+    unpacked = np.unpackbits(bits.view(np.uint8), axis=1, bitorder="little").astype(bool)
+    last = unpacked.shape[1] - 1 - unpacked[:, ::-1].argmax(axis=1)
+    return np.column_stack((unpacked.argmax(axis=1), last)).astype(np.int32)
 
 
 def surface_tables(patterns: tuple[np.ndarray, np.ndarray], surfaces: tuple[np.ndarray, np.ndarray], sums: np.ndarray, relief: np.ndarray, body_total: int) -> SurfaceTables:
@@ -624,18 +663,27 @@ def surface_tables(patterns: tuple[np.ndarray, np.ndarray], surfaces: tuple[np.n
     pattern, bodies = surfaces
     picked = coeffs[pattern].astype(np.float64)
     ramp_fever, ramp_normal = picked[:, 3] * 0.01, picked[:, 2] * 0.01
-    head = np.column_stack((ramp_fever, ramp_normal, picked[:, 1] - ramp_fever, picked[:, 0] - ramp_normal))
+    head = np.column_stack(
+        (ramp_fever, ramp_normal, picked[:, 1] - ramp_fever, picked[:, 0] - ramp_normal)
+    ).astype(np.float32)
     shape = head.copy()
     shape[:, 0] += bodies
     shape[:, 1] += body_total - bodies
-    bits = np.ascontiguousarray(sums).view(np.uint32).reshape(pattern.shape[0], _SUM_WORDS)
-    return SurfaceTables(words[pattern, :_MASK_WORDS].astype(np.uint32), head.astype(np.float32), shape.astype(np.float32), bodies.astype(np.int32), bits, relief.astype(np.float32))
-
-
-def _sum_spans(bits: np.ndarray) -> np.ndarray:
-    """Per surface the lowest and highest FT + FF of its bits."""
-    unpacked = np.unpackbits(bits.view(np.uint8), axis=1, bitorder="little").astype(bool)
-    return np.column_stack((unpacked.argmax(axis=1), unpacked.shape[1] - 1 - unpacked[:, ::-1].argmax(axis=1))).astype(np.int32)
+    head_words = np.ascontiguousarray(words[pattern, :_MASK_WORDS], dtype=np.uint32)
+    sum_words = np.ascontiguousarray(sums).view(np.uint32).reshape(pattern.shape[0], _SUM_WORDS)
+    body_i32 = np.ascontiguousarray(bodies, dtype=np.int32)
+    relief_f32 = np.ascontiguousarray(relief, dtype=np.float32)
+    return SurfaceTables(
+        head_words,
+        head,
+        shape,
+        body_i32,
+        sum_words,
+        relief_f32,
+        np.ascontiguousarray(np.hstack((shape, head)), dtype=np.float32),
+        np.ascontiguousarray(np.hstack((head_words, sum_words)), dtype=np.uint32),
+        np.ascontiguousarray(np.column_stack((body_i32, _sum_spans(sum_words))), dtype=np.int32),
+    )
 
 
 def _stats_by_term(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -648,6 +696,15 @@ def _stats_by_term(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
 
 _ready = False
 _loaded_song = None
+
+
+def _clear_gpu_lines_state() -> None:
+    global _ready, _loaded_song
+    _ready = False
+    _loaded_song = None
+
+
+register_reset_hook(_clear_gpu_lines_state)
 
 
 def _start() -> None:
@@ -688,10 +745,15 @@ def _load_song(song: SongTables) -> None:
 def _chunk_pairs(surfaces: SurfaceTables, first: int, last: int, search) -> tuple[int, int]:
     """_find_pairs on surfaces first..last: the chunk's pair entries and base values."""
     span = slice(first, last)
-    terms = np.hstack((surfaces.shape_terms[span], surfaces.head_terms[span]))
-    bits = np.hstack((surfaces.words[span], surfaces.sums[span]))
-    counts = np.column_stack((surfaces.body_fever[span], _sum_spans(surfaces.sums[span])))
-    found = _find_pairs(first, last - first, search, terms, bits, counts, surfaces.relief[span])
+    found = _find_pairs(
+        first,
+        last - first,
+        search,
+        surfaces.terms[span],
+        surfaces.bits[span],
+        surfaces.counts[span],
+        surfaces.relief[span],
+    )
     return int(found[0]), int(found[1])
 
 
@@ -755,9 +817,11 @@ def line_rows(song: SongTables, surfaces: SurfaceTables, query: LineQuery) -> tu
                 break
             size = max(size >> 2, 1)
             continue
-        rows_so_far = int(_find_rows(search))
         if narrow_from < query.classes.shape[0]:
+            _find_rows_no_sync(search)
             rows_so_far = int(_find_narrow_rows(search))
+        else:
+            rows_so_far = int(_find_rows(search))
         # A list that overflowed holds what the threads' race left: the chunk goes, so a run repeats.
         if rows_so_far > MAX_ROWS:
             complete = False

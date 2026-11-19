@@ -91,11 +91,13 @@ def test_stop_twice_is_stop_once(solve_worker):
 
 
 def test_each_worker_has_its_own_result_database_and_frontier_caches_when_asked(solve_worker, tmp_path, monkeypatch):
+    from pathlib import Path
+
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", "/shared/timeline")
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", "/shared/fg")
     solve_worker.request({"n": 1})
     assert solve_worker.env["EVOLUTION_DB_PATH"] == str(tmp_path / "worker" / "bin" / "service_result.db")
-    assert solve_worker.env["TIMELINE_FRONTIER_CACHE_DIR"] == "/shared/timeline"
+    assert solve_worker.env["TIMELINE_FRONTIER_CACHE_DIR"] == str(Path("/shared/timeline"))
 
     uploaded = service._SolveWorker(tmp_path / "upload", frontier_root=tmp_path / "upload")
     uploaded.starts = 0

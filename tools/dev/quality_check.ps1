@@ -28,7 +28,7 @@ function Invoke-NativeStep {
 Write-Host "== Gear Optimizer: Quality Check =="
 
 # 1. Syntax check
-Invoke-NativeStep -Label "compileall" -Executable "python" -Arguments @("-m", "compileall", "-q", "gear_optimizer", "tests")
+Invoke-NativeStep -Label "compileall" -Executable "python" -Arguments @("-m", "compileall", "-q", "gear_optimizer", "general_meta", "tools", "tests", "main.py")
 
 # 2. Policy offense scan
 
@@ -65,8 +65,9 @@ if ($CI) {
     "-m",
     "pytest",
     "tests/test_repo_guardrails.py",
+    "tests/test_import_cycles.py",
     "tests/test_pipeline_canonical.py",
-    "tests/test_gpu_ga_eval_incumbent_cull.py",
+    "tests/test_gpu_executor.py",
     "-q",
     "--tb=short"
   )

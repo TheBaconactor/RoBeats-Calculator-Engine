@@ -504,6 +504,36 @@ def test_a_loaded_scoring_bundle_maps_every_stat_key_its_file_holds(tmp_path: Pa
     assert bundle.frontier_idx_by_stat[5, 9] == -1
 
 
+def test_scoring_bundle_preserves_caller_arrays_by_default_and_supports_consume(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from gear_optimizer.frontier import fg_cache
+    from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key
+    from gear_optimizer.frontier.fg_cache_store import read_compatible_bundle
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    forget_scoring_bundles()
+    song, curves = _song(), _varying_ref_arrays()
+    build_or_load_payload(song, curves, stat_keys=((0, 0), (1, 0)))
+    key = fg_response_frontier_bundle_cache_key(song, curves)
+    arrays = read_compatible_bundle(key)
+    assert arrays is not None
+    original_keys = set(arrays)
+
+    first = fg_cache.scoring_bundle(key, arrays)
+    assert set(arrays) == original_keys
+    second = fg_cache.scoring_bundle(key, arrays)
+    assert set(arrays) == original_keys
+    assert np.array_equal(first.frontier_idx_by_stat, second.frontier_idx_by_stat)
+    assert np.array_equal(first.pool.pattern_words, second.pool.pattern_words)
+    assert np.array_equal(first.pool.counts, second.pool.counts)
+
+    consumed = fg_cache.scoring_bundle(key, arrays, consume=True)
+    assert "surface_patterns" not in arrays and "surface_rows" not in arrays
+    assert np.array_equal(first.pool.pattern_words, consumed.pool.pattern_words)
+    assert np.array_equal(first.pool.counts, consumed.pool.counts)
+
+
 
 
 def test_fg_response_frontier_scoring_bundle_requires_startup_cache(tmp_path: Path, monkeypatch) -> None:

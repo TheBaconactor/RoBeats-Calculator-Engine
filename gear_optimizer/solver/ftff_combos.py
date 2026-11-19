@@ -12,9 +12,8 @@ from typing import NamedTuple
 
 import numpy as np
 
-from numba.cpython.unsafe.numbers import leading_zeros, trailing_zeros
-
 from gear_optimizer.core.jit_setup import jit
+from numba.cpython.unsafe.numbers import leading_zeros, trailing_zeros
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, GEM_BUDGET, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 
 
@@ -89,32 +88,63 @@ def ftff_shortlist(payload, *, reach: np.ndarray, color_flags: dict[str, int]) -
     gain_element = ELEMENT_GEM_GAIN * (2 * color_flags["is_p_ov"] + color_flags["is_s_ov"])
     weights = (STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ft"] + color_flags["is_s_ft"]) - gain_element,
                STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ff"] + color_flags["is_s_ff"]) - gain_element)
-    keep_bits = np.zeros(((MAX_STAT + 1) ** 2, (len(combo_ft) + 63) // 64), dtype=np.uint64)
+    total_keys = (MAX_STAT + 1) ** 2
+    reach_keys = np.flatnonzero(np.asarray(reach, dtype=bool).ravel()).astype(np.int32)
+    slot_of_key = np.full(total_keys, -1, dtype=np.int32)
+    slot_of_key[reach_keys] = np.arange(reach_keys.shape[0], dtype=np.int32)
+    keep_bits = np.zeros((reach_keys.shape[0], (len(combo_ft) + 63) // 64), dtype=np.uint64)
     frontier = (np.asarray(payload.grid_frontier_offset[0], dtype=np.int64).ravel(),
                 np.asarray(payload.grid_frontier_count[0], dtype=np.int64).ravel(), surface_of_row)
     surfaces = rows[order[is_first]]
-    _shortlist_keep(np.ascontiguousarray(reach.ravel()), combo_index, frontier, surfaces, weights, keep_bits)
-    count = np.bitwise_count(keep_bits).sum(axis=1, dtype=np.int32)
-    return FtffShortlist(np.cumsum(count, dtype=np.int32) - count, count, _decode_keep(keep_bits, int(count.sum())))
+    if reach_keys.shape[0]:
+        _shortlist_keep(slot_of_key, combo_index, frontier, surfaces, weights, keep_bits)
+    start, count, combos = _decode_keep(keep_bits, reach_keys, total_keys)
+    return FtffShortlist(start, count, combos)
 
 
 @jit(nopython=True, cache=True, nogil=True)
-def _decode_keep(keep_bits, kept):
-    """The `kept` set bits of keep_bits, row by row, ascending combo index."""
+def _popcount64(x):
+    x = x - ((x >> np.uint64(1)) & np.uint64(0x5555555555555555))
+    x = (x & np.uint64(0x3333333333333333)) + ((x >> np.uint64(2)) & np.uint64(0x3333333333333333))
+    x = (x + (x >> np.uint64(4))) & np.uint64(0x0F0F0F0F0F0F0F0F)
+    return np.int32((x * np.uint64(0x0101010101010101)) >> np.uint64(56))
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _decode_keep(keep_bits, reach_keys, total_keys):
+    """(start, count, combos) over all `total_keys` from the compact `keep_bits` rows of `reach_keys`."""
+    count = np.zeros(total_keys, dtype=np.int32)
+    kept = 0
+    n_reach, n_words = keep_bits.shape
+    for r in range(n_reach):
+        row_count = np.int32(0)
+        for w in range(n_words):
+            x = keep_bits[r, w]
+            if x:
+                row_count += _popcount64(x)
+        count[reach_keys[r]] = row_count
+        kept += int(row_count)
+    start = np.empty(total_keys, dtype=np.int32)
+    running = np.int32(0)
+    for k in range(total_keys):
+        start[k] = running
+        running += count[k]
     combos = np.empty(kept, dtype=np.int32)
     pos = 0
-    for key in range(keep_bits.shape[0]):
-        for w in range(keep_bits.shape[1]):
-            x = keep_bits[key, w]
+    for r in range(n_reach):
+        if count[reach_keys[r]] == 0:
+            continue
+        for w in range(n_words):
+            x = keep_bits[r, w]
             while x:
                 combos[pos] = w * 64 + np.int64(trailing_zeros(x))
                 pos += 1
                 x &= x - np.uint64(1)
-    return combos
+    return start, count, combos
 
 
 @jit(nopython=True, cache=True, nogil=True)
-def _shortlist_keep(reach, combo_index, frontier, surfaces, weights, keep_bits):
+def _shortlist_keep(slot_of_key, combo_index, frontier, surfaces, weights, keep_bits):
     """Set keep_bits[key, c] (bit c % 64 of word c // 64) for every reachable key's kept combos.
 
     Which option beats which does not depend on the key: with g = STAT_GEM_GAIN_FEVER, from key (ft0, ff0) an option at
@@ -202,9 +232,10 @@ def _shortlist_keep(reach, combo_index, frontier, surfaces, weights, keep_bits):
                     a = xo - X
                     for Y in range(yo, max(beaten_up_to + 1, yo - (GEM_BUDGET - a), 0) - 1, -1):
                         key = (i + g * X) * side + j + g * Y
-                        if reach[key]:
+                        slot = slot_of_key[key]
+                        if slot >= 0:
                             c = combo_index[a, yo - Y]
-                            keep_bits[key, c >> 6] |= np.uint64(1) << np.uint64(c & 63)
+                            keep_bits[slot, c >> 6] |= np.uint64(1) << np.uint64(c & 63)
 
 
 __all__ = ["FtffShortlist", "ftff_combo_arrays", "ftff_shortlist", "reachable_ftff_keys"]

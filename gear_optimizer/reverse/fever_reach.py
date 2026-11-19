@@ -15,12 +15,13 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import threading
 
-import numba
 import numpy as np
 
-from gear_optimizer.chart import Chart
 from gear_optimizer.core.jit_setup import jit
+import numba
+from gear_optimizer.chart import Chart
 from gear_optimizer.core.time_quantize import quantize_to_int_ms
 from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs
 from gear_optimizer.gamedata import StatCurves
@@ -38,12 +39,21 @@ _STATE_ROWS = 1 << 15
 _GREAT_STATE_ROWS = 1 << 11
 # The sets a body state's fevers keep apart: a window that may or may not fit before the song's end parts them by its notes.
 _BODY_SETS = 8
-# A cell's walk reads nothing of another cell's and the kernel holds no GIL, so the grid is walked _WALK_ROWS Fever Times a
-# turn on threads: as many as numba may use (NUMBA_NUM_THREADS, by default the machine's cores) up to the M4's four
+# A cell's walk reads nothing of another cell's and the kernel holds no GIL, so the grid is walked across Fever Time
+# on threads: as many as numba may use (NUMBA_NUM_THREADS, by default the machine's cores) up to the M4's four
 # performance cores. Past them the wall time barely falls and the CPU time grows: five charts' walks at 8 Greats, wall / CPU
 # ms, on 1 thread 1,460 / 1,460, on 2 865 / 1,516, on 4 560 / 1,582, on 6 517 / 1,913, on 10 511 / 2,192.
-_WALK_ROWS = 8
-_WALKERS = ThreadPoolExecutor(max_workers=min(4, numba.config.NUMBA_NUM_THREADS), thread_name_prefix="fever-walk")
+_WALK_THREADS = max(1, min(4, int(numba.config.NUMBA_NUM_THREADS)))
+_walkers_pool: ThreadPoolExecutor | None = None
+_walkers_lock = threading.Lock()
+
+
+def _walkers() -> ThreadPoolExecutor:
+    global _walkers_pool
+    with _walkers_lock:
+        if _walkers_pool is None:
+            _walkers_pool = ThreadPoolExecutor(max_workers=_WALK_THREADS, thread_name_prefix="fever-walk")
+        return _walkers_pool
 
 
 def event_times(chart: Chart, perfect_time: int, greats: int = 0) -> tuple[np.ndarray, np.ndarray]:
@@ -528,17 +538,50 @@ def pattern_words(low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return words
 
 
+def _walk_time_bounds(
+    chart: Chart, perfect_time: int, *, include_greats: bool
+) -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
+    """Perfect-only `(earliest, latest)` event bounds for `walk_cell` and, when `include_greats` is set, the all-Great
+    `(great_early, great_late)` bounds built from the same quantized timestamps."""
+    hit = quantize_to_int_ms(chart.timestamps).astype(np.int64)
+    tap, tail = judgment_bounds(1, perfect_time), judgment_bounds(HELD_TAIL_WINDOW_SCALE, perfect_time)
+    is_tail = chart.note_types == HELD_TAIL_TYPE
+    times = (
+        np.sort(hit + np.where(is_tail, tail.perfect.earliest, tap.perfect.earliest) - 1),
+        np.sort(hit + np.where(is_tail, tail.perfect.latest, tap.perfect.latest)),
+    )
+    if not include_greats:
+        return times, times
+    greats_pair = (
+        np.sort(hit + np.where(is_tail, tail.early_great.earliest, tap.early_great.earliest) - 1),
+        np.sort(hit + np.where(is_tail, tail.late_great.latest, tap.late_great.latest)),
+    )
+    return times, greats_pair
+
+
 def fever_surfaces(chart: Chart, curves: StatCurves, perfect_time: int, greats: int = 0) -> FeverSurfaces:
     """The timelines of every cell of `chart` of a play at this Perfect Time with at most `greats` Greats."""
     durations, thresholds = fever_axes(chart.total_notes, chart.long_notes, chart.last_note_time, curves)
-    walk = event_times(chart, perfect_time), great_times(chart, perfect_time), thresholds.astype(np.float64), durations * 1000.0, greats
+    times, greats_pair = _walk_time_bounds(chart, perfect_time, include_greats=greats > 0)
+    walk = times, greats_pair, thresholds.astype(np.float64), durations * 1000.0, greats
     # The first Fever Time is walked alone: numba resolves a kernel's argument types once per process, and two threads at that
     # at once abort it. The turns' rows in Fever Time order are the rows of one walk of the grid.
-    spans = [(ft, min(ft + _WALK_ROWS, durations.shape[0])) for ft in range(1, durations.shape[0], _WALK_ROWS)]
-    rows = np.concatenate((_walk_grid(*walk, (0, 1)), *_WALKERS.map(lambda span: _walk_grid(*walk, span), spans)))
+    rest = durations.shape[0] - 1
+    if _WALK_THREADS <= 1 or rest <= 1:
+        rows = _walk_grid(*walk, (0, durations.shape[0]))
+    else:
+        step = (rest + _WALK_THREADS - 1) // _WALK_THREADS
+        spans = [(ft, min(ft + step, durations.shape[0])) for ft in range(1, durations.shape[0], step)]
+        rows = np.concatenate((_walk_grid(*walk, (0, 1)), *_walkers().map(lambda span: _walk_grid(*walk, span), spans)))
     first, ids, order = _distinct((rows[:, 0], rows[:, 1], rows[:, 2]))
-    patterns, pattern_ids, _order = _distinct((rows[first, 0], rows[first, 1]))
-    words = pattern_words(rows[first[patterns], 0], rows[first[patterns], 1])
+    r0, r1 = rows[first, 0], rows[first, 1]
+    new_pat = np.empty(first.shape[0], dtype=bool)
+    if first.shape[0]:
+        new_pat[0] = True
+        new_pat[1:] = (r0[1:] != r0[:-1]) | (r1[1:] != r1[:-1])
+    patterns = np.flatnonzero(new_pat)
+    pattern_ids = np.cumsum(new_pat, dtype=np.int32) - 1
+    words = pattern_words(r0[patterns], r1[patterns])
     # _walk_grid writes rows by cell and the sort is stable, so (surface, cell) pairs come sorted: only repeats to drop.
     pairs = ids[order].astype(np.int64) * CELLS + rows[order, 3]
     pairs = pairs[np.concatenate(([True], pairs[1:] != pairs[:-1]))]

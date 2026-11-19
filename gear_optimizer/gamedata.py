@@ -25,17 +25,6 @@ STATS = (*CURVE_STATS, *ELEMENTS)
 
 Stats = dict[str, int]
 
-# TeamBuff: Perfect Points plus a bonus to the team color (always the song's primary element).
-TEAM_BUFFS: dict[str, tuple[int, int]] = {
-    "NONE": (0, 0),
-    "T1": (25, 35),
-    "T5": (25, 30),
-    "T10": (20, 25),
-    "T20": (15, 20),
-    "T50": (10, 15),
-    "T51": (5, 10),
-}
-
 ASCENSION_LEVEL = 10
 # Every mini gains 2 Perfect Points per ascension level, whatever the song.
 ASCENSION_PERFECT_POINTS = 2 * ASCENSION_LEVEL

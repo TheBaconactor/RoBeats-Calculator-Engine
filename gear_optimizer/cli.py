@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing
-import os
 import sys
 from typing import Sequence
 
@@ -25,15 +24,13 @@ def apply_service_frontier_threads() -> None:
 def run() -> int:
     common_init()
     try:
-        # Configure durable diagnostics logging BEFORE importing the solver/Taichi stack.
-        # The heavy import chain behind `gear_optimizer.app` can install a root logging
-        # handler at import time; if it lands first, `configure_logging`'s respect-existing-
-        # handlers guard would bail and `bin/error.log` would never get its file handler.
+        from gear_optimizer.core.cpu_affinity import pin_to_performance_cores
         from gear_optimizer.core.logging_config import configure_default_logging
 
+        # On a hybrid Intel CPU, force the fast P-cores before the worker pool spawns (workers inherit
+        # affinity). Without this, Windows EcoQoS parks the cold FG build on the slow E-cores.
+        pin_to_performance_cores()
         configure_default_logging()
-
-        os.environ.setdefault("TI_ENABLE_PYBUF", "0")
         apply_service_frontier_threads()
         from gear_optimizer.app import GearOptimizerApp
 
@@ -44,8 +41,7 @@ def run() -> int:
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="metafinder")
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("run", help="Run optimizer.")
+    parser.add_argument("command", nargs="?", choices=("run",), default="run", help="Run optimizer.")
     return parser
 
 

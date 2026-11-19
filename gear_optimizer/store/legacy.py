@@ -19,8 +19,8 @@ from ..data.loadout_equivalence import representative_mini_names
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from ..gamedata import STATS, Gear, Mini
 from ..stats import GEM_KINDS
-from .boards import Row
-from .db import Boards, load_boards, load_traces, store_results
+from .boards import Row, served_rows
+from .db import load_boards, load_traces, store_results
 from .records import FgResult, Loadout, MetaResult, encode_trace
 from .schema import connect
 
@@ -38,13 +38,14 @@ def best_loadouts(
     minis: Mapping[str, Mini] | None = None,
 ) -> list[dict[str, Any]]:
     meta, fg = served_rows(load_boards(conn, mode, song, tier), limit)
-    traces = load_traces(conn, mode, song, tier, {x.loadout_hash for x in meta + fg})
+    fg_hashes = {x.loadout_hash for x in fg}
+    traces = load_traces(conn, mode, song, tier, {x.loadout_hash for x in meta} | fg_hashes)
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for x in meta:
         entry = _entry(x, meta_details(x, traces[x.loadout_hash].meta), gears, minis)
         entry["fg_score"] = x.fg_score or 0
-        if x.fg is not None and x in fg:
+        if x.fg is not None and x.loadout_hash in fg_hashes:
             entry["force"] = fg_payload(x, traces[x.loadout_hash].fg)
             entry["fg_base_score"] = x.score
         seen.add(x.loadout_hash)
@@ -57,14 +58,6 @@ def best_loadouts(
         entry["force"] = fg_payload(x, traces[x.loadout_hash].fg)
         out.append(entry)
     return out
-
-
-def served_rows(boards: Boards, limit: int = LOADOUTS_PER_SONG_LIMIT) -> tuple[list[Loadout], list[Loadout]]:
-    """The rows best_loadouts serves, in the version 18 reader's orders (its query plans'): the meta board's best
-    `limit` by score, then FG score, then entry; the FG board's best `limit` by FG score, then loadout hash."""
-    meta = sorted(boards.meta, key=lambda x: (-x.score, -(x.fg_score or 0), x.meta.seq))[:limit]
-    fg = sorted(boards.fg, key=lambda x: (-x.fg_score, x.loadout_hash))[:limit]
-    return meta, fg
 
 
 def read_best_loadouts(

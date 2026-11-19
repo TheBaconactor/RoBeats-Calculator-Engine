@@ -32,6 +32,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import multiprocessing
 import os
 import queue
@@ -602,8 +603,17 @@ def _shown_numbers(raw: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any
     for name in names:
         value = raw.get(name)
         if value is not None:
-            if not isinstance(value, _SHOWN_NUMBERS[name]) or isinstance(value, bool) or value < 0:
+            if (
+                not isinstance(value, _SHOWN_NUMBERS[name])
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0
+            ):
                 raise RequestError(f"{name} must be a non-negative number")
+            if name == "accuracy" and value > 100:
+                raise RequestError("accuracy must be at most 100")
+            if name == "gearMultiplier" and value == 0:
+                raise RequestError("gearMultiplier must be positive")
             shown[name] = value
     return shown
 
@@ -742,7 +752,9 @@ def _build_frontier_caches() -> None:
     from gear_optimizer.frontier.startup_prebuild import run_startup_cpu_work
     from gear_optimizer.gamedata import stat_curves
 
-    charts = tuple(str(chart) for difficulty in DIFFICULTIES for chart in sorted(paths().chart_dir(difficulty).glob("*.txt")))
+    charts = tuple(
+        str(chart) for _difficulty, folder in _official_song_directories() for chart in sorted(folder.glob("*.txt"))
+    )
     run_startup_cpu_work(charts_by_mode={mode: charts for mode in TIMING_MODES}, curves=stat_curves(),
                          authorize_destructive_rotation=True)
 

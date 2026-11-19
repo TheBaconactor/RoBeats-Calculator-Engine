@@ -1,7 +1,6 @@
 import atexit
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -16,47 +15,12 @@ from gear_optimizer.store import schema
 
 
 def _configure_test_db_path() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    source_db = repo_root / "evolution.db"
-
     tmp_dir = Path(tempfile.mkdtemp(prefix="gear_optimizer_tests_db_"))
     atexit.register(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
 
     tmp_db = tmp_dir / "evolution.db"
-    if source_db.exists():
-        shutil.copy2(source_db, tmp_db)
-
     os.environ["EVOLUTION_DB_PATH"] = str(tmp_db)
-
-    # If the repo's evolution.db is corrupted/malformed, fall back to a clean DB for tests.
-    def _is_db_healthy(path: Path) -> bool:
-        if not path.exists():
-            return True
-        try:
-            conn = sqlite3.connect(str(path))
-            try:
-                row = conn.execute("PRAGMA quick_check;").fetchone()
-                return bool(row and str(row[0]).strip().lower() == "ok")
-            finally:
-                conn.close()
-        except Exception:
-            return False
-
-    if not _is_db_healthy(tmp_db):
-        try:
-            tmp_db.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    try:
-        schema.ensure(tmp_db)
-    except sqlite3.DatabaseError:
-        # Retry once with a clean DB.
-        try:
-            tmp_db.unlink(missing_ok=True)
-        except Exception:
-            pass
-        schema.ensure(tmp_db)
+    schema.ensure(tmp_db)
 
 
 def _isolate_frontier_cache_dirs() -> None:
@@ -119,45 +83,23 @@ def prebuild_timeline_frontier():
 def _taichi_module_isolation(request):
     """
     Taichi (Vulkan) is prone to rare access violations when a single process runs
-    many GPU-heavy modules back-to-back. Isolate GPU-related test modules by
-    hard-resetting Taichi before and after the module runs.
+    many GPU-heavy modules back-to-back. Isolate GPU-marked test modules by
+    resetting an initialized Taichi runtime before and after the module runs.
     """
-    try:
-        test_path = str(getattr(request, "fspath", "") or "")
-    except Exception:
-        test_path = ""
-
-    is_gpu_module = False
-    try:
-        node = getattr(request, "node", None)
-        if node is not None:
-            is_gpu_module = node.get_closest_marker("gpu") is not None
-    except Exception:
-        is_gpu_module = False
-
-    if not is_gpu_module:
-        is_gpu_module = any(
-            token in test_path
-            for token in (
-                "test_gpu_",
-                "test_fg_",
-                "test_cpu_gpu_",
-                "test_ga_",
-                "test_taichi_",
-                "test_parity_",
-            )
-        )
-
-    if not is_gpu_module:
+    node = getattr(request, "node", None)
+    if node is None or node.get_closest_marker("gpu") is None:
         yield
         return
 
-    try:
-        from gear_optimizer.gpu.api import hard_reset_taichi
+    test_path = str(getattr(request, "fspath", "") or "")
 
-        hard_reset_taichi(reason=f"pytest module isolation (setup): {test_path}")
+    def _reset_if_loaded(phase: str) -> None:
+        runtime = sys.modules.get("gear_optimizer.gpu.runtime")
+        if runtime is not None and getattr(runtime, "_ti_initialized", False):
+            runtime.reset_taichi(reason=f"pytest module isolation ({phase}): {test_path}")
+
+    _reset_if_loaded("setup")
+    try:
         yield
-        hard_reset_taichi(reason=f"pytest module isolation (teardown): {test_path}")
-    except Exception:
-        # Never fail tests due to reset issues; worst case Taichi crashes as before.
-        yield
+    finally:
+        _reset_if_loaded("teardown")

@@ -9,11 +9,13 @@ base trace reconstruction.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import threading
 from typing import Any
 
 import numpy as np
 
 from ... import score as core_score
+from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.rules import MAX_STAT
 from ...gamedata import STATS, StatCurves
 from ..fever_timeline import fixed_timeline_cell
@@ -31,6 +33,7 @@ from ..timing_envelope import TimedSong, fever_axes, fever_fill_denominators
 # LOADOUTS_PER_SONG_LIMIT entries) -- or FIFO eviction turns every second-pass lookup into a miss.
 _TIMELINE_TRACE_MEMO: dict[tuple, dict[str, Any]] = {}
 _TIMELINE_TRACE_MEMO_MAX = 1024
+_TIMELINE_TRACE_MEMO_LOCK = threading.Lock()
 
 
 def _copy_timeline_trace_meta(meta: dict[str, Any]) -> dict[str, Any]:
@@ -65,6 +68,9 @@ def score_stats_exact_with_timeline_trace(
     song: TimedSong,
     curves: StatCurves,
     perfect_time: int,
+    *,
+    copy: bool = True,
+    memo: dict[tuple, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 
@@ -79,7 +85,13 @@ def score_stats_exact_with_timeline_trace(
     ft_i = max(0, min(row["Fever Time"], MAX_STAT))
     ff_i = max(0, min(row["Fever Fill Rate"], MAX_STAT))
     memo_key = (frontier_result.cache_key, ft_i, ff_i, int(pool_idx), perfect_time)
-    frontier_meta = _TIMELINE_TRACE_MEMO.get(memo_key)
+    ephemeral = frontier_cache_is_ephemeral()
+    frontier_meta = None if memo is None else memo.get(memo_key)
+    if frontier_meta is None and not ephemeral:
+        with _TIMELINE_TRACE_MEMO_LOCK:
+            frontier_meta = _TIMELINE_TRACE_MEMO.get(memo_key)
+        if frontier_meta is not None and memo is not None:
+            memo[memo_key] = frontier_meta
     if frontier_meta is None:
         frontier_meta = _timeline_trace_for_payload_surface(
             payload=payload,
@@ -90,10 +102,17 @@ def score_stats_exact_with_timeline_trace(
             curves=curves,
             perfect_time=perfect_time,
         )
-        while len(_TIMELINE_TRACE_MEMO) >= _TIMELINE_TRACE_MEMO_MAX:
-            _TIMELINE_TRACE_MEMO.pop(next(iter(_TIMELINE_TRACE_MEMO)))
-        _TIMELINE_TRACE_MEMO[memo_key] = frontier_meta
-    return {"score": int(best_score), "TimelineFrontier": _copy_timeline_trace_meta(frontier_meta)}
+        if not ephemeral:
+            with _TIMELINE_TRACE_MEMO_LOCK:
+                while len(_TIMELINE_TRACE_MEMO) >= _TIMELINE_TRACE_MEMO_MAX:
+                    _TIMELINE_TRACE_MEMO.pop(next(iter(_TIMELINE_TRACE_MEMO)))
+                _TIMELINE_TRACE_MEMO[memo_key] = frontier_meta
+        if memo is not None:
+            memo[memo_key] = frontier_meta
+    return {
+        "score": int(best_score),
+        "TimelineFrontier": _copy_timeline_trace_meta(frontier_meta) if copy else frontier_meta,
+    }
 
 
 def score_stats_exact_batch(

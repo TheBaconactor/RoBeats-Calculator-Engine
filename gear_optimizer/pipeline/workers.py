@@ -130,33 +130,42 @@ def solve_queue(
         if not stop.is_set() and finished < len(tasks):
             spawn(worker)
 
-    for worker in range(workers):
-        spawn(worker)
-    while running:
-        if not stop.is_set() and stop_requested():
-            stop.set()
-        by_handle = {gpu.sentinel: (index, "gpu") for index, gpu in enumerate(gpus) if gpu.exitcode is None}
-        for worker, (process, reader) in running.items():
-            by_handle[reader] = (worker, "pipe")
-            by_handle[process.sentinel] = (worker, "exit")
-        ready = wait(list(by_handle), timeout=_POLL_S)
-        for handle in ready:
-            worker, kind = by_handle[handle]
-            if kind == "pipe" and worker in running:
-                drain(worker, handle)
-            elif kind == "gpu" and not stop.is_set():
-                error = error or GpuFatalError(f"GPU process {worker} exited (exit code {gpus[worker].exitcode})")
+    try:
+        for worker in range(workers):
+            spawn(worker)
+        while running:
+            if not stop.is_set() and stop_requested():
                 stop.set()
-        for handle in ready:
-            worker, kind = by_handle[handle]
-            if kind == "exit" and worker in running:
-                exited(worker)
-    stop.set()  # the GPU processes end with the workers
-    for index, gpu in enumerate(gpus):
-        gpu.join(_GPU_EXIT_S)
-        if gpu.exitcode is None:
-            logger.warning("[Workers] GPU process %d did not exit in %.0f s; terminating it", index, _GPU_EXIT_S)
-            gpu.terminate()
+            by_handle = {gpu.sentinel: (index, "gpu") for index, gpu in enumerate(gpus) if gpu.exitcode is None}
+            for worker, (process, reader) in running.items():
+                by_handle[reader] = (worker, "pipe")
+                by_handle[process.sentinel] = (worker, "exit")
+            ready = wait(list(by_handle), timeout=_POLL_S)
+            for handle in ready:
+                worker, kind = by_handle[handle]
+                if kind == "pipe" and worker in running:
+                    drain(worker, handle)
+                elif kind == "gpu" and not stop.is_set():
+                    error = error or GpuFatalError(f"GPU process {worker} exited (exit code {gpus[worker].exitcode})")
+                    stop.set()
+            for handle in ready:
+                worker, kind = by_handle[handle]
+                if kind == "exit" and worker in running:
+                    exited(worker)
+    finally:
+        stop.set()  # the GPU processes end with the workers
+        for _worker, (process, reader) in list(running.items()):
+            reader.close()
+            if process.exitcode is None:
+                process.terminate()
+            process.join(5.0)
+        running.clear()
+        for index, gpu in enumerate(gpus):
+            gpu.join(_GPU_EXIT_S)
+            if gpu.exitcode is None:
+                logger.warning("[Workers] GPU process %d did not exit in %.0f s; terminating it", index, _GPU_EXIT_S)
+                gpu.terminate()
+                gpu.join(5.0)
     if error is not None:
         raise error
     return stored
@@ -178,7 +187,8 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
     from gear_optimizer.pipeline.solve import solve_song
     from gear_optimizer.pipeline.storing import store_solve
     from gear_optimizer.gpu.executor import is_stop_abort_exception
-    from gear_optimizer.store import schema
+    from gear_optimizer.solver.gem_search import configure_fg_cpu_search_workers
+    from gear_optimizer.store import schema, tables
 
     # Ctrl+C reaches every process of the console: the parent turns it into the stop event the worker watches.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -187,6 +197,7 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
         suppress_stderr(True)
     configure_default_logging()
     pin_solve_worker(worker, workers)
+    configure_fg_cpu_search_workers(max(1, min(4, (os.cpu_count() or 1) // max(1, workers))))
     run, paths = settings.read_run_settings(), settings.paths()
     catalog = load_catalog(paths.game_export)
     gears, minis = catalog.gears, catalog.minis
@@ -204,7 +215,7 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
             try:
                 solved = solve_song(SongTask(file_path, song_name, mode, context, seed, repeat_index, repeat_total),
                                     executor)
-                events.send(("done", *store_solve(conn, solved, gears, minis)))
+                events.send(("done", *store_solve(conn, solved, gears, minis, checkpoint=False)))
             except GpuFatalError as exc:
                 events.send(("fatal", f"{type(exc).__name__}: {exc}"))
                 return
@@ -215,6 +226,7 @@ def _worker_main(worker: int, workers: int, pending, events, stop, memory_limit_
             if memory_release_requested():
                 raise SystemExit(_EXIT_FOR_MEMORY)
     finally:
+        tables.truncate_wal(conn)
         conn.close()
         executor.stop()
 
@@ -229,6 +241,10 @@ class _GpuClient:
         self._sent = 0
 
     def call(self, fn, *args):
+        from gear_optimizer.pipeline.song import NativeSongGPUInputs
+
+        if args and isinstance(args[0], NativeSongGPUInputs):
+            args = (args[0].as_ga_inputs(), *args[1:])
         self._sent += 1
         tag = (os.getpid(), self._sent)
         self._calls.put((self._worker, tag, fn, args))

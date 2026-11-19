@@ -381,7 +381,10 @@ def _casual_window(play: PlayInfo) -> tuple[float, float] | None:
         return float(play.casual_score), float(play.casual_score)
     if play.gear_multiplier is None:
         return None
-    return play.score / (play.gear_multiplier + _MULTIPLIER_ROUNDING), play.score / (play.gear_multiplier - _MULTIPLIER_ROUNDING)
+    low = play.score / (play.gear_multiplier + _MULTIPLIER_ROUNDING)
+    if play.gear_multiplier <= _MULTIPLIER_ROUNDING:
+        return low, np.inf
+    return low, play.score / (play.gear_multiplier - _MULTIPLIER_ROUNDING)
 
 
 def _casual_cell(song: ReverseSong) -> tuple[float, float]:
@@ -480,10 +483,15 @@ def _stat_lines(song: ReverseSong, timelines: Timelines, query: LineQuery) -> Fo
     rows = np.empty((packed.shape[0], ROW_COLUMNS), dtype=np.int64)
     rows[:, 0], rows[:, 1], rows[:, 2], rows[:, 3] = packed[:, 0], packed[:, 1] >> 8, packed[:, 1] & 255, packed[:, 2]
     rows[:, 4], rows[:, 5], rows[:, 6], rows[:, 7] = packed[:, 3] >> 16, packed[:, 4], packed[:, 5], packed[:, 3] & 65535
-    held = np.empty((MAX_ROWS, 8), dtype=np.int64)
-    written = cell_lines(rows, query.power, points, (timelines.bands, timelines.cell_start, timelines.cells), (song.vertex_values, song.vertex_prices), held)
+    held, written = cell_lines(
+        rows,
+        query.power,
+        points,
+        (timelines.bands, timelines.cell_start, timelines.cells),
+        (song.vertex_values, song.vertex_prices),
+        MAX_ROWS,
+    )
     complete = complete and written <= MAX_ROWS
-    held = held[: min(written, MAX_ROWS)]
     keys = held[:, 1] * _AXIS**4 + held[:, 2] * _AXIS**3 + held[:, 3] * _AXIS**2 + held[:, 4] * _AXIS + held[:, 7] + 1
     keys = keys * (1 << 16) + held[:, 5]
     ordered = np.argsort(keys, kind="stable")
