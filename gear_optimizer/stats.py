@@ -17,6 +17,8 @@ STAT_GEMS: dict[str, tuple[int, str]] = {
 }
 # Gem counts are keyed by the stat a gem raises, plus "Element" for the selected element.
 GEM_KINDS = (*STAT_GEMS, "Element")
+_GEM_KINDS_SET = frozenset(GEM_KINDS)
+_STAT_GEM_ITEMS = tuple((stat, gain, element) for stat, (gain, element) in STAT_GEMS.items())
 
 
 def gems(*, pp: int = 0, cm: int = 0, fm: int = 0, ft: int = 0, ff: int = 0, element: int = 0) -> dict[str, int]:
@@ -56,14 +58,14 @@ def named_loadout_stats(
 
 
 def apply_gems(stats: Mapping[str, int], allocation: Mapping[str, int], selected_element: str) -> Stats:
-    unknown = set(allocation) - set(GEM_KINDS)
-    if unknown:
-        raise ValueError(f"unknown gem kinds {sorted(unknown)}")
+    if not _GEM_KINDS_SET.issuperset(allocation):
+        raise ValueError(f"unknown gem kinds {sorted(set(allocation) - _GEM_KINDS_SET)}")
     out = dict(stats)
-    for stat, (gain, element) in STAT_GEMS.items():
+    for stat, gain, element in _STAT_GEM_ITEMS:
         count = allocation.get(stat, 0)
-        out[stat] += count * gain
-        out[element] += count * STAT_GEM_ELEMENT_GAIN
+        if count:
+            out[stat] += count * gain
+            out[element] += count * STAT_GEM_ELEMENT_GAIN
     element_gems = allocation.get("Element", 0)
     if element_gems:
         if selected_element not in ELEMENTS:

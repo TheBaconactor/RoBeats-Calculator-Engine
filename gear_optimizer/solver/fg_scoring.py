@@ -23,12 +23,14 @@ def required_response_stat_keys(base_stats: list[dict[str, Any]]) -> np.ndarray:
     """The sorted (n, 2) FT/FF cells a batch of pre-gem stats can reach over every gem split: a reachability projection
     of the full search space, so no candidate is removed and a cell outside it cannot be indexed by the exact solve."""
     ft_gems, ff_gems, _remaining = ftff_combo_arrays(GEM_BUDGET)
-    ft_base = np.asarray([stats["Fever Time"] for stats in base_stats], dtype=np.int32)[:, None]
-    ff_base = np.asarray([stats["Fever Fill Rate"] for stats in base_stats], dtype=np.int32)[:, None]
-    ft_stats = np.clip(ft_base + ft_gems[None, :] * STAT_GEM_GAIN_FEVER, 0, MAX_STAT)
-    ff_stats = np.clip(ff_base + ff_gems[None, :] * STAT_GEM_GAIN_FEVER, 0, MAX_STAT)
+    unique_pairs = list(dict.fromkeys((stats["Fever Time"], stats["Fever Fill Rate"]) for stats in base_stats))
+    pairs = np.asarray(unique_pairs, dtype=np.int32)
+    ft_stats = np.clip(pairs[:, 0:1] + ft_gems[None, :] * STAT_GEM_GAIN_FEVER, 0, MAX_STAT)
+    ff_stats = np.clip(pairs[:, 1:2] + ff_gems[None, :] * STAT_GEM_GAIN_FEVER, 0, MAX_STAT)
     axis = MAX_STAT + 1
-    cells = np.unique((ft_stats * axis + ff_stats).ravel())
+    seen = np.zeros(axis * axis, dtype=np.bool_)
+    seen[(ft_stats * axis + ff_stats).ravel()] = True
+    cells = np.flatnonzero(seen).astype(np.int32)
     return np.stack((cells // axis, cells % axis), axis=1)
 
 

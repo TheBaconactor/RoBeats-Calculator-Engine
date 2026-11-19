@@ -9,7 +9,7 @@ LOADOUTS_PER_SONG_LIMIT loadouts; a loadout keeps both of its results while it i
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from .records import FgResult, Loadout, MetaResult
@@ -73,8 +73,7 @@ def merge(rows: Iterable[Row], results: Sequence[Row], *, now: int, next_seq: tu
         _merge_meta(work, result, now, seqs)
     for result in results:
         _merge_fg(work, result, now, seqs)
-    loadouts = [_project(w) for w in work.values()]
-    return _normalize([row for row in loadouts if row is not None])
+    return _normalize(work.values())
 
 
 @dataclass(slots=True)
@@ -116,10 +115,13 @@ def _merge_meta(work: dict[str, _Work], result: Row, now: int, seqs: _Seqs) -> N
     if seq is not None:
         current.source = new
         current.score = new.score
-        current.meta = replace(new.meta, seq=seq)
+        m = new.meta
+        current.meta = MetaResult(m.element, m.gems, m.stats, now, seq)
         current.meta_trace = result.meta_trace
+    else:
+        m = current.meta
+        current.meta = MetaResult(m.element, m.gems, m.stats, now, m.seq)
     current.fg_seen = max(current.fg_seen, new.fg_score or 0)
-    current.meta = replace(current.meta, updated=now)
 
 
 def _merge_fg(work: dict[str, _Work], result: Row, now: int, seqs: _Seqs) -> None:
@@ -139,37 +141,50 @@ def _merge_fg(work: dict[str, _Work], result: Row, now: int, seqs: _Seqs) -> Non
         if current.meta is None:
             current.source = new
         current.paired = new.score
-        current.fg = replace(new.fg, seq=seq)
+        f = new.fg
+        current.fg = FgResult(f.element, f.gems, f.stats, f.surface, now, seq)
         current.fg_trace = result.fg_trace
         current.fg_score = new.fg_score if current.fg_score is None else max(current.fg_score, new.fg_score)
-    current.fg = replace(current.fg, updated=now)
+    else:
+        f = current.fg
+        current.fg = FgResult(f.element, f.gems, f.stats, f.surface, now, f.seq)
 
 
-def _project(work: _Work) -> Row | None:
-    """One loadout row: the meta side's score is the loadout's score (else the FG side's paired base); the FG
-    score is its FG result's, else the best one seen with its meta result. The FG trace is its FG result's, or
-    a replay kept without a result (version 18 stored some)."""
-    if work.meta is None and work.fg is None:
-        return None
-    score = work.score if work.meta is not None else work.paired
-    fg_score = work.fg_score if work.fg is not None else (work.fg_seen or None)
-    loadout = replace(work.source, score=score, fg_score=fg_score, meta=work.meta, fg=work.fg, on_meta=False, on_fg=False)
-    return Row(loadout, work.meta_trace if work.meta is not None else None, work.fg_trace)
-
-
-def _normalize(rows: list[Row]) -> list[Row]:
-    """Rank both boards to the limit; a loadout on neither board is dropped."""
-    meta = sorted((r.loadout for r in rows if r.loadout.meta is not None), key=lambda x: (-x.score, x.meta.seq))
+def _normalize(works: Iterable[_Work]) -> list[Row]:
+    """Rank both boards to the limit and construct surviving rows once; a loadout on neither board is dropped."""
+    active = [w for w in works if w.meta is not None or w.fg is not None]
+    meta = sorted((w for w in active if w.meta is not None), key=lambda w: (-w.score, w.meta.seq))
     fg = sorted(
-        (r.loadout for r in rows if r.loadout.fg is not None and r.loadout.fg_score > r.loadout.score),
-        key=lambda x: (-x.fg_score, x.fg.seq),
+        (w for w in active if w.fg is not None and w.fg_score > (w.score if w.meta is not None else w.paired)),
+        key=lambda w: (-w.fg_score, w.fg.seq),
     )
-    on_meta = {x.loadout_hash for x in meta[:LOADOUTS_PER_SONG_LIMIT]}
-    on_fg = {x.loadout_hash for x in fg[:LOADOUTS_PER_SONG_LIMIT]}
+    on_meta = {w.source.loadout_hash for w in meta[:LOADOUTS_PER_SONG_LIMIT]}
+    on_fg = {w.source.loadout_hash for w in fg[:LOADOUTS_PER_SONG_LIMIT]}
     out: list[Row] = []
-    for row in rows:
-        key = row.loadout.loadout_hash
-        if key in on_meta or key in on_fg:
-            loadout = replace(row.loadout, on_meta=key in on_meta, on_fg=key in on_fg)
-            out.append(Row(loadout, row.meta_trace, row.fg_trace))
+    for w in active:
+        s = w.source
+        key = s.loadout_hash
+        in_meta = key in on_meta
+        in_fg = key in on_fg
+        if in_meta or in_fg:
+            score = w.score if w.meta is not None else w.paired
+            fg_score = w.fg_score if w.fg is not None else (w.fg_seen or None)
+            loadout = Loadout(
+                mode=s.mode,
+                song=s.song,
+                tier=s.tier,
+                loadout_hash=key,
+                gear=s.gear,
+                minis=s.minis,
+                primary=s.primary,
+                secondary=s.secondary,
+                mini_ascension=s.mini_ascension,
+                score=score,
+                fg_score=fg_score,
+                meta=w.meta,
+                fg=w.fg,
+                on_meta=in_meta,
+                on_fg=in_fg,
+            )
+            out.append(Row(loadout, w.meta_trace if w.meta is not None else None, w.fg_trace))
     return out

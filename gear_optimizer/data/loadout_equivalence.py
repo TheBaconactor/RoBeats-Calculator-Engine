@@ -21,6 +21,29 @@ _SIGNATURE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "F
 _MINI_SIG_TO_NAMES_CACHE: dict[tuple[str, str, str], tuple[Mapping[str, Mini | SongMini], dict[tuple[Any, ...], list[str]]]] = {}
 
 
+def _pick_representatives(groups: list[list[str]], *, clean: bool = False) -> list[str]:
+    reps: list[str] = []
+    used: set[str] = set()
+    group_counts: dict[tuple[str, ...], int] = {}
+    for g0 in groups or ():
+        if not g0:
+            continue
+        if clean:
+            g = [s for x in g0 if x is not None and (s := (x.strip() if isinstance(x, str) else str(x).strip()))]
+            if not g:
+                continue
+        else:
+            g = g0
+        key = tuple(g)
+        seen = group_counts.get(key, 0)
+        group_counts[key] = seen + 1
+        preferred = g[seen % len(g)]
+        choice = preferred if preferred not in used else next((n for n in g if n not in used), preferred)
+        reps.append(choice)
+        used.add(choice)
+    return reps
+
+
 def representative_mini_names(groups: list[list[str]]) -> list[str]:
     """
     Pick a deterministic representative name per group.
@@ -29,35 +52,16 @@ def representative_mini_names(groups: list[list[str]]) -> list[str]:
     that are song-context equivalent), prefer picking distinct names across slots
     when possible so downstream displays don't show duplicate minis.
     """
-    reps: list[str] = []
-    used: set[str] = set()
-    group_counts: dict[tuple[str, ...], int] = {}
-    for g0 in groups or []:
-        g = [str(x).strip() for x in (g0 or []) if x is not None]
-        g = [n for n in g if n]
-        if not g:
-            continue
-
-        key = tuple(g)
-        seen = group_counts.get(key, 0)
-        group_counts[key] = seen + 1
-
-        preferred = g[seen % len(g)]
-        if preferred not in used:
-            choice = preferred
-        else:
-            choice = next((n for n in g if n not in used), preferred)
-
-        reps.append(choice)
-        used.add(choice)
-    return reps
+    return _pick_representatives(groups, clean=True)
 
 
 def _normalized_groups(groups: list[list[str]]) -> list[list[str]]:
     """Each non-empty group as its sorted unique stripped names (empty names and groups dropped)."""
     normalized: list[list[str]] = []
-    for g0 in groups or []:
-        g = [n for n in (str(x).strip() for x in g0 or [] if x is not None) if n]
+    for g0 in groups or ():
+        if not g0:
+            continue
+        g = [s for x in g0 if x is not None and (s := (x.strip() if isinstance(x, str) else str(x).strip()))]
         if g:
             normalized.append(sorted(set(g)))
     return normalized
@@ -74,15 +78,8 @@ def rotate_mini_groups_for_slot_display(groups: list[list[str]]) -> list[list[st
     This preserves determinism while keeping the full variant set in each slot group.
     """
     normalized = _normalized_groups(groups)
-    reps = representative_mini_names(normalized)
-    rotated: list[list[str]] = []
-    for g, rep in zip(normalized, reps):
-        if rep and rep in g and len(g) > 1:
-            rotated.append([rep, *[n for n in g if n != rep]])
-        else:
-            rotated.append(g)
-
-    return rotated
+    reps = _pick_representatives(normalized)
+    return [[rep, *[n for n in g if n != rep]] if len(g) > 1 and rep in g else g for g, rep in zip(normalized, reps)]
 
 
 def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str]]:
@@ -110,16 +107,11 @@ def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str
     """
     normalized = _normalized_groups(groups)
     counts: Counter[tuple[str, ...]] = Counter(tuple(g) for g in normalized)
-    reps = representative_mini_names(normalized)
-
-    out: list[list[str]] = []
-    for g, rep in zip(normalized, reps):
-        key = tuple(g)
-        if counts.get(key, 0) > 1 and len(g) > 1 and rep:
-            out.append([rep])
-        else:
-            out.append(g)
-    return out
+    reps = _pick_representatives(normalized)
+    return [
+        [rep] if counts[tuple(g)] > 1 and len(g) > 1 and rep else g
+        for g, rep in zip(normalized, reps)
+    ]
 
 
 def effective_mini_signature(

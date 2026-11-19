@@ -51,6 +51,9 @@ _frontier_payload_memory: MemoryLru[bytes] = MemoryLru(40)
 # The last payload served, as (its memory-tier bytes, payload): a solve reads one song's payload once per scored
 # loadout (~50 times), every reader only reads it, so it is decoded once.
 _last_served_payload: tuple[bytes, TimelineFrontierGridPayload] | None = None
+# Repeated calls for the same (song, curves) in the same cache directory reuse the load result directly while the
+# underlying bytes remain in _frontier_payload_memory.
+_last_load: tuple[TimedSong, StatCurves, Path, bytes, FrontierCacheLoad[TimelineFrontierGridPayload]] | None = None
 # The timeline cache version: a hand-kept base version plus a fingerprint of the Base producer sources. The cache key
 # hashes the song inputs and the FT/FF axes, never the producer, so bump the base version when the payload changes in a
 # way neither sees (e.g. a dependency's behavior). The version history is in git.
@@ -239,6 +242,11 @@ def build_or_load_timeline_frontier_payload(
     cache signatures. non-precise is fixed timing: its payload is the cheap chart-time singleton, never the precise
     candidate frontier.
     """
+    global _last_load
+    cached = _last_load
+    if cached is not None and cached[0] is song and cached[1] is curves:
+        if _frontier_disk_cache_dir() == cached[2] and _frontier_payload_memory.get(cached[4].cache_key) is cached[3]:
+            return cached[4]
     t0 = time.perf_counter()
     _check_note_count(song)
     cache_key = _song_cache_key(song, curves)
@@ -249,13 +257,27 @@ def build_or_load_timeline_frontier_payload(
         _save_frontier_payload(cache_key, raw)
         _frontier_payload_memory.put(cache_key, raw)
         cache_source = "built"
-    return FrontierCacheLoad(
+    disk_dir = _frontier_disk_cache_dir()
+    disk_path = TIMELINE_FRONTIER_CACHE.file_path(cache_key)
+    load = FrontierCacheLoad(
         payload=payload,
         cache_key=cache_key,
-        disk_path=TIMELINE_FRONTIER_CACHE.file_path(cache_key),
+        disk_path=disk_path,
         cache_source=cache_source,
         elapsed_ms=(time.perf_counter() - t0) * 1000.0,
     )
+    if cache_source != "built":
+        raw = _frontier_payload_memory.get(cache_key)
+        if raw is not None:
+            hit = (
+                load
+                if cache_source == "memory"
+                else FrontierCacheLoad(
+                    payload=payload, cache_key=cache_key, disk_path=disk_path, cache_source="memory", elapsed_ms=0.0
+                )
+            )
+            _last_load = (song, curves, disk_dir, raw, hit)
+    return load
 
 
 def ensure_timeline_frontier_cache_for_song(song: TimedSong, curves: StatCurves) -> tuple[str, float, Path]:

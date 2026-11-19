@@ -17,7 +17,7 @@ import numpy as np
 from ... import score as core_score
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.rules import MAX_STAT
-from ...gamedata import STATS, StatCurves
+from ...gamedata import StatCurves
 from ..fever_timeline import fixed_timeline_cell
 from ..timing_envelope import TimedSong, fever_axes, fever_fill_denominators
 
@@ -41,10 +41,6 @@ def _copy_timeline_trace_meta(meta: dict[str, Any]) -> dict[str, Any]:
     out["frontier_trace"] = [dict(source) for source in meta["frontier_trace"]]
     out["response_surface"] = list(meta["response_surface"])
     return out
-
-
-def _stats_row(stats: Mapping[str, Any]) -> dict[str, int]:
-    return {stat: int(stats.get(stat) or 0) for stat in STATS}
 
 
 def _best_timeline_score(payload, curves, primary, secondary, stats, total_notes) -> tuple[int, int]:
@@ -79,12 +75,9 @@ def score_stats_exact_with_timeline_trace(
     frontier_result = build_or_load_timeline_frontier_payload(song, curves) if frontier is None else frontier
     payload = frontier_result.payload
     primary, secondary = song.chart.primary, song.chart.secondary
-    row = _stats_row(stats)
-    best_score, pool_idx = _best_timeline_score(
-        payload, curves, primary, secondary, row, total_notes
-    )
-    ft_i = max(0, min(row["Fever Time"], MAX_STAT))
-    ff_i = max(0, min(row["Fever Fill Rate"], MAX_STAT))
+    best_score, pool_idx = _best_timeline_score(payload, curves, primary, secondary, stats, total_notes)
+    ft_i = max(0, min(int(stats.get("Fever Time") or 0), MAX_STAT))
+    ff_i = max(0, min(int(stats.get("Fever Fill Rate") or 0), MAX_STAT))
     memo_key = (frontier_result.cache_key, ft_i, ff_i, int(pool_idx), perfect_time)
     ephemeral = frontier_cache_is_ephemeral()
     frontier_meta = None if memo is None else memo.get(memo_key)
@@ -130,7 +123,7 @@ def score_stats_exact_batch(
     payload = build_or_load_timeline_frontier_payload(song, curves).payload
     primary, secondary = song.chart.primary, song.chart.secondary
     return [
-        _best_timeline_score(payload, curves, primary, secondary, _stats_row(stats), total_notes)[0]
+        _best_timeline_score(payload, curves, primary, secondary, stats, total_notes)[0]
         for stats in stats_rows
     ]
 
@@ -201,7 +194,7 @@ def score_stats_timing_exact_batch(
     cells: dict[tuple[int, int], core_score.TimelineCell] = {}
     scores: list[int] = []
     for stats in stats_rows:
-        f = core_score.factors(_stats_row(stats), curves, primary, secondary)
+        f = core_score.factors(stats, curves, primary, secondary)
         key = (max(0, min(f.fever_time_row, MAX_STAT)), max(0, min(f.fever_fill_row, MAX_STAT)))
         cell = cells.get(key)
         if cell is None:
@@ -292,5 +285,5 @@ def score_force_greats_response_surface_exact(
         raise ValueError("FG response surface replay needs stats")
     total_notes = song.chart.total_notes
     primary, secondary = song.chart.primary, song.chart.secondary
-    f = core_score.factors(_stats_row(stats), curves, primary, secondary)
+    f = core_score.factors(stats, curves, primary, secondary)
     return core_score.fg_surface_score(f, surface, total_notes)

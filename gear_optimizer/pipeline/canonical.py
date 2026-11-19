@@ -36,7 +36,7 @@ from ..solver.scoring.exact_rescore import (
 )
 from gear_optimizer.trace.reconstruct import UnplayableTrace
 from ..solver.timing_envelope import TimedSong
-from ..stats import GEM_KINDS, named_loadout_stats
+from ..stats import GEM_KINDS, apply_gems, total
 from ..store.boards import Row
 from ..store.records import FgResult, Loadout, MetaResult, encode_trace
 from .results import SolvedFg, SolvedLoadout, SongSolve
@@ -99,8 +99,14 @@ def canonical_rows(
             raise ValueError(f"{solve.song}: the GA surface holds loadout {ident.loadout_hash} twice")
         seen.add(ident.loadout_hash)
 
+        pre_gem = total(
+            fixed_tier,
+            *(gears[n].stats for n in ident.gear if n in gears),
+            *(song_view[n].stats for n in ident.reps if n in song_view),
+        )
+
         def stats_of(element: str, allocation: tuple[int, ...], solved: Mapping[str, int]) -> tuple[int, ...]:
-            return stored_stats(fixed_tier, ident, gears, song_view, element, allocation, solved, (primary, secondary))
+            return _verified_stats(pre_gem, ident.loadout_hash, element, allocation, solved, (primary, secondary))
 
         perfect_time = sum(gears[n].perfect_time for n in ident.gear)
         try:
@@ -213,6 +219,21 @@ def loadout_identity(
     )
 
 
+def _verified_stats(
+    pre_gem: Mapping[str, int],
+    loadout_hash: str,
+    element: str,
+    allocation: tuple[int, ...],
+    solved: Mapping[str, int],
+    colors: tuple[str, str],
+) -> tuple[int, ...]:
+    stats = apply_gems(pre_gem, dict(zip(GEM_KINDS, allocation)), element)
+    changed = [k for k in dict.fromkeys((*_SCORE_STATS, *colors, element)) if stats[k] != solved[k]]
+    if changed:
+        raise ValueError(f"the canonical minis of {loadout_hash} change scoring stats {changed}")
+    return tuple(int(stats[s]) for s in STATS)
+
+
 def stored_stats(
     fixed: Mapping[str, int],
     ident: Identity,
@@ -225,13 +246,12 @@ def stored_stats(
 ) -> tuple[int, ...]:
     """A result's stored stats: its gems on the loadout's items with the minis' representatives. They may differ
     from the stats it was solved with only in stats no score reads, else the representatives are wrong."""
-    stats = named_loadout_stats(
-        fixed, ident.gear, ident.reps, gears, song_view, dict(zip(GEM_KINDS, allocation)), element
+    pre_gem = total(
+        fixed,
+        *(gears[n].stats for n in ident.gear if n in gears),
+        *(song_view[n].stats for n in ident.reps if n in song_view),
     )
-    changed = [k for k in dict.fromkeys((*_SCORE_STATS, *colors, element)) if stats[k] != solved[k]]
-    if changed:
-        raise ValueError(f"the canonical minis of {ident.loadout_hash} change scoring stats {changed}")
-    return tuple(int(stats[s]) for s in STATS)
+    return _verified_stats(pre_gem, ident.loadout_hash, element, allocation, solved, colors)
 
 
 def _fg_trace(solved: SolvedFg, song: TimedSong) -> dict[str, Any]:

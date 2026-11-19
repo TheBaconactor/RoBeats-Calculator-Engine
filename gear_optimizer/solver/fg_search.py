@@ -55,9 +55,11 @@ def search_fg_loadouts(
             [one_swap_neighborhood(np.asarray(found[k][0]), slot_start, slot_count, 9) for k in to_expand]
         )
         fresh: dict[tuple[int, ...], tuple[int, ...]] = {}
-        for genome, key in zip(hood.tolist(), map(tuple, totals(hood).tolist()), strict=True):
+        hood_keys = totals(hood).tolist()
+        for idx, row in enumerate(hood_keys):
+            key = tuple(row)
             if key not in found and key not in pruned and key not in fresh:
-                fresh[key] = tuple(genome)
+                fresh[key] = tuple(hood[idx].tolist())
         contenders = list(beam)
         keys = list(fresh)
         for start in range(0, len(keys), _CHUNK):

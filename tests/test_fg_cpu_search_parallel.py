@@ -38,7 +38,10 @@ def _random_batch(key_count: int, seed: int, colors=("Chill", "Flow", "Chill"), 
     if colors[0] == colors[1]:  # one color: its primary and secondary are one stat
         loadouts[:, 4] = loadouts[:, 3]
         groups[:, 2] = groups[:, 1]
-    loadouts = np.ascontiguousarray(loadouts[np.lexsort(loadouts[:, 2::-1].T)])
+    flags = search.color_flags(*colors)
+    allow_pp = bool(flags[0] or flags[1])
+    order = np.lexsort(loadouts[:, 2::-1].T) if allow_pp else np.lexsort(loadouts[:, 2:0:-1].T)
+    loadouts = np.ascontiguousarray(loadouts[order])
     lengths = rng.integers(1, 9, group_count).astype(np.int64)
     offsets = np.concatenate(([0], np.cumsum(lengths)[:-1])).astype(np.int64)
     surface_rows = int(lengths.sum())
@@ -55,12 +58,12 @@ def _random_batch(key_count: int, seed: int, colors=("Chill", "Flow", "Chill"), 
     curves = stat_curves()
     shapes = np.zeros((offsets.shape[0], 4), dtype=np.float64)
     search._frontier_shapes(
-        groups[:, 3], offsets, lengths, pattern_ids, counts, head_coeffs, 120, shapes,
+        groups[:, 3], (offsets, lengths, pattern_ids, counts, head_coeffs), 120, shapes,
         np.zeros(offsets.shape[0], dtype=np.bool_),
     )
     surfaces = (offsets, lengths, shapes, pattern_ids, words, counts, head_coeffs, surface_head_greats(words))
     shared = (
-        key_starts, groups, surfaces, np.array(search.color_flags(*colors), dtype=np.int32),
+        (key_starts[:-1], key_starts[1:]), groups, surfaces, np.array(flags, dtype=np.int32),
         tuple(
             np.ascontiguousarray(table, dtype=np.float64)
             for table in (curves.f64["Perfect Points"], curves.f64["Combo Multiplier"], curves.combo_ramp,
@@ -76,23 +79,29 @@ def _floors(loadouts):
 
 
 def _costs(loadouts, shared):
-    key_starts, groups, surfaces = shared[:3]
-    return np.add.reduceat(surfaces[1][groups[:, 3]], key_starts[:-1])[loadouts[:, 5]]
+    (k_starts, _k_ends), groups, surfaces = shared[:3]
+    return np.add.reduceat(surfaces[1][groups[:, 3]], k_starts)[loadouts[:, 5]]
+
+
+def _curve(ref, stat, gain, allowed):
+    out = np.empty(search.GEM_BUDGET + 1, dtype=np.float64)
+    n = search._fill_gem_curve(out, ref, stat, gain, allowed)
+    return out[: n + 1]
 
 
 def _brute_force_row(loadout, shared):
     """The winner of a loadout by trying every group, surface and gem allocation."""
-    key_starts, groups, surfaces, flags, (ref_pp, ref_cm, ref_ramp, ref_fm), (*notes, _most_gain) = shared
+    (k_starts, k_ends), groups, surfaces, flags, (ref_pp, ref_cm, ref_ramp, ref_fm), (*notes, _most_gain) = shared
     offsets, lengths, _stats, pattern_ids, words, counts, _coeffs, _greats = surfaces
     cur_pp, cur_cm, cur_fm, base_primary, base_secondary, key = (int(v) for v in loadout)
     gains = [STAT_GEM_ELEMENT_GAIN * int(flag) for flag in flags[:6]]
     ov_p, ov_s = ELEMENT_GEM_GAIN * int(flags[6]), ELEMENT_GEM_GAIN * int(flags[7])
     allow_pp = gains[0] != 0 or gains[1] != 0
-    pp_curve = search._gem_curve(ref_pp, cur_pp, STAT_GEM_GAIN_NORMAL, allow_pp)
-    cm_curve = search._gem_curve(ref_cm, cur_cm, STAT_GEM_GAIN_NORMAL, True)
-    fm_curve = search._gem_curve(ref_fm, cur_fm, STAT_GEM_GAIN_FEVER, True)
+    pp_curve = _curve(ref_pp, cur_pp, STAT_GEM_GAIN_NORMAL, allow_pp)
+    cm_curve = _curve(ref_cm, cur_cm, STAT_GEM_GAIN_NORMAL, True)
+    fm_curve = _curve(ref_fm, cur_fm, STAT_GEM_GAIN_FEVER, True)
     best = None
-    for g in range(key_starts[key], key_starts[key + 1]):
+    for g in range(k_starts[key], k_ends[key]):
         residual, primary_gain, secondary_gain, frontier, _position = (int(v) for v in groups[g])
         primary, secondary = base_primary + primary_gain, base_secondary + secondary_gain
         for ls in range(int(lengths[frontier])):
@@ -154,31 +163,31 @@ def test_a_floor_at_the_best_score_still_finds_the_winner():
 ])
 def test_a_budget_bounds_its_columns_and_a_column_its_blocks_over_the_deltas(gem_bases, stats):
     curves = stat_curves()
-    pp = search._gem_curve(np.ascontiguousarray(curves.f64["Perfect Points"]), stats[0], STAT_GEM_GAIN_NORMAL, False)
-    cm = search._gem_curve(np.ascontiguousarray(curves.f64["Combo Multiplier"]), stats[1], STAT_GEM_GAIN_NORMAL, True)
-    fm = search._gem_curve(np.ascontiguousarray(curves.f64["Fever Multiplier"]), stats[2], STAT_GEM_GAIN_FEVER, True)
+    pp = _curve(np.ascontiguousarray(curves.f64["Perfect Points"]), stats[0], STAT_GEM_GAIN_NORMAL, False)
+    cm = _curve(np.ascontiguousarray(curves.f64["Combo Multiplier"]), stats[1], STAT_GEM_GAIN_NORMAL, True)
+    fm = _curve(np.ascontiguousarray(curves.f64["Fever Multiplier"]), stats[2], STAT_GEM_GAIN_FEVER, True)
     tables = search._block_bound_tables()
     term_max, column_combo, column_first, column_terms, blocks, corners = tables
     delta_lo, delta_hi = 150.0, 3000.0
-    search._fill_block_bounds(tables, gem_bases, pp, cm, fm, (delta_lo, delta_hi))
+    search._fill_block_bounds(tables, gem_bases, pp, cm, fm, (0, len(cm) - 1, len(fm) - 1, False), (delta_lo, delta_hi))
     rng = np.random.default_rng(16)
     for _ in range(300):
         shape = tuple(rng.uniform(0.0, 900.0, 4).tolist())
         budget = int(rng.integers(0, search.GEM_BUDGET + 1))
-        delta = rng.uniform(delta_lo, delta_hi - budget * gem_bases[2] - pp[0])
-        budget_delta = delta + budget * gem_bases[2] + pp[0]
+        delta = rng.uniform(delta_lo, delta_hi - budget * gem_bases[2])
+        budget_delta = delta + budget * gem_bases[2]
         best_column = 0.0
-        for j in range(min(len(cm) - 1, budget) // search._TILE + 1):
-            last = min(len(fm) - 1, budget - j * search._TILE) // search._TILE
+        for j in range(min(len(cm) - 1, budget) // search._TILE_CM + 1):
+            last = min(len(fm) - 1, budget - j * search._TILE_CM) // search._TILE_FM
             top = column_terms[j, last]
-            column = search._column_bound(column_combo[j], top, budget_delta, shape)
+            column = search._column_bound(column_combo[j], top, budget_delta - delta_lo, shape)
             best_block = max(
                 search._block_bound(blocks[bi], budget_delta, shape)
                 for bi in range(column_first[j], column_first[j] + last + 1)
             )
             assert column >= best_block - 1e-6
             best_column = max(best_column, column)
-        assert search._budget_bound(term_max[budget], delta, shape) >= best_column - 1e-6
+        assert search._budget_bound(term_max[budget], delta - delta_lo, shape) >= best_column - 1e-6
 
 
 def test_a_surface_ceiling_holds_every_live_block():
@@ -190,11 +199,18 @@ def test_a_surface_ceiling_holds_every_live_block():
         blocks[:, 3], blocks[:, 4] = rng.uniform(2.0, 2.6, live), rng.uniform(3.0, 5.2, live)
         blocks[:, 1], blocks[:, 2] = blocks[:, 3] + rng.uniform(0.0, 0.07, live), blocks[:, 4] + rng.uniform(0.0, 0.2, live)
         deltas = rng.uniform(400.0, 3000.0, live)
-        frontier = tuple(rng.uniform(0.0, 900.0, 4).tolist())
-        shape = tuple((np.asarray(frontier) * rng.uniform(0.0, 1.0, 4)).tolist())
+        body_sum, head_sum = float(rng.uniform(100.0, 1000.0)), float(rng.uniform(10.0, 100.0))
+        fa, ff = float(rng.uniform(0.0, body_sum)), float(rng.uniform(0.0, head_sum))
+        sa, sf = float(rng.uniform(0.0, fa)), float(rng.uniform(0.0, ff))
+        frontier = (fa, body_sum - fa, ff, head_sum - ff)
+        shape = (sa, body_sum - sa, sf, head_sum - sf)
         great = (*rng.uniform(0.0, 9000.0, 3).tolist(), float(rng.uniform(-90.0, 9000.0)))
-        summary = search._live_summary(blocks, np.arange(live), deltas, live, frontier)
-        ceiling = search._surface_ceiling(summary, frontier, shape, great)
+        peak, low_base, low_combo, low_fever, low_wc, low_wf = search._live_summary(
+            blocks, np.arange(live), deltas, live, frontier
+        )
+        ceil_df = low_base * (low_fever - 1.0)
+        ceil_params = (peak, ceil_df * low_combo, ceil_df, low_wc, low_wf, low_wc * low_wf)
+        ceiling = search._surface_ceiling(ceil_params, frontier, shape, great)
         worst = max(
             search._block_bound(block, delta, shape) - search._shape_value(great, block[3], block[4])
             for block, delta in zip(blocks, deltas)
@@ -207,21 +223,30 @@ def test_a_surface_ceiling_takes_the_least_any_live_block_loses():
     deltas = np.asarray([900.0, 900.0], dtype=np.float64)
     shape = (500.0, 400.0, 30.0, 20.0)
     great = (1000.0, 1000.0, 1000.0, 0.0)
-    summary = search._live_summary(blocks, np.arange(2), deltas, 2, shape)
+    peak, low_base, low_combo, low_fever, low_wc, low_wf = search._live_summary(
+        blocks, np.arange(2), deltas, 2, shape
+    )
+    ceil_df = low_base * (low_fever - 1.0)
+    ceil_params = (peak, ceil_df * low_combo, ceil_df, low_wc, low_wf, low_wc * low_wf)
     expected = search._block_bound(blocks[0], 900.0, shape) - search._shape_value(great, 2.1, 3.1)
-    assert search._surface_ceiling(summary, shape, shape, great) == pytest.approx(expected)
+    assert search._surface_ceiling(ceil_params, shape, shape, great) == pytest.approx(expected)
 
 
 def test_a_stat_line_range_holds_the_deltas_of_its_loadouts():
+    ref_pp = np.ascontiguousarray(stat_curves().f64["Perfect Points"])
     prefix = np.asarray([210.0, 240.0, 251.0], dtype=np.float64)
     loadouts = np.asarray([
         [40, 30, 30, 500, 300, 0], [40, 30, 30, 900, 100, 1], [40, 30, 30, 20, 950, 2], [41, 30, 30, 9000, 9000, 3],
     ], dtype=np.int32)
     colors = 2 * loadouts[:3, 3] + loadouts[:3, 4]
-    low, high = search._stat_line_deltas(loadouts, 0, 70, 540, prefix)
+    low, high = search._stat_line_deltas(loadouts, 0, True, ref_pp, 70, 540, prefix, 2)
     assert low <= colors.min() + prefix[0]
     assert high >= colors.max() + 70 + 540 + prefix[-1]
-    assert search._stat_line_deltas(loadouts, 3, 0, 0, prefix)[0] == 27000 + prefix[0]
+    assert search._stat_line_deltas(loadouts, 3, True, ref_pp, 0, 0, prefix, 2)[0] == 27000 + prefix[0]
+    all_vals = 2 * loadouts[:, 3] + loadouts[:, 4] + ref_pp[loadouts[:, 0]]
+    low_nc, high_nc = search._stat_line_deltas(loadouts, 0, False, ref_pp, 70, 540, prefix, 0)
+    assert low_nc <= all_vals.min()
+    assert high_nc >= all_vals.max() + 70 + 540
 
 
 def test_search_kernel_releases_the_gil():

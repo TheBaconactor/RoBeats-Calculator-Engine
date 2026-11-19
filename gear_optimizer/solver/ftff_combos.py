@@ -13,7 +13,7 @@ from typing import NamedTuple
 import numpy as np
 
 from gear_optimizer.core.jit_setup import jit
-from numba.cpython.unsafe.numbers import leading_zeros, trailing_zeros
+from numba.cpython.unsafe.numbers import leading_zeros
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, GEM_BUDGET, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 
 
@@ -71,10 +71,16 @@ def ftff_shortlist(payload, *, reach: np.ndarray, color_flags: dict[str, int]) -
 
     color_flags: build_color_flags, the song's primary element selected.
     """
-    combo_ft, combo_ff, _ = ftff_combo_arrays(GEM_BUDGET)
-    combo_index = np.full((GEM_BUDGET + 1, GEM_BUDGET + 1), -1, dtype=np.int64)
-    combo_index[combo_ft, combo_ff] = np.arange(len(combo_ft))
+    total_keys = (MAX_STAT + 1) ** 2
+    reach_flat = np.asarray(reach, dtype=np.bool_).ravel()
     used = int(payload.frontier_pool_used)
+    if not used or not bool(reach_flat.any()):
+        start = np.zeros(total_keys, dtype=np.int32)
+        count = np.zeros(total_keys, dtype=np.int32)
+        combos = np.empty(0, dtype=np.int32)
+        for values in (start, count, combos):
+            values.setflags(write=False)
+        return FtffShortlist(start, count, combos)
     rows = np.concatenate(
         [np.asarray(payload.grid_frontier_masks_bits_pool[0, :used, :4], dtype=np.int64),
          np.asarray(payload.grid_frontier_body_fever_pool[0, :used], dtype=np.int64)[:, None]],
@@ -88,17 +94,11 @@ def ftff_shortlist(payload, *, reach: np.ndarray, color_flags: dict[str, int]) -
     gain_element = ELEMENT_GEM_GAIN * (2 * color_flags["is_p_ov"] + color_flags["is_s_ov"])
     weights = (STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ft"] + color_flags["is_s_ft"]) - gain_element,
                STAT_GEM_ELEMENT_GAIN * (2 * color_flags["is_p_ff"] + color_flags["is_s_ff"]) - gain_element)
-    total_keys = (MAX_STAT + 1) ** 2
-    reach_keys = np.flatnonzero(np.asarray(reach, dtype=bool).ravel()).astype(np.int32)
-    slot_of_key = np.full(total_keys, -1, dtype=np.int32)
-    slot_of_key[reach_keys] = np.arange(reach_keys.shape[0], dtype=np.int32)
-    keep_bits = np.zeros((reach_keys.shape[0], (len(combo_ft) + 63) // 64), dtype=np.uint64)
     frontier = (np.asarray(payload.grid_frontier_offset[0], dtype=np.int64).ravel(),
                 np.asarray(payload.grid_frontier_count[0], dtype=np.int64).ravel(), surface_of_row)
     surfaces = rows[order[is_first]]
-    if reach_keys.shape[0]:
-        _shortlist_keep(slot_of_key, combo_index, frontier, surfaces, weights, keep_bits)
-    start, count, combos = _decode_keep(keep_bits, reach_keys, total_keys)
+    min_y = _shortlist_min_y(frontier, surfaces, weights)
+    start, count, combos = _emit_shortlist(reach_flat, min_y)
     for values in (start, count, combos):
         values.setflags(write=False)
     return FtffShortlist(start, count, combos)
@@ -113,131 +113,205 @@ def _popcount64(x):
 
 
 @jit(nopython=True, cache=True, nogil=True)
-def _decode_keep(keep_bits, reach_keys, total_keys):
-    """(start, count, combos) over all `total_keys` from the compact `keep_bits` rows of `reach_keys`."""
-    count = np.zeros(total_keys, dtype=np.int32)
-    kept = 0
-    n_reach, n_words = keep_bits.shape
-    for r in range(n_reach):
-        row_count = np.int32(0)
-        for w in range(n_words):
-            x = keep_bits[r, w]
-            if x:
-                row_count += _popcount64(x)
-        count[reach_keys[r]] = row_count
-        kept += int(row_count)
-    start = np.empty(total_keys, dtype=np.int32)
-    running = np.int32(0)
-    for k in range(total_keys):
-        start[k] = running
-        running += count[k]
-    combos = np.empty(kept, dtype=np.int32)
-    pos = 0
-    for r in range(n_reach):
-        if count[reach_keys[r]] == 0:
-            continue
-        for w in range(n_words):
-            x = keep_bits[r, w]
-            while x:
-                combos[pos] = w * 64 + np.int64(trailing_zeros(x))
-                pos += 1
-                x &= x - np.uint64(1)
-    return start, count, combos
-
-
-@jit(nopython=True, cache=True, nogil=True)
-def _shortlist_keep(slot_of_key, combo_index, frontier, surfaces, weights, keep_bits):
-    """Set keep_bits[key, c] (bit c % 64 of word c // 64) for every reachable key's kept combos.
+def _shortlist_min_y(frontier, surfaces, weights):
+    """Per (x_key, j = y % g, a = xo - X, yo = y // g), the smallest lattice row Y still unbeaten by any option on a
+    beating surface (or higher combo on the same surface); `lattice` means no Y survives.
 
     Which option beats which does not depend on the key: with g = STAT_GEM_GAIN_FEVER, from key (ft0, ff0) an option at
     cell (x, y) has r = GEM_BUDGET - (x - ft0 + y - ff0) / g, v = const + (wx x + wy y) / g (weights wx, wy: an FT and
-    an FF gem's Perfect base against an element gem's, negative: 12 or 18 for the element, at most 9 for a stat gem),
-    and its combo index grows with (x, y). So per residue class (x, y mod g), in lattice units (cell (i + g X, j + g
-    Y)), an option's beaters are the cells of a wedge: X' + Y' <= X + Y and wx X' + wy Y' >= wx X + wy Y, which is at
-    most rise[X' - X + lattice - 1] above Y in column X'. A beater at (xp, yp) is reachable exactly from the keys with
-    ft0 <= xp and ff0 <= yp (it has r >= the option's, so it fits the budget wherever the option does): the option is
-    kept for the keys it fits (ft0 <= x, ff0 <= y within the budget) outside the quadrants below its beaters' corners
-    (min(xp, x), min(yp, y)), a staircase that only each column's highest beater shapes.
+    an FF gem's Perfect base against an element gem's, negative), and its combo index grows with (x, y). Per residue
+    class (i, j = x, y mod g), in lattice units (i + g X, j + g Y), an option's beaters lie in a wedge capped at
+    yo + rise[X' - xo + lattice - 1] in column X'.
 
-    So per surface: one word per lattice column (at most 64 cells high; the classes side by side) marks the options of
-    the surfaces beating it, and another its own options, which beat it too except an equal (r, v) from a lower combo
-    index. Each option reads them right to left, emitting a column's unbeaten keys as it goes. O(S^2) surface pairs,
-    O(options x columns) reads and O(kept) emission, against O(options^2 / (2 g^2)) option pairs. Surfaces mostly beat
-    from above an option's diagonal, so each list stops at the surface's own highest diagonal.
-
-    frontier: per cell its first row and row count, then each row's surface; surfaces: (S, 5) four head fever words
-    and the body fever count."""
+    Distinct surfaces ordered by descending (body, popcount(masks)) form a topological order of surface dominance:
+    every beater of r has index < r. Walking r - 1 down to 0 while skipping ancestors already covered by an immediate
+    dominator builds beaters[r] via Hasse edges only (O(E_hasse x side x g) bitwise ORs instead of O(S^2 + beater
+    options)). Every surviving option marks a suffix Y in [y_min, yo] with fixed (x_key, j, a, yo), so multiple options
+    collapse into a single scalar minimum `min_y` in O(1) without touching a key-by-combo bitset."""
     offsets, counts, surface_of_row = frontier
     masks, body = surfaces[:, :4], surfaces[:, 4]
     wx, wy = weights
     g = STAT_GEM_GAIN_FEVER
     side, lattice = MAX_STAT + 1, MAX_STAT // g + 1
     n_surfaces = surfaces.shape[0]
-    # Each surface's options by diagonal x + y, with their word and bit in the columns.
+
+    # Topological order: descending (body, popcount(masks)); every surface beating r has strictly smaller rank.
+    order_key = np.empty(n_surfaces, dtype=np.int64)
+    for s in range(n_surfaces):
+        pc = (
+            _popcount64(np.uint64(masks[s, 0]))
+            + _popcount64(np.uint64(masks[s, 1]))
+            + _popcount64(np.uint64(masks[s, 2]))
+            + _popcount64(np.uint64(masks[s, 3]))
+        )
+        order_key[s] = -(body[s] * 128 + np.int64(pc))
+    topo = np.argsort(order_key, kind="mergesort")
+    rank_of = np.empty(n_surfaces, dtype=np.int64)
+    t_m0 = np.empty(n_surfaces, dtype=np.uint64)
+    t_m1 = np.empty(n_surfaces, dtype=np.uint64)
+    t_m2 = np.empty(n_surfaces, dtype=np.uint64)
+    t_m3 = np.empty(n_surfaces, dtype=np.uint64)
+    for r in range(n_surfaces):
+        s = topo[r]
+        rank_of[s] = r
+        t_m0[r], t_m1[r] = np.uint64(masks[s, 0]), np.uint64(masks[s, 1])
+        t_m2[r], t_m3[r] = np.uint64(masks[s, 2]), np.uint64(masks[s, 3])
+
     option_start = np.zeros(n_surfaces + 1, dtype=np.int64)
     for cell in range(side * side):
         for row in range(offsets[cell], offsets[cell] + counts[cell]):
-            option_start[surface_of_row[row] + 1] += 1
+            option_start[rank_of[surface_of_row[row]] + 1] += 1
     option_start = np.cumsum(option_start)
     next_option = option_start[:-1].copy()
-    option_cell = np.empty(option_start[-1], dtype=np.int64)
-    option_word = np.empty(option_start[-1], dtype=np.int64)
-    option_bit = np.empty(option_start[-1], dtype=np.uint64)
-    option_diagonal = np.empty(option_start[-1], dtype=np.int64)
-    for diagonal in range(2 * side - 1):
-        for x in range(max(0, diagonal - side + 1), min(side, diagonal + 1)):
-            y = diagonal - x
-            cell = x * side + y
-            for row in range(offsets[cell], offsets[cell] + counts[cell]):
-                o = next_option[surface_of_row[row]]
-                next_option[surface_of_row[row]] += 1
-                option_cell[o], option_word[o], option_diagonal[o] = cell, x * g + y % g, diagonal
-                option_bit[o] = np.uint64(1) << np.uint64(y // g)
+    option_cell = np.empty(option_start[-1], dtype=np.int32)
+    for cell in range(side * side):
+        for row in range(offsets[cell], offsets[cell] + counts[cell]):
+            r = rank_of[surface_of_row[row]]
+            o = next_option[r]
+            next_option[r] = o + 1
+            option_cell[o] = np.int32(cell)
+
     rise = np.empty(2 * lattice - 1, dtype=np.int64)
     for k in range(2 * lattice - 1):
         rise[k] = min(lattice - 1 - k, (wx * (k - lattice + 1)) // -wy)
-    low_bits = np.full(2 * lattice + 1, ~np.uint64(0), dtype=np.uint64)  # low_bits[k]: the k lowest bits of a word
+    low_bits = np.full(2 * lattice + 1, ~np.uint64(0), dtype=np.uint64)
     for k in range(min(2 * lattice + 1, 64)):
         low_bits[k] = (np.uint64(1) << np.uint64(k)) - np.uint64(1)
-    beaters = np.empty(side * g, dtype=np.uint64)
-    own = np.empty(side * g, dtype=np.uint64)
-    for s in range(n_surfaces):
+
+    n_words = side * g
+    ancestors = np.zeros((n_surfaces, (n_surfaces + 63) >> 6), dtype=np.uint64)
+    reach_all = np.zeros((n_surfaces, n_words), dtype=np.uint64)
+    beaters = np.empty(n_words, dtype=np.uint64)
+    own_r = np.empty(n_words, dtype=np.uint64)
+    min_y = np.full((side, g, lattice, lattice), np.int8(lattice), dtype=np.int8)
+
+    for r in range(n_surfaces):
         beaters[:] = 0
-        own[:] = 0
-        highest_diagonal = option_diagonal[option_start[s + 1] - 1]
-        for other in range(n_surfaces):
-            if (other != s and body[other] >= body[s]
-                    and ((masks[s, 0] & ~masks[other, 0]) | (masks[s, 1] & ~masks[other, 1])
-                         | (masks[s, 2] & ~masks[other, 2]) | (masks[s, 3] & ~masks[other, 3])) == 0):
-                for o in range(option_start[other], option_start[other + 1]):
-                    if option_diagonal[o] > highest_diagonal:
-                        break
-                    beaters[option_word[o]] |= option_bit[o]
-        for o in range(option_start[s], option_start[s + 1]):
-            own[option_word[o]] |= option_bit[o]
-        for o in range(option_start[s], option_start[s + 1]):
-            x, y = option_cell[o] // side, option_cell[o] % side
+        m0, m1, m2, m3 = t_m0[r], t_m1[r], t_m2[r], t_m3[r]
+        anc_r = ancestors[r]
+        for other in range(r - 1, -1, -1):
+            if (anc_r[other >> 6] >> np.uint64(other & 63)) & np.uint64(1):
+                continue
+            if ((m0 & ~t_m0[other]) | (m1 & ~t_m1[other])
+                    | (m2 & ~t_m2[other]) | (m3 & ~t_m3[other])) == np.uint64(0):
+                anc_r[other >> 6] |= np.uint64(1) << np.uint64(other & 63)
+                anc_o = ancestors[other]
+                for w in range((other >> 6) + 1):
+                    anc_r[w] |= anc_o[w]
+                ro = reach_all[other]
+                for w in range(n_words):
+                    beaters[w] |= ro[w]
+
+        own_r[:] = 0
+        for o in range(option_start[r], option_start[r + 1]):
+            cell = int(option_cell[o])
+            x, y = cell // side, cell % side
+            own_r[x * g + y % g] |= np.uint64(1) << np.uint64(y // g)
+        rr = reach_all[r]
+        for w in range(n_words):
+            rr[w] = own_r[w] | beaters[w]
+
+        for o in range(option_start[r], option_start[r + 1]):
+            cell = int(option_cell[o])
+            x, y = cell // side, cell % side
             i, j, xo, yo = x % g, y % g, x // g, y // g
             beaten_up_to = -1
             for X in range(min((MAX_STAT - i) // g, xo + min(yo, (yo * wy) // wx)), -1, -1):
                 top = yo + rise[X - xo + lattice - 1]
-                word = (i + g * X) * g + j
-                # An equal (r, v) on the option's surface beats only from a higher combo index: its own cell and, with
-                # equal weights, the diagonal to its left stay out.
+                x_key = i + g * X
+                word = x_key * g + j
                 own_top = top - (X == xo or (X < xo and wx == wy))
-                found = (beaters[word] & low_bits[top + 1]) | (own[word] & low_bits[own_top + 1])
+                found = (beaters[word] & low_bits[top + 1]) | (own_r[word] & low_bits[own_top + 1])
                 if found:
                     beaten_up_to = max(beaten_up_to, min(63 - np.int64(leading_zeros(found)), yo))
                     if beaten_up_to == yo:
                         break
                 if X <= xo:
                     a = xo - X
-                    for Y in range(yo, max(beaten_up_to + 1, yo - (GEM_BUDGET - a), 0) - 1, -1):
-                        key = (i + g * X) * side + j + g * Y
-                        slot = slot_of_key[key]
-                        if slot >= 0:
-                            c = combo_index[a, yo - Y]
-                            keep_bits[slot, c >> 6] |= np.uint64(1) << np.uint64(c & 63)
+                    y_min = max(beaten_up_to + 1, yo - (GEM_BUDGET - a), 0)
+                    if y_min <= yo and y_min < int(min_y[x_key, j, a, yo]):
+                        min_y[x_key, j, a, yo] = np.int8(y_min)
+    return min_y
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _emit_shortlist(reach_flat, min_y):
+    """Count kept combos via O(1) prefix-difference updates per active (x_key, j, a, yo), then write ascending combo
+    indices directly into `combos` without an intermediate key-by-combo bitset."""
+    g = STAT_GEM_GAIN_FEVER
+    side, lattice = MAX_STAT + 1, MAX_STAT // g + 1
+    total_keys = side * side
+    combo_row_start = np.empty(lattice, dtype=np.int32)
+    acc = np.int32(0)
+    for a in range(min(lattice, GEM_BUDGET + 1)):
+        combo_row_start[a] = acc
+        acc += np.int32(GEM_BUDGET + 1 - a)
+
+    count = np.zeros(total_keys, dtype=np.int32)
+    diff = np.empty(lattice + 1, dtype=np.int32)
+    kept = 0
+    for x_key in range(side):
+        max_a = min((MAX_STAT - x_key) // g, GEM_BUDGET)
+        row_base = x_key * side
+        for j in range(g):
+            max_y = (MAX_STAT - j) // g
+            any_reach = False
+            for Y in range(max_y + 1):
+                if reach_flat[row_base + j + g * Y]:
+                    any_reach = True
+                    break
+            if not any_reach:
+                continue
+            for Y in range(max_y + 2):
+                diff[Y] = 0
+            for a in range(max_a + 1):
+                for yo in range(max_y + 1):
+                    y0 = int(min_y[x_key, j, a, yo])
+                    if y0 <= yo:
+                        diff[y0] += 1
+                        diff[yo + 1] -= 1
+            running = np.int32(0)
+            for Y in range(max_y + 1):
+                running += diff[Y]
+                key = row_base + j + g * Y
+                if reach_flat[key]:
+                    count[key] = running
+                    kept += int(running)
+
+    start = np.empty(total_keys, dtype=np.int32)
+    pos = np.int32(0)
+    for k in range(total_keys):
+        start[k] = pos
+        pos += count[k]
+
+    combos = np.empty(kept, dtype=np.int32)
+    cursor = np.empty(lattice, dtype=np.int32)
+    for x_key in range(side):
+        max_a = min((MAX_STAT - x_key) // g, GEM_BUDGET)
+        row_base = x_key * side
+        for j in range(g):
+            max_y = (MAX_STAT - j) // g
+            any_reach = False
+            for Y in range(max_y + 1):
+                key = row_base + j + g * Y
+                if reach_flat[key] and count[key] > 0:
+                    cursor[Y] = start[key]
+                    any_reach = True
+                else:
+                    cursor[Y] = -1
+            if not any_reach:
+                continue
+            for a in range(max_a + 1):
+                base_c = combo_row_start[a]
+                for yo in range(max_y + 1):
+                    y0 = int(min_y[x_key, j, a, yo])
+                    if y0 <= yo:
+                        for Y in range(y0, yo + 1):
+                            p = cursor[Y]
+                            if p >= 0:
+                                combos[p] = base_c + (yo - Y)
+                                cursor[Y] = p + 1
+    return start, count, combos
 
 
 __all__ = ["FtffShortlist", "ftff_combo_arrays", "ftff_shortlist", "reachable_ftff_keys"]

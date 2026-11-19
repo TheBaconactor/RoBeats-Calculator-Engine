@@ -34,14 +34,13 @@ from gear_optimizer.frontier.fg_cache import release_fg_response_song_memory
 from gear_optimizer.frontier.fg_cache_keys import fg_response_frontier_bundle_cache_key
 from gear_optimizer.frontier.fg_cache_types import require_response_surface
 from gear_optimizer.data.game_export import load_catalog
-from gear_optimizer.gamedata import Gear, Mini, SongMini, StatCurves, song_minis
+from gear_optimizer.gamedata import Gear, Mini, SongMini, StatCurves, empty_stats, song_minis
 from gear_optimizer.settings import paths
 from gear_optimizer.stats import total
 from gear_optimizer.trace.fixed_timing import build_fixed_timing_fg_replays
 from gear_optimizer.trace.materialize import FgTraceMaterializationCache
 from gear_optimizer.trace.reconstruct import UnplayableTrace
 
-from .gem_search import GemMemo
 from .scoring.exact_rescore import score_stats_exact_with_timeline_trace
 from .scoring.fever_solver import solve_best_fever_combination_batch
 from .song_config import baseline_fixed_stats
@@ -63,7 +62,7 @@ class _ReplayEntry:
     loadout_hash: str
     gear: list[str]
     minis: list[str]
-    items: list[Gear | SongMini]
+    item_totals: dict[str, Any]
     source_score: int
     source_fg_base_score: int
     source_fg_score: int
@@ -143,9 +142,10 @@ def _replay_entries(entries: list[dict], song: TimedSong, *, replay_fg: bool) ->
                 )
         score = entry.get("score", 0)
         items = _entry_loadout_items(entry, chart)
+        item_totals = total(empty_stats(), *(item.stats for item in items))
         rows.append(
             _ReplayEntry(entry, entry["loadout_hash"], _item_names(entry["gear"]), _item_names(entry["minis"]),
-                         items, score, entry.get("fg_base_score", score), entry.get("fg_score", 0),
+                         item_totals, score, entry.get("fg_base_score", score), entry.get("fg_score", 0),
                          replay_fg and force is not None, sum(gear.perfect_time for gear in items[:6]))
         )
     return rows
@@ -164,40 +164,55 @@ def _carried_fg_score(row: _ReplayEntry) -> int:
     return row.source_fg_score
 
 
-def _resolve_tier(
+def _resolve_tiers(
     rows: list[_ReplayEntry],
-    fixed_stats: dict,
+    tier_specs: list[tuple[str, dict, bool]],
     song: TimedSong,
     curves: StatCurves,
-    carry_fg: bool,
     trace_cache: FgTraceMaterializationCache,
-    base_memo: GemMemo,
-    fg_memo: GemMemo,
-) -> _TierResult:
-    """Re-solve the entries' gems at one tier's fixed stats; `carry_fg`: serve the stored FG payloads instead."""
+) -> list[_TierResult]:
+    """Re-solve the entries' gems across all requested tiers in one Base batch and one FG batch so tiers share bound
+    tables, bundle coverage and deduplicated 7-vectors; tiers with `carry_fg` serve the stored FG payloads instead."""
     primary = song.chart.primary
-    pre_gem = [total(fixed_stats, *(item.stats for item in row.items)) for row in rows]
-    bases, base_scores = [], []
-    for solve in solve_best_fever_combination_batch(pre_gem, song, curves, selected_color=primary, memo=base_memo):
-        pp, cm, fm, ft, ff, element = solve.gems
-        bases.append({"Stats": dict(solve.stats), "GemCounts": build_gem_counts(pp, cm, fm, element), "FT": ft, "FF": ff})
-        base_scores.append(solve.score)
-    forces: list[dict | None] = [None] * len(rows)
-    fg_scores = [0] * len(rows)
+    row_count = len(rows)
+    tier_count = len(tier_specs)
+    all_pre_gem = [total(fixed_stats, row.item_totals) for _tier, fixed_stats, _carry in tier_specs for row in rows]
+    all_solves = solve_best_fever_combination_batch(all_pre_gem, song, curves, selected_color=primary)
+
     fg_rows = [i for i, row in enumerate(rows) if row.has_fg]
-    if carry_fg:
-        for i in fg_rows:
-            forces[i], fg_scores[i] = rows[i].entry["force"], _carried_fg_score(rows[i])
-    else:
-        fg_pre_gem = [pre_gem[i] for i in fg_rows]
-        fg_pt = [rows[i].perfect_time for i in fg_rows]
-        replays = build_fixed_timing_fg_replays(
-            fg_pre_gem, song, curves, primary, trace_cache, fg_pt, memo=fg_memo
-        )
-        for i, force in zip(fg_rows, replays, strict=True):
+    fg_batch_pre_gem: list[dict] = []
+    fg_batch_pt: list[int] = []
+    fg_batch_targets: list[tuple[int, int]] = []
+    tier_forces: list[list[dict | None]] = [[None] * row_count for _ in range(tier_count)]
+    tier_fg_scores: list[list[int]] = [[0] * row_count for _ in range(tier_count)]
+    for t_idx, (_tier, _fixed, carry_fg) in enumerate(tier_specs):
+        if carry_fg:
+            for i in fg_rows:
+                tier_forces[t_idx][i] = rows[i].entry["force"]
+                tier_fg_scores[t_idx][i] = _carried_fg_score(rows[i])
+        else:
+            offset = t_idx * row_count
+            for i in fg_rows:
+                fg_batch_pre_gem.append(all_pre_gem[offset + i])
+                fg_batch_pt.append(rows[i].perfect_time)
+                fg_batch_targets.append((t_idx, i))
+    if fg_batch_pre_gem:
+        replays = build_fixed_timing_fg_replays(fg_batch_pre_gem, song, curves, primary, trace_cache, fg_batch_pt)
+        for (t_idx, i), force in zip(fg_batch_targets, replays, strict=True):
             # A loadout without an FG result (its plan is unplayable at this timing) ranks nowhere on the FG board.
-            forces[i], fg_scores[i] = force, (force or {}).get("Score", 0)
-    return _TierResult(bases, base_scores, forces, fg_scores)
+            tier_forces[t_idx][i] = force
+            tier_fg_scores[t_idx][i] = (force or {}).get("Score", 0)
+
+    results: list[_TierResult] = []
+    for t_idx in range(tier_count):
+        offset = t_idx * row_count
+        bases, base_scores = [], []
+        for solve in all_solves[offset : offset + row_count]:
+            pp, cm, fm, ft, ff, element = solve.gems
+            bases.append({"Stats": dict(solve.stats), "GemCounts": build_gem_counts(pp, cm, fm, element), "FT": ft, "FF": ff})
+            base_scores.append(solve.score)
+        results.append(_TierResult(bases, base_scores, tier_forces[t_idx], tier_fg_scores[t_idx]))
+    return results
 
 
 def _tier_details(
@@ -299,15 +314,19 @@ def build_team_buff_tier_db_batches(
     base_color, target_color = _team_colors(song.chart, base_team_color_override, target_team_color_override)
     song_stats = baseline_fixed_stats(song.chart)
     trace_cache = FgTraceMaterializationCache()
-    base_memo = GemMemo()
-    fg_memo = GemMemo()
     base_trace_memo: dict[tuple, dict[str, Any]] = {}
     batches: dict[str, list[dict]] = {}
     try:
-        for tier in normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS):
-            carry_fg = song.mode == "precise" and tier == OPTIMIZER_BASELINE_TEAM_BUFF and base_color == target_color
-            fixed_stats = _tier_fixed_stats(song_stats, tier, base_color, target_color)
-            result = _resolve_tier(rows, fixed_stats, song, curves, carry_fg, trace_cache, base_memo, fg_memo)
+        tier_specs = [
+            (
+                tier,
+                _tier_fixed_stats(song_stats, tier, base_color, target_color),
+                song.mode == "precise" and tier == OPTIMIZER_BASELINE_TEAM_BUFF and base_color == target_color,
+            )
+            for tier in normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
+        ]
+        results = _resolve_tiers(rows, tier_specs, song, curves, trace_cache)
+        for (tier, _fixed, _carry), result in zip(tier_specs, results, strict=True):
             batches[tier] = _served_rows(rows, result, n, replay_fg, song, curves, base_trace_memo)
     finally:
         if replay_fg:

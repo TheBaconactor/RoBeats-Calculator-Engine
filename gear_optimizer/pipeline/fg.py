@@ -67,8 +67,10 @@ def fg_turn(song: NativeSong, selection: GaSelection) -> tuple[GaSelection, dict
     stats, fixed = inputs.item_stats.astype(np.int64), inputs.base_fixed_stats_arr.astype(np.int64)
     columns = [0, 1, 2, COLOR_TO_STAT_INDEX[timed.fg_inputs.primary_color],
                COLOR_TO_STAT_INDEX[timed.fg_inputs.secondary_color], 3, 4]
+    stats_cols = np.ascontiguousarray(stats[:, columns], dtype=np.int32)
+    fixed_cols = np.ascontiguousarray(fixed[columns], dtype=np.int32)
     found = search_fg_loadouts(seeds=selection.genomes, seed_rows=fg_rows,
-                               totals=lambda genomes: (fixed + stats[genomes].sum(axis=1))[:, columns], score=score,
+                               totals=lambda genomes: fixed_cols + stats_cols[genomes].sum(axis=1), score=score,
                                slot_start=inputs.slot_start, slot_count=inputs.slot_count,
                                beam_width=FG_SEARCH_BEAM_PER_GA_RUN * inputs.num_runs)
     seeded = {tuple(row) for row in selection.base_stats.tolist()}

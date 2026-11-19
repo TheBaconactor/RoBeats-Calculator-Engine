@@ -41,8 +41,9 @@ from gear_optimizer.rules import (
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.stats import STAT_GEMS
 
-# (CM, FM) gem pairs per bound block side.
-_TILE = 3
+# (CM, FM) gem pairs per bound block: CM has low curvature (3 keeps column count low), FM is steep (2 sharpens bounds).
+_TILE_CM = 3
+_TILE_FM = 2
 # Contiguous chunks of loadouts scored on separate threads.
 _FG_CPU_SEARCH_WORKERS = max(1, min(4, (os.cpu_count() or 1)))
 _FG_CPU_SEARCH_CHUNKS_PER_WORKER = 2
@@ -52,9 +53,14 @@ _fg_cpu_search_pool_lock = threading.Lock()
 
 @dataclass(slots=True)
 class GemMemo:
-    """What the batches of one song and pool share: each pre-gem (FT, FF)'s groups, and each frontier's bound shape."""
+    """What the batches of one song and pool share: each pre-gem (FT, FF)'s groups in a flat grow-only buffer,
+    and each frontier's bound shape."""
 
-    key_groups: dict[int, np.ndarray] = field(default_factory=dict)
+    key_spans: dict[int, tuple[int, int]] = field(default_factory=dict)
+    groups_buf: np.ndarray = field(default_factory=lambda: np.empty((0, 5), dtype=np.int32))
+    groups_used: int = 0
+    most_gain: int = 0
+    shapes_scanned: int = 0
     frontier_shapes: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.float64))
     shapes_done: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.bool_))
     frontier_idx_ref: np.ndarray | None = None
@@ -64,9 +70,9 @@ class GemMemo:
 @dataclass(frozen=True, slots=True)
 class GemGroups:
     """A batch's gem-search groups. loadouts: (C, 6) PP, CM, FM, primary, secondary, its key. keys: (K, 2) the distinct
-    pre-gem FT, FF. key_starts: (K + 1) each key's first group. groups: (G, 5) residual gems, primary and secondary gain
-    of the FT/FF split, the frontier it reaches, the split's position in ftff_combo_arrays(GEM_BUDGET). head_len and
-    body_total: the song's head and body notes."""
+    pre-gem FT, FF. key_starts (and optional key_ends): each key's slice inside groups. groups: (G, 5) residual gems,
+    primary and secondary gain of the FT/FF split, the frontier it reaches, the split's position in
+    ftff_combo_arrays(GEM_BUDGET). head_len and body_total: the song's head and body notes."""
 
     loadouts: np.ndarray
     keys: np.ndarray
@@ -75,6 +81,7 @@ class GemGroups:
     head_len: int
     body_total: int
     memo: GemMemo = field(default_factory=GemMemo)
+    key_ends: np.ndarray | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,14 +142,14 @@ def _kept_splits(
     ff_caps = values[1] < values[0] or primary_gains[1] + secondary_gains[1] == 0
     ft_caps = values[budget + 1] < values[0] or primary_gains[budget + 1] + secondary_gains[budget + 1] == 0
     frontier_count = int(frontier_idx_by_stat.max()) + 1
-    stamp = np.full(frontier_count, -1, dtype=np.int64)
-    head = np.empty(frontier_count, dtype=np.int64)
-    tail = np.empty(frontier_count, dtype=np.int64)
-    best = np.empty(frontier_count, dtype=np.int64)
-    next_pos = np.empty(pair_count, dtype=np.int64)
-    reached = np.empty(pair_count, dtype=np.int64)
-    ft_stats = np.empty(budget + 1, dtype=np.int64)
-    ff_stats = np.empty(budget + 1, dtype=np.int64)
+    stamp = np.full(frontier_count, -1, dtype=np.int32)
+    head = np.empty(frontier_count, dtype=np.int32)
+    tail = np.empty(frontier_count, dtype=np.int32)
+    best = np.empty(frontier_count, dtype=np.int32)
+    next_pos = np.empty(pair_count, dtype=np.int32)
+    reached = np.empty(pair_count, dtype=np.int32)
+    ft_stats = np.empty(budget + 1, dtype=np.int32)
+    ff_stats = np.empty(budget + 1, dtype=np.int32)
     rows = np.empty((key_count * pair_count, 5), dtype=np.int32)
     counts = np.zeros(key_count, dtype=np.int64)
     write = 0
@@ -213,6 +220,28 @@ def _kept_splits(
     return rows[:write], counts
 
 
+def _append_memo_groups(memo: GemMemo, new_packed: list[int], flat_rows: np.ndarray, flat_counts: np.ndarray) -> None:
+    add_n = int(flat_rows.shape[0])
+    start = memo.groups_used
+    if add_n:
+        need = start + add_n
+        if need > memo.groups_buf.shape[0]:
+            new_cap = max(need, max(65536, memo.groups_buf.shape[0] * 2))
+            grown = np.empty((new_cap, 5), dtype=np.int32)
+            if start:
+                grown[:start] = memo.groups_buf[:start]
+            memo.groups_buf = grown
+        memo.groups_buf[start:need] = flat_rows
+        memo.groups_used = need
+        gain = int((2 * flat_rows[:, 1] + flat_rows[:, 2]).max())
+        if gain > memo.most_gain:
+            memo.most_gain = gain
+    pos = start
+    for key, cnt in zip(new_packed, flat_counts.tolist(), strict=True):
+        memo.key_spans[key] = (pos, pos + cnt)
+        pos += cnt
+
+
 def gem_groups(
     base_components: np.ndarray,
     *,
@@ -228,14 +257,18 @@ def gem_groups(
     its colors left."""
     memo = GemMemo() if memo is None else memo
     if memo.frontier_idx_ref is not frontier_idx_by_stat:
-        memo.key_groups.clear()
+        memo.key_spans.clear()
+        memo.groups_used = 0
+        memo.most_gain = 0
+        memo.shapes_scanned = 0
         memo.shapes_done = np.empty(0, dtype=np.bool_)
         memo.frontier_idx_ref = frontier_idx_by_stat
     base_components = np.ascontiguousarray(base_components, dtype=np.int32)
     packed = base_components[:, 5].astype(np.int64) * (1 << 32) + base_components[:, 6]
     packed_keys, first_rows, key_of = np.unique(packed, return_index=True, return_inverse=True)
     keys = base_components[first_rows, 5:7]
-    new_keys = [index for index, key in enumerate(packed_keys.tolist()) if key not in memo.key_groups]
+    packed_list = packed_keys.tolist()
+    new_keys = [index for index, key in enumerate(packed_list) if key not in memo.key_spans]
     if new_keys:
         ft_values, ff_values, residual_values = ftff_combo_arrays(GEM_BUDGET)
         ft_element, ff_element = STAT_GEMS["Fever Time"][1], STAT_GEMS["Fever Fill Rate"][1]
@@ -252,7 +285,6 @@ def gem_groups(
             flat_rows, flat_counts = _kept_splits(
                 keys[new_keys], residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, element_value
             )
-            kept = np.split(flat_rows, np.cumsum(flat_counts)[:-1])
         else:
             rows, counts = zip(*_fg_cpu_search_executor().map(
                 lambda chunk: _kept_splits(
@@ -260,17 +292,20 @@ def gem_groups(
                 ),
                 np.array_split(keys[new_keys], split_workers),
             ))
-            kept = np.split(np.concatenate(rows), np.cumsum(np.concatenate(counts))[:-1])
-        memo.key_groups.update(zip(packed_keys[new_keys].tolist(), kept, strict=True))
-    key_rows = [memo.key_groups[key] for key in packed_keys.tolist()]
+            flat_rows, flat_counts = np.concatenate(rows), np.concatenate(counts)
+        _append_memo_groups(memo, [packed_list[i] for i in new_keys], flat_rows, flat_counts)
+    spans = [memo.key_spans[key] for key in packed_list]
+    key_starts = np.asarray([s for s, _e in spans], dtype=np.int64)
+    key_ends = np.asarray([e for _s, e in spans], dtype=np.int64)
     return GemGroups(
         np.column_stack((base_components[:, :5], key_of.reshape(-1))).astype(np.int32),
         keys,
-        np.cumsum([0, *map(len, key_rows)], dtype=np.int64),
-        np.concatenate(key_rows),
+        key_starts,
+        memo.groups_buf[: memo.groups_used],
         min(int(total_notes), 100),
         max(0, int(total_notes) - 100),
         memo,
+        key_ends=key_ends,
     )
 
 
@@ -287,30 +322,41 @@ def gem_winners(
     below its floor has no winner (None)."""
     loadout_count = groups.loadouts.shape[0]
     floors = np.full(loadout_count, -1, dtype=np.int64) if floors is None else np.ascontiguousarray(floors, dtype=np.int64)
-    # Loadouts with equal PP, CM and FM side by side share their bound tables.
-    order = np.lexsort(groups.loadouts[:, 2::-1].T)
+    flags = color_flags(*colors)
+    allow_pp = bool(flags[0] or flags[1])
+    # Loadouts sharing their bound tables sit side by side: (PP, CM, FM) on Chill songs, (CM, FM) on all others.
+    order = np.lexsort(groups.loadouts[:, 2::-1].T) if allow_pp else np.lexsort(groups.loadouts[:, 2:0:-1].T)
     memo = groups.memo
     frontier_count = pool.frontier_offsets.shape[0]
     if memo.pool_ref is not pool or memo.shapes_done.shape[0] != frontier_count:
         memo.frontier_shapes = np.zeros((frontier_count, 4), dtype=np.float64)
         memo.shapes_done = np.zeros(frontier_count, dtype=np.bool_)
+        memo.shapes_scanned = 0
         memo.pool_ref = pool
-    _frontier_shapes(
-        groups.groups[:, 3], pool.frontier_offsets, pool.frontier_lengths, pool.pattern_ids, pool.counts, pool.head_coeffs,
-        groups.body_total, memo.frontier_shapes, memo.shapes_done,
-    )
+    pool_shapes = (pool.frontier_offsets, pool.frontier_lengths, pool.pattern_ids, pool.counts, pool.head_coeffs)
+    if groups.key_ends is not None:
+        k_starts, k_ends = groups.key_starts, groups.key_ends
+        if memo.shapes_scanned < groups.groups.shape[0]:
+            _frontier_shapes(
+                groups.groups[memo.shapes_scanned :, 3], pool_shapes, groups.body_total, memo.frontier_shapes, memo.shapes_done
+            )
+            memo.shapes_scanned = groups.groups.shape[0]
+        most_gain = memo.most_gain
+    else:
+        k_starts, k_ends = groups.key_starts[:-1], groups.key_starts[1:]
+        _frontier_shapes(groups.groups[:, 3], pool_shapes, groups.body_total, memo.frontier_shapes, memo.shapes_done)
+        most_gain = int((2 * groups.groups[:, 1] + groups.groups[:, 2]).max()) if groups.groups.shape[0] else 0
     surfaces = (
         pool.frontier_offsets, pool.frontier_lengths, memo.frontier_shapes, pool.pattern_ids, pool.pattern_words, pool.counts,
         pool.head_coeffs, pool.head_greats,
     )
     tables = (curves.f64["Perfect Points"], curves.f64["Combo Multiplier"], curves.combo_ramp, curves.f64["Fever Multiplier"])
     loadouts = np.ascontiguousarray(groups.loadouts[order])
-    most_gain = int((2 * groups.groups[:, 1] + groups.groups[:, 2]).max())
     rows, winner_groups = _score_on_cpu_cores(
         loadouts,
         floors[order],
-        np.diff(groups.key_starts)[loadouts[:, 5]],
-        (groups.key_starts, groups.groups, surfaces, np.asarray(color_flags(*colors), dtype=np.int32), tables,
+        (k_ends - k_starts)[loadouts[:, 5]],
+        ((k_starts, k_ends), groups.groups, surfaces, np.asarray(flags, dtype=np.int32), tables,
          (groups.head_len, groups.body_total, most_gain)),
     )
     ft_values, ff_values, _residual = ftff_combo_arrays(GEM_BUDGET)
@@ -433,92 +479,84 @@ def _block_bound(block, delta, shape):
 
 
 @jit(inline="always")
-def _surface_ceiling(live, frontier_shape, shape, great_shape):
-    """At least a surface's bound less what its Greats lose at each live block (live: _live_summary): a block's frontier
-    bound less base value x the shape's distance from the frontier's, at the lowest of each over the blocks."""
-    peak, low_base, low_combo, low_fever, low_worst_combo, low_worst_fever = live
-    distance = (
-        frontier_shape[0] - shape[0], frontier_shape[1] - shape[1], frontier_shape[2] - shape[2], frontier_shape[3] - shape[3]
-    )
+def _surface_ceiling(ceil_params, frontier_shape, shape, great_shape):
+    """At least a surface's bound less what its Greats lose at each live block: frontier peak less base x (low_fever - 1)
+    x (low_combo x dx + dy) less the Great loss at the worst corner (body and head totals are song constants)."""
+    peak, ceil_ka, ceil_df, low_wc, low_wf, gw_cf = ceil_params
+    dx = frontier_shape[0] - shape[0]
+    dy = frontier_shape[2] - shape[2]
+    great_loss = great_shape[0] * gw_cf + great_shape[1] * low_wc + great_shape[2] * low_wf + great_shape[3]
+    return peak - (ceil_ka * dx + ceil_df * dy) - great_loss
+
+
+@jit(inline="always")
+def _budget_bound(c, d_rel, shape):
+    """The surface bound over a budget's columns: each term of _column_bound at its most (c, the terms' maxima at
+    delta_lo and their slope in d_rel = delta - delta_lo >= 0)."""
+    a, e, f, g = shape
     return (
-        peak - low_base * _shape_value(distance, low_combo, low_fever)
-        - _shape_value(great_shape, low_worst_combo, low_worst_fever)
+        a * (c[0] + d_rel * c[1]) + e * (c[2] + d_rel * c[3]) + f * (c[4] + d_rel * c[5]) + g * (c[6] + d_rel * c[7]) + 1025.0
     )
 
 
 @jit(inline="always")
-def _budget_bound(c, delta, shape):
-    """The surface bound over a budget's columns: each term of _column_bound at its most (c, the terms' maxima as a value
-    and its slope in delta)."""
+def _column_bound(combo, column, col_d_rel, shape):
+    """The surface bound over a column of blocks of one combo: column, (most_base + delta_lo, most_low at delta_lo,
+    slope in col_d_rel = column_delta - delta_lo >= 0)."""
     a, e, f, g = shape
-    return (
-        a * (c[0] + delta * c[1]) + e * (c[2] + delta * c[3]) + f * (c[4] + delta * c[5]) + g * (c[6] + delta * c[7]) + 1025.0
-    )
-
-
-@jit(inline="always")
-def _column_bound(combo, column, delta, shape):
-    """The surface bound over a column of blocks of one combo: column, (the most base value, the most base value x fever
-    as a chord in delta: intercept, slope). Each term of the block bound at the column's most of it."""
-    a, e, f, g = shape
-    return (column[1] + delta * column[2]) * (combo * a + f) + (column[0] + delta) * (combo * e + g) + 1025.0
+    return (column[1] + col_d_rel * column[2]) * (combo * a + f) + (column[0] + col_d_rel) * (combo * e + g) + 1025.0
 
 
 @jit(nopython=True, cache=True)
-def _gem_curve(ref, stat, gain, allowed):
-    """ref at stat + k * gain for k = 0 .. the gems that take stat to MAX_STAT (at most GEM_BUDGET; none unless
-    allowed)."""
+def _fill_gem_curve(out, ref, stat, gain, allowed):
+    """Fill out[0..gems] with ref at stat + k * gain for k = 0..gems; returns gems."""
     gems = min(max(0, (MAX_STAT - stat + gain - 1) // gain), GEM_BUDGET) if allowed else 0
-    out = np.empty(gems + 1, dtype=np.float64)
     for k in range(gems + 1):
         out[k] = ref[_stat_row(stat + k * gain)]
-    return out
+    return gems
 
 
 @jit(nopython=True, cache=True)
 def _block_bound_tables():
-    """Empty bound tables, refilled per (PP, CM, FM) (_fill_block_bounds): per residual budget its terms (_budget_bound);
+    """Empty bound tables, refilled per stat line (_fill_block_bounds): per residual budget its terms (_budget_bound);
     per column of blocks its combo, its first block, and per count of its first blocks their _column_bound terms; then every
     block: (base value without delta, combo and fever at the best corner, combo and fever at the worst) and its (cm0, cm1,
     fm0, fm1) corners."""
-    side = (GEM_BUDGET + _TILE) // _TILE
+    side_cm = (GEM_BUDGET + _TILE_CM) // _TILE_CM
+    side_fm = (GEM_BUDGET + _TILE_FM) // _TILE_FM
     return (
         np.empty((GEM_BUDGET + 1, 8), dtype=np.float64),
-        np.empty(side, dtype=np.float64),
-        np.empty(side + 1, dtype=np.int64),
-        np.empty((side, side, 3), dtype=np.float64),
-        np.empty((side * side, 5), dtype=np.float64),
-        np.empty((side * side, 4), dtype=np.int64),
+        np.empty(side_cm, dtype=np.float64),
+        np.empty(side_cm + 1, dtype=np.int64),
+        np.empty((side_cm, side_fm, 3), dtype=np.float64),
+        np.empty((side_cm * side_fm, 5), dtype=np.float64),
+        np.empty((side_cm * side_fm, 4), dtype=np.int64),
     )
 
 
 @jit(nopython=True, cache=True)
-def _fill_block_bounds(tables, gem_bases, pp_bound_prefix_max, cm_ref_cache, fm_ref_cache, delta_range):
-    """The bound tables (_block_bound_tables) of a pre-gem (PP, CM, FM): its (CM, FM) blocks of _TILE x _TILE gem pairs in
-    columns of equal cm0, each block's best corner (the highest multipliers, and what its gems add to the base value over
-    element gems), and per residual budget its most of each term of the bound over its columns (the max of a sum is at most
-    the sum of the maxes). A budget takes a column's blocks its gems can reach, and adds its element gems to delta.
-
-    The most base value x fever of a column's blocks is convex in delta, a maximum of lines, so its chord over delta_range
-    (the deltas the stat line's loadouts can have) bounds it there: far tighter than its value at no delta plus delta x
-    the highest fever. gem_bases: what a CM, FM and element gem add to the base. The caches hold one entry per gem count the
-    loadout can spend on PP, CM and FM."""
+def _fill_block_bounds(tables, gem_bases, pp_bound_prefix_max, cm_ref_cache, fm_ref_cache, limits, delta_range):
+    """The bound tables (_block_bound_tables) of one stat line ((PP, CM, FM) when allow_pp else (CM, FM)): its
+    _TILE_CM x _TILE_FM blocks in columns of equal cm0, each block's best corner, each column's chord over delta_range
+    parameterized in d_rel = delta - delta_lo >= 0 (minimizing max_j splitting slack), and per residual budget its most
+    of each term over reachable columns."""
     term_max, column_combo, column_first, column_terms, blocks, corners = tables
     w_cm, w_fm, w_ov = gem_bases
+    full_pp, full_cm, full_fm, allow_pp = limits
     delta_lo, delta_hi = delta_range
     cm_lin_up = w_cm > w_ov
     fm_lin_up = w_fm > w_ov
-    full_pp, full_cm, full_fm = len(pp_bound_prefix_max) - 1, len(cm_ref_cache) - 1, len(fm_ref_cache) - 1
+    pp_0 = pp_bound_prefix_max[0] if allow_pp else 0.0
     b = 0
-    for j in range(full_cm // _TILE + 1):
-        cm0 = j * _TILE
-        cm1 = min(cm0 + _TILE - 1, full_cm)
+    for j in range(full_cm // _TILE_CM + 1):
+        cm0 = j * _TILE_CM
+        cm1 = min(cm0 + _TILE_CM - 1, full_cm)
         column_combo[j] = cm_ref_cache[cm1]
         column_first[j] = b
         most_base = most_low = most_high = -1.0e30
-        for k in range(min(full_fm, GEM_BUDGET - cm0) // _TILE + 1):
-            fm0 = k * _TILE
-            fm1 = min(fm0 + _TILE - 1, full_fm)
+        for k in range(min(full_fm, GEM_BUDGET - cm0) // _TILE_FM + 1):
+            fm0 = k * _TILE_FM
+            fm1 = min(fm0 + _TILE_FM - 1, full_fm)
             base = float((cm1 if cm_lin_up else cm0) * (w_cm - w_ov) + (fm1 if fm_lin_up else fm0) * (w_fm - w_ov))
             fever = fm_ref_cache[fm1]
             block = blocks[b]
@@ -529,38 +567,52 @@ def _fill_block_bounds(tables, gem_bases, pp_bound_prefix_max, cm_ref_cache, fm_
             most_high = max(most_high, (base + delta_hi) * fever)
             slope = (most_high - most_low) / (delta_hi - delta_lo)
             terms = column_terms[j, k]
-            terms[0], terms[1], terms[2] = most_base, most_low - delta_lo * slope, slope
+            terms[0], terms[1], terms[2] = most_base + delta_lo, most_low, slope
             b += 1
     for r in range(GEM_BUDGET + 1):
         most = term_max[r]
-        for j in range(min(full_cm, r) // _TILE + 1):
-            cm0 = j * _TILE
+        for j in range(min(full_cm, r) // _TILE_CM + 1):
+            cm0 = j * _TILE_CM
             combo = column_combo[j]
-            terms = column_terms[j, min(full_fm, r - cm0) // _TILE]
-            shift = float(r * w_ov) + pp_bound_prefix_max[min(full_pp, r - cm0)]
-            base, base_fever, slope = terms[0] + shift, terms[1] + shift * terms[2], terms[2]
-            budget_terms = (combo * base_fever, combo * slope, combo * base, combo, base_fever, slope, base, 1.0)
-            for t in range(8):
-                most[t] = max(most[t], budget_terms[t]) if j else budget_terms[t]
+            terms = column_terms[j, min(full_fm, r - cm0) // _TILE_FM]
+            shift_rel = float(r * w_ov) + (pp_bound_prefix_max[min(full_pp, r - cm0)] - pp_0 if allow_pp else 0.0)
+            base, base_fever, slope = terms[0] + shift_rel, terms[1] + shift_rel * terms[2], terms[2]
+            if j == 0:
+                most[0], most[1], most[2], most[3] = combo * base_fever, combo * slope, combo * base, combo
+                most[4], most[5], most[6], most[7] = base_fever, slope, base, 1.0
+            else:
+                most[0] = max(most[0], combo * base_fever)
+                most[1] = max(most[1], combo * slope)
+                most[2] = max(most[2], combo * base)
+                most[3] = max(most[3], combo)
+                most[4] = max(most[4], base_fever)
+                most[5] = max(most[5], slope)
+                most[6] = max(most[6], base)
 
 
 @jit(nopython=True, cache=True)
-def _stat_line_deltas(loadouts, c, most_gain, budget_gain, pp_bound_prefix_max):
-    """The range of the deltas of the loadouts from c on with c's PP, CM and FM (contiguous): delta holds a loadout's
-    colors (2 x primary + secondary), its FT and FF gems' gain (most_gain at the most), its budget's element gems
-    (budget_gain at the most) and the best PP part of its leftover gems."""
-    lowest = highest = (int(loadouts[c, 3]) << 1) + int(loadouts[c, 4])
+def _stat_line_deltas(loadouts, c, allow_pp, ref_pp, most_gain, budget_gain, pp_bound_prefix_max, full_pp):
+    """The range of delta_for_bounds over contiguous loadouts sharing c's stat line ((PP, CM, FM) if allow_pp else (CM, FM))."""
+    base0 = float((int(loadouts[c, 3]) << 1) + int(loadouts[c, 4])) + (
+        pp_bound_prefix_max[0] if allow_pp else ref_pp[_stat_row(int(loadouts[c, 0]))]
+    )
+    lowest = highest = base0
     last = c + 1
     while last < loadouts.shape[0] and (
-        loadouts[last, 0] == loadouts[c, 0] and loadouts[last, 1] == loadouts[c, 1] and loadouts[last, 2] == loadouts[c, 2]
+        loadouts[last, 1] == loadouts[c, 1]
+        and loadouts[last, 2] == loadouts[c, 2]
+        and (not allow_pp or loadouts[last, 0] == loadouts[c, 0])
     ):
-        colors = (int(loadouts[last, 3]) << 1) + int(loadouts[last, 4])
-        lowest, highest = min(lowest, colors), max(highest, colors)
+        val = float((int(loadouts[last, 3]) << 1) + int(loadouts[last, 4])) + (
+            pp_bound_prefix_max[0] if allow_pp else ref_pp[_stat_row(int(loadouts[last, 0]))]
+        )
+        if val < lowest:
+            lowest = val
+        if val > highest:
+            highest = val
         last += 1
-    return (
-        float(lowest) + pp_bound_prefix_max[0],
-        float(highest + most_gain + budget_gain) + pp_bound_prefix_max[len(pp_bound_prefix_max) - 1] + 1.0,
-    )
+    pp_extra = (pp_bound_prefix_max[full_pp] - pp_bound_prefix_max[0]) if allow_pp else 0.0
+    return lowest, highest + float(most_gain + budget_gain) + pp_extra + 1.0
 
 
 @jit(nopython=True, cache=True)
@@ -579,12 +631,13 @@ def _live_summary(blocks, live_blocks, live_deltas, live, frontier_shape):
 
 
 @jit(nopython=True, cache=True)
-def _frontier_shapes(group_frontiers, frontier_offsets, frontier_lengths, pattern_ids, counts, head_coeffs, body_total, shapes, done):
+def _frontier_shapes(group_frontiers, pool_shapes, body_total, shapes, done):
     """Into shapes, per frontier a group reaches that is not done yet, a shape bounding its surfaces' (_surface_shape).
     A surface's body and head totals (a + e, f + g) are the song's, so its value is the same with a note moved from e to a
     worth (fever - 1) x its combo more: the shape with the frontier's most a and f and those totals bounds every surface
     with fever >= 1, and the shape less a surface's is (x, -x, y, -y), never below zero at any combo and fever.
     O(groups + the surfaces of those frontiers)."""
+    frontier_offsets, frontier_lengths, pattern_ids, counts, head_coeffs = pool_shapes
     for f in group_frontiers:
         if not done[f]:
             done[f] = True
@@ -599,7 +652,7 @@ def _frontier_shapes(group_frontiers, frontier_offsets, frontier_lengths, patter
 
 
 @jit(nopython=True, cache=True)
-def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags, curves, song):
+def _score_loadouts(loadouts, floors, key_bounds, groups, surfaces, color_flags, curves, song):
     """Each loadout's best gem allocation over its groups (GemGroups): (rows, winning groups).
 
     A loadout's winner is its first group with the highest score; within it the first surface reaching that score, with
@@ -609,20 +662,13 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
     (a tie is still scored) because blocks visit pairs out of lexicographic order and the explicit tie-break must see
     every tie.
 
-    Bounds, each at least every pair score under it: per (CM, FM) block the score at the block's best corner with every
-    note Perfect (_block_bound); a column of blocks (equal cm0) takes each term's maximum over its blocks (the max of a sum
-    is at most the sum of the maxes), a budget the maxima over its columns, and a group a budget at the most of each shape
-    coordinate over its frontier's surfaces, which also leaves the group the blocks a surface can use. At a block a
-    surface's bound is the frontier's less base value x its shape's distance from the frontier's, so the group's highest
-    block bound less that distance at the live blocks' lowest values bounds the surface over them all. Inside a block, a
-    CM row's bound takes the row's best linear base, PP part and FM multiplier (each monotone along it). Each subtracts
-    what the surface's Greats lose at the least, at the lowest multipliers under it.
-
-    surfaces: frontier offsets and lengths, their bound shapes (_frontier_shapes), then SurfacePool's pattern ids, pattern
-    words, body counts, head coefficients and head Greats; curves: the Perfect Points, Combo Multiplier, combo ramp and
-    Fever Multiplier f64 tables; song: head and body notes and the most a group's FT and FF gems add to delta. Row columns:
+    Bounds, each at least every pair score under it: per (_TILE_CM x _TILE_FM) block the score at the block's best corner
+    with every note Perfect (_block_bound); a column of blocks (equal cm0) takes each term's maximum over its blocks,
+    parameterized in d_rel = delta - delta_lo >= 0 to tighten _budget_bound; a group filters live blocks and rejects
+    dominated surfaces via _surface_ceiling before touching pattern_words. Row columns:
     [best_score, best_surface, g_pp, g_cm, g_fm, g_ov].
     """
+    key_starts, key_ends = key_bounds
     frontier_offsets, frontier_lengths, frontier_shapes, pattern_ids, pattern_words, surface_counts, head_coeffs, \
         head_greats = surfaces
     ref_pp, ref_cm, ref_ramp, ref_fm = curves
@@ -650,76 +696,100 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
     pp_primary_delta = pp_p_delta - ov_p_delta
     pp_secondary_delta = pp_s_delta - ov_s_delta
 
-    full_pp_gems = 0
-    pp_ref_base = 0.0
-    pp_ref_cache = cm_ref_cache = fm_ref_cache = pp_bound_prefix_max = np.empty(1, dtype=np.float64)
+    pp_ref_cache = np.empty(GEM_BUDGET + 1, dtype=np.float64)
+    cm_ref_cache = np.empty(GEM_BUDGET + 1, dtype=np.float64)
+    fm_ref_cache = np.empty(GEM_BUDGET + 1, dtype=np.float64)
+    pp_bound_prefix_max = np.empty(GEM_BUDGET + 1, dtype=np.float64)
+    full_pp_gems = full_cm_gems = full_fm_gems = 0
+    pp_0 = delta_lo = 0.0
     tables = _block_bound_tables()
     term_max, column_combo, column_first, column_terms, blocks, block_corners = tables
     live_blocks = np.empty(blocks.shape[0], dtype=np.int64)
     live_deltas = np.empty(blocks.shape[0], dtype=np.float64)
     for c in range(loadouts.shape[0]):
         cur_pp, cur_cm, cur_fm = int(loadouts[c, 0]), int(loadouts[c, 1]), int(loadouts[c, 2])
-        if c == 0 or cur_pp != loadouts[c - 1, 0] or cur_cm != loadouts[c - 1, 1] or cur_fm != loadouts[c - 1, 2]:
-            # The stat curves per gem count and, per residual budget, the (CM, FM) blocks with their bounds.
-            pp_ref_cache = _gem_curve(ref_pp, cur_pp, STAT_GEM_GAIN_NORMAL, allow_pp)
-            cm_ref_cache = _gem_curve(ref_cm, cur_cm, STAT_GEM_GAIN_NORMAL, True)
-            fm_ref_cache = _gem_curve(ref_fm, cur_fm, STAT_GEM_GAIN_FEVER, True)
-            full_pp_gems = len(pp_ref_cache) - 1
-            pp_ref_base = pp_ref_cache[0]
-            # pp_bound_prefix_max[k]: the best base_value PP can add with at most k PP gems (in place of element gems).
-            pp_bound_prefix_max = pp_ref_cache.copy()
-            for gp in range(1, full_pp_gems + 1):
-                pp_bound_prefix_max[gp] = max(
-                    pp_bound_prefix_max[gp - 1], float(gp * delta_pp_vs_ov) + pp_ref_cache[gp]
-                )
-            delta_range = _stat_line_deltas(loadouts, c, most_gain, GEM_BUDGET * w_ov, pp_bound_prefix_max)
-            _fill_block_bounds(tables, (w_cm, w_fm, w_ov), pp_bound_prefix_max, cm_ref_cache, fm_ref_cache, delta_range)
+        if (
+            c == 0
+            or cur_cm != loadouts[c - 1, 1]
+            or cur_fm != loadouts[c - 1, 2]
+            or (allow_pp and cur_pp != loadouts[c - 1, 0])
+        ):
+            full_cm_gems = _fill_gem_curve(cm_ref_cache, ref_cm, cur_cm, STAT_GEM_GAIN_NORMAL, True)
+            full_fm_gems = _fill_gem_curve(fm_ref_cache, ref_fm, cur_fm, STAT_GEM_GAIN_FEVER, True)
+            if allow_pp:
+                full_pp_gems = _fill_gem_curve(pp_ref_cache, ref_pp, cur_pp, STAT_GEM_GAIN_NORMAL, True)
+                pp_0 = pp_ref_cache[0]
+                pp_bound_prefix_max[0] = pp_0
+                for gp in range(1, full_pp_gems + 1):
+                    pp_bound_prefix_max[gp] = max(
+                        pp_bound_prefix_max[gp - 1], float(gp * delta_pp_vs_ov) + pp_ref_cache[gp]
+                    )
+            else:
+                full_pp_gems = 0
+                pp_0 = 0.0
+                pp_bound_prefix_max[0] = 0.0
+            delta_range = _stat_line_deltas(
+                loadouts, c, allow_pp, ref_pp, most_gain, GEM_BUDGET * w_ov, pp_bound_prefix_max, full_pp_gems
+            )
+            delta_lo = delta_range[0]
+            _fill_block_bounds(
+                tables, (w_cm, w_fm, w_ov), pp_bound_prefix_max, cm_ref_cache, fm_ref_cache,
+                (full_pp_gems, full_cm_gems, full_fm_gems, allow_pp), delta_range,
+            )
+        pp_ref_base = pp_0 if allow_pp else ref_pp[_stat_row(cur_pp)]
+        if not allow_pp:
+            pp_ref_cache[0] = pp_ref_base
         candidate_best = int(floors[c])
         loadout_best = -2
         key = loadouts[c, 5]
-        for g in range(key_starts[key], key_starts[key + 1]):
+        for g in range(key_starts[key], key_ends[key]):
             residual_budget = int(groups[g, 0])
             cur_primary = int(loadouts[c, 3]) + int(groups[g, 1])
             cur_secondary = int(loadouts[c, 4]) + int(groups[g, 2])
             frontier = groups[g, 3]
             base_init = (cur_primary << 1) + cur_secondary
-            delta = float(base_init)
+            delta_for_bounds = float(base_init) + pp_ref_base
+            d_rel = delta_for_bounds - delta_lo
             most = frontier_shapes[frontier]
             frontier_shape = (most[0], most[1], most[2], most[3])
-            if _budget_bound(term_max[residual_budget], delta, frontier_shape) < float(candidate_best):
+            if _budget_bound(term_max[residual_budget], d_rel, frontier_shape) < float(candidate_best):
                 continue
 
-            budget_delta = delta + float(residual_budget * w_ov)
+            budget_delta = delta_for_bounds + float(residual_budget * w_ov)
             group_best_score = -1
             group_best_surface = group_best_pp = group_best_cm = group_best_fm = 0
             live = 0
-            for j in range(min(len(cm_ref_cache) - 1, residual_budget) // _TILE + 1):
-                cm0 = j * _TILE
-                last_block = min(len(fm_ref_cache) - 1, residual_budget - cm0) // _TILE
-                column_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0)]
-                if _column_bound(column_combo[j], column_terms[j, last_block], column_delta, frontier_shape) >= float(candidate_best):
+            for j in range(min(full_cm_gems, residual_budget) // _TILE_CM + 1):
+                cm0 = j * _TILE_CM
+                last_block = min(full_fm_gems, residual_budget - cm0) // _TILE_FM
+                column_delta = budget_delta + (
+                    pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0)] - pp_0 if allow_pp else 0.0
+                )
+                if _column_bound(column_combo[j], column_terms[j, last_block], column_delta - delta_lo, frontier_shape) >= float(candidate_best):
                     for bi in range(column_first[j], column_first[j] + last_block + 1):
                         block_delta = column_delta
                         if allow_pp:
-                            block_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0 - block_corners[bi, 2])]
+                            block_delta = budget_delta + pp_bound_prefix_max[min(full_pp_gems, residual_budget - cm0 - block_corners[bi, 2])] - pp_0
                         if _block_bound(blocks[bi], block_delta, frontier_shape) >= float(candidate_best):
                             live_blocks[live] = bi
                             live_deltas[live] = block_delta
                             live += 1
+            if live == 0:
+                continue
             # A note's Great base is at most 2/3 of its base without PP + 150, and gems only raise what is left.
-            gap = delta / 3.0 + pp_ref_base - 150.0
+            gap = float(base_init) / 3.0 + pp_ref_base - 150.0
             start = frontier_offsets[frontier]
-            summary = _live_summary(blocks, live_blocks, live_deltas, live, frontier_shape)
-            for ls in range(frontier_lengths[frontier] if live else 0):
+            peak, low_base, low_combo, low_fever, low_wc, low_wf = _live_summary(
+                blocks, live_blocks, live_deltas, live, frontier_shape
+            )
+            ceil_df = low_base * (low_fever - 1.0)
+            ceil_params = (peak, ceil_df * low_combo, ceil_df, low_wc, low_wf, low_wc * low_wf)
+            for ls in range(frontier_lengths[frontier]):
                 sr = start + ls
                 pattern_row = pattern_ids[sr]
                 body_fever = int(surface_counts[sr, 0])
                 body_great = int(surface_counts[sr, 1])
                 body_fever_great = int(surface_counts[sr, 2])
-                p_words = pattern_words[pattern_row]
-                no_greats = body_great == 0 and (
-                    int(p_words[4]) | int(p_words[5]) | int(p_words[6]) | int(p_words[7])
-                ) == 0
                 coeffs = head_coeffs[pattern_row]
                 shape = _surface_shape(body_fever, body_total - body_fever, coeffs[0], coeffs[1], coeffs[2], coeffs[3])
                 # What the Greats lose at the least, as a shape: each is worth gap x its multipliers less, past the score's
@@ -733,8 +803,10 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                     great_shape = (0.0, 0.0, 0.0, 0.0)
                 best_score, best_pp, best_cm, best_fm = group_best_score, group_best_pp, group_best_cm, group_best_fm
                 threshold = float(max(best_score, candidate_best))
-                if _surface_ceiling(summary, frontier_shape, shape, great_shape) < threshold:
+                if _surface_ceiling(ceil_params, frontier_shape, shape, great_shape) < threshold:
                     continue
+                p_words = pattern_words[pattern_row]
+                no_greats = body_great == 0 and head_greats[pattern_row, 0] == 0 and head_greats[pattern_row, 1] == 0
                 for position in range(live):
                     bi = live_blocks[position]
                     block = blocks[bi]
@@ -753,7 +825,7 @@ def _score_loadouts(loadouts, floors, key_starts, groups, surfaces, color_flags,
                         # The row's bound.
                         lin_fm = fm_hi if fm_lin_up else fm0
                         row_base = float(base_init + g_cm * w_cm + lin_fm * w_fm + (leftover_after_cm - lin_fm) * w_ov)
-                        row_base += pp_bound_prefix_max[min(full_pp_gems, leftover_after_cm - fm0)]
+                        row_base += pp_bound_prefix_max[min(full_pp_gems, leftover_after_cm - fm0)] if allow_pp else pp_ref_base
                         row_fever = fm_ref_cache[fm_hi]
                         row_loss = gamma * fm_ref_cache[fm0] + eta
                         if row_base * (alpha * row_fever + beta) + 1024.0 - row_loss < threshold:

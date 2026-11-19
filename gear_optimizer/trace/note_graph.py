@@ -130,8 +130,7 @@ class NotePlan:
 
     def graph(self) -> list[dict[str, Any]]:
         """The plan as the timing graph reads it, a dict per note."""
-        columns = (self.hit_ms, self.delta, self.great, self.fever, self.activation_witness, self.section, self.input_order)
-        return [
+        out = [
             {
                 "note_index": index,
                 "hit_time_ms": hit,
@@ -140,14 +139,27 @@ class NotePlan:
                 "input_order": order,
                 "fever": fever,
                 "is_activation_witness": witness,
-                "is_fever_end_witness": index in self.fever_ends,
-                "fever_end_ms": self.fever_ends.get(index),
+                "is_fever_end_witness": False,
+                "fever_end_ms": None,
                 "section": section,
             }
-            for index, (hit, delta, great, fever, witness, section, order) in enumerate(
-                zip(*(column.tolist() for column in columns))
+            for index, hit, delta, great, fever, witness, section, order in zip(
+                range(len(self.hit_ms)),
+                self.hit_ms.tolist(),
+                self.delta.tolist(),
+                self.great.tolist(),
+                self.fever.tolist(),
+                self.activation_witness.tolist(),
+                self.section.tolist(),
+                self.input_order.tolist(),
             )
         ]
+        for index, end_ms in self.fever_ends.items():
+            if 0 <= index < len(out):
+                row = out[index]
+                row["is_fever_end_witness"] = True
+                row["fever_end_ms"] = end_ms
+        return out
 
 
 def _chart_times_ms(total_notes: int, timestamps: Sequence[float] | np.ndarray) -> np.ndarray:

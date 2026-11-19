@@ -46,10 +46,11 @@ def solve_best_fever_combination_batch(
     if not rows:
         return []
     chart = song.chart
-    components = np.asarray([loadout_totals(row, chart.primary, chart.secondary) for row in rows], dtype=np.int32)
+    totals = [loadout_totals(row, chart.primary, chart.secondary) for row in rows]
+    unique_totals = list(dict.fromkeys(totals))
     frontier_idx_by_stat, pool = _base_surface_pool(song, curves)
     groups = gem_groups(
-        components,
+        np.asarray(unique_totals, dtype=np.int32),
         primary_color=chart.primary,
         secondary_color=chart.secondary,
         selected_color=selected_color,
@@ -57,12 +58,16 @@ def solve_best_fever_combination_batch(
         total_notes=int(chart.total_notes),
         memo=memo,
     )
+    winner_by_total = dict(
+        zip(
+            unique_totals,
+            gem_winners(groups, pool, colors=(chart.primary, chart.secondary, selected_color), curves=curves),
+            strict=True,
+        )
+    )
     solves = []
-    for row, winner in zip(
-        rows,
-        gem_winners(groups, pool, colors=(chart.primary, chart.secondary, selected_color), curves=curves),
-        strict=True,
-    ):
+    for row, key in zip(rows, totals, strict=True):
+        winner = winner_by_total[key]
         _score, _surface, pp, cm, fm, element = winner.inner_row
         allocation = (pp, cm, fm, winner.ft, winner.ff, element)
         solves.append(

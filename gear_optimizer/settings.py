@@ -92,10 +92,26 @@ class Paths:
         return self.bin_dir.joinpath(*parts)
 
 
+_PATH_ENV_KEYS = (
+    "ROBEATSMETA_OPTIMIZER_DATA_DIR",
+    "ROBEATSMETA_OPTIMIZER_BIN_DIR",
+    "METAFINDER_CONFIG_PATH",
+    "EVOLUTION_DB_PATH",
+    "TIMELINE_FRONTIER_CACHE_DIR",
+    "FG_RESPONSE_FRONTIER_CACHE_DIR",
+)
+_last_paths: tuple[tuple[str, ...], Paths] | None = None
+
+
 def paths() -> Paths:
+    global _last_paths
+    env_key = tuple(os.environ.get(name, "") for name in _PATH_ENV_KEYS)
+    cached = _last_paths
+    if cached is not None and cached[0] == env_key:
+        return cached[1]
     data_dir = _env_path("ROBEATSMETA_OPTIMIZER_DATA_DIR", ENGINE_ROOT / "Data")
     bin_dir = _env_path("ROBEATSMETA_OPTIMIZER_BIN_DIR", ENGINE_ROOT / "bin")
-    return Paths(
+    resolved = Paths(
         data_dir=data_dir,
         bin_dir=bin_dir,
         config_file=_env_path("METAFINDER_CONFIG_PATH", ENGINE_ROOT / "config.ini"),
@@ -103,6 +119,8 @@ def paths() -> Paths:
         timeline_cache=_env_path("TIMELINE_FRONTIER_CACHE_DIR", bin_dir / "timeline_frontier_cache"),
         fg_cache=_env_path("FG_RESPONSE_FRONTIER_CACHE_DIR", bin_dir / "fg_response_frontier_cache"),
     )
+    _last_paths = (env_key, resolved)
+    return resolved
 
 
 @dataclass(frozen=True, slots=True)
