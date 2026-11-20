@@ -30,9 +30,6 @@ from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS
 
 # The fastest rate the site offers.
 _FASTEST_FRAME_MS = 1000.0 / 360.0
-# Notes further apart in chart time than this have hits more than a frame margin apart, whatever comes between them: a
-# tail's earliest Great is 190 ms early and every hit is at most 200 ms late.
-_PAIR_SPAN_MS = 390.0 + FRAME_MARGIN_MS
 # A fever input lands strictly before its cutoff and a wasted note strictly after it, past the replay's rounding.
 _STRICT_MS = 1e-6
 _SLACK_MS = 1e-9
@@ -268,28 +265,38 @@ def _append_pair(pairs, used, x, y):
 def _scored_pairs(inputs, activation, wasted):
     """The inputs on two lanes whose order scores, as (m, 2) positions."""
     n = inputs.chart_ms.shape[0]
+    min_low = np.empty(n, np.float64)
+    min_low_suffix = np.empty(n, np.float64)
+    if n > 0:
+        cur = min(inputs.low_ms[n - 1], inputs.early_low_ms[n - 1])
+        min_low[n - 1] = cur
+        min_low_suffix[n - 1] = cur
+        for i in range(n - 2, -1, -1):
+            v = min(inputs.low_ms[i], inputs.early_low_ms[i])
+            min_low[i] = v
+            if v < cur:
+                cur = v
+            min_low_suffix[i] = cur
     special = np.empty(n, np.int64)
     n_sp = 0
     for i in range(HEAD_NOTES, n):
         if activation[i] or wasted[i]:
             special[n_sp] = i
             n_sp += 1
-    # Suffix minimum chart_ms over special[j:] breaks the scan only once no later special note can lie within _PAIR_SPAN_MS.
-    sp_suffix_min = np.empty(n_sp, np.float64)
+    sp_min_low_suffix = np.empty(n_sp, np.float64)
     if n_sp > 0:
-        cur = inputs.chart_ms[special[n_sp - 1]]
-        sp_suffix_min[n_sp - 1] = cur
+        cur = min_low[special[n_sp - 1]]
+        sp_min_low_suffix[n_sp - 1] = cur
         for j in range(n_sp - 2, -1, -1):
-            c = inputs.chart_ms[special[j]]
-            if c < cur:
-                cur = c
-            sp_suffix_min[j] = cur
+            v = min_low[special[j]]
+            if v < cur:
+                cur = v
+            sp_min_low_suffix[j] = cur
     pairs = np.empty((64, 2), np.int64)
     used = 0
     sp_cursor = 0
     for x in range(n):
         x_act_or_wasted = activation[x] or wasted[x]
-        x_chart = inputs.chart_ms[x]
         x_lane = inputs.lane[x]
         x_great = inputs.great[x]
         x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
@@ -299,12 +306,12 @@ def _scored_pairs(inputs, activation, wasted):
             if activation[x] and x_great and x >= HEAD_NOTES:
                 continue
             for y in range(x + 1, n):
-                if inputs.chart_ms[y] - x_chart > _PAIR_SPAN_MS:
+                if min_low_suffix[y] >= x_hi:
                     break
                 if (
                     x_lane != inputs.lane[y]
                     and x_great != inputs.great[y]
-                    and min(inputs.low_ms[y], inputs.early_low_ms[y]) < x_hi
+                    and min_low[y] < x_hi
                     and (y < HEAD_NOTES or x_act_or_wasted or activation[y] or wasted[y])
                 ):
                     pairs, used = _append_pair(pairs, used, x, y)
@@ -314,15 +321,10 @@ def _scored_pairs(inputs, activation, wasted):
             if sp_cursor >= n_sp:
                 break
             for j in range(sp_cursor, n_sp):
-                if sp_suffix_min[j] - x_chart > _PAIR_SPAN_MS:
+                if sp_min_low_suffix[j] >= x_hi:
                     break
                 y = special[j]
-                if (
-                    inputs.chart_ms[y] - x_chart <= _PAIR_SPAN_MS
-                    and x_lane != inputs.lane[y]
-                    and x_great != inputs.great[y]
-                    and min(inputs.low_ms[y], inputs.early_low_ms[y]) < x_hi
-                ):
+                if x_lane != inputs.lane[y] and x_great != inputs.great[y] and min_low[y] < x_hi:
                     pairs, used = _append_pair(pairs, used, x, y)
     return pairs[:used]
 

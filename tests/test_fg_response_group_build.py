@@ -184,3 +184,98 @@ def test_gem_winners_sparse_grid_and_batch_sizes_match_bruteforce(candidate_coun
     for row, w in zip(base[:12], got[:12], strict=True):
         exp_ft, exp_ff, exp_inner = _brute_force_winner(row, budget, grid, pool, colors, curves, (8, 8))
         assert (w.ft, w.ff, w.inner_row) == (exp_ft, exp_ff, exp_inner)
+
+
+@pytest.mark.parametrize(
+    "colors",
+    [
+        ("Beat", "Vibe", "Beat"),
+        ("Vibe", "Beat", "Vibe"),
+        ("Beat", "Chill", "Beat"),  # secondary Chill -> allow_pp True
+        ("Chill", "Chill", "Chill"),  # single-color + allow_pp True
+        ("Rush", "Flow", "Rush"),
+    ],
+)
+def test_gem_winners_optimal_score_matches_unpruned_exhaustive_search(colors):
+    """Independent exhaustive oracle: enumerates ALL legal 6-tuples (ft, ff, pp, cm, fm, ov) summing to budget
+    with NO dominance pruning, NO stat-cap pruning, and independent scoring via gear_optimizer.score.fg_surface_score
+    (primary selected, as every RoBeats solve uses)."""
+    from gear_optimizer.frontier.types import FgResponseSurface
+    from gear_optimizer.gamedata import empty_stats
+    from gear_optimizer.score import factors as score_factors, fg_surface_score
+    from gear_optimizer.stats import apply_gems, gems as make_gems
+
+    curves = stat_curves()
+    rng = np.random.default_rng(2026 + len(colors[0]) + len(colors[2]))
+    head_len, body_total = 100, 12
+    total_notes = head_len + body_total
+    frontier_count = 6
+    # Build surfaces with both Great-free and Great-bearing head/body patterns.
+    lengths = np.full(frontier_count, 2, dtype=np.int32)
+    offsets = np.arange(0, frontier_count * 2, 2, dtype=np.int32)
+    rows = int(lengths.sum())
+    words = np.zeros((rows, 8), dtype=np.uint32)
+    words[:, 0] = rng.integers(0, 1 << 16, rows, dtype=np.uint32)
+    words[1::2, 4] = rng.integers(0, 1 << 8, rows // 2, dtype=np.uint32)
+    counts = np.zeros((rows, 3), dtype=np.int32)
+    counts[:, 0] = rng.integers(0, body_total + 1, rows, dtype=np.int32)
+    counts[1::2, 1] = rng.integers(0, 5, rows // 2, dtype=np.int32)
+    counts[1::2, 2] = np.minimum(counts[1::2, 1], counts[1::2, 0])
+    pool = SurfacePool(
+        frontier_offsets=offsets,
+        frontier_lengths=lengths,
+        pattern_ids=np.arange(rows, dtype=np.int32),
+        pattern_words=words,
+        counts=counts,
+        head_coeffs=surface_head_coeffs(words, head_len=head_len),
+        head_greats=surface_head_greats(words),
+    )
+    grid = rng.integers(0, frontier_count, (MAX_STAT + 1, MAX_STAT + 1), dtype=np.int32)
+    primary, secondary, selected = colors
+    # Mix of uncapped, near-cap, and at-cap stats so every cap/dominance boundary is exercised.
+    stat_rows = [
+        {**empty_stats(), "Perfect Points": 157, "Combo Multiplier": 158, "Fever Multiplier": 156, "Fever Time": 155,
+         "Fever Fill Rate": 158, primary: 120, secondary: 120 if primary == secondary else 75},
+        {**empty_stats(), "Perfect Points": 160, "Combo Multiplier": 160, "Fever Multiplier": 160, "Fever Time": 160,
+         "Fever Fill Rate": 160, primary: 80, secondary: 80 if primary == secondary else 40},
+        {**empty_stats(), "Perfect Points": 10, "Combo Multiplier": 25, "Fever Multiplier": 40, "Fever Time": 12,
+         "Fever Fill Rate": 18, primary: 200, secondary: 200 if primary == secondary else 90},
+    ]
+    budget = 6
+    base = np.asarray(
+        [[s["Perfect Points"], s["Combo Multiplier"], s["Fever Multiplier"], s[primary], s[secondary],
+          s["Fever Time"], s["Fever Fill Rate"]] for s in stat_rows],
+        dtype=np.int32,
+    )
+    winners = search.gem_winners(
+        base, (grid, pool), colors=colors, curves=curves, notes=(head_len, body_total),
+        budgets=np.full(len(stat_rows), budget, dtype=np.int32),
+    )
+    for base_dict, w in zip(stat_rows, winners, strict=True):
+        best_score = -1
+        for g_ft in range(budget + 1):
+            for g_ff in range(budget - g_ft + 1):
+                for g_cm in range(budget - g_ft - g_ff + 1):
+                    for g_fm in range(budget - g_ft - g_ff - g_cm + 1):
+                        for g_pp in range(budget - g_ft - g_ff - g_cm - g_fm + 1):
+                            g_ov = budget - g_ft - g_ff - g_cm - g_fm - g_pp
+                            final = apply_gems(
+                                base_dict,
+                                make_gems(pp=g_pp, cm=g_cm, fm=g_fm, ft=g_ft, ff=g_ff, element=g_ov),
+                                selected,
+                            )
+                            fid = int(grid[min(MAX_STAT, final["Fever Time"]), min(MAX_STAT, final["Fever Fill Rate"])])
+                            f = score_factors(final, curves, primary, secondary)
+                            for ls in range(int(pool.frontier_lengths[fid])):
+                                sr = int(pool.frontier_offsets[fid]) + ls
+                                surf = FgResponseSurface(*pool.pattern_words[sr].tolist(), *pool.counts[sr].tolist())
+                                sc = fg_surface_score(f, surf, total_notes)
+                                if sc > best_score:
+                                    best_score = sc
+        score, _ls, g_pp, g_cm, g_fm, g_ov = w.inner_row
+        assert score == best_score
+        assert w.ft + w.ff + g_pp + g_cm + g_fm + g_ov == budget
+        win_final = apply_gems(
+            base_dict, make_gems(pp=g_pp, cm=g_cm, fm=g_fm, ft=w.ft, ff=w.ff, element=g_ov), selected
+        )
+        assert fg_surface_score(score_factors(win_final, curves, primary, secondary), FgResponseSurface(*w.surface), total_notes) == best_score
