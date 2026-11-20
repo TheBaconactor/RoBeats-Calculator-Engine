@@ -251,6 +251,68 @@ def test_force_payload_trace_cache_reuses_the_validated_trace(monkeypatch):
     assert seen["physical_calls"] == 1
 
 
+def test_fg_raw_trace_cache_reuses_reconstruction_without_skipping_validation(monkeypatch):
+    """A different Perfect Time reuses the cached raw trace without bypassing physical validation."""
+    from gear_optimizer.frontier.types import FgResponseFrontierSolveResult, FgResponseSurface
+    from gear_optimizer.trace import materialize as mat_mod
+    from gear_optimizer.trace.reconstruct import UnplayableTrace
+
+    calls = {"reconstruct": 0, "validate": []}
+    result = FgResponseFrontierSolveResult(
+        best_score=1000, ft=0, ff=0, gem_counts={},
+        stats={"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Fever Fill Rate": 10, "Fever Time": 10, "Rush": 50},
+        surface=FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        non_fever_base=3, raw_fever_fill=2.5, real_fever_time=4.0,
+    )
+
+    def _rec(**_kw):
+        calls["reconstruct"] += 1
+        return ({"section": 1, "forced_count": 0},)
+
+    def _val(**kw):
+        calls["validate"].append(kw["perfect_time"])
+        if kw["perfect_time"] > 0:
+            raise UnplayableTrace("too wide")
+
+    monkeypatch.setattr(mat_mod, "reconstruct_force_greats_response_trace", _rec)
+    monkeypatch.setattr(mat_mod, "validate_force_greats_physical_replay", _val)
+    monkeypatch.setattr(mat_mod, "score_force_greats_response_surface_exact", lambda *_a, **_kw: 1000)
+
+    cache = mat_mod.FgTraceMaterializationCache()
+    song = _stub_song(1)
+    curves = stat_curves()
+    mat_mod.materialize_force_payload_from_response_frontier(
+        base_stats={"Perfect Points": 0}, paired_base_score=900, selected_element="Rush",
+        result=result, song=song, curves=curves, trace_cache=cache, perfect_time=0,
+    )
+    with pytest.raises(UnplayableTrace):
+        mat_mod.materialize_force_payload_from_response_frontier(
+            base_stats={"Perfect Points": 0}, paired_base_score=900, selected_element="Rush",
+            result=result, song=song, curves=curves, trace_cache=cache, perfect_time=120,
+        )
+    # Raw trace was reconstructed once; validation ran for both 0 and 120, and 120 was not cached as valid.
+    assert calls["reconstruct"] == 1
+    assert calls["validate"] == [0, 120]
+    assert len(cache.traces) == 1
+    assert len(cache.raw_traces) == 1
+
+
+def test_action_table_arrays_matches_producer_action_table():
+    """Vectorized reconstruct._action_table_arrays matches producer_batch.action_table bit-for-bit."""
+    from gear_optimizer.frontier.producer_batch import action_table
+    from gear_optimizer.trace.reconstruct import _action_table_arrays
+
+    for raw_fill in (0.1, 1.0, 2.5, 11.75, 40.0):
+        for nfb in (0, 1, 5, 25):
+            for forced_timing in (False, True):
+                got = _action_table_arrays(raw_fill, nfb, forced_timing)
+                ref = action_table(
+                    raw_fever_fill=raw_fill, non_fever_base=nfb, use_forced_great_timing=forced_timing
+                )
+                for g, r in zip(got, ref, strict=True):
+                    np.testing.assert_array_equal(g, np.asarray(r, dtype=np.int64))
+
+
 def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     from types import SimpleNamespace
 
@@ -433,55 +495,6 @@ def test_response_frontier_best_position_prune_matches_sort_reference_randomized
                 best = max(bucket, key=lambda idx: (int(residuals[idx]), -int(positions[idx])))
                 expected.append(int(positions[best]))
             np.testing.assert_array_equal(got, np.asarray(expected, dtype=np.int32))
-
-
-def test_response_frontier_group_builder_matches_prune_reference():
-    from gear_optimizer.rules import MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
-    from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-    from tests.fg_group_build_reference import build_response_group_rows_reference, kept_group_rows
-
-    ft_values, ff_values, residual_values = ftff_combo_arrays(3)
-    base_components = np.asarray(
-        [
-            [1, 2, 3, 10, 20, 0, 0],
-            [4, 5, 6, 13, 17, 2, 1],
-            [7, 8, 9, 11, 23, 4, 3],
-        ],
-        dtype=np.int32,
-    )
-    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
-    for base in base_components:
-        for ft, ff in zip(ft_values, ff_values, strict=True):
-            ft_stat = int(np.clip(int(base[5]) + int(ft) * STAT_GEM_GAIN_FEVER, 0, MAX_STAT))
-            ff_stat = int(np.clip(int(base[6]) + int(ff) * STAT_GEM_GAIN_FEVER, 0, MAX_STAT))
-            frontier_idx_by_stat[ft_stat, ff_stat] = int((ft_stat // STAT_GEM_GAIN_FEVER + ff_stat // STAT_GEM_GAIN_FEVER) % 3)
-
-    cases = (
-        (np.zeros_like(ft_values, dtype=np.int32), np.zeros_like(ff_values, dtype=np.int32), True),
-        (
-            np.asarray(ft_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32),
-            np.asarray(ff_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32),
-            False,
-        ),
-    )
-    for primary_delta, secondary_delta, constant in cases:
-        args = (
-            base_components,
-            np.ascontiguousarray(ft_values, dtype=np.int32),
-            np.ascontiguousarray(ff_values, dtype=np.int32),
-            np.ascontiguousarray(residual_values, dtype=np.int32),
-            np.ascontiguousarray(frontier_idx_by_stat, dtype=np.int32),
-            np.ascontiguousarray(primary_delta, dtype=np.int32),
-            np.ascontiguousarray(secondary_delta, dtype=np.int32),
-            constant,
-            0,
-            4,
-            9,
-        )
-        got = kept_group_rows(*args)
-        expected = build_response_group_rows_reference(*args)
-        for got_arr, expected_arr in zip(got, expected, strict=True):
-            np.testing.assert_array_equal(got_arr, expected_arr)
 
 
 def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():

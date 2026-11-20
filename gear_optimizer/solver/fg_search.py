@@ -54,25 +54,33 @@ def search_fg_loadouts(
         hood = np.concatenate(
             [one_swap_neighborhood(np.asarray(found[k][0]), slot_start, slot_count, 9) for k in to_expand]
         )
-        fresh: dict[tuple[int, ...], tuple[int, ...]] = {}
-        hood_keys = totals(hood).tolist()
-        for idx, row in enumerate(hood_keys):
+        hood_totals = totals(hood)
+        fresh_keys: list[tuple[int, ...]] = []
+        fresh_idx: list[int] = []
+        seen_fresh: set[tuple[int, ...]] = set()
+        for idx, row in enumerate(hood_totals.tolist()):
             key = tuple(row)
-            if key not in found and key not in pruned and key not in fresh:
-                fresh[key] = tuple(hood[idx].tolist())
+            if key not in found and key not in pruned and key not in seen_fresh:
+                seen_fresh.add(key)
+                fresh_keys.append(key)
+                fresh_idx.append(idx)
         contenders = list(beam)
-        keys = list(fresh)
-        for start in range(0, len(keys), _CHUNK):
-            chunk = keys[start : start + _CHUNK]
-            top = best_of(contenders)
-            floor = found[top[-1]][1].inner_row[0] if len(top) == beam_width else -1
-            rows = score(np.asarray(chunk, dtype=np.int32), np.full(len(chunk), floor, dtype=np.int64))
-            for key in chunk:
-                if key in rows:
-                    found[key] = (fresh[key], rows[key])
-                    contenders.append(key)
-                else:
-                    pruned.add(key)
+        if fresh_idx:
+            fresh_arr = np.ascontiguousarray(hood_totals[fresh_idx], dtype=np.int32)
+            fresh_genomes = hood[fresh_idx].tolist()
+            for start in range(0, len(fresh_keys), _CHUNK):
+                stop = start + _CHUNK
+                chunk_keys = fresh_keys[start:stop]
+                top = best_of(contenders)
+                floor = found[top[-1]][1].inner_row[0] if len(top) == beam_width else -1
+                rows = score(fresh_arr[start:stop], np.full(len(chunk_keys), floor, dtype=np.int64))
+                for pos, key in enumerate(chunk_keys):
+                    winner = rows.get(key)
+                    if winner is not None:
+                        found[key] = (tuple(fresh_genomes[start + pos]), winner)
+                        contenders.append(key)
+                    else:
+                        pruned.add(key)
         next_beam = best_of(contenders)
         if set(next_beam) == set(beam):
             return found

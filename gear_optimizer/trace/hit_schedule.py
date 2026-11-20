@@ -30,9 +30,6 @@ from gear_optimizer.solver.timing_envelope import FRAME_MARGIN_MS
 
 # The fastest rate the site offers.
 _FASTEST_FRAME_MS = 1000.0 / 360.0
-# Notes further apart in chart time than this have hits more than a frame margin apart, whatever comes between them: a
-# tail's earliest Great is 190 ms early and every hit is at most 200 ms late.
-_PAIR_SPAN_MS = 390.0 + FRAME_MARGIN_MS
 # A fever input lands strictly before its cutoff and a wasted note strictly after it, past the replay's rounding.
 _STRICT_MS = 1e-6
 _SLACK_MS = 1e-9
@@ -257,65 +254,78 @@ def build_schedule_inputs(plan_cols, order, bands_2, act_positions, precise):
 
 
 @jit(nopython=True, cache=True, nogil=True)
+def _append_pair(pairs, used, x, y):
+    if used == pairs.shape[0]:
+        pairs = np.concatenate((pairs, pairs))
+    pairs[used, 0], pairs[used, 1] = x, y
+    return pairs, used + 1
+
+
+@jit(nopython=True, cache=True, nogil=True)
 def _scored_pairs(inputs, activation, wasted):
     """The inputs on two lanes whose order scores, as (m, 2) positions."""
     n = inputs.chart_ms.shape[0]
+    min_low = np.empty(n, np.float64)
+    min_low_suffix = np.empty(n, np.float64)
+    if n > 0:
+        cur = min(inputs.low_ms[n - 1], inputs.early_low_ms[n - 1])
+        min_low[n - 1] = cur
+        min_low_suffix[n - 1] = cur
+        for i in range(n - 2, -1, -1):
+            v = min(inputs.low_ms[i], inputs.early_low_ms[i])
+            min_low[i] = v
+            if v < cur:
+                cur = v
+            min_low_suffix[i] = cur
     special = np.empty(n, np.int64)
     n_sp = 0
     for i in range(HEAD_NOTES, n):
         if activation[i] or wasted[i]:
             special[n_sp] = i
             n_sp += 1
+    sp_min_low_suffix = np.empty(n_sp, np.float64)
+    if n_sp > 0:
+        cur = min_low[special[n_sp - 1]]
+        sp_min_low_suffix[n_sp - 1] = cur
+        for j in range(n_sp - 2, -1, -1):
+            v = min_low[special[j]]
+            if v < cur:
+                cur = v
+            sp_min_low_suffix[j] = cur
     pairs = np.empty((64, 2), np.int64)
     used = 0
     sp_cursor = 0
     for x in range(n):
-        if x < HEAD_NOTES or activation[x] or wasted[x]:
-            if activation[x] and inputs.great[x] and x >= HEAD_NOTES:
+        x_act_or_wasted = activation[x] or wasted[x]
+        x_lane = inputs.lane[x]
+        x_great = inputs.great[x]
+        x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
+        if x < HEAD_NOTES or x_act_or_wasted:
+            # A Great activation adds the least fill: past the ramp a follower read first fills the bar instead, and the
+            # fevered set and the score stay the same.
+            if activation[x] and x_great and x >= HEAD_NOTES:
                 continue
-            x_chart = inputs.chart_ms[x]
-            x_lane = inputs.lane[x]
-            x_great = inputs.great[x]
-            x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
-            x_act_or_wasted = activation[x] or wasted[x]
             for y in range(x + 1, n):
-                if inputs.chart_ms[y] - x_chart > _PAIR_SPAN_MS:
+                if min_low_suffix[y] >= x_hi:
                     break
-                if x_lane == inputs.lane[y] or x_great == inputs.great[y]:
-                    continue
-                if min(inputs.low_ms[y], inputs.early_low_ms[y]) >= x_hi:
-                    continue
-                if y < HEAD_NOTES or x_act_or_wasted or activation[y] or wasted[y]:
-                    if used == pairs.shape[0]:
-                        pairs = np.concatenate((pairs, pairs))
-                    pairs[used, 0], pairs[used, 1] = x, y
-                    used += 1
+                if (
+                    x_lane != inputs.lane[y]
+                    and x_great != inputs.great[y]
+                    and min_low[y] < x_hi
+                    and (y < HEAD_NOTES or x_act_or_wasted or activation[y] or wasted[y])
+                ):
+                    pairs, used = _append_pair(pairs, used, x, y)
         else:
             while sp_cursor < n_sp and special[sp_cursor] <= x:
                 sp_cursor += 1
             if sp_cursor >= n_sp:
                 break
-            x_chart = inputs.chart_ms[x]
-            if inputs.chart_ms[special[sp_cursor]] - x_chart > _PAIR_SPAN_MS + 390.0:
-                continue
-            x_lane = inputs.lane[x]
-            x_great = inputs.great[x]
-            x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
             for j in range(sp_cursor, n_sp):
+                if sp_min_low_suffix[j] >= x_hi:
+                    break
                 y = special[j]
-                dy = inputs.chart_ms[y] - x_chart
-                if dy > _PAIR_SPAN_MS:
-                    if dy > _PAIR_SPAN_MS + 390.0:
-                        break
-                    continue
-                if x_lane == inputs.lane[y] or x_great == inputs.great[y]:
-                    continue
-                if min(inputs.low_ms[y], inputs.early_low_ms[y]) >= x_hi:
-                    continue
-                if used == pairs.shape[0]:
-                    pairs = np.concatenate((pairs, pairs))
-                pairs[used, 0], pairs[used, 1] = x, y
-                used += 1
+                if x_lane != inputs.lane[y] and x_great != inputs.great[y] and min_low[y] < x_hi:
+                    pairs, used = _append_pair(pairs, used, x, y)
     return pairs[:used]
 
 
@@ -359,21 +369,17 @@ def _links_of(inputs, sections):
     out_before = np.empty(total, np.int64)
     out_after = np.empty(total, np.int64)
     out_fixed = np.zeros(total, np.float64)
+    out_before[:used] = before[:used]
+    out_after[:used] = after[:used]
+    out_fixed[:used] = fixed[:used]
+    for i in range(m_pairs):
+        out_before[used + i] = pairs[i, 0]
+        out_after[used + i] = pairs[i, 1]
     into_start = np.zeros(n + 1, np.int64)
     n_fwd = 0
     n_back = 0
-    for i in range(used):
-        b, a = before[i], after[i]
-        out_before[i], out_after[i], out_fixed[i] = b, a, fixed[i]
-        if b < a:
-            into_start[a + 1] += 1
-            n_fwd += 1
-        elif b > a:
-            n_back += 1
-    for i in range(m_pairs):
-        b, a = pairs[i, 0], pairs[i, 1]
-        idx = used + i
-        out_before[idx], out_after[idx] = b, a
+    for i in range(total):
+        b, a = out_before[i], out_after[i]
         if b < a:
             into_start[a + 1] += 1
             n_fwd += 1

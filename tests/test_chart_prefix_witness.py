@@ -140,14 +140,9 @@ def test_section_prefix_witness_matches_chart_prefix_witness_across_modes_and_bo
         )
         w_new = section_prefix_witness(
             tpl,
-            run_start=run_start,
-            run_end=run_end,
-            late_great=late_great,
-            activation_index=a,
-            activation_hit_timestamp=hit,
-            fever_fill_denom=denom,
-            preactivation_fill=pre_fill,
-            section_start=start,
+            section=(start, run_start, run_end),
+            activation=(a, late_great, hit),
+            fill=(denom, pre_fill),
             predecessor_hit_timestamp=pred,
         )
         if w_new is not None:

@@ -181,3 +181,53 @@ def test_a_surface_scores_as_score_py():
             curves.factor("Fever Multiplier", int(fever_stats[i])), 0, 0, 0,
         )
         assert int(out[i]) == best_timeline_score(factors, cell, 400)[0]
+
+
+@ti.kernel
+def _valid_pair_columns(
+    stats: ti.types.vector(7, ti.i32), budget: ti.i32, base_init: ti.i32, flags: GpuColorFlags, n_surfaces: ti.i32,
+    out: ti.types.ndarray(dtype=ti.i32, ndim=4),
+):
+    for pool_idx, g_cm, g_fm in ti.ndrange(n_surfaces, 21, 21):
+        if g_cm * 3 + g_fm * 3 <= budget:
+            ctx = search_context(budget, stats, base_init, flags, pool_idx)
+            score = pair_score(ctx, g_cm * 3, g_fm * 3, 0)
+            out[pool_idx, g_cm, g_fm, 0] = score
+            out[pool_idx, g_cm, g_fm, 1] = ti.cast(pair_bound(ctx, g_cm * 3, g_fm * 3), ti.i32)
+            out[pool_idx, g_cm, g_fm, 2] = pair_floor(ctx, g_cm * 3, g_fm * 3)
+            out[pool_idx, g_cm, g_fm, 3] = pair_score(ctx, g_cm * 3, g_fm * 3, score)
+        else:
+            for c in ti.static(range(4)):
+                out[pool_idx, g_cm, g_fm, c] = 0
+
+
+def test_gpu_pair_bound_and_floor_admissible_at_extreme_stat_corners():
+    """Verify pair_bound >= pair_score >= pair_floor at extreme budgets, bases, stats, and high-note-count scores."""
+    inputs = ga_inputs(song(n_notes=2500, name="ExtremePairs"))
+    device.ensure_ready()
+    payload = ga.build_or_load_timeline_frontier_payload(inputs.timed_song, inputs.curves).payload
+    device.upload_timeline(inputs.timed_song.timeline_key, payload)
+    n_surfaces = min(32, int(payload.frontier_pool_used))
+    flags = gpu_color_flags(inputs.color_flags)
+    cases = (
+        ([0, 0, 0, 1, 0, 0, 0], 0, 1),
+        ([160, 160, 160, 2000, 2000, 160, 160], 90, 6000),
+        ([0, 159, 0, 500, 500, 0, 0], 90, 1500),
+        ([159, 0, 159, 1500, 300, 80, 80], 45, 3300),
+    )
+    out = np.zeros((n_surfaces, 21, 21, 4), dtype=np.int32)
+    for stat_vec, budget, base_init in cases:
+        _valid_pair_columns(ti.Vector(stat_vec, dt=ti.i32), budget, base_init, flags, n_surfaces, out)
+        ti.sync()
+        # Only valid pairs (3*g_cm + 3*g_fm <= budget) are legal allocations.
+        g_cm = np.arange(21)[None, :, None] * 3
+        g_fm = np.arange(21)[None, None, :] * 3
+        valid = np.broadcast_to((g_cm + g_fm) <= budget, out.shape[:3])
+        scores = out[..., 0][valid]
+        bounds = out[..., 1][valid]
+        floors = out[..., 2][valid]
+        exact_at_floor = out[..., 3][valid]
+        assert np.all(scores > 0)
+        assert np.all(bounds >= scores), (stat_vec, budget, base_init, (scores - bounds).max())
+        assert np.all(floors <= scores), (stat_vec, budget, base_init, (floors - scores).max())
+        np.testing.assert_array_equal(exact_at_floor, scores)

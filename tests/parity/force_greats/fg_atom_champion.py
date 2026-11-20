@@ -14,7 +14,8 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
-from gear_optimizer.solver.gem_search import GemGroups, SurfacePool, gem_winners
+from gear_optimizer.frontier.types import SurfacePool
+from gear_optimizer.solver.gem_search import gem_winners
 
 @dataclass(frozen=True, slots=True)
 class ChampionAtom:
@@ -48,14 +49,10 @@ def _score_single_frontier_domain(
 ) -> np.ndarray:
     count = int(group_meta.shape[0])
     meta = np.ascontiguousarray(group_meta, dtype=np.int32)
-    groups = GemGroups(  # each group its own loadout, all on one frontier: every row is exact
-        loadouts=np.column_stack((meta[:, 1:6], np.arange(count))).astype(np.int32),
-        keys=np.zeros((count, 2), dtype=np.int32),
-        key_starts=np.arange(count + 1, dtype=np.int64),
-        groups=np.column_stack((meta[:, 0], np.zeros((count, 4), dtype=np.int32))).astype(np.int32),
-        head_len=int(meta[0, 6]),
-        body_total=int(meta[0, 7]),
-    )
+    loadouts = np.empty((count, 7), dtype=np.int32)
+    loadouts[:, :5] = meta[:, 1:6]
+    loadouts[:, 5:] = MAX_STAT
+    zero_grid = np.zeros((MAX_STAT + 1, MAX_STAT + 1), dtype=np.int32)
     pool = SurfacePool(
         frontier_offsets=np.zeros(1, dtype=np.int32),
         frontier_lengths=np.asarray((surface_words.shape[0],), dtype=np.int32),
@@ -66,11 +63,14 @@ def _score_single_frontier_domain(
         head_greats=surface_head_greats(surface_words),
     )
     winners = gem_winners(
-        groups,
-        pool,
+        loadouts,
+        (zero_grid, pool),
         colors=(str(primary_color or ""), str(secondary_color or ""), str(selected_color or "")),
         curves=curves,
+        notes=(int(meta[0, 6]), int(meta[0, 7])),
+        budgets=meta[:, 0],
     )
+    assert all(winner.ft == 0 and winner.ff == 0 for winner in winners)
     return np.asarray([winner.inner_row for winner in winners], dtype=np.int32)
 
 

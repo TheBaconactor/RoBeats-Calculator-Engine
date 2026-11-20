@@ -185,6 +185,24 @@ def minis_signature_to_names_map(
     return sig_to_names
 
 
+def song_mini_identity_table(
+    minis_by_name: Mapping[str, Mini | SongMini],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Per-song lookup from mini name -> (signature string for hashing/sorting, canonical sorted variant group)."""
+    sig_to_all = minis_signature_to_names_map(minis_by_name, primary_color, secondary_color, selected_color)
+    sig_meta = {
+        sig: ("|".join(str(x) for x in sig), tuple(sorted({s for n in names if (s := n.strip())})))
+        for sig, names in sig_to_all.items()
+    }
+    return {
+        name: sig_meta[effective_mini_signature(mini.stats, primary_color, secondary_color, selected_color)]
+        for name, mini in minis_by_name.items()
+    }
+
+
 def canonical_minis_groups_from_names(
     mini_names: List[str],
     minis_by_name: Mapping[str, Mini | SongMini],
