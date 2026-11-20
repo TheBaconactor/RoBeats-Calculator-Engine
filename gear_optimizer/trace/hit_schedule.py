@@ -257,6 +257,14 @@ def build_schedule_inputs(plan_cols, order, bands_2, act_positions, precise):
 
 
 @jit(nopython=True, cache=True, nogil=True)
+def _append_pair(pairs, used, x, y):
+    if used == pairs.shape[0]:
+        pairs = np.concatenate((pairs, pairs))
+    pairs[used, 0], pairs[used, 1] = x, y
+    return pairs, used + 1
+
+
+@jit(nopython=True, cache=True, nogil=True)
 def _scored_pairs(inputs, activation, wasted):
     """The inputs on two lanes whose order scores, as (m, 2) positions."""
     n = inputs.chart_ms.shape[0]
@@ -266,56 +274,56 @@ def _scored_pairs(inputs, activation, wasted):
         if activation[i] or wasted[i]:
             special[n_sp] = i
             n_sp += 1
+    # Suffix minimum chart_ms over special[j:] breaks the scan only once no later special note can lie within _PAIR_SPAN_MS.
+    sp_suffix_min = np.empty(n_sp, np.float64)
+    if n_sp > 0:
+        cur = inputs.chart_ms[special[n_sp - 1]]
+        sp_suffix_min[n_sp - 1] = cur
+        for j in range(n_sp - 2, -1, -1):
+            c = inputs.chart_ms[special[j]]
+            if c < cur:
+                cur = c
+            sp_suffix_min[j] = cur
     pairs = np.empty((64, 2), np.int64)
     used = 0
     sp_cursor = 0
     for x in range(n):
-        if x < HEAD_NOTES or activation[x] or wasted[x]:
-            if activation[x] and inputs.great[x] and x >= HEAD_NOTES:
+        x_act_or_wasted = activation[x] or wasted[x]
+        x_chart = inputs.chart_ms[x]
+        x_lane = inputs.lane[x]
+        x_great = inputs.great[x]
+        x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
+        if x < HEAD_NOTES or x_act_or_wasted:
+            # A Great activation adds the least fill: past the ramp a follower read first fills the bar instead, and the
+            # fevered set and the score stay the same.
+            if activation[x] and x_great and x >= HEAD_NOTES:
                 continue
-            x_chart = inputs.chart_ms[x]
-            x_lane = inputs.lane[x]
-            x_great = inputs.great[x]
-            x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
-            x_act_or_wasted = activation[x] or wasted[x]
             for y in range(x + 1, n):
                 if inputs.chart_ms[y] - x_chart > _PAIR_SPAN_MS:
                     break
-                if x_lane == inputs.lane[y] or x_great == inputs.great[y]:
-                    continue
-                if min(inputs.low_ms[y], inputs.early_low_ms[y]) >= x_hi:
-                    continue
-                if y < HEAD_NOTES or x_act_or_wasted or activation[y] or wasted[y]:
-                    if used == pairs.shape[0]:
-                        pairs = np.concatenate((pairs, pairs))
-                    pairs[used, 0], pairs[used, 1] = x, y
-                    used += 1
+                if (
+                    x_lane != inputs.lane[y]
+                    and x_great != inputs.great[y]
+                    and min(inputs.low_ms[y], inputs.early_low_ms[y]) < x_hi
+                    and (y < HEAD_NOTES or x_act_or_wasted or activation[y] or wasted[y])
+                ):
+                    pairs, used = _append_pair(pairs, used, x, y)
         else:
             while sp_cursor < n_sp and special[sp_cursor] <= x:
                 sp_cursor += 1
             if sp_cursor >= n_sp:
                 break
-            x_chart = inputs.chart_ms[x]
-            if inputs.chart_ms[special[sp_cursor]] - x_chart > _PAIR_SPAN_MS + 390.0:
-                continue
-            x_lane = inputs.lane[x]
-            x_great = inputs.great[x]
-            x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
             for j in range(sp_cursor, n_sp):
+                if sp_suffix_min[j] - x_chart > _PAIR_SPAN_MS:
+                    break
                 y = special[j]
-                dy = inputs.chart_ms[y] - x_chart
-                if dy > _PAIR_SPAN_MS:
-                    if dy > _PAIR_SPAN_MS + 390.0:
-                        break
-                    continue
-                if x_lane == inputs.lane[y] or x_great == inputs.great[y]:
-                    continue
-                if min(inputs.low_ms[y], inputs.early_low_ms[y]) >= x_hi:
-                    continue
-                if used == pairs.shape[0]:
-                    pairs = np.concatenate((pairs, pairs))
-                pairs[used, 0], pairs[used, 1] = x, y
-                used += 1
+                if (
+                    inputs.chart_ms[y] - x_chart <= _PAIR_SPAN_MS
+                    and x_lane != inputs.lane[y]
+                    and x_great != inputs.great[y]
+                    and min(inputs.low_ms[y], inputs.early_low_ms[y]) < x_hi
+                ):
+                    pairs, used = _append_pair(pairs, used, x, y)
     return pairs[:used]
 
 
@@ -359,21 +367,17 @@ def _links_of(inputs, sections):
     out_before = np.empty(total, np.int64)
     out_after = np.empty(total, np.int64)
     out_fixed = np.zeros(total, np.float64)
+    out_before[:used] = before[:used]
+    out_after[:used] = after[:used]
+    out_fixed[:used] = fixed[:used]
+    for i in range(m_pairs):
+        out_before[used + i] = pairs[i, 0]
+        out_after[used + i] = pairs[i, 1]
     into_start = np.zeros(n + 1, np.int64)
     n_fwd = 0
     n_back = 0
-    for i in range(used):
-        b, a = before[i], after[i]
-        out_before[i], out_after[i], out_fixed[i] = b, a, fixed[i]
-        if b < a:
-            into_start[a + 1] += 1
-            n_fwd += 1
-        elif b > a:
-            n_back += 1
-    for i in range(m_pairs):
-        b, a = pairs[i, 0], pairs[i, 1]
-        idx = used + i
-        out_before[idx], out_after[idx] = b, a
+    for i in range(total):
+        b, a = out_before[i], out_after[i]
         if b < a:
             into_start[a + 1] += 1
             n_fwd += 1

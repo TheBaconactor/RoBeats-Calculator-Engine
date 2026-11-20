@@ -76,18 +76,31 @@ def one_swap_neighborhood(
     Gear slots (0-5) swap to every other item in the slot pool; mini slots (6-8)
     additionally exclude the incumbent's other two minis. Returns (K, n_slots) i32.
     """
-    inc = np.asarray(incumbent, dtype=np.int64)
-    rows = []
+    inc = np.asarray(incumbent, dtype=np.int32)
+    pools = []
+    total = 0
     for s in range(n_slots):
-        pool = np.arange(slot_start[s], slot_start[s] + slot_count[s], dtype=np.int64)
-        pool = pool[pool != inc[s]]
+        start, count = int(slot_start[s]), int(slot_count[s])
+        pool = np.arange(start, start + count, dtype=np.int32)
         if s >= 6:
-            pool = pool[~np.isin(pool, [inc[j] for j in range(6, n_slots) if j != s])]
-        if pool.size == 0:
-            continue
-        block = np.tile(inc, (pool.size, 1))
-        block[:, s] = pool
-        rows.append(block)
-    if not rows:
-        return np.zeros((0, n_slots), dtype=np.int32)
-    return np.ascontiguousarray(np.concatenate(rows, axis=0).astype(np.int32))
+            mask = np.ones(count, dtype=np.bool_)
+            for j in range(6, n_slots):
+                pos = int(inc[j]) - start
+                if 0 <= pos < count:
+                    mask[pos] = False
+            pool = pool[mask]
+        else:
+            pos = int(inc[s]) - start
+            if 0 <= pos < count:
+                pool = np.delete(pool, pos)
+        pools.append(pool)
+        total += pool.size
+    out = np.empty((total, n_slots), dtype=np.int32)
+    out[:] = inc
+    cursor = 0
+    for s, pool in enumerate(pools):
+        n = pool.size
+        if n:
+            out[cursor : cursor + n, s] = pool
+            cursor += n
+    return out

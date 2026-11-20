@@ -14,8 +14,6 @@ from gear_optimizer.frontier.producer_batch import early_exit_min_fill, song_arr
 from gear_optimizer.frontier.types import FgResponseSurface
 from .activation_witness import (
     SongWitnessTemplate,
-    chart_prefix_witness,
-    exact_label_hit_intervals,
     section_prefix_witness,
     song_witness_template,
 )
@@ -161,42 +159,22 @@ def _stored_section(
     preactivation_great_count = max(0, min(activation_idx, run_end) - max(section_start, run_start))
     preactivation_fill = 2 * preactivation_event_count - preactivation_great_count
     predecessor_hit = None if section_start == 0 else float(context.perfect_floor_timestamps[section_start - 1])
-    if witness_tpl is not None:
-        witness = section_prefix_witness(
-            witness_tpl,
-            run_start=run_start,
-            run_end=run_end,
-            late_great=bool(late_great),
-            activation_index=activation_idx,
-            activation_hit_timestamp=hit,
-            fever_fill_denom=context.fever_fill_denom,
-            preactivation_fill=preactivation_fill,
-            section_start=section_start,
-            predecessor_hit_timestamp=predecessor_hit,
-        )
-    else:
-        is_great = np.zeros(n, dtype=np.bool_)
-        is_great[run_start:run_end] = True
-        if late_great:
-            is_great[activation_idx] = True
-        labels = exact_label_hit_intervals(
-            is_great=is_great,
+    if witness_tpl is None:
+        witness_tpl = song_witness_template(
             timestamps=timestamps,
             perfect_floor_timestamps=context.perfect_floor_timestamps,
             perfect_candidate_timestamps=context.perfect_candidate_timestamps,
             great_floor_timestamps=context.great_floor_timestamps,
             great_candidate_timestamps=context.great_candidate_timestamps,
-        )
-        witness = chart_prefix_witness(
-            labels=labels,
             lanes=context.lanes,
-            activation_index=activation_idx,
-            activation_hit_timestamp=hit,
-            fever_fill_denom=context.fever_fill_denom,
-            preactivation_fill=preactivation_fill,
-            section_start=section_start,
-            predecessor_hit_timestamp=predecessor_hit,
         )
+    witness = section_prefix_witness(
+        witness_tpl,
+        section=(section_start, run_start, run_end),
+        activation=(activation_idx, bool(late_great), hit),
+        fill=(context.fever_fill_denom, preactivation_fill),
+        predecessor_hit_timestamp=predecessor_hit,
+    )
     if witness is None:
         raise UnplayableTrace(f"no play reaches note {activation_idx} in chart order before its fever")
     chart_time = float(timestamps[activation_idx])

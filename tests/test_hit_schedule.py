@@ -319,3 +319,59 @@ def test_incremental_hits_matches_reference_across_tails_chords_and_back_links()
             for anchor in (sec.activation, min(sec.fever_end, n - 1)):
                 ref_early[anchor + 1 :] &= (hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS)[anchor + 1 :] >= hit_ms[anchor]
         assert np.array_equal(got_early, ref_early)
+
+
+def test_scored_pairs_matches_bruteforce_with_reordered_high_perfect_time_notes():
+    """_scored_pairs uses sp_suffix_min (exact even when input order reorders chart_ms across special notes) and stays
+    exact at high Perfect Time where hit bands widen."""
+    from gear_optimizer.trace import hit_schedule as hs
+    from gear_optimizer.trace.note_graph import _tap_and_tail_bands
+
+    rng = np.random.default_rng(77)
+    bands = _tap_and_tail_bands(160)  # max Perfect Time
+    n = 140
+    base_chart = np.cumsum(rng.choice([0.0, 12.0, 28.0, 65.0], size=n))
+    # Reorder a special note later in input order to an earlier chart_ms than an intermediate distant special note.
+    chart_ms = base_chart.copy()
+    chart_ms[112] = chart_ms[108] + 600.0  # > _PAIR_SPAN_MS past index 108
+    chart_ms[115] = chart_ms[108] + 45.0   # <= _PAIR_SPAN_MS past index 108, AFTER index 112 in input order!
+    tail = rng.random(n) < 0.35
+    great = rng.random(n) < 0.4
+    lanes = rng.integers(0, 4, size=n, dtype=np.int64)
+    great[108], great[115] = False, True
+    lanes[108], lanes[115] = 0, 1
+    t_idx = tail.astype(np.int64)
+    low_ms = chart_ms + np.where(great, bands[t_idx, 2, 0], bands[t_idx, 0, 0])
+    high_ms = chart_ms + np.where(great, bands[t_idx, 2, 1], bands[t_idx, 0, 1])
+    early_lo = np.where(great, chart_ms + bands[t_idx, 1, 0], np.inf)
+    early_hi = np.where(great, chart_ms + bands[t_idx, 1, 1], -np.inf)
+    activation = np.zeros(n, dtype=np.bool_)
+    wasted = np.zeros(n, dtype=np.bool_)
+    activation[[15, 112, 115]] = True
+    wasted[[45, 118]] = True
+    inputs = hs.Inputs(
+        chart_ms, low_ms, high_ms, np.zeros(n), early_lo, early_hi, lanes, tail, great, np.zeros(n, dtype=np.bool_)
+    )
+
+    got = hs._scored_pairs(inputs, activation, wasted)
+    expected = []
+    for x in range(n):
+        x_sp = bool(activation[x] or wasted[x])
+        if activation[x] and great[x] and x >= hs.HEAD_NOTES:
+            continue
+        x_hi = high_ms[x] + FRAME_MARGIN_MS
+        for y in range(x + 1, n):
+            if (x < hs.HEAD_NOTES or x_sp) and chart_ms[y] - chart_ms[x] > hs._PAIR_SPAN_MS:
+                break
+            if chart_ms[y] - chart_ms[x] > hs._PAIR_SPAN_MS:
+                continue
+            if (
+                lanes[x] != lanes[y]
+                and great[x] != great[y]
+                and min(low_ms[y], early_lo[y]) < x_hi
+                and (y < hs.HEAD_NOTES or x_sp or activation[y] or wasted[y])
+            ):
+                expected.append([x, y])
+    expected_arr = np.asarray(expected, dtype=np.int64).reshape(-1, 2)
+    np.testing.assert_array_equal(got, expected_arr)
+    assert any(p[0] == 108 and p[1] == 115 for p in got.tolist())

@@ -71,3 +71,48 @@ def test_timeline_trace_memo_is_bounded_hits_and_copies(monkeypatch) -> None:
     _score(*keys[0])
     assert len(traced) == len(keys) + 1
     assert len(exact_rescore._TIMELINE_TRACE_MEMO) == cap
+
+
+def test_base_raw_trace_memo_validates_each_perfect_time_independently(monkeypatch) -> None:
+    """Base raw-trace cache avoids re-reconstructing across Perfect Time values without bypassing validation."""
+    import numpy as np
+    import pytest
+    from gear_optimizer.gamedata import stat_curves
+    from gear_optimizer.trace import physical_replay, reconstruct
+    from gear_optimizer.trace.reconstruct import UnplayableTrace
+
+    monkeypatch.setattr(exact_rescore, "_TIMELINE_TRACE_MEMO", {})
+    monkeypatch.setattr(exact_rescore, "_TIMELINE_RAW_TRACE_MEMO", {})
+    calls = {"reconstruct": 0, "validate": []}
+
+    def _rec(*_a, **_kw):
+        calls["reconstruct"] += 1
+        return ({"section": 1, "activation_index": 0},)
+
+    def _val(**kw):
+        calls["validate"].append(kw["perfect_time"])
+        if kw["perfect_time"] > 0:
+            raise UnplayableTrace("base unplayable")
+
+    monkeypatch.setattr(reconstruct, "reconstruct_base_trace", _rec)
+    monkeypatch.setattr(physical_replay, "validate_base_physical_replay", _val)
+    payload = SimpleNamespace(
+        frontier_pool_used=1,
+        grid_frontier_body_fever_pool=np.zeros((1, 1), dtype=np.int32),
+        grid_frontier_body_normal_pool=np.zeros((1, 1), dtype=np.int32),
+        grid_frontier_masks_bits_pool=np.zeros((1, 1, 4), dtype=np.uint32),
+    )
+    frontier = SimpleNamespace(cache_key=("unit", "raw-split"), payload=payload)
+    monkeypatch.setattr(exact_rescore, "_best_timeline_score", lambda *_a, **_kw: (5000, 0))
+    song = make_song([0.0, 0.5])
+    curves = stat_curves()
+    stats = {"Fever Time": 10, "Fever Fill Rate": 10}
+
+    out = exact_rescore.score_stats_exact_with_timeline_trace(stats, song, curves, perfect_time=0, frontier=frontier)
+    assert out["score"] == 5000
+    with pytest.raises(UnplayableTrace):
+        exact_rescore.score_stats_exact_with_timeline_trace(stats, song, curves, perfect_time=120, frontier=frontier)
+    assert calls["reconstruct"] == 1
+    assert calls["validate"] == [0, 120]
+    assert len(exact_rescore._TIMELINE_TRACE_MEMO) == 1
+    assert len(exact_rescore._TIMELINE_RAW_TRACE_MEMO) == 1

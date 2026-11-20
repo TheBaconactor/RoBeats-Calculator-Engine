@@ -17,7 +17,7 @@ from ...gamedata import Stats, StatCurves
 from ...rules import MAX_STAT
 from ...stats import GEM_KINDS, apply_gems
 from ..base_stats import STAT_NAMES, loadout_totals
-from ..gem_search import GemMemo, gem_groups, gem_winners
+from ..gem_search import GemMemo, gem_winners
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
 from gear_optimizer.frontier.timeline_cache import build_or_load_timeline_frontier_payload
 from gear_optimizer.frontier.types import SurfacePool
@@ -48,20 +48,18 @@ def solve_best_fever_combination_batch(
     chart = song.chart
     totals = [loadout_totals(row, chart.primary, chart.secondary) for row in rows]
     unique_totals = list(dict.fromkeys(totals))
-    frontier_idx_by_stat, pool = _base_surface_pool(song, curves)
-    groups = gem_groups(
-        np.asarray(unique_totals, dtype=np.int32),
-        primary_color=chart.primary,
-        secondary_color=chart.secondary,
-        selected_color=selected_color,
-        frontier_idx_by_stat=frontier_idx_by_stat,
-        total_notes=int(chart.total_notes),
-        memo=memo,
-    )
+    total_notes = int(chart.total_notes)
     winner_by_total = dict(
         zip(
             unique_totals,
-            gem_winners(groups, pool, colors=(chart.primary, chart.secondary, selected_color), curves=curves),
+            gem_winners(
+                np.asarray(unique_totals, dtype=np.int32),
+                _base_surface_pool(song, curves),
+                colors=(chart.primary, chart.secondary, selected_color),
+                curves=curves,
+                notes=(min(total_notes, 100), max(0, total_notes - 100)),
+                memo=memo,
+            ),
             strict=True,
         )
     )

@@ -18,8 +18,8 @@ from .physical_replay import validate_force_greats_physical_replay
 class FgTraceMaterializationCache:
     """One song's validated traces, raw reconstructed traces (independent of Perfect Time), and section options."""
 
-    traces: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
-    raw_traces: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
+    traces: dict[Any, list[dict[str, Any]]] = field(default_factory=dict)
+    raw_traces: dict[Any, list[dict[str, Any]]] = field(default_factory=dict)
     edge_options: FgTraceEdgeOptionsCache = field(default_factory=FgTraceEdgeOptionsCache)
 
 
@@ -33,7 +33,6 @@ def materialize_force_payload_from_response_frontier(
     curves: StatCurves,
     trace_cache: FgTraceMaterializationCache,
     perfect_time: int,
-    copy_trace: bool = True,
 ) -> dict[str, Any]:
     if paired_base_score <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
@@ -61,19 +60,21 @@ def materialize_force_payload_from_response_frontier(
     trace_key = (raw_key, fever_fill_denominator, perfect_time)
     base_trace = trace_cache.traces.get(trace_key)
     if base_trace is None:
-        base_trace = trace_cache.raw_traces.get(raw_key)
-        if base_trace is None:
-            base_trace = reconstruct_force_greats_response_trace(
-                inputs=song_inputs,
-                non_fever_base=result.non_fever_base,
-                target_surface=surface,
-                raw_fever_fill=result.raw_fever_fill,
-                real_fever_time=result.real_fever_time,
-                edge_options_cache=trace_cache.edge_options,
+        raw_trace = trace_cache.raw_traces.get(raw_key)
+        if raw_trace is None:
+            raw_trace = list(
+                reconstruct_force_greats_response_trace(
+                    inputs=song_inputs,
+                    non_fever_base=result.non_fever_base,
+                    target_surface=surface,
+                    raw_fever_fill=result.raw_fever_fill,
+                    real_fever_time=result.real_fever_time,
+                    edge_options_cache=trace_cache.edge_options,
+                )
             )
-            trace_cache.raw_traces[raw_key] = base_trace
+            trace_cache.raw_traces[raw_key] = raw_trace
         validate_force_greats_physical_replay(
-            frontier_trace=base_trace,
+            frontier_trace=raw_trace,
             surface=surface,
             timestamps=song_inputs.timestamps,
             note_types=song.chart.note_types,
@@ -83,6 +84,7 @@ def materialize_force_payload_from_response_frontier(
             timing_mode=song.mode,
             perfect_time=perfect_time,
         )
+        base_trace = raw_trace
         trace_cache.traces[trace_key] = base_trace
     final_score = int(score_force_greats_response_surface_exact(result.stats, song, curves, surface))
     return {
@@ -102,7 +104,7 @@ def materialize_force_payload_from_response_frontier(
             # timing graph places the fever window.
             "raw_fever_fill": fever_fill_denominator,
             "real_fever_time": result.real_fever_time,
-            "frontier_trace": [dict(row) for row in base_trace] if copy_trace else base_trace,
+            "frontier_trace": base_trace,
             "non_fever_base": result.non_fever_base,
         },
     }

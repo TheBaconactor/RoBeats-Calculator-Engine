@@ -14,15 +14,15 @@ from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.base_stats import loadout_totals
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-from gear_optimizer.solver.gem_search import GemMemo, GemWinner, gem_groups, gem_winners
+from gear_optimizer.solver.gem_search import GemMemo, GemWinner, gem_winners
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.stats import apply_gems, gems
 
 
-def required_response_stat_keys(base_stats: list[dict[str, Any]]) -> np.ndarray:
+def required_response_stat_keys(base_stats: list[dict[str, Any]], *, budget: int | None = None) -> np.ndarray:
     """The sorted (n, 2) FT/FF cells a batch of pre-gem stats can reach over every gem split: a reachability projection
     of the full search space, so no candidate is removed and a cell outside it cannot be indexed by the exact solve."""
-    ft_gems, ff_gems, _remaining = ftff_combo_arrays(GEM_BUDGET)
+    ft_gems, ff_gems, _remaining = ftff_combo_arrays(GEM_BUDGET if budget is None else budget)
     unique_pairs = list(dict.fromkeys((stats["Fever Time"], stats["Fever Fill Rate"]) for stats in base_stats))
     pairs = np.asarray(unique_pairs, dtype=np.int32)
     ft_stats = np.clip(pairs[:, 0:1] + ft_gems[None, :] * STAT_GEM_GAIN_FEVER, 0, MAX_STAT)
@@ -43,36 +43,49 @@ def score_fg_base_components(
     scoring_bundle: FgResponseFrontierScoringBundle,
     floors: np.ndarray | None = None,
     memo: GemMemo | None = None,
+    budget: int | None = None,
 ) -> dict[tuple[int, ...], GemWinner]:
     """The FG score row of each distinct 7-vector of pre-gem totals (PP, CM, FM, primary, secondary, FT, FF), keyed by
     it (CPU only); equal 7-vectors have equal FG results, so each is scored once. ``selected_color`` is the song's
     selected element; every other input is song-level (the scoring bundle). With `floors` (a score per row) a 7-vector
     below its floor (the lowest of its floors) has no row; `memo` carries what a song's calls share."""
-    floor_of: dict[tuple[int, ...], int] = {}
-    for idx, row in enumerate(np.asarray(base_components, dtype=np.int32).tolist()):
-        key = tuple(row)
-        floor = -1 if floors is None else int(floors[idx])
-        floor_of[key] = min(floor_of.get(key, floor), floor)
-    if not floor_of:
+    arr = np.asarray(base_components, dtype=np.int32)
+    n = int(arr.shape[0])
+    if n == 0:
         return {}
+    floors_arr = None if floors is None else np.asarray(floors, dtype=np.int64)
+    floor_list = None if floors_arr is None else floors_arr.tolist()
+    pos_of: dict[tuple[int, ...], int] = {}
+    keep_idx: list[int] = []
+    keep_floors: list[int] = []
+    for idx, row in enumerate(arr.tolist()):
+        key = tuple(row)
+        prev = pos_of.get(key)
+        if prev is None:
+            pos_of[key] = len(keep_idx)
+            keep_idx.append(idx)
+            if floor_list is not None:
+                keep_floors.append(floor_list[idx])
+        elif floor_list is not None and floor_list[idx] < keep_floors[prev]:
+            keep_floors[prev] = floor_list[idx]
+    all_unique = len(keep_idx) == n
+    unique_arr = arr if all_unique else arr[keep_idx]
+    unique_floors = floors_arr if all_unique else (None if floors_arr is None else np.asarray(keep_floors, dtype=np.int64))
     inputs = song.fg_inputs
-    groups = gem_groups(
-        np.asarray(list(floor_of), dtype=np.int32),
-        primary_color=inputs.primary_color,
-        secondary_color=inputs.secondary_color,
-        selected_color=selected_color,
-        frontier_idx_by_stat=scoring_bundle.frontier_idx_by_stat,
-        total_notes=int(inputs.total_notes),
-        memo=memo,
-    )
+    total_notes = int(inputs.total_notes)
+    active_budget = GEM_BUDGET if budget is None else budget
+    budgets = None if active_budget == GEM_BUDGET else np.full(len(pos_of), active_budget, dtype=np.int32)
     winners = gem_winners(
-        groups,
-        scoring_bundle.pool,
+        unique_arr,
+        (scoring_bundle.frontier_idx_by_stat, scoring_bundle.pool),
         colors=(inputs.primary_color, inputs.secondary_color, selected_color),
         curves=curves,
-        floors=None if floors is None else np.asarray(list(floor_of.values())),
+        notes=(min(total_notes, 100), max(0, total_notes - 100)),
+        budgets=budgets,
+        floors=unique_floors,
+        memo=memo,
     )
-    return {key: winner for key, winner in zip(floor_of, winners, strict=True) if winner is not None}
+    return {key: winner for key, winner in zip(pos_of, winners, strict=True) if winner is not None}
 
 
 def bundle_without_surface(
@@ -140,13 +153,14 @@ def fg_solve_results(
     selected_color: str,
     scoring_bundle: FgResponseFrontierScoringBundle,
     memo: GemMemo | None = None,
+    budget: int | None = None,
 ) -> list[FgResponseFrontierSolveResult]:
     """Each row of pre-gem stats' FG solve result."""
     song_inputs = song.fg_inputs
     totals = [loadout_totals(stats, song_inputs.primary_color, song_inputs.secondary_color) for stats in stats_rows]
     rows = score_fg_base_components(
         base_components=np.asarray(totals, dtype=np.int32), song=song, curves=curves, selected_color=selected_color,
-        scoring_bundle=scoring_bundle, memo=memo,
+        scoring_bundle=scoring_bundle, memo=memo, budget=budget,
     )
     return [
         fg_solve_result(score_row=rows[key], base_stats=dict(stats), selected_color=selected_color,

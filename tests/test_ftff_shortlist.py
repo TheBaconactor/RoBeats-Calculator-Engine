@@ -115,3 +115,67 @@ def test_shortlist_keeps_what_the_definition_keeps(primary, secondary, seed, sta
         index = key[0] * SIDE + key[1]
         got = shortlist.combos[shortlist.start[index] : shortlist.start[index] + shortlist.count[index]]
         assert np.array_equal(got, np.flatnonzero(_kept_bitmap(key, frontier, combos, gains))), key
+
+
+def test_shortlist_handles_equal_surfaces_extreme_masks_and_reachable_keys():
+    """Equal surfaces, all-zero/all-one/boundary-bit masks, and 2D-slice reachable_ftff_keys match brute force."""
+    from gear_optimizer.solver.ftff_combos import reachable_ftff_keys
+
+    # Extreme 100-bit masks (0, all-ones, single boundary bits 0/31/32/63/64/99) plus exact duplicate surfaces.
+    surfaces = np.asarray(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],  # duplicate
+            [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xF, 50],
+            [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xF, 50],  # duplicate
+            [1, 0, 0, 0, 10],
+            [0x80000000, 0, 0, 0, 10],
+            [0, 1, 0, 0, 10],
+            [0, 0x80000000, 0, 0, 25],
+            [0, 0, 1, 0, 25],
+            [0, 0, 0, 0x8, 25],
+            [0x80000001, 0x80000001, 1, 0x8, 25],
+        ],
+        dtype=np.int64,
+    )
+    rng = np.random.default_rng(99)
+    counts = rng.integers(1, 4, size=(SIDE, SIDE), dtype=np.int32)
+    offsets = (np.cumsum(counts.ravel()) - counts.ravel()).reshape(SIDE, SIDE).astype(np.int32)
+    rows = surfaces[rng.integers(0, len(surfaces), size=int(counts.sum()))]
+    payload = SimpleNamespace(
+        frontier_pool_used=len(rows),
+        grid_frontier_masks_bits_pool=rows[:, :4][None],
+        grid_frontier_body_fever_pool=rows[:, 4][None],
+        grid_frontier_offset=offsets[None],
+        grid_frontier_count=counts[None],
+    )
+    reach = rng.random((SIDE, SIDE)) < 0.05
+    flags = build_color_flags("Beat", "Vibe", "Beat")
+    shortlist = ftff_shortlist(payload, reach=reach, color_flags=flags)
+    element = ELEMENT_GEM_GAIN * (2 * flags["is_p_ov"] + flags["is_s_ov"])
+    gains = (STAT_GEM_ELEMENT_GAIN * (2 * flags["is_p_ft"] + flags["is_s_ft"]),
+             STAT_GEM_ELEMENT_GAIN * (2 * flags["is_p_ff"] + flags["is_s_ff"]), element)
+    combo_ft, combo_ff, combo_left = ftff_combo_arrays(GEM_BUDGET)
+    combos = combo_ft, combo_ff, combo_left, np.argsort(-combo_left, kind="stable")
+    frontier = (payload.grid_frontier_offset[0], payload.grid_frontier_count[0],
+                payload.grid_frontier_masks_bits_pool[0], payload.grid_frontier_body_fever_pool[0])
+    for key in np.argwhere(reach):
+        index = key[0] * SIDE + key[1]
+        got = shortlist.combos[shortlist.start[index] : shortlist.start[index] + shortlist.count[index]]
+        assert np.array_equal(got, np.flatnonzero(_kept_bitmap(key, frontier, combos, gains))), key
+
+    # Verify 2D-slice reachable_ftff_keys against brute-force coordinate scatter across edge shifts.
+    item_stats = np.zeros((10, 10), dtype=np.int32)
+    item_stats[:, 3:5] = [(0, 0), (15, 0), (0, 20), (160, 5), (5, 160), (160, 160), (12, 18), (0, 0), (40, 35), (1, 1)]
+    slot_start = np.asarray([0, 3, 6], dtype=np.int32)
+    slot_count = np.asarray([3, 3, 4], dtype=np.int32)
+    base_fixed = np.asarray([0, 0, 0, 7, 11, 0, 0, 0, 0, 0], dtype=np.int32)
+    got_reach = reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed)
+    ref_reach = np.zeros((SIDE, SIDE), dtype=bool)
+    ref_reach[7, 11] = True
+    for s, c in zip(slot_start, slot_count):
+        ft, ff = np.nonzero(ref_reach)
+        ref_reach = np.zeros((SIDE, SIDE), dtype=bool)
+        for d_ft, d_ff in set(map(tuple, item_stats[s : s + c, 3:5].tolist())):
+            ref_reach[np.minimum(ft + d_ft, MAX_STAT), np.minimum(ff + d_ff, MAX_STAT)] = True
+    np.testing.assert_array_equal(got_reach, ref_reach)

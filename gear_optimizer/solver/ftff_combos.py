@@ -13,7 +13,7 @@ from typing import NamedTuple
 import numpy as np
 
 from gear_optimizer.core.jit_setup import jit
-from numba.cpython.unsafe.numbers import leading_zeros
+from numba.cpython.unsafe.numbers import leading_zeros, trailing_zeros
 from gear_optimizer.rules import ELEMENT_GEM_GAIN, GEM_BUDGET, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 
 
@@ -50,10 +50,24 @@ def reachable_ftff_keys(item_stats, slot_start, slot_count, base_fixed_stats_arr
     reach = np.zeros((side, side), dtype=bool)
     reach[min(int(base_fixed_stats_arr[3]), MAX_STAT), min(int(base_fixed_stats_arr[4]), MAX_STAT)] = True
     for start, count in zip(slot_start, slot_count):
-        ft, ff = np.nonzero(reach)
-        reach = np.zeros((side, side), dtype=bool)
+        nxt = np.zeros((side, side), dtype=bool)
         for d_ft, d_ff in set(map(tuple, item_stats[start : start + count, 3:5].tolist())):
-            reach[np.minimum(ft + d_ft, MAX_STAT), np.minimum(ff + d_ff, MAX_STAT)] = True
+            if d_ft == 0 and d_ff == 0:
+                nxt |= reach
+            elif d_ft < 0 or d_ff < 0:
+                ft, ff = np.nonzero(reach)
+                nxt[np.minimum(ft + d_ft, MAX_STAT), np.minimum(ff + d_ff, MAX_STAT)] = True
+            else:
+                dx, dy = min(d_ft, MAX_STAT), min(d_ff, MAX_STAT)
+                x_lim, y_lim = MAX_STAT - dx, MAX_STAT - dy
+                if x_lim > 0 and y_lim > 0:
+                    nxt[dx:MAX_STAT, dy:MAX_STAT] |= reach[:x_lim, :y_lim]
+                if y_lim > 0:
+                    nxt[MAX_STAT, dy:MAX_STAT] |= reach[x_lim:, :y_lim].any(axis=0)
+                if x_lim > 0:
+                    nxt[dx:MAX_STAT, MAX_STAT] |= reach[:x_lim, y_lim:].any(axis=1)
+                nxt[MAX_STAT, MAX_STAT] |= reach[x_lim:, y_lim:].any()
+        reach = nxt
     return reach
 
 
@@ -97,8 +111,8 @@ def ftff_shortlist(payload, *, reach: np.ndarray, color_flags: dict[str, int]) -
     frontier = (np.asarray(payload.grid_frontier_offset[0], dtype=np.int64).ravel(),
                 np.asarray(payload.grid_frontier_count[0], dtype=np.int64).ravel(), surface_of_row)
     surfaces = rows[order[is_first]]
-    min_y = _shortlist_min_y(frontier, surfaces, weights)
-    start, count, combos = _emit_shortlist(reach_flat, min_y)
+    min_y, active_yo = _shortlist_min_y(frontier, surfaces, weights)
+    start, count, combos = _emit_shortlist(reach_flat, min_y, active_yo)
     for values in (start, count, combos):
         values.setflags(write=False)
     return FtffShortlist(start, count, combos)
@@ -184,6 +198,7 @@ def _shortlist_min_y(frontier, surfaces, weights):
     beaters = np.empty(n_words, dtype=np.uint64)
     own_r = np.empty(n_words, dtype=np.uint64)
     min_y = np.full((side, g, lattice, lattice), np.int8(lattice), dtype=np.int8)
+    active_yo = np.zeros((side, g, lattice), dtype=np.uint64)
 
     for r in range(n_surfaces):
         beaters[:] = 0
@@ -231,11 +246,12 @@ def _shortlist_min_y(frontier, surfaces, weights):
                     y_min = max(beaten_up_to + 1, yo - (GEM_BUDGET - a), 0)
                     if y_min <= yo and y_min < int(min_y[x_key, j, a, yo]):
                         min_y[x_key, j, a, yo] = np.int8(y_min)
-    return min_y
+                        active_yo[x_key, j, a] |= np.uint64(1) << np.uint64(yo)
+    return min_y, active_yo
 
 
 @jit(nopython=True, cache=True, nogil=True)
-def _emit_shortlist(reach_flat, min_y):
+def _emit_shortlist(reach_flat, min_y, active_yo):
     """Count kept combos via O(1) prefix-difference updates per active (x_key, j, a, yo), then write ascending combo
     indices directly into `combos` without an intermediate key-by-combo bitset."""
     g = STAT_GEM_GAIN_FEVER
@@ -265,11 +281,12 @@ def _emit_shortlist(reach_flat, min_y):
             for Y in range(max_y + 2):
                 diff[Y] = 0
             for a in range(max_a + 1):
-                for yo in range(max_y + 1):
-                    y0 = int(min_y[x_key, j, a, yo])
-                    if y0 <= yo:
-                        diff[y0] += 1
-                        diff[yo + 1] -= 1
+                mask = active_yo[x_key, j, a]
+                while mask:
+                    yo = np.int64(trailing_zeros(mask))
+                    mask &= mask - np.uint64(1)
+                    diff[int(min_y[x_key, j, a, yo])] += 1
+                    diff[yo + 1] -= 1
             running = np.int32(0)
             for Y in range(max_y + 1):
                 running += diff[Y]
@@ -302,15 +319,18 @@ def _emit_shortlist(reach_flat, min_y):
             if not any_reach:
                 continue
             for a in range(max_a + 1):
+                mask = active_yo[x_key, j, a]
+                if not mask:
+                    continue
                 base_c = combo_row_start[a]
-                for yo in range(max_y + 1):
-                    y0 = int(min_y[x_key, j, a, yo])
-                    if y0 <= yo:
-                        for Y in range(y0, yo + 1):
-                            p = cursor[Y]
-                            if p >= 0:
-                                combos[p] = base_c + (yo - Y)
-                                cursor[Y] = p + 1
+                while mask:
+                    yo = np.int64(trailing_zeros(mask))
+                    mask &= mask - np.uint64(1)
+                    for Y in range(int(min_y[x_key, j, a, yo]), yo + 1):
+                        p = cursor[Y]
+                        if p >= 0:
+                            combos[p] = base_c + (yo - Y)
+                            cursor[Y] = p + 1
     return start, count, combos
 
 

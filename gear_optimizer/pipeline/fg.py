@@ -197,7 +197,7 @@ def finish_fg(song: NativeSong, ga_result: tuple[GaSelection, dict]) -> SongSolv
             payload_fg = materialize_force_payload_from_response_frontier(
                 base_stats=base_stats[index], paired_base_score=loadouts[index].score, selected_element=selected,
                 result=result, song=timed, curves=curves, trace_cache=trace_cache,
-                perfect_time=perfect_times[index], copy_trace=False,
+                perfect_time=perfect_times[index],
             )
             return solved_fg(payload_fg, default_element=selected)
 

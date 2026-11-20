@@ -36,7 +36,8 @@ def test_response_surface_head_coeffs_match_bruteforce():
 def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.frontier.fg_cache_patterns import surface_head_coeffs, surface_head_greats
-    from gear_optimizer.solver.gem_search import GemGroups, SurfacePool, gem_winners
+    from gear_optimizer.frontier.types import SurfacePool
+    from gear_optimizer.solver.gem_search import gem_winners
 
     pattern_a = np.zeros((8,), dtype=np.uint32)
     pattern_b = np.zeros((8,), dtype=np.uint32)
@@ -45,14 +46,8 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     shared_words = np.stack((pattern_a, pattern_b)).astype(np.uint32)
     counts = np.asarray(((0, 0, 0), (2, 0, 0), (1, 0, 0)), dtype=np.int32)
     zero = np.zeros(1, dtype=np.int32)
-    groups = GemGroups(
-        loadouts=np.asarray(((10, 10, 10, 120, 60, 0),), dtype=np.int32),
-        keys=np.zeros((1, 2), dtype=np.int32),
-        key_starts=np.asarray((0, 1), dtype=np.int64),
-        groups=np.zeros((1, 5), dtype=np.int32),
-        head_len=4,
-        body_total=3,
-    )
+    zero_grid = np.zeros((MAX_STAT + 1, MAX_STAT + 1), dtype=np.int32)
+    loadouts = np.asarray(((10, 10, 10, 120, 60, MAX_STAT, MAX_STAT),), dtype=np.int32)
     curves = synthetic_curves({
         "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.6, MAX_STAT + 1, dtype=np.float64),
@@ -62,7 +57,10 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     def winner(pattern_ids, words):
         pool = SurfacePool(zero, np.asarray((3,), dtype=np.int32), np.asarray(pattern_ids, dtype=np.int32), words,
                            counts, surface_head_coeffs(words, head_len=4), surface_head_greats(words))
-        return gem_winners(groups, pool, colors=("Rush", "Flow", "Rush"), curves=curves)
+        return gem_winners(
+            loadouts, (zero_grid, pool), colors=("Rush", "Flow", "Rush"), curves=curves, notes=(4, 3),
+            budgets=np.zeros(1, dtype=np.int32),
+        )
 
     assert winner((0, 0, 1), shared_words) == winner((0, 1, 2), identity_words)
 

@@ -1,6 +1,6 @@
 
 from tests.fg_cache_support import build_or_load_payload, ensure_cache, load_scoring_bundle
-from tests.curves_support import no_ftff_gems, synthetic_curves
+from tests.curves_support import synthetic_curves
 from pathlib import Path
 
 import numpy as np
@@ -207,13 +207,12 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
     # The fixed stats are the winner's: no gems left to spend.
-    monkeypatch.setattr("gear_optimizer.solver.gem_search.ftff_combo_arrays", no_ftff_gems)
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     build_or_load_payload(song, curves, stat_keys=(stat_key,))
     scoring_bundle = load_scoring_bundle(song, curves, stat_keys=(stat_key,))
 
     result = fg_solve_results([final_stats], song=song, curves=curves, selected_color="Vibe",
-                              scoring_bundle=scoring_bundle)[0]
+                              scoring_bundle=scoring_bundle, budget=0)[0]
 
     assert int(result.best_score) == 29_340_273
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 6, 6)
@@ -326,12 +325,11 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
     # The fixed stats are the winner's: no gems left to spend.
-    monkeypatch.setattr("gear_optimizer.solver.gem_search.ftff_combo_arrays", no_ftff_gems)
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     build_or_load_payload(song, curves, stat_keys=(stat_key,))
     scoring_bundle = load_scoring_bundle(song, curves, stat_keys=(stat_key,))
     result = fg_solve_results([final_stats], song=song, curves=curves, selected_color="Chill",
-                              scoring_bundle=scoring_bundle)[0]
+                              scoring_bundle=scoring_bundle, budget=0)[0]
 
     assert int(result.best_score) == 47_502_676  # legal max; > the unreachable served 47,476,966
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 4095, 0, 0, 0, 1361, 5, 5)
