@@ -15,7 +15,8 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
-from gear_optimizer.data.loadout_equivalence import effective_loadout_hash_from_names, effective_mini_signature_for_name
+from gear_optimizer.data.loadout_equivalence import effective_mini_signature_for_name
+from gear_optimizer.data.loadout_hashing import loadout_hash_from_sig_strings
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.pipeline.results import SolvedLoadout, SongSolve, solved_fg
 from gear_optimizer.pipeline.song import NativeSong
@@ -111,14 +112,26 @@ def _selected_surface(song: NativeSong, selection: GaSelection, fg_rows: dict) -
     pool = [(selection.best_genome, selection.best_score, selection.best_results)]
     pool += zip(selection.genomes, selection.scores.tolist(), selection.results)
     best: dict[str, tuple] = {}
+    mini_sig_str: dict[str, str] = {}
+    decode_names = gpu_inputs.registry.decode_names
+    item_stats = gpu_inputs.item_stats
+    fixed_stats = gpu_inputs.base_fixed_stats_arr
     for ids, score, results in pool:
-        genome = (*(int(v) for v in ids[:6]), *sorted(int(v) for v in ids[6:9]))
-        names = gpu_inputs.registry.decode_names(np.asarray(genome, dtype=np.int32))
-        sigs = [effective_mini_signature_for_name(n, gpu_inputs.minis_by_name, primary, secondary, primary)
-                for n in names[6:]]
-        key = effective_loadout_hash_from_names(names[:6], sigs)
+        genome = (
+            int(ids[0]), int(ids[1]), int(ids[2]), int(ids[3]), int(ids[4]), int(ids[5]),
+            *sorted((int(ids[6]), int(ids[7]), int(ids[8]))),
+        )
+        names = decode_names(genome)
+        sig_strs = []
+        for n in names[6:]:
+            s = mini_sig_str.get(n)
+            if s is None:
+                sig = effective_mini_signature_for_name(n, gpu_inputs.minis_by_name, primary, secondary, primary)
+                s = mini_sig_str[n] = "|".join(str(x) for x in sig)
+            sig_strs.append(s)
+        key = loadout_hash_from_sig_strings(names[:6], sig_strs)
         if key not in best or score > best[key][1]:
-            pre_gem = build_stats_dict(gpu_inputs.base_fixed_stats_arr + gpu_inputs.item_stats[list(genome)].sum(axis=0))
+            pre_gem = build_stats_dict(fixed_stats + item_stats[list(genome)].sum(axis=0))
             best[key] = (genome, score, results, names, pre_gem)
 
     def fg_score(loadout: tuple) -> int:

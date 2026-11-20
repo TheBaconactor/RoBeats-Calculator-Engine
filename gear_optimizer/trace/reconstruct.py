@@ -10,7 +10,7 @@ import numpy as np
 
 from gear_optimizer.solver.scoring.fg_policy import FGSongInputs
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
-from gear_optimizer.frontier.producer_batch import action_table, early_exit_min_fill, song_arrays
+from gear_optimizer.frontier.producer_batch import early_exit_min_fill, song_arrays
 from gear_optimizer.frontier.types import FgResponseSurface
 from .activation_witness import (
     SongWitnessTemplate,
@@ -26,12 +26,19 @@ _EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 _EMPTY_F32 = np.empty(0, dtype=np.float32)
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=512)
 def _action_table_arrays(raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
-    actions, later_fill, first_fill, later_forced, first_forced = action_table(
-        raw_fever_fill=raw_fever_fill, non_fever_base=non_fever_base, use_forced_great_timing=use_forced_great_timing
-    )
-    return tuple(np.asarray(col, dtype=np.int64) for col in (actions, later_fill, first_fill, later_forced, first_forced))
+    """Vectorized equivalent of producer_batch.action_table (ceil(raw_fever_fill + 0.5 * k))."""
+    k = np.arange(non_fever_base + 1, dtype=np.int64)
+    later_fill = np.ceil(raw_fever_fill + 0.5 * k).astype(np.int64)
+    if not use_forced_great_timing and later_fill.size > 1:
+        keep = np.empty(later_fill.shape[0], dtype=np.bool_)
+        keep[0] = True
+        keep[1:] = later_fill[1:] != later_fill[:-1]
+        k = k[keep]
+        later_fill = later_fill[keep]
+    first_fill = np.maximum(0, later_fill - 1)
+    return k, later_fill, first_fill, np.minimum(k, later_fill), np.minimum(k, first_fill)
 
 
 _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS = 262_144
@@ -274,10 +281,10 @@ def reconstruct_force_greats_response_trace(
         shared_tables.song_prep is not None
         and all(a is b for a, b in zip(shared_tables.song_prep[0], prep_arrays, strict=True))
     ):
-        _, parsed_arrays, min_fill, witness_tpl = shared_tables.song_prep
+        _, parsed_arrays, min_fill, witness_tpl, no_early_exit = shared_tables.song_prep
     else:
         parsed_arrays = song_arrays(*prep_arrays)
-        ts_0, perfect_0, great_0, floor_0, great_floor_0, _, _, lane_0 = parsed_arrays
+        ts_0, perfect_0, great_0, floor_0, great_floor_0, _, exit_0, lane_0 = parsed_arrays
         min_fill = early_exit_min_fill(floor_0, perfect_0)
         witness_tpl = song_witness_template(
             timestamps=ts_0,
@@ -287,10 +294,11 @@ def reconstruct_force_greats_response_trace(
             great_candidate_timestamps=great_0,
             lanes=lane_0,
         )
-        shared_tables.song_prep = (prep_arrays, parsed_arrays, min_fill, witness_tpl)
+        no_early_exit = np.full_like(exit_0, -np.inf)
+        shared_tables.song_prep = (prep_arrays, parsed_arrays, min_fill, witness_tpl, no_early_exit)
     ts, perfect_ts, great_ts, floor_ts, great_floor_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr = parsed_arrays
     if max(1, ceil(raw_fever_fill)) < min_fill:
-        exit_ceiling_ts = np.full_like(exit_ceiling_ts, -np.inf)  # as the search: no early exits at this fill
+        exit_ceiling_ts = no_early_exit  # as the search: no early exits at this fill
     context = SectionContext(
         ts, floor_ts, perfect_ts, great_floor_ts, great_ts, late_great_floor_ts, exit_ceiling_ts, lane_arr,
         raw_fever_fill, real_fever_time, use_forced_great_timing,

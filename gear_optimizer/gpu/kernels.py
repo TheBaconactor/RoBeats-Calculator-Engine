@@ -352,8 +352,8 @@ def _scan_best_surface(
         pair1 = ti.i32(0)
         least_budget = ti.i32(0)
         if ti.static(at_pair):
-            pair0 = fields.ga_rep_pair[r, 0]
-            pair1 = fields.ga_rep_pair[r, 1]
+            pair0 = fields.ga_rep_pair[genome, 0]
+            pair1 = fields.ga_rep_pair[genome, 1]
             least_budget = pair0 + pair1
         else:
             pair0 = gems_to_cap(stats[1], STAT_GEM_GAIN_NORMAL)
@@ -422,8 +422,8 @@ def _build_reference(n_genomes: ti.i32, flags: GpuColorFlags):
         base: ti.i32 = top[2] + (top[1] * w_ov)
         wide = search_context(top[3], stats, base - (top[3] * w_ov), flags, top[0])
         best = surface_search(wide, 0, False)
-        fields.ga_rep_pair[r, 0] = best[2]
-        fields.ga_rep_pair[r, 1] = best[3]
+        fields.ga_rep_pair[genome, 0] = best[2]
+        fields.ga_rep_pair[genome, 1] = best[3]
         fields.ga_gem_reference[genome] = gem_reference(wide, base, best[0])
 
 
@@ -441,8 +441,8 @@ def _set_incumbent(n_genomes: ti.i32, flags: GpuColorFlags):
         top = _reduce_ref_lanes(r)
         fields.ga_eval_incumbent_score[genome] = pair_floor(
             search_context(top[1], stats, top[2], flags, top[0]),
-            fields.ga_rep_pair[r, 0],
-            fields.ga_rep_pair[r, 1],
+            fields.ga_rep_pair[genome, 0],
+            fields.ga_rep_pair[genome, 1],
         )
 
 
@@ -515,7 +515,10 @@ def _search_combos(n_genomes: ti.i32, flags: GpuColorFlags, combos: _I32_ARRAY):
             # culling only bound < score keeps every tie, so the winning combo is unchanged. Stale reads of the shared
             # incumbent only cull less.
             cull_threshold: ti.i32 = ti.max(best[0] - 1, fields.ga_eval_incumbent_score[genome])
-            result = exact_gem_search(_combo_option(combo_idx, stats, flags), stats, flags, cull_threshold, reference)
+            result = exact_gem_search(
+                _combo_option(combo_idx, stats, flags), stats, flags, cull_threshold, reference,
+                fields.ga_rep_pair[genome, 0], fields.ga_rep_pair[genome, 1],
+            )
             if result[0] + 1 > best[0]:
                 best = ti.Vector([result[0] + 1, combo_idx, result[1], result[2], result[3], result[4]])
                 ti.atomic_max(fields.ga_eval_incumbent_score[genome], result[0])

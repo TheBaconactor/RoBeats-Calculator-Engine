@@ -23,7 +23,13 @@ from typing import Any, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
-from gear_optimizer.trace.hit_schedule import Inputs, input_order, schedule_hits
+from gear_optimizer.trace.hit_schedule import (
+    build_schedule_inputs,
+    early_greats_kernel,
+    input_order,
+    ranked_times_kernel,
+    schedule_hits,
+)
 from gear_optimizer.trace.reconstruct import UnplayableTrace
 from gear_optimizer.solver.timing_envelope import (
     FRAME_MARGIN_MS,
@@ -122,8 +128,14 @@ class NotePlan:
     fever_ends: dict[int, float]
     is_tail: np.ndarray | None = None
     lanes: np.ndarray | None = None
-    band_ms: np.ndarray | None = None
+    _tap_tail_bands: np.ndarray | None = None
     precise: bool = False
+
+    @property
+    def band_ms(self) -> np.ndarray | None:
+        if self._tap_tail_bands is None or self.is_tail is None:
+            return None
+        return self._tap_tail_bands[self.is_tail.astype(np.int64)]
 
     def __len__(self) -> int:
         return len(self.hit_ms)
@@ -195,7 +207,7 @@ def _new_plan(
         hit_ms,
         is_tail=is_tail,
         lanes=lane_ids,
-        band_ms=_tap_and_tail_bands(perfect_time)[is_tail.astype(np.int64)],
+        _tap_tail_bands=_tap_and_tail_bands(perfect_time),
         precise=timing_mode != "non-precise",
     )
 
@@ -208,44 +220,17 @@ def _early_greats(plan: NotePlan, sections: Sequence[_Section]) -> np.ndarray:
     n = len(plan)
     if plan.precise or not n:
         return np.zeros(n, dtype=bool)
-    hit_ms, great, lanes, band_ms = plan.hit_ms, plan.great, plan.lanes, plan.band_ms
-    late_ms = hit_ms + np.where(great, band_ms[:, 2, 0], 0.0)
-    next_late_ms, from_last = np.full(n, np.inf), np.full(n, np.inf)
-    for lane in np.unique(lanes):
-        notes = np.flatnonzero(lanes == lane)
-        next_late_ms[notes[:-1]] = late_ms[notes[1:]]
-        from_last[notes[1:]] = np.diff(hit_ms[notes])
-    chord = np.cumsum(np.r_[0, np.diff(hit_ms) != 0.0])
-    first_perfect = np.full(chord[-1] + 1, n, dtype=np.int64)
-    np.minimum.at(first_perfect, chord[~great], np.flatnonzero(~great))
-    room_late, room_early = next_late_ms - late_ms, from_last + band_ms[:, 1, 1]
-    early = (room_late < FRAME_MARGIN_MS) & (room_early > room_late)
-    early |= (np.arange(n) < first_perfect[chord]) & (first_perfect[chord] < n)
-    early &= great
-    early[[sec.activation for sec in sections]] = False
-    anchor_floor = np.full(n, -np.inf)
-    for sec in sections:
-        for anchor in (sec.activation, min(sec.fever_end, n - 1)):
-            if anchor + 1 < n and hit_ms[anchor] > anchor_floor[anchor + 1]:
-                anchor_floor[anchor + 1] = hit_ms[anchor]
-    early &= hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS >= np.maximum.accumulate(anchor_floor)
-    return early
+    activations = np.array([sec.activation for sec in sections], dtype=np.int64)
+    fever_ends = np.array([sec.fever_end for sec in sections], dtype=np.int64)
+    return early_greats_kernel(
+        plan.hit_ms, plan.great, plan.lanes, plan.is_tail, plan._tap_tail_bands, activations, fever_ends
+    )
 
 
 def _ranked_times_ms(plan: NotePlan, early: np.ndarray) -> np.ndarray:
     """Each note's place among the inputs free to go in either order: its chart time, a Great past the ramp its first late
     hit and an early one its last early hit a frame margin clear."""
-    hit_ms, band_ms = plan.hit_ms, plan.band_ms
-    moved = plan.great.copy()
-    moved[: _HEAD_NOTES] = False
-    # The chord crossing the ramp is one tie.
-    ramp_end = min(_HEAD_NOTES, len(plan))
-    while 0 < ramp_end < len(plan) and hit_ms[ramp_end] == hit_ms[ramp_end - 1]:
-        moved[ramp_end] = False
-        ramp_end += 1
-    times = hit_ms + np.where(moved, band_ms[:, 2, 0], 0.0)
-    times[early] = (hit_ms + band_ms[:, 1, 1] - FRAME_MARGIN_MS)[early]
-    return times
+    return ranked_times_kernel(plan.hit_ms, plan.great, plan.is_tail, early, plan._tap_tail_bands)
 
 
 def _merged_order(plan: NotePlan, links: Sequence[tuple[int, int]], early: np.ndarray) -> np.ndarray:
@@ -263,29 +248,18 @@ def _merged_order(plan: NotePlan, links: Sequence[tuple[int, int]], early: np.nd
 def _schedule_hits(plan: NotePlan, order: np.ndarray, sections: Sequence[_Section], early: np.ndarray) -> None:
     """Give every input its time (hit_schedule): the plan keeps its judgments, input order and fever, so its score, and each
     input gets the room its frame needs. Non-Precise Perfects stay on their chart times."""
-    hit_ms, great, band_ms = plan.hit_ms[order], plan.great[order], plan.band_ms[order]
-    perfect_ms, early_ms, late_ms = band_ms[:, 0], band_ms[:, 1], band_ms[:, 2]
-    fixed_early = early[order]
     activations = np.array([sec.activation for sec in sections], dtype=np.int64)
-    activation = np.zeros(len(plan), dtype=bool)
-    activation[plan.input_order[activations]] = True
-    offsets_ms = np.where(great[:, None], late_ms, perfect_ms if plan.precise else 0.0)
-    offsets_ms[fixed_early] = early_ms[fixed_early]
-    may_go_early = great & ~fixed_early & ~activation
-    positions = plan.input_order[activations].tolist()
+    act_positions = plan.input_order[activations]
+    positions = act_positions.tolist()
+    inputs = build_schedule_inputs(
+        (plan.hit_ms, plan.is_tail, plan.lanes, plan.great, plan.fever, early),
+        order,
+        plan._tap_tail_bands,
+        act_positions,
+        plan.precise,
+    )
     stopped, hits = schedule_hits(
-        Inputs(
-            hit_ms,
-            hit_ms + offsets_ms[:, 0],
-            hit_ms + offsets_ms[:, 1],
-            (perfect_ms[:, 1] - offsets_ms[:, 1]) * ~great,
-            np.where(may_go_early, hit_ms + early_ms[:, 0], np.inf),
-            np.where(may_go_early, hit_ms + early_ms[:, 1], -np.inf),
-            plan.lanes[order],
-            plan.is_tail[order],
-            great,
-            plan.fever[order],
-        ),
+        inputs,
         np.array(
             [(at, stop, sec.fever_duration_ms) for at, stop, sec in zip(positions, [*positions[1:], len(plan)], sections)],
             dtype=np.float64,
@@ -294,7 +268,7 @@ def _schedule_hits(plan: NotePlan, order: np.ndarray, sections: Sequence[_Sectio
     )
     if stopped >= 0:
         raise UnplayableTrace(f"note_graph: note {order[stopped]}'s input has no frame of its own at any rate")
-    plan.delta[order] = hits - hit_ms
+    plan.delta[order] = hits - inputs.chart_ms
     if plan.precise:
         for sec in sections:
             last_fever = min(sec.fever_end, len(plan)) - 1

@@ -106,24 +106,212 @@ def input_order(lane, rank, before, after):
 
 
 @jit(nopython=True, cache=True, nogil=True)
+def early_greats_kernel(hit_ms, great, lanes, is_tail, bands_2, activations, fever_ends):
+    """Non-Precise early Greats: Greats ahead of a chord's first Perfect or tighter late than early on their lane,
+    clamped by activation/fever-end anchor floors."""
+    n = hit_ms.shape[0]
+    early = np.zeros(n, np.bool_)
+    if n == 0:
+        return early
+    lane_min = lanes[0]
+    lane_max = lanes[0]
+    for i in range(1, n):
+        v = lanes[i]
+        if v < lane_min:
+            lane_min = v
+        if v > lane_max:
+            lane_max = v
+    prev_on_lane = np.full(lane_max - lane_min + 1, -1, np.int64)
+    next_late_ms = np.full(n, np.inf, np.float64)
+    from_last = np.full(n, np.inf, np.float64)
+    for i in range(n):
+        t = 1 if is_tail[i] else 0
+        late_i = hit_ms[i] + (bands_2[t, 2, 0] if great[i] else 0.0)
+        li = lanes[i] - lane_min
+        prev = prev_on_lane[li]
+        if prev >= 0:
+            next_late_ms[prev] = late_i
+            from_last[i] = hit_ms[i] - hit_ms[prev]
+        prev_on_lane[li] = i
+    # Chord runs share equal hit_ms: mark Greats before a chord's first Perfect.
+    c0 = 0
+    while c0 < n:
+        c1 = c0 + 1
+        t0 = hit_ms[c0]
+        while c1 < n and hit_ms[c1] == t0:
+            c1 += 1
+        fp = n
+        for i in range(c0, c1):
+            if not great[i]:
+                fp = i
+                break
+        if fp < n:
+            for i in range(c0, fp):
+                if great[i]:
+                    early[i] = True
+        c0 = c1
+    anchor_floor = np.full(n, -np.inf, np.float64)
+    is_act = np.zeros(n, np.bool_)
+    for s in range(activations.shape[0]):
+        a = activations[s]
+        is_act[a] = True
+        fe = fever_ends[s]
+        if fe > n - 1:
+            fe = n - 1
+        if a + 1 < n and hit_ms[a] > anchor_floor[a + 1]:
+            anchor_floor[a + 1] = hit_ms[a]
+        if fe + 1 < n and hit_ms[fe] > anchor_floor[fe + 1]:
+            anchor_floor[fe + 1] = hit_ms[fe]
+    af = -np.inf
+    for i in range(n):
+        if anchor_floor[i] > af:
+            af = anchor_floor[i]
+        if not great[i] or is_act[i]:
+            early[i] = False
+            continue
+        t = 1 if is_tail[i] else 0
+        if not early[i]:
+            late_i = hit_ms[i] + bands_2[t, 2, 0]
+            room_late = next_late_ms[i] - late_i
+            room_early = from_last[i] + bands_2[t, 1, 1]
+            if room_late < FRAME_MARGIN_MS and room_early > room_late:
+                early[i] = True
+        if early[i] and hit_ms[i] + bands_2[t, 1, 1] - FRAME_MARGIN_MS < af:
+            early[i] = False
+    return early
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def ranked_times_kernel(hit_ms, great, is_tail, early, bands_2):
+    """Per-note tie-break times for input_order: chart time, late Great past the combo ramp, early Great shifted early."""
+    n = hit_ms.shape[0]
+    ramp_end = HEAD_NOTES if HEAD_NOTES < n else n
+    while 0 < ramp_end < n and hit_ms[ramp_end] == hit_ms[ramp_end - 1]:
+        ramp_end += 1
+    times = np.empty(n, np.float64)
+    for i in range(n):
+        t = 1 if is_tail[i] else 0
+        if early[i]:
+            times[i] = hit_ms[i] + bands_2[t, 1, 1] - FRAME_MARGIN_MS
+        elif i >= ramp_end and great[i]:
+            times[i] = hit_ms[i] + bands_2[t, 2, 0]
+        else:
+            times[i] = hit_ms[i]
+    return times
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def build_schedule_inputs(plan_cols, order, bands_2, act_positions, precise):
+    """Build `Inputs` in input order in one compiled pass over `order` without per-note (N, 3, 2) band arrays."""
+    hit_ms, is_tail, lanes, great, fever, early = plan_cols
+    n = order.shape[0]
+    out_chart = np.empty(n, np.float64)
+    out_low = np.empty(n, np.float64)
+    out_high = np.empty(n, np.float64)
+    out_reach = np.empty(n, np.float64)
+    out_elo = np.empty(n, np.float64)
+    out_ehi = np.empty(n, np.float64)
+    out_lane = np.empty(n, np.int64)
+    out_tail = np.empty(n, np.bool_)
+    out_great = np.empty(n, np.bool_)
+    out_fever = np.empty(n, np.bool_)
+    is_act = np.zeros(n, np.bool_)
+    for i in range(act_positions.shape[0]):
+        is_act[act_positions[i]] = True
+    for pos in range(n):
+        idx = order[pos]
+        h = hit_ms[idx]
+        tail = is_tail[idx]
+        t = 1 if tail else 0
+        g = great[idx]
+        fe = early[idx]
+        out_chart[pos] = h
+        out_lane[pos] = lanes[idx]
+        out_tail[pos] = tail
+        out_great[pos] = g
+        out_fever[pos] = fever[idx]
+        if fe:
+            lo_off = bands_2[t, 1, 0]
+            hi_off = bands_2[t, 1, 1]
+        elif g:
+            lo_off = bands_2[t, 2, 0]
+            hi_off = bands_2[t, 2, 1]
+        elif precise:
+            lo_off = bands_2[t, 0, 0]
+            hi_off = bands_2[t, 0, 1]
+        else:
+            lo_off = 0.0
+            hi_off = 0.0
+        out_low[pos] = h + lo_off
+        out_high[pos] = h + hi_off
+        out_reach[pos] = 0.0 if g else (bands_2[t, 0, 1] - hi_off)
+        if g and not fe and not is_act[pos]:
+            out_elo[pos] = h + bands_2[t, 1, 0]
+            out_ehi[pos] = h + bands_2[t, 1, 1]
+        else:
+            out_elo[pos] = np.inf
+            out_ehi[pos] = -np.inf
+    return Inputs(
+        out_chart, out_low, out_high, out_reach, out_elo, out_ehi, out_lane, out_tail, out_great, out_fever
+    )
+
+
+@jit(nopython=True, cache=True, nogil=True)
 def _scored_pairs(inputs, activation, wasted):
     """The inputs on two lanes whose order scores, as (m, 2) positions."""
     n = inputs.chart_ms.shape[0]
+    special = np.empty(n, np.int64)
+    n_sp = 0
+    for i in range(HEAD_NOTES, n):
+        if activation[i] or wasted[i]:
+            special[n_sp] = i
+            n_sp += 1
     pairs = np.empty((64, 2), np.int64)
     used = 0
+    sp_cursor = 0
     for x in range(n):
-        for y in range(x + 1, n):
-            if inputs.chart_ms[y] - inputs.chart_ms[x] > _PAIR_SPAN_MS:
-                break
-            if inputs.lane[x] == inputs.lane[y] or inputs.great[x] == inputs.great[y]:
-                continue
-            if min(inputs.low_ms[y], inputs.early_low_ms[y]) >= inputs.high_ms[x] + FRAME_MARGIN_MS:
-                continue
-            # A Great activation adds the least fill: past the ramp a follower read first fills the bar instead, and the
-            # fevered set and the score stay the same.
+        if x < HEAD_NOTES or activation[x] or wasted[x]:
             if activation[x] and inputs.great[x] and x >= HEAD_NOTES:
                 continue
-            if y < HEAD_NOTES or activation[x] or activation[y] or wasted[x] or wasted[y]:
+            x_chart = inputs.chart_ms[x]
+            x_lane = inputs.lane[x]
+            x_great = inputs.great[x]
+            x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
+            x_act_or_wasted = activation[x] or wasted[x]
+            for y in range(x + 1, n):
+                if inputs.chart_ms[y] - x_chart > _PAIR_SPAN_MS:
+                    break
+                if x_lane == inputs.lane[y] or x_great == inputs.great[y]:
+                    continue
+                if min(inputs.low_ms[y], inputs.early_low_ms[y]) >= x_hi:
+                    continue
+                if y < HEAD_NOTES or x_act_or_wasted or activation[y] or wasted[y]:
+                    if used == pairs.shape[0]:
+                        pairs = np.concatenate((pairs, pairs))
+                    pairs[used, 0], pairs[used, 1] = x, y
+                    used += 1
+        else:
+            while sp_cursor < n_sp and special[sp_cursor] <= x:
+                sp_cursor += 1
+            if sp_cursor >= n_sp:
+                break
+            x_chart = inputs.chart_ms[x]
+            if inputs.chart_ms[special[sp_cursor]] - x_chart > _PAIR_SPAN_MS + 390.0:
+                continue
+            x_lane = inputs.lane[x]
+            x_great = inputs.great[x]
+            x_hi = inputs.high_ms[x] + FRAME_MARGIN_MS
+            for j in range(sp_cursor, n_sp):
+                y = special[j]
+                dy = inputs.chart_ms[y] - x_chart
+                if dy > _PAIR_SPAN_MS:
+                    if dy > _PAIR_SPAN_MS + 390.0:
+                        break
+                    continue
+                if x_lane == inputs.lane[y] or x_great == inputs.great[y]:
+                    continue
+                if min(inputs.low_ms[y], inputs.early_low_ms[y]) >= x_hi:
+                    continue
                 if used == pairs.shape[0]:
                     pairs = np.concatenate((pairs, pairs))
                 pairs[used, 0], pairs[used, 1] = x, y
@@ -166,15 +354,46 @@ def _links_of(inputs, sections):
             used += 1
         last_on_lane[lane] = k
     pairs = _scored_pairs(inputs, activation, wasted)
-    before = np.concatenate((before[:used], pairs[:, 0]))
-    after = np.concatenate((after[:used], pairs[:, 1]))
-    fixed = np.concatenate((fixed[:used], np.zeros(pairs.shape[0], np.float64)))
-    forward = np.flatnonzero(before < after)
-    into = forward[np.argsort(after[forward], kind="mergesort")]
+    m_pairs = pairs.shape[0]
+    total = used + m_pairs
+    out_before = np.empty(total, np.int64)
+    out_after = np.empty(total, np.int64)
+    out_fixed = np.zeros(total, np.float64)
     into_start = np.zeros(n + 1, np.int64)
-    for link in into:
-        into_start[after[link] + 1] += 1
-    return _Links(before, after, fixed, into, np.cumsum(into_start), np.flatnonzero(before > after))
+    n_fwd = 0
+    n_back = 0
+    for i in range(used):
+        b, a = before[i], after[i]
+        out_before[i], out_after[i], out_fixed[i] = b, a, fixed[i]
+        if b < a:
+            into_start[a + 1] += 1
+            n_fwd += 1
+        elif b > a:
+            n_back += 1
+    for i in range(m_pairs):
+        b, a = pairs[i, 0], pairs[i, 1]
+        idx = used + i
+        out_before[idx], out_after[idx] = b, a
+        if b < a:
+            into_start[a + 1] += 1
+            n_fwd += 1
+        elif b > a:
+            n_back += 1
+    for k in range(n):
+        into_start[k + 1] += into_start[k]
+    fill = into_start[:n].copy()
+    into = np.empty(n_fwd, np.int64)
+    back = np.empty(n_back, np.int64)
+    bi = 0
+    for i in range(total):
+        b, a = out_before[i], out_after[i]
+        if b < a:
+            into[fill[a]] = i
+            fill[a] += 1
+        elif b > a:
+            back[bi] = i
+            bi += 1
+    return _Links(out_before, out_after, out_fixed, into, into_start, back)
 
 
 @jit(nopython=True, cache=True, nogil=True)
@@ -210,8 +429,9 @@ def _earliest(links, margin, low_ms, ceiling_ms, earliest, source):
     n = low_ms.shape[0]
     earliest[:] = low_ms
     source[:] = -1
+    lo = 0
     while True:
-        for k in range(n):
+        for k in range(lo, n):
             if k and earliest[k - 1] > earliest[k] + _SLACK_MS:
                 earliest[k], source[k] = earliest[k - 1], -2
             for c in range(links.into_start[k], links.into_start[k + 1]):
@@ -221,14 +441,20 @@ def _earliest(links, margin, low_ms, ceiling_ms, earliest, source):
                     earliest[k], source[k] = hit, link
             if earliest[k] > ceiling_ms[k] + _SLACK_MS:
                 return k
-        settled = True
-        for link in links.back:
-            hit = earliest[links.before[link]] + links.fixed[link] + margin[link]
-            if hit > earliest[links.after[link]] + _SLACK_MS:
-                earliest[links.after[link]], source[links.after[link]] = hit, link
-                settled = False
-        if settled:
+        if links.back.shape[0] == 0:
             return -1
+        next_lo = n
+        for idx in range(links.back.shape[0]):
+            link = links.back[idx]
+            target = links.after[link]
+            hit = earliest[links.before[link]] + links.fixed[link] + margin[link]
+            if hit > earliest[target] + _SLACK_MS:
+                earliest[target], source[target] = hit, link
+                if target < next_lo:
+                    next_lo = target
+        if next_lo == n:
+            return -1
+        lo = next_lo
 
 
 @jit(nopython=True, cache=True, nogil=True)
@@ -236,21 +462,28 @@ def _latest(links, margin, ceiling_ms, latest):
     """Fills each input's latest hit."""
     n = ceiling_ms.shape[0]
     latest[:] = ceiling_ms
+    hi = n - 1
     while True:
-        for k in range(n - 1, -1, -1):
+        for k in range(hi, -1, -1):
             for c in range(links.into_start[k], links.into_start[k + 1]):
                 link = links.into[c]
                 latest[links.before[link]] = min(latest[links.before[link]], latest[k] - links.fixed[link] - margin[link])
             if k:
                 latest[k - 1] = min(latest[k - 1], latest[k])
-        settled = True
-        for link in links.back:
-            hit = latest[links.after[link]] - links.fixed[link] - margin[link]
-            if hit < latest[links.before[link]] - _SLACK_MS:
-                latest[links.before[link]] = hit
-                settled = False
-        if settled:
+        if links.back.shape[0] == 0:
             return
+        next_hi = -1
+        for idx in range(links.back.shape[0]):
+            link = links.back[idx]
+            b = links.before[link]
+            hit = latest[links.after[link]] - links.fixed[link] - margin[link]
+            if hit < latest[b] - _SLACK_MS:
+                latest[b] = hit
+                if b > next_hi:
+                    next_hi = b
+        if next_hi < 0:
+            return
+        hi = next_hi
 
 
 @jit(nopython=True, cache=True, nogil=True)
@@ -310,16 +543,21 @@ def _hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle):
             b, a = links.before[link], links.after[link]
             if a > max_after[b]:
                 max_after[b] = a
-        back_start = np.zeros(n + 1, np.int64)
-        for link in links.back:
-            back_start[links.before[link] + 1] += 1
-        back_start = np.cumsum(back_start)
-        fill = back_start[:n].copy()
-        back_links = np.empty(links.back.shape[0], np.int64)
-        for link in links.back:
+        n_back = links.back.shape[0]
+        back_before = np.empty(n_back, np.int64)
+        back_after = np.empty(n_back, np.int64)
+        back_step = np.empty(n_back, np.float64)
+        min_back, max_back = n, -1
+        for bi in range(n_back):
+            link = links.back[bi]
             b = links.before[link]
-            back_links[fill[b]] = link
-            fill[b] += 1
+            back_before[bi] = b
+            back_after[bi] = links.after[link]
+            back_step[bi] = links.fixed[link] + margin[link]
+            if b < min_back:
+                min_back = b
+            if b > max_back:
+                max_back = b
         for row in range(sections.shape[0]):
             k = int(sections[row, 0])
             at = (
@@ -345,16 +583,17 @@ def _hits(links, inputs, low_ms, margin, ceiling_ms, sections, middle):
                             if max_after[j] > limit:
                                 limit = min(n - 1, max_after[j])
                     jumped_to = j
-                    for c in range(back_start[j], back_start[j + 1]):
-                        back = back_links[c]
-                        hit = earliest[j] + links.fixed[back] + margin[back]
-                        target = links.after[back]
-                        if hit > earliest[target] + _SLACK_MS:
-                            earliest[target] = hit
-                            if max_after[target] > limit:
-                                limit = min(n - 1, max_after[target])
-                            if target < jumped_to:
-                                jumped_to = target
+                    if min_back <= j <= max_back:
+                        for bi in range(n_back):
+                            if back_before[bi] == j:
+                                hit = earliest[j] + back_step[bi]
+                                target = back_after[bi]
+                                if hit > earliest[target] + _SLACK_MS:
+                                    earliest[target] = hit
+                                    if max_after[target] > limit:
+                                        limit = min(n - 1, max_after[target])
+                                    if target < jumped_to:
+                                        jumped_to = target
                     if jumped_to < j:
                         j = jumped_to
                         continue
@@ -406,9 +645,12 @@ def warm() -> None:
     """Load the kernels (a first run compiles them, about 7 s), so that no request of a server pays for it."""
     one_ms, lane, flag = np.zeros(1, np.float64), np.zeros(1, np.int64), np.zeros(1, np.bool_)
     no_links = np.empty(0, np.int64)
+    bands_2 = np.zeros((2, 3, 2), np.float64)
     input_order(lane, lane, no_links, no_links)
+    early_greats_kernel(one_ms, flag, lane, flag, bands_2, no_links, no_links)
+    ranked_times_kernel(one_ms, flag, flag, flag, bands_2)
     schedule_hits(
-        Inputs(one_ms, one_ms, one_ms, one_ms, np.full(1, np.inf), np.full(1, -np.inf), lane, flag, flag, flag),
+        build_schedule_inputs((one_ms, flag, lane, flag, flag, flag), lane, bands_2, no_links, True),
         np.empty((0, 3), np.float64),
         np.empty(0, np.bool_),
     )

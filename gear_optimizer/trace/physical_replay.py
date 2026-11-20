@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -35,10 +36,11 @@ class PhysicalReplay:
         return tuple(self._fever_mask.astype(bool).tolist())
 
 
-def _note_edges(note_types: np.ndarray, perfect_time: int) -> np.ndarray:
-    """Per note, its six judgment edges (a held tail's are twice as wide) at the build's Perfect Time."""
+@lru_cache(maxsize=None)
+def _tap_tail_edges(perfect_time: int) -> np.ndarray:
+    """Tap (row 0) and held-tail (row 1) six judgment edges at the build's Perfect Time."""
     tap = np.asarray(judgment_edges(perfect_time), dtype=np.float64)
-    return np.where((note_types == HELD_TAIL_TYPE)[:, None], tap * HELD_TAIL_WINDOW_SCALE, tap)
+    return np.vstack((tap, tap * HELD_TAIL_WINDOW_SCALE))
 
 
 # Judgment codes of the replay kernel.
@@ -125,14 +127,14 @@ def _replay_kernel(plan, edges, lanes, fever_fill_denominator, real_fever_time, 
 
     Returns ``(status, arg_a, arg_b)``; on success ``event_order`` and ``replay_fever`` are filled.
     """
-    delta_ms, hit_time_ms, input_order, expected_result_code, expected_fever = plan
+    delta_ms, hit_time_ms, input_order, expected_result_code, expected_fever, is_tail = plan
     event_order, replay_fever = replayed
     n = delta_ms.shape[0]
 
     # Per-note judgment agreement plus event-time accumulation.
     event_times_ms = np.empty(n, dtype=np.float64)
     for i in range(n):
-        actual = _judgment_code(delta_ms[i], edges[i])
+        actual = _judgment_code(delta_ms[i], edges[1 if is_tail[i] else 0])
         if actual != expected_result_code[i]:
             return _REPLAY_ERR_JUDGMENT, i, actual
         event_times_ms[i] = hit_time_ms[i] + delta_ms[i]
@@ -215,10 +217,11 @@ def _replay_plan(
     delta_ms = plan.delta
     expected_fever = plan.fever.astype(np.int8)
     expected_code = np.where(plan.great, _GREAT_CODE, _PERFECT_CODE).astype(np.int8)
+    is_tail = (note_types == HELD_TAIL_TYPE) if plan.is_tail is None else plan.is_tail
     event_order, replay_fever = np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int8)
     status, arg_a, arg_b = _replay_kernel(
-        (delta_ms, plan.hit_ms, plan.input_order, expected_code, expected_fever),
-        _note_edges(note_types, perfect_time),
+        (delta_ms, plan.hit_ms, plan.input_order, expected_code, expected_fever, is_tail),
+        _tap_tail_edges(perfect_time),
         lanes,
         float(fever_fill_denominator),
         float(fever_seconds),

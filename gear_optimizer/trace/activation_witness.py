@@ -47,6 +47,19 @@ class SongWitnessTemplate(NamedTuple):
     first_note_from: np.ndarray
 
 
+@jit(nopython=True, cache=True, nogil=True)
+def _build_first_note_from(dense_lane, n_lanes):
+    n = dense_lane.shape[0]
+    out = np.empty((n + 1, n_lanes), dtype=np.int32)
+    for u in range(n_lanes):
+        out[n, u] = n
+    for i in range(n - 1, -1, -1):
+        for u in range(n_lanes):
+            out[i, u] = out[i + 1, u]
+        out[i, dense_lane[i]] = i
+    return out
+
+
 def song_witness_template(
     *,
     timestamps: Sequence[float] | np.ndarray,
@@ -74,11 +87,7 @@ def song_witness_template(
         if lane_arr.shape[0] != n:
             raise ValueError("exact label hit-interval arrays must have one row per note")
         unique_lanes, dense_lane = np.unique(lane_arr, return_inverse=True)
-        n_lanes = unique_lanes.shape[0]
-        first_note_from = np.full((n + 1, n_lanes), n, dtype=np.int32)
-        for i in range(n - 1, -1, -1):
-            first_note_from[i] = first_note_from[i + 1]
-            first_note_from[i, dense_lane[i]] = i
+        first_note_from = _build_first_note_from(dense_lane, unique_lanes.shape[0])
 
     if (
         np.array_equal(perfect_floor, chart)
@@ -280,6 +289,146 @@ def chart_prefix_witness(
     )
 
 
+@jit(nopython=True, cache=True, nogil=True)
+def _note_band(tpl_bands, note, is_great, fixed_timing):
+    chart, raw_perfect_low, perfect_high, raw_great_low, great_early_high, great_late_low, great_high, _ = tpl_bands
+    if fixed_timing:
+        c = float(chart[note])
+        return c, c, np.inf, -np.inf
+    if is_great:
+        return float(raw_great_low[note]), float(great_early_high[note]), float(great_late_low[note]), float(great_high[note])
+    return float(raw_perfect_low[note]), float(perfect_high[note]), np.inf, -np.inf
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _earliest_hit_scalar(p_lo, p_hi, s_lo, s_hi, floor):
+    best = np.inf
+    if floor <= p_hi and p_lo <= p_hi:
+        best = floor if floor > p_lo else p_lo
+    if floor <= s_hi and s_lo <= s_hi:
+        cand = floor if floor > s_lo else s_lo
+        if cand < best:
+            best = cand
+    return best
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _section_prefix_witness_kernel(tpl_bands, lanes_info, sec_cfg, hit, first_clock):
+    """Fused section_prefix_witness + _prefix_order reading template float32 arrays directly without temporary bands."""
+    chart, raw_perfect_low, _, raw_great_low, _, _, _, perfect_opens_after = tpl_bands
+    dense_lane, first_at = lanes_info
+    start, a, run_start, run_end, late_great, fixed_timing = sec_cfg
+    n = chart.shape[0]
+    empty = np.empty(0, dtype=np.int64)
+
+    if fixed_timing or run_end <= a + 1:
+        lo, hi = a + 1, n
+        while lo < hi:
+            mid = (lo + hi) >> 1
+            if float(perfect_opens_after[mid]) <= hit:
+                lo = mid + 1
+            else:
+                hi = mid
+        open_end = lo
+    elif run_end < n and float(perfect_opens_after[run_end]) <= hit:
+        lo, hi = run_end, n
+        while lo < hi:
+            mid = (lo + hi) >> 1
+            if float(perfect_opens_after[mid]) <= hit:
+                lo = mid + 1
+            else:
+                hi = mid
+        open_end = lo
+    else:
+        lim = run_end if run_end < n else n
+        open_end = a + 1
+        for k in range(lim - 1, a, -1):
+            if float(raw_great_low[k]) <= hit:
+                open_end = k + 1
+                break
+    end = a + 1
+    head_cap = n if n < _HEAD_NOTES else _HEAD_NOTES
+    if head_cap > end:
+        end = head_cap
+    if open_end > end:
+        end = open_end
+
+    a_g = (run_start <= a < run_end) or late_great
+    ap_lo, ap_hi, as_lo, as_hi = _note_band(tpl_bands, a, a_g, fixed_timing)
+    if not ((ap_lo <= hit <= ap_hi) or (as_lo <= hit <= as_hi)):
+        return False, empty, empty, empty
+
+    for note in range(start, end):
+        if note == a:
+            continue
+        is_g = (run_start <= note < run_end)
+        p_lo, p_hi, s_lo, s_hi = _note_band(tpl_bands, note, is_g, fixed_timing)
+        open_p, open_s = p_lo <= p_hi, s_lo <= s_hi
+        if note < a:
+            if not ((open_p and p_lo <= hit) or (open_s and s_lo <= hit)):
+                return False, empty, empty, empty
+        else:
+            if not ((open_p and p_hi >= hit) or (open_s and s_hi >= hit)):
+                return False, empty, empty, empty
+
+    n_lanes = first_at.shape[0]
+    ordered_u = np.empty(n_lanes, dtype=np.int64)
+    n_present = 0
+    for u in range(n_lanes):
+        if first_at[u] < n:
+            pos = n_present
+            fa = first_at[u]
+            while pos > 0 and first_at[ordered_u[pos - 1]] > fa:
+                ordered_u[pos] = ordered_u[pos - 1]
+                pos -= 1
+            ordered_u[pos] = u
+            n_present += 1
+    ordered_u = ordered_u[:n_present]
+    rank_of_dense = np.empty(n_lanes, dtype=np.int64)
+    for rk in range(n_present):
+        rank_of_dense[ordered_u[rk]] = rk
+
+    prefix_len = a - start
+    head_lim = a if a < _HEAD_NOTES else _HEAD_NOTES
+    head_end = head_lim - start if head_lim > start else 0
+    order = np.empty(prefix_len, dtype=np.int64)
+    played = np.zeros(n_present, dtype=np.int64)
+    clock = first_clock
+    for off in range(head_end):
+        note = start + off
+        is_g = run_start <= note < run_end
+        p_lo, p_hi, s_lo, s_hi = _note_band(tpl_bands, note, is_g, fixed_timing)
+        clock = _earliest_hit_scalar(p_lo, p_hi, s_lo, s_hi, clock)
+        if clock > hit:
+            return False, empty, empty, empty
+        order[off] = note
+        played[rank_of_dense[dense_lane[note]]] += 1
+
+    body = prefix_len - head_end
+    if body > 0:
+        lane_clock = np.full(n_present, clock, dtype=np.float64)
+        body_ranks = np.empty(body, dtype=np.int64)
+        hits = np.empty(body, dtype=np.float64)
+        for pos in range(body):
+            note = start + head_end + pos
+            rk = rank_of_dense[dense_lane[note]]
+            body_ranks[pos] = rk
+            played[rk] += 1
+            is_g = run_start <= note < run_end
+            p_lo, p_hi, s_lo, s_hi = _note_band(tpl_bands, note, is_g, fixed_timing)
+            lc = _earliest_hit_scalar(p_lo, p_hi, s_lo, s_hi, lane_clock[rk])
+            if lc > hit:
+                return False, empty, empty, empty
+            lane_clock[rk] = lc
+            hits[pos] = lc
+        by_lane = np.argsort(body_ranks, kind="mergesort")
+        merged = by_lane[np.argsort(hits[by_lane], kind="mergesort")]
+        base_idx = start + head_end
+        for pos in range(body):
+            order[head_end + pos] = base_idx + merged[pos]
+    return True, order, ordered_u, played
+
+
 def section_prefix_witness(
     tpl: SongWitnessTemplate,
     *,
@@ -295,7 +444,6 @@ def section_prefix_witness(
 ) -> ChartPrefixWitness | None:
     """`chart_prefix_witness` for one section from a `SongWitnessTemplate`, touching only `[section_start:end]`."""
     start, a = section_start, activation_index
-    n = int(tpl.chart.shape[0])
     a_is_great = (run_start <= a < run_end) or late_great
     if not 0.5 * preactivation_fill < fever_fill_denom <= 0.5 * (preactivation_fill + (1 if a_is_great else 2)):
         return None
@@ -304,49 +452,18 @@ def section_prefix_witness(
     if first_clock > hit:
         return None
 
-    if tpl.fixed_timing or run_end <= a + 1:
-        open_end = (a + 1) + int(np.searchsorted(tpl.perfect_opens_after[a + 1 :], hit, side="right"))
-    elif run_end < n and tpl.perfect_opens_after[run_end] <= hit:
-        open_end = run_end + int(np.searchsorted(tpl.perfect_opens_after[run_end:], hit, side="right"))
-    else:
-        tail = tpl.raw_great_low[a + 1 : run_end].copy()
-        if run_end < n:
-            tail[-1] = min(tail[-1], tpl.perfect_opens_after[run_end])
-        tail = np.minimum.accumulate(tail[::-1])[::-1]
-        open_end = (a + 1) + int(np.searchsorted(tail, hit, side="right"))
-    end = max(a + 1, min(n, _HEAD_NOTES), open_end)
-
-    span = end - start
-    i = a - start
-    if tpl.fixed_timing:
-        p_lo = tpl.chart[start:end].astype(np.float64)
-        bands = (p_lo, p_lo, np.full(span, np.inf, dtype=np.float64), np.full(span, -np.inf, dtype=np.float64))
-    else:
-        sec_great = np.zeros(span, dtype=np.bool_)
-        g0, g1 = max(0, run_start - start), max(0, min(end, run_end) - start)
-        if g0 < g1:
-            sec_great[g0:g1] = True
-        if late_great:
-            sec_great[i] = True
-        bands = (
-            np.where(sec_great, tpl.raw_great_low[start:end], tpl.raw_perfect_low[start:end]).astype(np.float64),
-            np.where(sec_great, tpl.great_early_high[start:end], tpl.perfect_high[start:end]).astype(np.float64),
-            np.where(sec_great, tpl.great_late_low[start:end], np.float32(np.inf)).astype(np.float64),
-            np.where(sec_great, tpl.great_high[start:end], np.float32(-np.inf)).astype(np.float64),
-        )
-    if not (bands[0][i] <= hit <= bands[1][i] or bands[2][i] <= hit <= bands[3][i]):
-        return None
-
-    first_at = tpl.first_note_from[start]
-    present_u = np.flatnonzero(first_at < n)
-    ordered_u = present_u[np.argsort(first_at[present_u], kind="mergesort")]
-    rank_of_dense = np.empty(tpl.unique_lanes.shape[0], dtype=np.int64)
-    rank_of_dense[ordered_u] = np.arange(ordered_u.shape[0], dtype=np.int64)
-    note_ranks = rank_of_dense[tpl.dense_lane[start:end]]
-    ok, order = _prefix_order(bands, note_ranks, i, max(0, min(a, _HEAD_NOTES) - start), hit, first_clock)
+    ok, order, ordered_u, played = _section_prefix_witness_kernel(
+        (
+            tpl.chart, tpl.raw_perfect_low, tpl.perfect_high, tpl.raw_great_low,
+            tpl.great_early_high, tpl.great_late_low, tpl.great_high, tpl.perfect_opens_after,
+        ),
+        (tpl.dense_lane, tpl.first_note_from[start]),
+        (start, a, run_start, run_end, late_great, tpl.fixed_timing),
+        hit,
+        first_clock,
+    )
     if not ok:
         return None
-    played = np.bincount(note_ranks[:i], minlength=ordered_u.shape[0]).tolist()
     return ChartPrefixWitness(
-        tuple((order + start).tolist()), tuple(zip(tpl.unique_lanes[ordered_u].tolist(), played, strict=True))
+        tuple(order.tolist()), tuple(zip(tpl.unique_lanes[ordered_u].tolist(), played.tolist(), strict=True))
     )

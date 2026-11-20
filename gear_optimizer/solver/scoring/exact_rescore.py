@@ -32,6 +32,7 @@ from ..timing_envelope import TimedSong, fever_axes, fever_fill_denominators
 # persistence authority pass re-requests the canonicalize pass's keys (<= a few x
 # LOADOUTS_PER_SONG_LIMIT entries) -- or FIFO eviction turns every second-pass lookup into a miss.
 _TIMELINE_TRACE_MEMO: dict[tuple, dict[str, Any]] = {}
+_TIMELINE_RAW_TRACE_MEMO: dict[tuple, tuple[dict[str, Any], ...]] = {}
 _TIMELINE_TRACE_MEMO_MAX = 1024
 _TIMELINE_TRACE_MEMO_LOCK = threading.Lock()
 
@@ -95,6 +96,7 @@ def score_stats_exact_with_timeline_trace(
             song=song,
             curves=curves,
             perfect_time=perfect_time,
+            raw_key=None if ephemeral else (frontier_result.cache_key, ft_i, ff_i, int(pool_idx)),
         )
         if not ephemeral:
             with _TIMELINE_TRACE_MEMO_LOCK:
@@ -214,6 +216,7 @@ def _timeline_trace_for_payload_surface(
     song: TimedSong,
     curves: StatCurves,
     perfect_time: int,
+    raw_key: tuple | None = None,
 ) -> dict[str, Any]:
     from gear_optimizer.trace.physical_replay import validate_base_physical_replay
     from gear_optimizer.trace.reconstruct import reconstruct_base_trace
@@ -233,13 +236,23 @@ def _timeline_trace_for_payload_surface(
     )
     real_fever_time = float(durations[ft_idx])
 
-    trace = reconstruct_base_trace(
-        song_inputs,
-        head_words=words,
-        body_fever=int(body_fever),
-        raw_fever_fill=float(raw_fever_fill),
-        real_fever_time=float(real_fever_time),
-    )
+    trace = None
+    if raw_key is not None:
+        with _TIMELINE_TRACE_MEMO_LOCK:
+            trace = _TIMELINE_RAW_TRACE_MEMO.get(raw_key)
+    if trace is None:
+        trace = reconstruct_base_trace(
+            song_inputs,
+            head_words=words,
+            body_fever=int(body_fever),
+            raw_fever_fill=float(raw_fever_fill),
+            real_fever_time=float(real_fever_time),
+        )
+        if raw_key is not None:
+            with _TIMELINE_TRACE_MEMO_LOCK:
+                while len(_TIMELINE_RAW_TRACE_MEMO) >= _TIMELINE_TRACE_MEMO_MAX:
+                    _TIMELINE_RAW_TRACE_MEMO.pop(next(iter(_TIMELINE_RAW_TRACE_MEMO)))
+                _TIMELINE_RAW_TRACE_MEMO[raw_key] = trace
     response_surface = [
         int(words[0]),
         int(words[1]),

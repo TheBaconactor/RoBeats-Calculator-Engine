@@ -15,7 +15,7 @@ MAX_ITEMS = 65536  # Items per song (id 0 is the empty slot).
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_GA_RUNS = 128  # Runs per song.
 MAX_FTFF_COMBOS = (GEM_BUDGET + 1) * (GEM_BUDGET + 2) // 2
-GA_FTFF_LANES = 32  # A genome's search threads: one per listed combo, each a stride of its shortlist past that.
+GA_FTFF_LANES = 16  # A genome's search threads: one per listed combo, each a stride of its shortlist past that.
 GA_REF_LANES = 16  # Parallel shortlist-scan lanes per compacted uncached genome (reference, incumbent, survivor filter).
 GA_EVAL_CACHE_SIZE = 16384  # Device memo of evaluations; full stats verify every hit.
 GA_WINNER_COLS = 6  # score + 1 (0: none), FT/FF combo, PP, CM, FM and element gems
@@ -45,6 +45,7 @@ _FIELDS = {
     "ref_cm_field": (ti.f32, GRID_SIZE),
     "ref_fm_field": (ti.f32, GRID_SIZE),
     "exact_pp_best_gems_prefix": (ti.i16, (16, GRID_SIZE, GEM_BUDGET + 1)),
+    "exact_pp_best_extra_prefix": (ti.f32, (16, GRID_SIZE, GEM_BUDGET + 1)),
     # A note's combo multiplier by stat: its head ramp, then at COMBO_RAMP_NOTES the full combo's; for exact scores
     # (scoring.note_score), the game's float64 values too, each as its two 32-bit words: Taichi misaligns 64-bit fields.
     "note_combo": (ti.f32, (GRID_SIZE, COMBO_RAMP_NOTES + 1)),

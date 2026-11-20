@@ -17,7 +17,6 @@ from ..gamedata import Mini, SongMini
 
 # (primary, secondary, selected) -> (the song-mini map it was built from, signature -> names). The entry keeps
 # that map alive, so the identity check can never match a different, later map.
-_SIGNATURE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
 _MINI_SIG_TO_NAMES_CACHE: dict[tuple[str, str, str], tuple[Mapping[str, Mini | SongMini], dict[tuple[Any, ...], list[str]]]] = {}
 
 
@@ -128,9 +127,16 @@ def effective_mini_signature(
     - Only elemental stats that can matter for this song context:
       primary, secondary, selected (duplicates allowed; caller may canonicalize)
     """
+    get = mini_stats.get
     return (
-        *(mini_stats.get(stat, 0) for stat in _SIGNATURE_STATS),
-        *(mini_stats.get(color, 0) if color else 0 for color in (primary_color, secondary_color, selected_color)),
+        get("Perfect Points", 0),
+        get("Combo Multiplier", 0),
+        get("Fever Multiplier", 0),
+        get("Fever Time", 0),
+        get("Fever Fill Rate", 0),
+        get(primary_color, 0) if primary_color else 0,
+        get(secondary_color, 0) if secondary_color else 0,
+        get(selected_color, 0) if selected_color else 0,
     )
 
 

@@ -14,14 +14,18 @@ from gear_optimizer.gamedata import Gear, Mini, SongMini
 
 
 
+def loadout_hash_from_sig_strings(gear_names, mini_sig_strings) -> str:
+    """MD5 effective loadout hash from non-empty gear names and pre-formatted mini signature strings."""
+    g = sorted(n for n in (gear_names or ()) if n)
+    m = sorted(mini_sig_strings or ())
+    return hashlib.md5(f"GEAR:{'|'.join(g)}::MINIS:{'|'.join(m)}".encode("utf-8")).hexdigest()
+
+
 def effective_loadout_hash_from_names(
     gear_names: List[str],
     mini_sigs: List[tuple[Any, ...]],
 ) -> str:
-    g = sorted([n for n in (gear_names or []) if n])
-    m = sorted("|".join(str(x) for x in sig) for sig in (mini_sigs or []))
-    payload = f"GEAR:{'|'.join(g)}::MINIS:{'|'.join(m)}"
-    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+    return loadout_hash_from_sig_strings(gear_names, ("|".join(str(x) for x in sig) for sig in (mini_sigs or ())))
 
 
 def compact_gear_names(gear_items) -> list[str]:

@@ -38,9 +38,9 @@ def _uploads_commit(label: str, arrays: tuple[np.ndarray, ...]) -> None:
     _ga_uploads[label] = tuple(np.asarray(a).copy() for a in arrays)
 
 
-def _pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
-    """(flags, PP stat, gems) -> the PP gems of the best PP/element split of at most `gems` gems: removes the inner O(B)
-    PP scan from each (CM, FM) pair of the exact gem search (O(B^3) -> O(B^2))."""
+def _pp_best_gems_prefix(pp_ref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(flags, PP stat, gems) -> (best PP gems, its base-value extra) for the best PP/element split of at most `gems`
+    gems: removes the inner O(B) PP scan from each (CM, FM) pair of the exact gem search (O(B^3) -> O(B^2))."""
     gems = np.arange(GEM_BUDGET + 1, dtype=np.int32)
     cur_pp = np.arange(GRID_SIZE, dtype=np.int32)[:, None]
     pp_extra = pp_ref[np.minimum(cur_pp + (gems[None, :] * STAT_GEM_GAIN_NORMAL), GRID_SIZE - 1)]
@@ -48,13 +48,16 @@ def _pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
                        for flags in range(16)], dtype=np.int32)
     extra = pp_extra[None, :, :] + (deltas[:, None, None].astype(np.float32) * gems[None, None, :])
     best_idx = np.zeros((16, GRID_SIZE, GEM_BUDGET + 1), dtype=np.int16)
+    best_val_prefix = np.empty((16, GRID_SIZE, GEM_BUDGET + 1), dtype=np.float32)
     best_val = extra[:, :, 0].copy()
+    best_val_prefix[:, :, 0] = best_val
     for g_pp in range(1, GEM_BUDGET + 1):
         best_idx[:, :, g_pp] = best_idx[:, :, g_pp - 1]
         better = extra[:, :, g_pp] > best_val
         best_idx[:, :, g_pp][better] = g_pp
         best_val[better] = extra[:, :, g_pp][better]
-    return best_idx
+        best_val_prefix[:, :, g_pp] = best_val
+    return best_idx, best_val_prefix
 
 
 def ensure_ready() -> None:
@@ -70,7 +73,9 @@ def ensure_ready() -> None:
     fields.ref_pp_field.from_numpy(curves["Perfect Points"])
     fields.ref_cm_field.from_numpy(curves["Combo Multiplier"])
     fields.ref_fm_field.from_numpy(curves["Fever Multiplier"])
-    fields.exact_pp_best_gems_prefix.from_numpy(_pp_best_gems_prefix(curves["Perfect Points"]))
+    pp_idx, pp_extra = _pp_best_gems_prefix(curves["Perfect Points"])
+    fields.exact_pp_best_gems_prefix.from_numpy(pp_idx)
+    fields.exact_pp_best_extra_prefix.from_numpy(pp_extra)
     note_combo = np.column_stack((all_curves.combo_ramp, all_curves.f64["Combo Multiplier"]))
     fields.note_combo.from_numpy(note_combo.astype(np.float32))
     fields.note_combo_bits.from_numpy(float64_words(note_combo))

@@ -23,13 +23,16 @@ from typing import Any
 
 from ..core.team_buff import team_buff_effect
 from ..data.loadout_equivalence import (
+    _pick_representatives,
     canonical_minis_groups_from_names,
     effective_loadout_hash_from_names,
+    effective_mini_signature,
     effective_mini_signature_for_name,
+    minis_signature_to_names_map,
     rotate_mini_groups_for_slot_display,
 )
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, StatCurves, song_minis
-from gear_optimizer.data.loadout_hashing import compact_gear_names, compact_mini_names
+from gear_optimizer.data.loadout_hashing import compact_gear_names, compact_mini_names, loadout_hash_from_sig_strings
 from ..solver.scoring.exact_rescore import (
     score_stats_exact_with_timeline_trace,
     score_stats_fixed_timing_exact_batch,
@@ -73,6 +76,7 @@ def canonical_rows(
     song, curves = solve.timed, solve.curves
     primary, secondary = song.chart.primary, song.chart.secondary
     song_view: dict[str, SongMini] = {m.name: m for m in song_minis(minis.values(), solve.song, primary, secondary)}
+    mini_lookup = _song_mini_identity_table(song_view, primary, secondary)
     fg_by_index = dict(solve.fg)
     if len(fg_by_index) != len(solve.fg):
         raise ValueError(f"{solve.song}: two FG results for one loadout")
@@ -94,7 +98,7 @@ def canonical_rows(
     seen: set[str] = set()
     for i in row_order(len(solve.loadouts), [i for i, fg in solve.fg if fg.score > fg.paired]):
         loadout = solve.loadouts[i]
-        ident = loadout_identity(loadout, song_view, primary, secondary)
+        ident = _fast_loadout_identity(loadout, mini_lookup, song_view, primary, secondary)
         if ident.loadout_hash in seen:
             raise ValueError(f"{solve.song}: the GA surface holds loadout {ident.loadout_hash} twice")
         seen.add(ident.loadout_hash)
@@ -199,6 +203,57 @@ def row_order(count: int, fg_indices: Sequence[int]) -> list[int]:
     """Surface indices in store order: the best, the loadouts with a winning FG result (FG stage order), the rest."""
     order = list(dict.fromkeys([0, *fg_indices])) if count else []
     return order + [i for i in range(count) if i not in set(order)]
+
+
+def _song_mini_identity_table(
+    song_view: Mapping[str, SongMini], primary: str, secondary: str
+) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Per-song lookup from mini name -> (signature string for hashing/sorting, canonical sorted variant group)."""
+    sig_to_all = minis_signature_to_names_map(song_view, primary, secondary, primary)
+    sig_meta = {
+        sig: ("|".join(str(x) for x in sig), tuple(sorted({s for n in names if (s := n.strip())})))
+        for sig, names in sig_to_all.items()
+    }
+    return {
+        name: sig_meta[effective_mini_signature(mini.stats, primary, secondary, primary)]
+        for name, mini in song_view.items()
+    }
+
+
+def _fast_loadout_identity(
+    loadout: SolvedLoadout,
+    mini_lookup: Mapping[str, tuple[str, tuple[str, ...]]],
+    song_view: Mapping[str, SongMini],
+    primary: str,
+    secondary: str,
+) -> Identity:
+    """`loadout_identity` reusing the song's precomputed mini signature/group table."""
+    gear = tuple(n for n in loadout.gear if n)
+    entries: list[tuple[str, tuple[str, ...]]] = []
+    for raw in loadout.minis:
+        if not raw or "[" in raw:
+            return loadout_identity(loadout, song_view, primary, secondary)
+        name = raw.strip()
+        if not name:
+            continue
+        found = mini_lookup.get(name)
+        if found is None:
+            return loadout_identity(loadout, song_view, primary, secondary)
+        entries.append(found)
+    entries.sort(key=lambda item: item[0])
+    sig_strs = [s for s, _g in entries]
+    raw_groups = [list(g) for _s, g in entries if g]
+    reps = _pick_representatives(raw_groups)
+    rotated = tuple(
+        (rep, *(n for n in g if n != rep)) if len(g) > 1 and rep in g else tuple(g)
+        for g, rep in zip(raw_groups, reps)
+    )
+    return Identity(
+        loadout_hash=loadout_hash_from_sig_strings(gear, sig_strs),
+        gear=gear,
+        groups=rotated,
+        reps=tuple(g[0] for g in rotated if g),
+    )
 
 
 def loadout_identity(

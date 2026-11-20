@@ -19,6 +19,7 @@ loadout O(G) group bounds + the blocks of surviving groups' columns + one bound 
 surfaces + the rows of surviving blocks + the pairs of surviving rows.
 """
 
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import os
@@ -220,26 +221,59 @@ def _kept_splits(
     return rows[:write], counts
 
 
-def _append_memo_groups(memo: GemMemo, new_packed: list[int], flat_rows: np.ndarray, flat_counts: np.ndarray) -> None:
-    add_n = int(flat_rows.shape[0])
+@jit(nopython=True, cache=True)
+def _copy_rows_and_max_gain(dst, offset, src):
+    """Copy `src` into `dst[offset:]` and return max(2 * col1 + col2) in one memory pass."""
+    n = src.shape[0]
+    best = 0
+    for i in range(n):
+        pg = src[i, 1]
+        sg = src[i, 2]
+        g = (pg << 1) + sg
+        if g > best:
+            best = g
+        dst[offset + i, 0] = src[i, 0]
+        dst[offset + i, 1] = pg
+        dst[offset + i, 2] = sg
+        dst[offset + i, 3] = src[i, 3]
+        dst[offset + i, 4] = src[i, 4]
+    return best
+
+
+def _append_memo_groups(
+    memo: GemMemo,
+    new_packed: list[int],
+    row_chunks: Sequence[np.ndarray],
+    count_chunks: Sequence[np.ndarray],
+) -> None:
+    add_n = sum(int(chunk.shape[0]) for chunk in row_chunks)
     start = memo.groups_used
     if add_n:
         need = start + add_n
         if need > memo.groups_buf.shape[0]:
-            new_cap = max(need, max(65536, memo.groups_buf.shape[0] * 2))
+            new_cap = max(need, max(262_144, memo.groups_buf.shape[0] * 2))
             grown = np.empty((new_cap, 5), dtype=np.int32)
             if start:
                 grown[:start] = memo.groups_buf[:start]
             memo.groups_buf = grown
-        memo.groups_buf[start:need] = flat_rows
+        dst = start
+        max_gain = memo.most_gain
+        for chunk in row_chunks:
+            n = int(chunk.shape[0])
+            if n:
+                g = int(_copy_rows_and_max_gain(memo.groups_buf, dst, chunk))
+                if g > max_gain:
+                    max_gain = g
+                dst += n
         memo.groups_used = need
-        gain = int((2 * flat_rows[:, 1] + flat_rows[:, 2]).max())
-        if gain > memo.most_gain:
-            memo.most_gain = gain
+        memo.most_gain = max_gain
     pos = start
-    for key, cnt in zip(new_packed, flat_counts.tolist(), strict=True):
-        memo.key_spans[key] = (pos, pos + cnt)
-        pos += cnt
+    idx = 0
+    for cnts in count_chunks:
+        for cnt in cnts.tolist():
+            memo.key_spans[new_packed[idx]] = (pos, pos + cnt)
+            pos += cnt
+            idx += 1
 
 
 def gem_groups(
@@ -285,6 +319,7 @@ def gem_groups(
             flat_rows, flat_counts = _kept_splits(
                 keys[new_keys], residual_values, frontier_idx_by_stat, primary_gains, secondary_gains, element_value
             )
+            _append_memo_groups(memo, [packed_list[i] for i in new_keys], (flat_rows,), (flat_counts,))
         else:
             rows, counts = zip(*_fg_cpu_search_executor().map(
                 lambda chunk: _kept_splits(
@@ -292,8 +327,7 @@ def gem_groups(
                 ),
                 np.array_split(keys[new_keys], split_workers),
             ))
-            flat_rows, flat_counts = np.concatenate(rows), np.concatenate(counts)
-        _append_memo_groups(memo, [packed_list[i] for i in new_keys], flat_rows, flat_counts)
+            _append_memo_groups(memo, [packed_list[i] for i in new_keys], rows, counts)
     spans = [memo.key_spans[key] for key in packed_list]
     key_starts = np.asarray([s for s, _e in spans], dtype=np.int64)
     key_ends = np.asarray([e for _s, e in spans], dtype=np.int64)

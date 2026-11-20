@@ -11,7 +11,6 @@ import numpy as np
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.domain.jobs import SongTask
 from gear_optimizer.frontier.cache_scope import frontier_cache_is_ephemeral
-from gear_optimizer.gamedata import STATS
 from gear_optimizer.pipeline.pools import gears_digest_bytes
 from gear_optimizer.pipeline.song import (
     NativeSong,
@@ -33,13 +32,20 @@ _PREP_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict, np.ndarray, tuple[np.
 _SHORTLIST_CACHE: "OrderedDict[tuple, FtffShortlist]" = OrderedDict()
 
 
-def _catalog_digest(gears, song_minis) -> str:
+def _catalog_digest(gears_digest: bytes, song_minis) -> str:
     """The items a song's pools are built from: a request's own catalog (a custom pool) or in-place mapping changes
     must never reuse the cached pools of another catalog."""
-    digest = hashlib.blake2b(gears_digest_bytes(gears), digest_size=16)
+    parts = []
     for mini in sorted(song_minis, key=lambda m: m.name):
-        stats_tuple = tuple(mini.stats.get(s, 0) for s in STATS)
-        digest.update(f"{mini.name}\0{int(bool(mini.targets_song))}\0{stats_tuple}\n".encode())
+        g = mini.stats.get
+        stats_tuple = (
+            g("Perfect Points", 0), g("Combo Multiplier", 0), g("Fever Multiplier", 0),
+            g("Fever Fill Rate", 0), g("Fever Time", 0),
+            g("Chill", 0), g("Flow", 0), g("Rush", 0), g("Beat", 0), g("Vibe", 0),
+        )
+        parts.append(f"{mini.name}\0{int(bool(mini.targets_song))}\0{stats_tuple}\n")
+    digest = hashlib.blake2b(gears_digest, digest_size=16)
+    digest.update("".join(parts).encode())
     return digest.hexdigest()
 
 
@@ -58,11 +64,14 @@ def _ga_registry(gears, song_minis, primary: str, secondary: str, base_fixed_sta
     # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
     targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
     fixed_key = tuple(int(x) for x in base_fixed_stats.ravel())
-    pool_key = (primary, secondary, _SLOTS, targeting_minis, fixed_key, _catalog_digest(gears, song_minis))
+    gears_digest = gears_digest_bytes(gears)
+    pool_key = (primary, secondary, _SLOTS, targeting_minis, fixed_key, _catalog_digest(gears_digest, song_minis))
     if pool_key in _PREP_CACHE:
         _PREP_CACHE.move_to_end(pool_key)
         return *_PREP_CACHE[pool_key], pool_key
-    gear_pool, mini_pool = initialize_pools(gears, song_minis, primary, list(_SLOTS), s_color=secondary)
+    gear_pool, mini_pool = initialize_pools(
+        gears, song_minis, primary, list(_SLOTS), s_color=secondary, gears_digest=gears_digest
+    )
     registry = ItemRegistry(gear_pool, mini_pool, list(_SLOTS))
     gpu_data = registry.to_gpu_arrays()
     topk = build_ga_init_heuristic_topk(

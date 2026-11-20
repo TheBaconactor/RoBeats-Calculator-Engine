@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 import hashlib
 
-from gear_optimizer.gamedata import STATS, Gear, SongMini, song_secondary
+from gear_optimizer.gamedata import Gear, SongMini, song_secondary
 
 
 def _relevant_row_projection(row: Gear | SongMini, primary_color, secondary_color=""):
@@ -158,22 +158,33 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
 
 def gears_digest_bytes(gears: Mapping[str, Gear]) -> bytes:
     """Content digest of a gear catalog (keys, names, slots, Perfect Time, and stats)."""
-    digest = hashlib.blake2b(digest_size=16)
+    parts = []
     for key in sorted(gears):
         gear = gears[key]
-        stats = gear.stats
-        stats_tuple = tuple(stats.get(s, 0) for s in STATS)
-        digest.update(f"{key}\0{gear.name}\0{gear.slot}\0{gear.perfect_time}\0{stats_tuple}\n".encode())
-    return digest.digest()
+        g = gear.stats.get
+        stats_tuple = (
+            g("Perfect Points", 0), g("Combo Multiplier", 0), g("Fever Multiplier", 0),
+            g("Fever Fill Rate", 0), g("Fever Time", 0),
+            g("Chill", 0), g("Flow", 0), g("Rush", 0), g("Beat", 0), g("Vibe", 0),
+        )
+        parts.append(f"{key}\0{gear.name}\0{gear.slot}\0{gear.perfect_time}\0{stats_tuple}\n")
+    return hashlib.blake2b("".join(parts).encode(), digest_size=16).digest()
 
 
 _PRUNED_GEAR_POOL_MAX = 32
 _PRUNED_GEAR_POOL_CACHE: OrderedDict[tuple[str, str, tuple[str, ...], bytes], dict[str, list[Gear]]] = OrderedDict()
 
 
-def _get_pruned_gear_pool(gears: Mapping[str, Gear], slots, p_color, s_color=None) -> dict[str, list[Gear]]:
+def _get_pruned_gear_pool(
+    gears: Mapping[str, Gear], slots, p_color, s_color=None, *, gears_digest: bytes | None = None
+) -> dict[str, list[Gear]]:
     slots_key = tuple(str(s) for s in slots)
-    cache_key = (str(p_color or ""), str(s_color or ""), slots_key, gears_digest_bytes(gears))
+    cache_key = (
+        str(p_color or ""),
+        str(s_color or ""),
+        slots_key,
+        gears_digest_bytes(gears) if gears_digest is None else gears_digest,
+    )
     cached = _PRUNED_GEAR_POOL_CACHE.get(cache_key)
     if cached is not None:
         _PRUNED_GEAR_POOL_CACHE.move_to_end(cache_key)
@@ -227,6 +238,8 @@ def initialize_pools(
     p_color: str,
     slots,
     s_color: str | None = None,
+    *,
+    gears_digest: bytes | None = None,
 ) -> tuple[dict[str, list[Gear]], list[SongMini]]:
     """
     The song's gear pool per slot (from the gear catalog, by name) and its mini pool, pruned exactly (no
@@ -241,4 +254,4 @@ def initialize_pools(
     mini_pool = prune_mini_pool_lossless_for_song(mini_pool, p_color, s_color)
     if not mini_pool:
         raise ValueError(f"no mini matches the song colors {p_color!r}/{s_color!r}")
-    return _get_pruned_gear_pool(gears, slots, p_color, s_color), mini_pool
+    return _get_pruned_gear_pool(gears, slots, p_color, s_color, gears_digest=gears_digest), mini_pool
