@@ -84,9 +84,9 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "exact-frontier-v12+logic-5f4d8f2f18e7",
     ),
     # Lossless frontier kernel & fixed-timing optimizations (activation-only surface grid, O(G^2) surface interning,
-    # vectorized surface_head_coeffs, scalar zero-Great body DP) changed no persisted byte: 16 gate charts + broad
-    # catalog sample (including 7k-note charts) match 82c968dfb744.
-    "exact-frontier-v12+logic-bc418414b5c9": (
+    # vectorized surface_head_coeffs, scalar zero-Great body DP) changed no persisted byte: 16 gate charts + 20 catalog
+    # charts (up to 7,027 notes) match 82c968dfb744.
+    "exact-frontier-v12+logic-ee8cdeed4425": (
         "exact-frontier-v12+logic-82c968dfb744",
     ),
 }

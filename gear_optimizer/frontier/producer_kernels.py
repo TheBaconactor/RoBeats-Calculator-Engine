@@ -44,6 +44,25 @@ ActivationEnds = namedtuple(
         "late_exit_e",
     ],
 )
+# Song-invariant per-activation region-2 cores shared across every fill group of one song (song_region_cores):
+# great_end (int32[n], note index or -1), late_token/perfect_token (int32[n], kind * n + note or -1),
+# hit (float32[n], seconds), flags (uint8[n], bit 0: hit & later notes legal, bit 1: Greats before activation legal).
+SongRegionCores = namedtuple("SongRegionCores", ["great_end", "late_token", "perfect_token", "hit", "flags"])
+# Stamped dense (normal Greats, fever Greats) -> best body-fever table shared by a worker thread:
+# values/stamps/touched are int32[>= (n + 1) * pair_mod]; epoch is the monotonic int stamp (reset past 1 << 30).
+_PairWorkspace = namedtuple("_PairWorkspace", ["values", "stamps", "touched", "epoch"])
+# Stamped 1-based Fenwick prefix-max workspace over fever Greats + reusable 64K-bit sort scratch:
+# values/stamps are int32[>= n + 2]; epoch is the monotonic int stamp; sort_bits is zeroed uint64[1024].
+_FenwickWorkspace = namedtuple("_FenwickWorkspace", ["values", "stamps", "epoch", "sort_bits"])
+# Body-DP scratch bundle passed to `_body_tails`: admitted pair_mod (int <= n + 1), prepass max_eg_width (int notes),
+# and sliced `_PairWorkspace` / `_FenwickWorkspace` views.
+_BodyScratch = namedtuple("_BodyScratch", ["pair_mod", "max_eg_width", "pairs", "fenwick"])
+# Per-state bounds for `_points_frontier`: candidate count m, total chart notes n, interned pattern count, head slice
+# [lo_pos, hi_pos) in [0, 100], and whether m == 0 emits the zero surface row.
+_FrontierBounds = namedtuple("_FrontierBounds", ["m", "n", "patterns", "lo_pos", "hi_pos", "empty_is_zero"])
+# Per-activation body shift parameters passed to `_body_end_shifts`: family kind, state-shifted normal_base,
+# act_extra (0/1), fg_run_lo = max(activation, run_start), and forced-Great great_end (note indices).
+_RegionShift = namedtuple("_RegionShift", ["kind", "normal_base", "act_extra", "fg_run_lo", "great_end"])
 # Song tokens ``kind * n + note_index`` name every value activation-hit selection can return (chart / Perfect /
 # Great / capped Perfect / capped Great); the song-wide endpoint tables are indexed by them directly.
 _REGION_HIT_CHART = 0
@@ -729,7 +748,7 @@ def song_region_cores(timestamps, hit_times):
         core_perfect_token[activation] = perfect_token
         core_hit[activation] = h_a
         core_flags[activation] = np.uint8((1 if legal else 0) | (2 if greats_before_legal else 0))
-    return core_great_end, core_late_token, core_perfect_token, core_hit, core_flags
+    return SongRegionCores(core_great_end, core_late_token, core_perfect_token, core_hit, core_flags)
 
 
 @njit(cache=True, nogil=True)
@@ -752,7 +771,11 @@ def _region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, l
         return head_starts, np.empty((0, 5), dtype=np.int32), key_starts, np.empty((0, 5), dtype=np.int32)
     perfect_floor = hit_times.perfect_floor_timestamps
     perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
-    core_great_end, core_late_token, core_perfect_token, core_hit, core_flags = song_cores
+    core_great_end = song_cores.great_end
+    core_late_token = song_cores.late_token
+    core_perfect_token = song_cores.perfect_token
+    core_hit = song_cores.hit
+    core_flags = song_cores.flags
     first_later_section = int(np.ceil(raw_fever_fill)) + 1
 
     run_action = np.empty(actions, dtype=np.int64)
@@ -1279,75 +1302,32 @@ def _surface_margin(left, right) -> float:
 @njit(cache=True, nogil=True)
 def _cone_kept(rows, scores, sums):
     """The rows no other row dominates (score gap >= the pair's margin at all 16 corners), by descending corner-score
-    sum. Tracks running maxima at opposite box extrema (corners 1, 14, 2, 0, 15) for O(1) fast-accept and checks those
-    opposite trade-off corners first before scanning the remaining corners."""
+    sum. Packs kept rows' 16-corner scores contiguously for L1-resident inner scans."""
     m = rows.shape[0]
     order = np.argsort(sums)
     kept_rows = np.empty(m, dtype=np.int64)
     kept_scores = np.empty((m, 16), dtype=np.float64)
     kept_count = 0
-    max_s0 = -1.0e300
-    max_s1 = -1.0e300
-    max_s2 = -1.0e300
-    max_s14 = -1.0e300
-    max_s15 = -1.0e300
     for pos in range(m):
         i = order[pos]
-        s0 = scores[i, 0]
-        s1 = scores[i, 1]
-        s2 = scores[i, 2]
-        s14 = scores[i, 14]
-        s15 = scores[i, 15]
         dominated = False
-        if s1 <= max_s1 and s14 <= max_s14 and s2 <= max_s2 and s0 <= max_s0 and s15 <= max_s15:
-            for ki in range(kept_count):
-                d1 = kept_scores[ki, 1] - s1
-                if d1 < 0.0:
-                    continue
-                d14 = kept_scores[ki, 14] - s14
-                if d14 < 0.0:
-                    continue
-                d2 = kept_scores[ki, 2] - s2
-                if d2 < 0.0:
-                    continue
-                d0 = kept_scores[ki, 0] - s0
-                if d0 < 0.0:
-                    continue
-                d15 = kept_scores[ki, 15] - s15
-                if d15 < 0.0:
-                    continue
-                min_diff = d0 if d0 < d1 else d1
-                if d2 < min_diff:
-                    min_diff = d2
-                if d14 < min_diff:
-                    min_diff = d14
-                if d15 < min_diff:
-                    min_diff = d15
-                ok = True
-                for cc in range(3, 14):
-                    d = kept_scores[ki, cc] - scores[i, cc]
-                    if d < 0.0:
-                        ok = False
-                        break
-                    if d < min_diff:
-                        min_diff = d
-                if ok and min_diff >= _surface_margin(rows[kept_rows[ki]], rows[i]):
-                    dominated = True
+        for ki in range(kept_count):
+            min_diff = 1.0e300
+            ok = True
+            for cc in range(16):
+                d = kept_scores[ki, cc] - scores[i, cc]
+                if d < 0.0:
+                    ok = False
                     break
+                if d < min_diff:
+                    min_diff = d
+            if ok and min_diff >= _surface_margin(rows[kept_rows[ki]], rows[i]):
+                dominated = True
+                break
         if not dominated:
             kept_rows[kept_count] = i
             for cc in range(16):
                 kept_scores[kept_count, cc] = scores[i, cc]
-            if s0 > max_s0:
-                max_s0 = s0
-            if s1 > max_s1:
-                max_s1 = s1
-            if s2 > max_s2:
-                max_s2 = s2
-            if s14 > max_s14:
-                max_s14 = s14
-            if s15 > max_s15:
-                max_s15 = s15
             kept_count += 1
     return kept_rows[:kept_count]
 
@@ -1524,34 +1504,23 @@ def _head_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int):
 
 
 @njit(cache=True, nogil=True)
-def _reduce_touched_pairs_inplace(pair_mod: int, touched_pair, touched_count: int, best_fever_by_pair, bit_ws, stack) -> int:
-    """In-place fused skyline + per-normal-Great upper-hull reduction of `touched_pair[:touched_count]` into
-    pre-sized `stack` (at least `touched_count` rows). Returns only the scalar kept count (no array return/refcount).
+def _reduce_touched_pairs_inplace(
+    pair_mod: int, touched_pair, touched_count: int, best_fever_by_pair, fenwick, stack
+) -> int:
+    """In-place fused skyline + per-normal-Great upper-hull reduction of `touched_pair[:touched_count]` (int32 packed
+    `ng * pair_mod + fg` keys) into pre-sized `stack` (`int64[>= touched_count, 4]`: body_fever, ng, fg, 0). Returns
+    only the scalar kept row count (avoiding array-return NRT refcounting).
 
-    Stride-1 (`pair_mod == 1`) skips all division and Fenwick operations. General strides sort distinct touched pairs
-    via `_sort_distinct_i32` (64-bit word bitset when dense) and run a single fused decode + Fenwick + upper-hull pass."""
-    bit_values, bit_stamps, bit_stamp, sort_bits = bit_ws
+    Stride-1 (`pair_mod == 1`) skips division and Fenwick operations. General strides sort distinct keys via
+    `_sort_distinct_i32` (64-bit word bitset when dense, else insertion/NumPy sort) and run one fused pass."""
+    bit_values, bit_stamps, bit_stamp, sort_bits = fenwick.values, fenwick.stamps, fenwick.epoch, fenwick.sort_bits
     if touched_count <= 0:
         return 0
-    if touched_count <= 2:
+    if touched_count == 1:
         p0 = int(touched_pair[0])
-        p1 = 0
-        if touched_count == 2:
-            p1 = int(touched_pair[1])
-            if p0 > p1:
-                p0, p1 = p1, p0
         ng0 = p0 if pair_mod == 1 else p0 // pair_mod
         fg0 = 0 if pair_mod == 1 else p0 - ng0 * pair_mod
-        bf0 = best_fever_by_pair[p0]
-        stack[0, 0], stack[0, 1], stack[0, 2], stack[0, 3] = bf0, ng0, fg0, 0
-        if touched_count == 1:
-            return 1
-        ng1 = p1 if pair_mod == 1 else p1 // pair_mod
-        fg1 = 0 if pair_mod == 1 else p1 - ng1 * pair_mod
-        bf1 = best_fever_by_pair[p1]
-        if fg0 > fg1 or bf1 > bf0:
-            stack[1, 0], stack[1, 1], stack[1, 2], stack[1, 3] = bf1, ng1, fg1, 0
-            return 2
+        stack[0, 0], stack[0, 1], stack[0, 2], stack[0, 3] = best_fever_by_pair[p0], ng0, fg0, 0
         return 1
     _sort_distinct_i32(touched_pair, touched_count, sort_bits)
     if pair_mod == 1:
@@ -1660,7 +1629,7 @@ def reduce_touched_body_pairs(
         touched_pair,
         touched_count,
         best_fever_by_pair,
-        (bit_values, bit_stamps, bit_stamp, np.empty(0, dtype=np.uint64)),
+        _FenwickWorkspace(bit_values, bit_stamps, bit_stamp, np.empty(0, dtype=np.uint64)),
         stack,
     )
     return stack, count
@@ -1858,18 +1827,17 @@ def _clamped_end(n: int, activation_idx: int, raw_end_idx: int) -> int:
 
 
 @njit(cache=True, nogil=True, inline="always")
-def _body_end_shifts(end: int, activation: int, edge_e: int, is_region: bool, reg):
-    """Per-end (body_fever, normal_great, fever_great) shifts for one body activation packet."""
-    kind, normal_base, act_extra, fg_run_lo, great_end = reg
+def _body_end_shifts(end: int, activation: int, edge_e: int, is_region: bool, shift):
+    """Per-end (body_fever, normal_great, fever_great) shifts for one body activation packet (`shift`: `_RegionShift`)."""
     bf_sh = end - activation
     if is_region:
-        fg_run_hi = end if end < great_end else great_end
-        overlap_fg = fg_run_hi - fg_run_lo if fg_run_hi > fg_run_lo else 0
-        ng_sh = normal_base - overlap_fg
-        fg_sh = overlap_fg + act_extra + (end - edge_e if end > edge_e else 0)
+        fg_run_hi = end if end < shift.great_end else shift.great_end
+        overlap_fg = fg_run_hi - shift.fg_run_lo if fg_run_hi > shift.fg_run_lo else 0
+        ng_sh = shift.normal_base - overlap_fg
+        fg_sh = overlap_fg + shift.act_extra + (end - edge_e if end > edge_e else 0)
     else:
-        ng_sh = normal_base
-        fg_sh = kind + (end - edge_e if end > edge_e else 0)
+        ng_sh = shift.normal_base
+        fg_sh = shift.kind + (end - edge_e if end > edge_e else 0)
     return bf_sh, ng_sh, fg_sh
 
 
@@ -1927,15 +1895,19 @@ def _body_tails_scalar(n: int, offset: int, reachable, ends, pair_epoch: int, bi
 @njit(cache=True, nogil=True)
 def _body_tails(n: int, families, reachable, region, ends, scratch):
     """The tail frontier of every reachable body state, states n - 1 down to 100: rows (body fever, body Greats, fever
-    Greats) of `body_values`, addressed per state by body_starts / body_counts. State n holds the tail of a play that
-    never activates again, and a state with no candidate shares it.
+    Greats) of `body_values` (uint64[cap, 3]), addressed per state by `body_starts`/`body_counts` (int32[n + 1]).
+    State n holds the zero tail of a play that never activates again, and a state with no candidate shares it.
+    `scratch` is a `_BodyScratch` carrying the admitted pair/Fenwick workspaces and geometry bounds.
 
     Returns (body_values, body_starts, body_counts, states evaluated, rows generated, rows retained, the largest
-    frontier, the pair epoch, the bit epoch)."""
-    (
-        pair_mod, best_fever_by_pair, pair_stamp, touched_pair, pair_epoch,
-        bit_values, bit_stamps, bit_epoch, max_eg_width, sort_bits,
-    ) = scratch
+    frontier, updated pair_epoch, updated bit_epoch)."""
+    pair_mod, max_eg_width = scratch.pair_mod, scratch.max_eg_width
+    best_fever_by_pair, pair_stamp, touched_pair, pair_epoch = (
+        scratch.pairs.values, scratch.pairs.stamps, scratch.pairs.touched, scratch.pairs.epoch
+    )
+    bit_values, bit_stamps, bit_epoch, sort_bits = (
+        scratch.fenwick.values, scratch.fenwick.stamps, scratch.fenwick.epoch, scratch.fenwick.sort_bits
+    )
     family_count = families.shape[0]
     if (
         family_count == 1
@@ -2058,7 +2030,7 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
                     normal_base = 2 * activation + body_great_run - 2 * first_offset
                 else:
                     act_extra, fg_run_lo, normal_base = 0, 0, 2 * activation + defect
-                reg_info = (kind, normal_base, act_extra, fg_run_lo, great_end)
+                reg_info = _RegionShift(kind, normal_base, act_extra, fg_run_lo, great_end)
                 if n_ends == 1:
                     bf_sh, ng_sh, fg_sh = _body_end_shifts(only_end, activation, edge_e, is_region, reg_info)
                     st = int(body_starts[only_end])
@@ -2190,7 +2162,7 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
                     touched_pair,
                     touched,
                     best_fever_by_pair,
-                    (bit_values, bit_stamps, bit_epoch, sort_bits),
+                    _FenwickWorkspace(bit_values, bit_stamps, bit_epoch, sort_bits),
                     kept,
                 )
                 if frontier >= 2:
@@ -2698,41 +2670,88 @@ def _state_points(entries, count: int, n: int, head, scratch):
 
 
 @njit(cache=True, nogil=True)
-def _reduce_overflow_bucket(bucketed, start: int, end: int, p_stride: int, need_pairs: int, fen_ws, p_stack):
-    """Cold fallback when a pattern bucket's pair table exceeds the reusable workspace; uses the same reducer."""
-    pv = np.empty(need_pairs, dtype=np.int32)
-    ps = np.zeros(need_pairs, dtype=np.int32)
-    pt = np.empty(end - start, dtype=np.int32)
-    u = 0
-    for src in range(start, end):
-        bf = bucketed[src, 0]
-        pair = bucketed[src, 1] * p_stride + bucketed[src, 2]
-        if ps[pair] == 0:
-            ps[pair] = 1
-            pv[pair] = bf
-            pt[u] = pair
-            u += 1
-        elif bf > pv[pair]:
-            pv[pair] = bf
-    if u > p_stack.shape[0]:
-        p_stack = _rows_ensure(p_stack, 0, u)
-    return p_stack, _reduce_touched_pairs_inplace(p_stride, pt, u, pv, fen_ws, p_stack)
+def _reduce_overflow_bucket(bucketed, start: int, end: int, radix: int, p_max_fg: int, fenwick, p_stack):
+    """Bounded O(b) sparse fallback when a pattern bucket's dense pair extent exceeds the admitted pair workspace.
+
+    Allocates only O(b) sort scratch (16 bytes per bucket point) and reuses the already-admitted Fenwick workspace
+    (length >= n + 2, with a fresh stamp), preserving fail-loud bounds and exact equivalence to
+    `_reduce_touched_pairs_inplace`."""
+    b = end - start
+    if b <= 0:
+        return p_stack, 0
+    if radix > 2_000_000:
+        raise ValueError("FG response sparse overflow radix exceeded int64 sort key")
+    bit_values, bit_stamps, bit_stamp = fenwick.values, fenwick.stamps, fenwick.epoch
+    if p_max_fg + 1 >= bit_values.shape[0] or p_max_fg + 1 >= bit_stamps.shape[0]:
+        raise ValueError("FG response sparse overflow Fenwick bound was too small")
+    keys = np.empty(b, dtype=np.int64)
+    for k in range(b):
+        src = start + k
+        keys[k] = (bucketed[src, 1] * radix + bucketed[src, 2]) * radix + (radix - 1 - bucketed[src, 0])
+    order = np.argsort(keys)
+    if b > p_stack.shape[0]:
+        p_stack = _rows_ensure(p_stack, 0, b)
+    limit = p_max_fg + 2
+    kept = 0
+    level = -1
+    level_base = 0
+    seen_ng = -1
+    seen_fg = -1
+    for pos in range(b):
+        src = start + order[pos]
+        bf, ng, fg = bucketed[src, 0], bucketed[src, 1], bucketed[src, 2]
+        if ng == seen_ng and fg == seen_fg:
+            continue
+        seen_ng, seen_fg = ng, fg
+        best = -1
+        cursor = fg + 1
+        while cursor > 0:
+            if bit_stamps[cursor] == bit_stamp and bit_values[cursor] > best:
+                best = bit_values[cursor]
+            cursor -= cursor & -cursor
+        if bf > best:
+            if ng != level:
+                level = ng
+                level_base = kept
+            while kept - level_base >= 2:
+                cross = (p_stack[kept - 1, 0] - p_stack[kept - 2, 0]) * (p_stack[kept - 2, 2] - fg) - (
+                    p_stack[kept - 2, 2] - p_stack[kept - 1, 2]
+                ) * (bf - p_stack[kept - 2, 0])
+                if cross >= 0:
+                    kept -= 1
+                else:
+                    break
+            p_stack[kept, 0], p_stack[kept, 1], p_stack[kept, 2], p_stack[kept, 3] = bf, ng, fg, 0
+            kept += 1
+            cursor = fg + 1
+            while cursor < limit:
+                if bit_stamps[cursor] != bit_stamp:
+                    bit_stamps[cursor] = bit_stamp
+                    bit_values[cursor] = bf
+                elif bf > bit_values[cursor]:
+                    bit_values[cursor] = bf
+                cursor += cursor & -cursor
+    return p_stack, kept
 
 
 @njit(cache=True, nogil=True)
-def _points_frontier(points, masks, sizes, head, fen, pair_ws):
-    """A state's frontier from its candidate points, by three reductions, cheapest and strongest first:
+def _points_frontier(points, masks, bounds, fenwick, pairs):
+    """A state's frontier (uint64[k, 7]) from its candidate points (`int64[>= m, 4]`: body_fever, ng, fg, pattern_id)
+    and interned head masks (`uint64[>= patterns, 4]`), bounded by `_FrontierBounds` using `_FenwickWorkspace` and
+    `_PairWorkspace`:
 
-    1. Counting-sort by integer pattern id (O(m + P)), then per-pattern skyline + upper hulls: singletons and pairs
-       emit in O(1); buckets `b >= 3` stamp into the reusable pair table with L1-compact stride `p_max_fg + 1` and
-       reduce in one fused pass via `_reduce_touched_pairs_inplace`.
+    1. Counting-sort by integer pattern id (O(m + P)), then per-pattern skyline + upper hulls: singletons emit directly;
+       buckets `b >= 2` stamp into the admitted pair workspace with compact stride `p_max_fg + 1` and reduce via
+       `_reduce_touched_pairs_inplace`, falling back to bounded O(b) sparse `_reduce_overflow_bucket` if the pair extent
+       exceeds the admitted workspace.
     2. The head envelope (cone) filter across patterns (`head_envelope_filter`, lossless by its 16-corner proof).
     3. The exact structural Pareto set of what remains, chained by fever/Great overlap pair.
-    No points gives the zero surface when `empty_is_zero`, else nothing. Returns (frontier, pair_epoch, fen_stamp)."""
-    m, n, patterns = sizes
-    lo_pos, hi_pos, empty_is_zero = head
-    fen_values, fen_stamps, fen_stamp, sort_bits = fen
-    pair_values, pair_stamps, pair_touched, pair_epoch = pair_ws
+    No points gives the zero surface when `bounds.empty_is_zero`, else nothing.
+    Returns (frontier uint64[k, 7], updated pair_epoch, updated fen_stamp)."""
+    m, n, patterns = bounds.m, bounds.n, bounds.patterns
+    lo_pos, hi_pos, empty_is_zero = bounds.lo_pos, bounds.hi_pos, bounds.empty_is_zero
+    fen_values, fen_stamps, fen_stamp, sort_bits = fenwick.values, fenwick.stamps, fenwick.epoch, fenwick.sort_bits
+    pair_values, pair_stamps, pair_touched, pair_epoch = pairs.values, pairs.stamps, pairs.touched, pairs.epoch
     if m == 0:
         return np.zeros((1 if empty_is_zero else 0, 7), dtype=np.uint64), pair_epoch, fen_stamp
     radix = n + 1
@@ -2778,26 +2797,17 @@ def _points_frontier(points, masks, sizes, head, fen, pair_ws):
         if b == 1:
             p_stack[0, 0], p_stack[0, 1], p_stack[0, 2] = bucketed[start, 0], bucketed[start, 1], bucketed[start, 2]
             kept_p = 1
-        elif b == 2:
-            bf0, ng0, fg0 = bucketed[start, 0], bucketed[start, 1], bucketed[start, 2]
-            bf1, ng1, fg1 = bucketed[start + 1, 0], bucketed[start + 1, 1], bucketed[start + 1, 2]
-            if ng1 < ng0 or (ng1 == ng0 and (fg1 < fg0 or (fg1 == fg0 and bf1 > bf0))):
-                bf0, bf1, ng0, ng1, fg0, fg1 = bf1, bf0, ng1, ng0, fg1, fg0
-            p_stack[0, 0], p_stack[0, 1], p_stack[0, 2] = bf0, ng0, fg0
-            if not (ng1 == ng0 and fg1 == fg0) and (fg0 > fg1 or bf1 > bf0):
-                p_stack[1, 0], p_stack[1, 1], p_stack[1, 2] = bf1, ng1, fg1
-                kept_p = 2
-            else:
-                kept_p = 1
         else:
-            p_stride = pat_max_fg[p] + 1
+            p_max_fg = pat_max_fg[p]
+            p_stride = p_max_fg + 1
             need_pairs = (pat_max_ng[p] + 1) * p_stride
-            if p_stride > 1:
+            use_dense = need_pairs <= pair_size and pair_ok
+            if p_stride > 1 or not use_dense:
                 fen_stamp += 1
                 if fen_stamp > (1 << 30):
                     fen_stamps[:] = 0
                     fen_stamp = 1
-            if need_pairs <= pair_size and pair_ok:
+            if use_dense:
                 pair_epoch += 1
                 if pair_epoch > (1 << 30):
                     pair_stamps[:] = 0
@@ -2816,11 +2826,22 @@ def _points_frontier(points, masks, sizes, head, fen, pair_ws):
                 if u > p_stack.shape[0]:
                     p_stack = _rows_ensure(p_stack, 0, u)
                 kept_p = _reduce_touched_pairs_inplace(
-                    p_stride, pair_touched, u, pair_values, (fen_values, fen_stamps, fen_stamp, sort_bits), p_stack
+                    p_stride,
+                    pair_touched,
+                    u,
+                    pair_values,
+                    _FenwickWorkspace(fen_values, fen_stamps, fen_stamp, sort_bits),
+                    p_stack,
                 )
             else:
                 p_stack, kept_p = _reduce_overflow_bucket(
-                    bucketed, start, end, p_stride, need_pairs, (fen_values, fen_stamps, fen_stamp, sort_bits), p_stack
+                    bucketed,
+                    start,
+                    end,
+                    radix,
+                    p_max_fg,
+                    _FenwickWorkspace(fen_values, fen_stamps, fen_stamp, sort_bits),
+                    p_stack,
                 )
         for k in range(kept_p):
             frontier[out_count, 0], frontier[out_count, 1] = m0, m1
@@ -2934,17 +2955,11 @@ def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: in
         reachable,
         region,
         ends,
-        (
+        _BodyScratch(
             pair_mod,
-            pair_values[:pair_size],
-            pair_stamps[:pair_size],
-            pair_touched[:pair_size],
-            pair_epoch,
-            bit_values[: pair_mod + 1],
-            bit_stamps[: pair_mod + 1],
-            bit_epoch,
             max_eg_width,
-            sort_bits,
+            _PairWorkspace(pair_values[:pair_size], pair_stamps[:pair_size], pair_touched[:pair_size], pair_epoch),
+            _FenwickWorkspace(bit_values[: pair_mod + 1], bit_stamps[: pair_mod + 1], bit_epoch, sort_bits),
         ),
     )
 
@@ -2993,10 +3008,9 @@ def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: in
         frontier, pair_epoch, bit_epoch = _points_frontier(
             points,
             masks,
-            (m, n, patterns),
-            (state, head_limit, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
-            (bit_values, bit_stamps, bit_epoch, sort_bits),
-            (pair_values, pair_stamps, pair_touched, pair_epoch),
+            _FrontierBounds(m, n, patterns, state, head_limit, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
+            _FenwickWorkspace(bit_values, bit_stamps, bit_epoch, sort_bits),
+            _PairWorkspace(pair_values, pair_stamps, pair_touched, pair_epoch),
         )
         retained_total += len(frontier)
         if len(frontier) > max_state_frontier:
