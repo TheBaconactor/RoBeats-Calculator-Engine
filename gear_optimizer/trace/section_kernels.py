@@ -27,7 +27,7 @@ from gear_optimizer.frontier.producer_kernels import (
 
 # Numba's disk cache watches only this file, and the kernels here carry compiled copies of the producer kernels they call.
 # This digest of producer_kernels.py makes an edit there change this file too (tests/test_repo_guardrails.py checks it).
-_PRODUCER_KERNELS_SHA256 = "bc055af16765ef58a4caae836a304898fb231ac3731188b8ee034af51d516960"
+_PRODUCER_KERNELS_SHA256 = "823beb689e34adb0baacd945c12ea013d74aeffd7c2442f751d434caff8d6fe3"
 
 # What the sections of a song read: its hit times, lanes, and one fill denominator and fever time.
 SectionContext = namedtuple(

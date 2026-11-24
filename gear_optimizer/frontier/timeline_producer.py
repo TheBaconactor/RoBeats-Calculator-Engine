@@ -13,8 +13,10 @@ import numpy as np
 
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
-from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
+from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid, intern_fixed_timing_surfaces
 from gear_optimizer.solver.timing_envelope import TimedSong, fever_axes
+
+from .fg_cache_patterns import surface_head_coeffs
 
 GRID_SIZE = MAX_STAT + 1
 MAX_TIMELINE_FRONTIER_SURFACES = 262144  # the song's frontier pool: the GPU field-size cap (VRAM bound 1,048,576)
@@ -44,21 +46,6 @@ class TimelineFrontierGridPayload:
     grid_gap: np.ndarray
     grid_fever_activations: np.ndarray
     frontier_pool_used: int
-
-
-def _head_mask_coefficients_py(m0: int, m1: int, m2: int, m3: int, head_len: int) -> tuple[int, int, int, int]:
-    """Of the first `head_len` notes, by the fever mask's four 32-bit words: how many are normal and how many fever
-    notes, then the sums of their 1-based positions."""
-    words = (m0, m1, m2, m3)
-    n_hn = n_hf = sigma_hn = sigma_hf = 0
-    for note_index in range(head_len):
-        if (words[note_index // 32] >> (note_index % 32)) & 1:
-            n_hf += 1
-            sigma_hf += note_index + 1
-        else:
-            n_hn += 1
-            sigma_hn += note_index + 1
-    return n_hn, n_hf, sigma_hn, sigma_hf
 
 
 def build_timeline_frontier_grid_payload(
@@ -103,8 +90,14 @@ def build_timeline_frontier_grid_payload(
     # mask's four 32-bit words, and its surface count and pool offset.
     pool: list[tuple[int, int, int]] = []
     offset_of: dict[tuple[tuple[int, int, int], ...], int] = {}
+    cell_by_id: dict[int, tuple[int, ...]] = {}
     cells = []
     for frontier in frontiers:
+        fid = id(frontier)
+        cached_cell = cell_by_id.get(fid)
+        if cached_cell is not None:
+            cells.append(cached_cell)
+            continue
         rows = frontier.first_frontier.numba_rows().tolist()
         if not rows:
             raise ValueError("timeline physical producer emitted an empty frontier")
@@ -123,10 +116,12 @@ def build_timeline_frontier_grid_payload(
             offset = offset_of[surfaces] = len(pool)
             pool.extend(surfaces)
         body_fever, fever_lo, fever_hi = max(surfaces, key=lambda surface: (surface[0], surface[2], surface[1]))
-        cells.append((
+        cell = (
             body_fever, total_body - body_fever, head_len, fever_lo & _WORD, fever_lo >> 32, fever_hi & _WORD,
             fever_hi >> 32, len(surfaces), offset,
-        ))
+        )
+        cell_by_id[fid] = cell
+        cells.append(cell)
     dense = np.asarray(cells, dtype=np.int64).reshape(unique_fever_times.size, unique_fill_counts.size, 9)
     grid = dense[time_inverse.reshape(GRID_SIZE, 1), fill_inverse.reshape(1, GRID_SIZE)][None]
 
@@ -135,15 +130,17 @@ def build_timeline_frontier_grid_payload(
     body_normal_pool = np.zeros(pool_shape, dtype=np.int32)
     masks_pool = np.zeros((*pool_shape, 4), dtype=np.uint32)
     coeffs_pool = np.zeros((*pool_shape, 4), dtype=np.int16)
-    head_coeffs: dict[tuple[int, int, int, int], tuple[int, int, int, int]] = {}
-    for pool_idx, (body_fever, fever_lo, fever_hi) in enumerate(pool):
-        words = (fever_lo & _WORD, fever_lo >> 32, fever_hi & _WORD, fever_hi >> 32)
-        if words not in head_coeffs:
-            head_coeffs[words] = _head_mask_coefficients_py(*words, head_len=head_len)
-        body_fever_pool[0, pool_idx] = body_fever
-        body_normal_pool[0, pool_idx] = total_body - body_fever
-        masks_pool[0, pool_idx] = words
-        coeffs_pool[0, pool_idx] = head_coeffs[words]
+    pool_used = len(pool)
+    if pool_used:
+        pool_arr = np.asarray(pool, dtype=np.uint64)
+        bf_col = pool_arr[:, 0].astype(np.int32)
+        body_fever_pool[0, :pool_used] = bf_col
+        body_normal_pool[0, :pool_used] = total_body - bf_col
+        masks_pool[0, :pool_used, 0] = (pool_arr[:, 1] & np.uint64(_WORD)).astype(np.uint32)
+        masks_pool[0, :pool_used, 1] = (pool_arr[:, 1] >> np.uint64(32)).astype(np.uint32)
+        masks_pool[0, :pool_used, 2] = (pool_arr[:, 2] & np.uint64(_WORD)).astype(np.uint32)
+        masks_pool[0, :pool_used, 3] = (pool_arr[:, 2] >> np.uint64(32)).astype(np.uint32)
+        coeffs_pool[0, :pool_used] = surface_head_coeffs(masks_pool[0, :pool_used], head_len=head_len).astype(np.int16)
 
     return TimelineFrontierGridPayload(
         grid_count_body_fever=grid[..., 0].astype(np.int32),
@@ -179,21 +176,11 @@ def build_fixed_timing_payload(song: TimedSong, curves: StatCurves) -> TimelineF
         (body_fever, body_normal, masks, activations, last_fever_end),
     )
     gap = (total_notes - last_fever_end).astype(np.int32)
-
-    # One row per cell: body fever, body normal, the four mask words, activations, gap (int64 holds them all exactly).
-    cells = np.column_stack(
-        (body_fever.ravel(), body_normal.ravel(), masks.reshape(-1, 4), activations.ravel(), gap.ravel())
-    ).astype(np.int64)
-    surfaces, first_cell, surface_of_cell = np.unique(cells, axis=0, return_index=True, return_inverse=True)
-    if surfaces.shape[0] > MAX_TIMELINE_FRONTIER_SURFACES:
-        raise RuntimeError(f"non-precise timeline surface pool overflow: cap={MAX_TIMELINE_FRONTIER_SURFACES}")
-    order = np.argsort(first_cell)  # np.unique sorts the surfaces: back to the order their first cells come
-    pool_row = np.empty_like(order)
-    pool_row[order] = np.arange(order.size)
-    surfaces = surfaces[order]
-    head_coeffs = np.asarray(
-        [_head_mask_coefficients_py(*words, head_len=head_len) for words in surfaces[:, 2:6].tolist()], dtype=np.int16
-    ).reshape(-1, 4)
+    total_body = max(0, total_notes - 100)
+    offsets, pool_bf, pool_masks, pool_used = intern_fixed_timing_surfaces(
+        body_fever, masks, activations, last_fever_end, MAX_TIMELINE_FRONTIER_SURFACES
+    )
+    head_coeffs = surface_head_coeffs(pool_masks, head_len=head_len).astype(np.int16)
     shape = (1, *grid)
     return TimelineFrontierGridPayload(
         grid_count_body_fever=body_fever[np.newaxis],
@@ -201,12 +188,12 @@ def build_fixed_timing_payload(song: TimedSong, curves: StatCurves) -> TimelineF
         grid_head_len=np.full(shape, head_len, dtype=np.int8),
         grid_fever_masks_bits=masks[np.newaxis],
         grid_frontier_count=np.ones(shape, dtype=np.int32),
-        grid_frontier_offset=pool_row[surface_of_cell].astype(np.int32).reshape(shape),
-        grid_frontier_body_fever_pool=surfaces[:, 0].astype(np.int32)[np.newaxis],
-        grid_frontier_body_normal_pool=surfaces[:, 1].astype(np.int32)[np.newaxis],
-        grid_frontier_masks_bits_pool=surfaces[:, 2:6].astype(np.uint32)[np.newaxis],
+        grid_frontier_offset=offsets[np.newaxis],
+        grid_frontier_body_fever_pool=pool_bf[np.newaxis],
+        grid_frontier_body_normal_pool=(total_body - pool_bf).astype(np.int32)[np.newaxis],
+        grid_frontier_masks_bits_pool=pool_masks[np.newaxis],
         grid_frontier_head_coeffs_pool=head_coeffs[np.newaxis],
         grid_gap=gap[np.newaxis],
         grid_fever_activations=activations[np.newaxis],
-        frontier_pool_used=int(surfaces.shape[0]),
+        frontier_pool_used=int(pool_used),
     )

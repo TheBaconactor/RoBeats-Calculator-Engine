@@ -215,6 +215,29 @@ def test_surface_pattern_expansion_rejects_invalid_pattern_id() -> None:
         expand_surface_rows(row_refs, patterns)
 
 
+@pytest.mark.parametrize(
+    ("row_count", "pattern_count"),
+    [(0, 0), (1, 1), (12, 1), (200, 9), (300, 140)],
+)
+def test_intern_surface_row_words_matches_np_unique_oracle(row_count: int, pattern_count: int) -> None:
+    """Hash interning + lexsort of unique head masks matches np.unique(..., axis=0) exactly, including rehashes."""
+    from gear_optimizer.frontier.fg_cache_patterns import intern_surface_row_words
+
+    pool = (
+        np.empty((0, 11), dtype=np.uint32)
+        if row_count == 0
+        else _shared_pattern_pool(row_count, pattern_count)
+    )
+    row_refs, unique_words = intern_surface_row_words(pool)
+    if row_count == 0:
+        assert row_refs.shape == (0, 4) and unique_words.shape == (0, 8)
+        return
+    expected_words, expected_ids = np.unique(pool[:, :8], axis=0, return_inverse=True)
+    assert np.array_equal(unique_words, expected_words)
+    assert np.array_equal(row_refs[:, 0], expected_ids.astype(np.uint32))
+    assert np.array_equal(row_refs[:, 1:4], pool[:, 8:11])
+
+
 
 
 def _shared_pattern_pool(row_count: int, pattern_count: int) -> np.ndarray:
