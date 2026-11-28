@@ -21,19 +21,6 @@ def _executor(workers: int) -> concurrent.futures.ThreadPoolExecutor:
     return concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="FrontierBuild")
 
 
-def _region_table(build: SongBuild, table: ActionTable) -> tuple[np.ndarray, ...]:
-    song = build.song
-    return kernels.region_core_table(
-        table.action_k,
-        table.raw_fever_fill,
-        song.timestamps,
-        kernels.HitTimes(
-            song.perfect_floor, song.perfect_candidates, song.great_floor, song.great_candidates, song.late_great_floor
-        ),
-        song.lanes,
-    )
-
-
 def _table_bytes(region_table: tuple[np.ndarray, ...]) -> int:
     return sum(array.nbytes for array in region_table)
 
@@ -149,8 +136,17 @@ def schedule_groups(build: SongBuild, groups: list[_Group]) -> list[_Results]:
     Without forced-Great timing no region run exists and every group reads one contentless table."""
     n = build.song.timestamps.shape[0]
     if build.use_forced_great_timing:
+        song = build.song
+        hit_times = kernels.HitTimes(
+            song.perfect_floor, song.perfect_candidates, song.great_floor, song.great_candidates, song.late_great_floor
+        )
+        song_cores = kernels.song_region_cores(song.timestamps, hit_times)
+
         def table_of(group: _Group) -> tuple[np.ndarray, ...]:
-            return _region_table(build, group[0].table)
+            table = group[0].table
+            return kernels.region_core_table(
+                table.action_k, table.raw_fever_fill, song.timestamps, hit_times, song.lanes, song_cores
+            )
     else:
         no_rows = np.empty((0, 5), dtype=np.int32)
         empty_table = (np.zeros(min(n, 100) + 2, dtype=np.int64), no_rows, np.zeros(n + 1, dtype=np.int64), no_rows)

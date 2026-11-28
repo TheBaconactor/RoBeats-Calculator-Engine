@@ -44,17 +44,25 @@ ActivationEnds = namedtuple(
         "late_exit_e",
     ],
 )
-# A surface's basis for the corner scores: its body counts, then its head sums at the box's low and high combo.
-_BASIS_BODY_FEVER = 0
-_BASIS_BODY_NORMAL_GREAT = 1
-_BASIS_BODY_FEVER_GREAT = 2
-_BASIS_B_LO = 3
-_BASIS_C_LO = 4
-_BASIS_D_LO = 5
-_BASIS_B_HI = 6
-_BASIS_C_HI = 7
-_BASIS_D_HI = 8
-
+# Song-invariant per-activation region-2 cores shared across every fill group of one song (song_region_cores):
+# great_end (int32[n], note index or -1), late_token/perfect_token (int32[n], kind * n + note or -1),
+# hit (float32[n], seconds), flags (uint8[n], bit 0: hit & later notes legal, bit 1: Greats before activation legal).
+SongRegionCores = namedtuple("SongRegionCores", ["great_end", "late_token", "perfect_token", "hit", "flags"])
+# Stamped dense (normal Greats, fever Greats) -> best body-fever table shared by a worker thread:
+# values/stamps/touched are int32[>= (n + 1) * pair_mod]; epoch is the monotonic int stamp (reset past 1 << 30).
+_PairWorkspace = namedtuple("_PairWorkspace", ["values", "stamps", "touched", "epoch"])
+# Stamped 1-based Fenwick prefix-max workspace over fever Greats + reusable 64K-bit sort scratch:
+# values/stamps are int32[>= n + 2]; epoch is the monotonic int stamp; sort_bits is zeroed uint64[1024].
+_FenwickWorkspace = namedtuple("_FenwickWorkspace", ["values", "stamps", "epoch", "sort_bits"])
+# Body-DP scratch bundle passed to `_body_tails`: admitted pair_mod (int <= n + 1), prepass max_eg_width (int notes),
+# and sliced `_PairWorkspace` / `_FenwickWorkspace` views.
+_BodyScratch = namedtuple("_BodyScratch", ["pair_mod", "max_eg_width", "pairs", "fenwick"])
+# Per-state bounds for `_points_frontier`: candidate count m, total chart notes n, interned pattern count, head slice
+# [lo_pos, hi_pos) in [0, 100], and whether m == 0 emits the zero surface row.
+_FrontierBounds = namedtuple("_FrontierBounds", ["m", "n", "patterns", "lo_pos", "hi_pos", "empty_is_zero"])
+# Per-activation body shift parameters passed to `_body_end_shifts`: family kind, state-shifted normal_base,
+# act_extra (0/1), fg_run_lo = max(activation, run_start), and forced-Great great_end (note indices).
+_RegionShift = namedtuple("_RegionShift", ["kind", "normal_base", "act_extra", "fg_run_lo", "great_end"])
 # Song tokens ``kind * n + note_index`` name every value activation-hit selection can return (chart / Perfect /
 # Great / capped Perfect / capped Great); the song-wide endpoint tables are indexed by them directly.
 _REGION_HIT_CHART = 0
@@ -326,90 +334,53 @@ def activation_hit_tables(
 
 @njit(cache=True, nogil=True)
 def fill_crossing_run(start: int, great_run_start: int, k: int, fever_fill_denom: float, n: int):
-    s = start
-    g0 = great_run_start
-    count = k
-    total = n
-    denom = fever_fill_denom
-    run_lo = g0 if g0 > s else s
-    run_hi = g0 + count if g0 + count < total else total
-    if run_hi <= run_lo:
-        idx = s + int(np.ceil(denom)) - 1
-        if idx < total:
-            return idx, 0
-        return -1, 0
-    g0 = run_lo
+    run_lo = max(great_run_start, start)
+    run_hi = min(great_run_start + k, n)
+    idx = start + int(np.ceil(fever_fill_denom)) - 1
+    if run_hi <= run_lo or idx < run_lo:
+        return (idx, 0) if idx < n else (-1, 0)
     count = run_hi - run_lo
-    perfects_before = g0 - s
-
-    idx = s + int(np.ceil(denom)) - 1
-    if idx < g0:
-        if idx < total:
-            return idx, 0
-        return -1, 0
-
-    idx = g0 - 1 + int(np.ceil(2.0 * (denom - float(perfects_before))))
-    if idx < g0 + count:
-        if idx < g0:
-            idx = g0
-        if idx < total:
-            return idx, 1
-        return -1, 0
-
-    idx = (g0 + count) - 1 + int(np.ceil(denom - float(perfects_before) - 0.5 * float(count)))
-    if idx < total:
-        return idx, 0
-    return -1, 0
+    perfects_before = run_lo - start
+    idx = max(run_lo, run_lo - 1 + int(np.ceil(2.0 * (fever_fill_denom - float(perfects_before)))))
+    if idx < run_hi:
+        return (idx, 1) if idx < n else (-1, 0)
+    idx = run_hi - 1 + int(np.ceil(fever_fill_denom - float(perfects_before) - 0.5 * float(count)))
+    return (idx, 0) if idx < n else (-1, 0)
 
 
 @njit(cache=True, nogil=True)
 def region2_offset_for_count(start: int, count: int, fever_fill_denom: float, n: int) -> int:
     if count <= 0 or start >= n:
         return -1
-    denom = fever_fill_denom
-    # Let x = run_start - section_start and m = count. The activation is the m-th Great in
-    # the run iff x + 0.5*(m-1) < denom <= x + 0.5*m. That half-open interval has width 0.5,
-    # so it contains at most one integer x.
-    if denom <= 0.0 or not np.isfinite(denom):
+    # Let x = run_start - section_start and m = count. The activation is the m-th Great in the run iff
+    # x + 0.5*(m-1) < denom <= x + 0.5*m. That half-open interval of width 0.5 contains at most one integer x.
+    if fever_fill_denom <= 0.0 or not np.isfinite(fever_fill_denom):
         raise ValueError("fever_fill_denom must be finite and > 0")
-    # At most one fill unit exists per chart row. This exact no-crossing case must return before
-    # any float-to-integer conversion, including legal finite values above the int64 range.
-    if denom > float(n):
+    # Guard before float-to-int conversion so legal finite values above int64 range return cleanly.
+    if fever_fill_denom > float(n):
         return -1
-    lo = int(np.ceil(denom - 0.5 * float(count)))
-    hi = int(np.ceil(denom - 0.5 * float(count - 1))) - 1
-    if lo < 1:
-        return -1
-    if lo != hi:
-        return -1
-    if start + lo + count - 1 >= n:
+    lo = int(np.ceil(fever_fill_denom - 0.5 * float(count)))
+    hi = int(np.ceil(fever_fill_denom - 0.5 * float(count - 1))) - 1
+    if lo < 1 or lo != hi or start + lo + count - 1 >= n:
         return -1
     return lo
 
 
 @njit(cache=True, nogil=True)
 def region2_k_scan_stop(action_count: int, fever_fill_denom: float) -> int:
-    count = action_count
-    denom = fever_fill_denom
-    if count <= 0:
+    if action_count <= 0:
         return 0
-    if denom <= 0.0 or not np.isfinite(denom):
+    if fever_fill_denom <= 0.0 or not np.isfinite(fever_fill_denom):
         raise ValueError("fever_fill_denom must be finite and > 0")
-    # min(action_count, ceil(2*denom)+1) is already action_count above this threshold. Compare
-    # before multiplication so a legal huge finite denominator cannot overflow to infinity.
-    if denom >= 0.5 * float(count - 1):
-        return count
-    stop = int(np.ceil(2.0 * denom)) + 1
-    if stop < 1:
-        stop = 1
-    if stop > count:
-        stop = count
-    return stop
+    # Compare before multiplying by 2 so huge finite denominators cannot overflow to infinity.
+    if fever_fill_denom >= 0.5 * float(action_count - 1):
+        return action_count
+    return min(action_count, max(1, int(np.ceil(2.0 * fever_fill_denom)) + 1))
 
 
 @njit(cache=True, nogil=True)
 def _lane_prefix_signature_reachable(
-    activation_index: int,
+    a: int,
     activation_hit_timestamp: float,
     hit_times,
     lanes,
@@ -420,26 +391,13 @@ def _lane_prefix_signature_reachable(
 ) -> bool:
     """Exact exceptional-path test for one score-bearing prefix signature.
 
-    The common producer witness is the global chart prefix and is certified without allocation by
-    the caller.  When timing windows force a cross-lane swap, each lane still contributes one
-    chart-order prefix.  This packed DP decides the exact pair ``(event count, Great count)``;
-    full lane-ID equality owns identity and hashes are not involved.
+    When timing windows force a cross-lane swap, each lane still contributes one chart-order prefix. This packed DP
+    decides the exact pair ``(event count, Great count)``; full lane-ID equality owns identity.
     """
-    section_start, section_end = section
-    great_start, great_end = run
-    target_event_count, target_great_count = target
-    (
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        late_great_floor_timestamps,
-    ) = hit_times
-    a = activation_index
-    start = section_start
-    end = section_end
-    target_count = target_event_count
-    target_great = target_great_count
+    start, end = section
+    g0, g1 = run
+    target_count, target_great = target
+    perfect_floor, perfect_candidates, great_floor, great_candidates, _late_great_floor = hit_times
     section_length = end - start
     if target_count < 0 or target_count > section_length - 1 or target_great < 0 or target_great > target_count:
         return False
@@ -448,10 +406,10 @@ def _lane_prefix_signature_reachable(
 
     word_count = (target_great + 64) // 64
     word_cells = (target_count + 1) * word_count
-    if word_cells <= 0 or word_cells > int(_EXACT_LANE_SIGNATURE_MAX_WORD_CELLS):
+    if word_cells <= 0 or word_cells > _EXACT_LANE_SIGNATURE_MAX_WORD_CELLS:
         raise MemoryError("FG exact lane-prefix signature DP exceeds its fail-loud capacity")
     reachable = np.zeros((target_count + 1, word_count), dtype=np.uint64)
-    merged = np.zeros_like(reachable)
+    merged = np.empty_like(reachable)
     reachable[0, 0] = np.uint64(1)
 
     unique_lanes = np.empty(max(1, section_length), dtype=np.int64)
@@ -470,8 +428,6 @@ def _lane_prefix_signature_reachable(
     activation_lane = np.int64(lanes[a])
     prefix_greats = np.empty(section_length + 1, dtype=np.int32)
     h_a = np.float32(activation_hit_timestamp)
-    g0 = great_start
-    g1 = great_end
     for lane_idx in range(unique_count):
         lane_id = unique_lanes[lane_idx]
         note_count = 0
@@ -481,14 +437,14 @@ def _lane_prefix_signature_reachable(
         head_note_count = 0
         target_head_count = 0
         lane_clock = -np.inf
-        prefix_greats[0] = np.int32(0)
+        prefix_greats[0] = 0
         for note_idx in range(start, end):
             if np.int64(lanes[note_idx]) != lane_id:
                 continue
-            is_great = bool((g0 <= note_idx and note_idx < g1) or (note_idx == a and activation_is_great != 0))
-            low = great_floor_timestamps[note_idx] if is_great else perfect_floor_timestamps[note_idx]
-            high = great_candidate_timestamps[note_idx] if is_great else perfect_candidate_timestamps[note_idx]
-            lane_clock = max(float(lane_clock), float(low))
+            is_great = (g0 <= note_idx < g1) or (note_idx == a and activation_is_great != 0)
+            low = great_floor[note_idx] if is_great else perfect_floor[note_idx]
+            high = great_candidates[note_idx] if is_great else perfect_candidates[note_idx]
+            lane_clock = max(lane_clock, float(low))
             if lane_clock > float(high):
                 raise ValueError("FG lane label windows cannot realize chart-order full combo")
             if high < h_a:
@@ -501,33 +457,27 @@ def _lane_prefix_signature_reachable(
                 head_note_count += 1
                 if note_idx < a:
                     target_head_count += 1
-            prefix_greats[note_count + 1] = np.int32(int(prefix_greats[note_count]) + int(is_great))
+            prefix_greats[note_count + 1] = prefix_greats[note_count] + (1 if is_great else 0)
             note_count += 1
         if maximum_count < 0:
             maximum_count = note_count
         if minimum_count > maximum_count:
             return False
 
-        option_start = minimum_count
-        option_end = maximum_count
+        option_start, option_end = minimum_count, maximum_count
         if lane_id == activation_lane:
             if activation_position < 0:
                 raise ValueError("FG activation note is absent from its exact lane")
             if not (minimum_count <= activation_position <= maximum_count):
                 return False
-            option_start = activation_position
-            option_end = activation_position
+            option_start = option_end = activation_position
+        option_start = max(option_start, target_head_count)
         if target_head_count < head_note_count:
-            option_start = max(option_start, target_head_count)
             option_end = min(option_end, target_head_count)
-        else:
-            option_start = max(option_start, target_head_count)
         if option_start > option_end:
             return False
 
-        for count_idx in range(target_count + 1):
-            for word_idx in range(word_count):
-                merged[count_idx, word_idx] = np.uint64(0)
+        merged[:] = np.uint64(0)
         for option_count in range(option_start, option_end + 1):
             option_great = int(prefix_greats[option_count])
             if option_count > target_count or option_great > target_great:
@@ -542,26 +492,20 @@ def _lane_prefix_signature_reachable(
                         continue
                     output_word = source_word + word_shift
                     if output_word < word_count:
-                        merged[output_count, output_word] |= np.uint64(bits << np.uint64(bit_shift))
+                        merged[output_count, output_word] |= bits << np.uint64(bit_shift)
                     if bit_shift != 0 and output_word + 1 < word_count:
-                        merged[output_count, output_word + 1] |= np.uint64(bits >> np.uint64(64 - bit_shift))
-        temporary = reachable
-        reachable = merged
-        merged = temporary
+                        merged[output_count, output_word + 1] |= bits >> np.uint64(64 - bit_shift)
+        reachable, merged = merged, reachable
 
-    target_word = target_great // 64
-    target_bit = target_great % 64
-    return bool(reachable[target_count, target_word] & (np.uint64(1) << np.uint64(target_bit)))
+    return bool(reachable[target_count, target_great // 64] & (np.uint64(1) << np.uint64(target_great % 64)))
 
 
 @njit(cache=True, nogil=True)
 def _fill_window_holds(denom: float, preactivation_count: int, great_before: int, activation_is_great: bool) -> bool:
     """Whether the bar fills on the activation: `preactivation_count` notes of the section precede it, `great_before`
     of them Greats (half a fill unit each), and the activation adds a unit as a Perfect and half as a Great."""
-    preactivation_half = 2 * preactivation_count - great_before
-    activation_half = 1 if activation_is_great else 2
-    fill_before = 0.5 * float(preactivation_half)
-    return fill_before < denom and denom <= fill_before + 0.5 * float(activation_half)
+    fill_before = 0.5 * float(2 * preactivation_count - great_before)
+    return fill_before < denom and denom <= fill_before + (0.5 if activation_is_great else 1.0)
 
 
 @njit(cache=True, nogil=True)
@@ -574,7 +518,7 @@ def _later_notes_allow(a: int, h_a, timestamps, perfect_candidate_timestamps, gr
     for j in range(a + 1, end):
         if timestamps[j] >= h_a:
             break
-        label_high = great_candidate_timestamps[j] if g0 <= j and j < g1 else perfect_candidate_timestamps[j]
+        label_high = great_candidate_timestamps[j] if g0 <= j < g1 else perfect_candidate_timestamps[j]
         if label_high < h_a:
             return False
     return True
@@ -582,189 +526,117 @@ def _later_notes_allow(a: int, h_a, timestamps, perfect_candidate_timestamps, gr
 
 @njit(cache=True, nogil=True)
 def activation_reachable_contiguous_run(
-    activation_index: int,
+    a: int,
     activation_hit_timestamp: float,
     timestamps,
     hit_times,
     lanes,
-    fever_fill_denom: float,
+    denom: float,
     bounds,
     activation_great_i: int,
 ) -> bool:
-    section_start, section_end, great_start, great_count = bounds
-    (
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        late_great_floor_timestamps,
-    ) = hit_times
-    a = activation_index
-    start = section_start
-    end = section_end
+    start, end, great_start, great_count = bounds
+    perfect_floor, perfect_candidates, great_floor, great_candidates, _late_great_floor = hit_times
     if start < 0 or end < start or not (start <= a < end):
         return False
-    denom = fever_fill_denom
     if denom <= 0.0 or not np.isfinite(denom):
         raise ValueError("fever_fill_denom must be finite and > 0")
-    total = perfect_candidate_timestamps.shape[0]
+    total = perfect_candidates.shape[0]
     if end > total:
         return False
     if (
         timestamps.shape[0] < total
-        or perfect_floor_timestamps.shape[0] < total
-        or great_floor_timestamps.shape[0] < total
-        or great_candidate_timestamps.shape[0] < total
+        or perfect_floor.shape[0] < total
+        or great_floor.shape[0] < total
+        or great_candidates.shape[0] < total
         or lanes.shape[0] < total
     ):
         raise ValueError("FG activation reachability timing arrays are not aligned")
-    # Every row contributes at most one fill unit, including the activation.
     if denom > float(end - start):
         return False
 
-    g0 = great_start
-    if g0 < start:
-        g0 = start
-    if g0 < 0:
-        g0 = 0
-    g1 = great_start + great_count
-    if g1 > end:
-        g1 = end
-    if g1 < g0:
-        g1 = g0
-
+    g0 = max(start, great_start)
+    g1 = max(g0, min(end, great_start + great_count))
     h_a = np.float32(activation_hit_timestamp)
-    activation_is_great = activation_great_i != 0 or (g0 <= a and a < g1)
-    activation_low = great_floor_timestamps[a] if activation_is_great else perfect_floor_timestamps[a]
-    activation_high = great_candidate_timestamps[a] if activation_is_great else perfect_candidate_timestamps[a]
+    activation_is_great = activation_great_i != 0 or (g0 <= a < g1)
+    activation_low = great_floor[a] if activation_is_great else perfect_floor[a]
+    activation_high = great_candidates[a] if activation_is_great else perfect_candidates[a]
     if h_a < activation_low or h_a > activation_high:
         return False
 
-    # The producer's common witness consumes [section_start, activation) before activation. That
-    # exact chart prefix is an O(1) certificate for the score-bearing signature. If its timing is
-    # illegal, the exceptional DP below may replace body identities only; head identities remain
-    # position-exact and body event/Great counts remain identical to the cached surface.
     preactivation_count = a - start
-    great_before = max(0, min(a, g1) - max(start, g0))
+    great_before = max(0, min(a, g1) - g0)
     if not _fill_window_holds(denom, preactivation_count, great_before, activation_is_great):
         return False
 
-    # Both floor streams are monotone prefix maxima.  Check the last row of each constant-label
-    # segment: that is necessary and sufficient for every chart-prefix event to have a legal hit no
-    # later than h_a.
+    # Both floor streams are monotone prefix maxima, so checking the last row of each constant-label segment is
+    # necessary and sufficient for every chart-prefix note to have a legal hit <= h_a.
     chart_prefix_legal = True
     perfect_before_end = min(a, g0)
-    if perfect_before_end > start and perfect_floor_timestamps[perfect_before_end - 1] > h_a:
+    if perfect_before_end > start and perfect_floor[perfect_before_end - 1] > h_a:
         chart_prefix_legal = False
-    great_before_start = max(start, g0)
     great_before_end = min(a, g1)
-    if great_before_end > great_before_start and great_floor_timestamps[great_before_end - 1] > h_a:
+    if great_before_end > g0 and great_floor[great_before_end - 1] > h_a:
         chart_prefix_legal = False
-    perfect_after_run_start = max(start, g1)
-    if a > perfect_after_run_start and perfect_floor_timestamps[a - 1] > h_a:
+    if a > g1 and perfect_floor[a - 1] > h_a:
         chart_prefix_legal = False
 
-    if chart_prefix_legal and _later_notes_allow(
-        a, h_a, timestamps, perfect_candidate_timestamps, great_candidate_timestamps, (g0, g1, end)
-    ):
+    if chart_prefix_legal and _later_notes_allow(a, h_a, timestamps, perfect_candidates, great_candidates, (g0, g1, end)):
         return True
 
-    return bool(
-        _lane_prefix_signature_reachable(
-            a,
-            float(h_a),
-            hit_times,
-            lanes,
-            (start, end),
-            (g0, g1),
-            int(activation_is_great),
-            (preactivation_count, great_before),
-        )
+    return _lane_prefix_signature_reachable(
+        a, float(h_a), hit_times, lanes, (start, end), (g0, g1), 1 if activation_is_great else 0,
+        (preactivation_count, great_before),
     )
 
 
 @njit(cache=True, nogil=True)
 def minimal_reachable_region_great_end(
-    activation: int, section_start: int, run_start: int, raw_fever_fill: float, timestamps, hit_times, lanes, n: int
+    a: int, section_start: int, run_start: int, raw_fever_fill: float, timestamps, hit_times, lanes, n: int
 ):
-    (
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        late_great_floor_timestamps,
-    ) = hit_times
-    a = activation
-    hit_hi = great_candidate_timestamps[a]
+    _pf, perfect_candidates, _gf, great_candidates, late_great_floor = hit_times
+    hit_hi = great_candidates[a]
     max_great_end = a + 1
-    while max_great_end < n and perfect_candidate_timestamps[max_great_end] < hit_hi:
+    while max_great_end < n and perfect_candidates[max_great_end] < hit_hi:
         max_great_end += 1
     for great_end in range(a + 1, max_great_end + 1):
         hit, valid, token = late_great_activation_hit_for_run(
-            a,
-            timestamps,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
-            late_great_floor_timestamps,
-            run_start,
-            great_end - run_start,
-            n,
+            a, timestamps, perfect_candidates, great_candidates, late_great_floor, run_start, great_end - run_start, n
         )
-        if int(valid) == 0:
+        if valid == 0:
             continue
         if activation_reachable_contiguous_run(
-            a,
-            float(hit),
-            timestamps,
-            hit_times,
-            lanes,
-            raw_fever_fill,
-            (section_start, n, run_start, great_end - run_start),
-            1,
+            a, hit, timestamps, hit_times, lanes, raw_fever_fill, (section_start, n, run_start, great_end - run_start), 1
         ):
-            return great_end, int(token)
+            return great_end, token
     return -1, -1
 
 
 @njit(cache=True, nogil=True)
 def has_shifted_head_region(section_start: int, raw_fever_fill: float) -> int:
-    if section_start >= 99:
-        return 0
-    return 1 if int(np.ceil(raw_fever_fill)) > 1 else 0
+    return 1 if section_start < 99 and int(np.ceil(raw_fever_fill)) > 1 else 0
 
 
 @njit(cache=True, nogil=True)
 def region_core_candidate_capacity(n: int, region_action_count: int, action_k, raw_fever_fill: float) -> int:
-    """Exact count of offsets that can reach the expensive region-core producer.
-
-    This is an allocation bound only: validity still belongs exclusively to
-    ``_region_run_core``. Counting repeats the cheap offset arithmetic but never
-    reconstructs semantics, and the fill pass retains the canonical section/action/offset order.
-    """
+    """Exact count of offsets that can reach the region-core producer (allocation bound only)."""
     region_k_stop = region2_k_scan_stop(region_action_count, raw_fever_fill)
-    denom = raw_fever_fill
-    if denom <= 0.0 or not np.isfinite(denom):
+    if raw_fever_fill <= 0.0 or not np.isfinite(raw_fever_fill):
         raise ValueError("raw_fever_fill must be finite and > 0")
-    if denom > float(n):
+    if raw_fever_fill > float(n):
         return 0
-    shifted_sections = 0
-    if int(np.ceil(raw_fever_fill)) > 1:
-        shifted_sections = min(99, n + 1)
-    # Every action owns the shifted-head offset in the first 99 sections. A region-2 offset is
-    # independent of section_start until its final chart-boundary cutoff, so each action's count
-    # is one interval length. If that offset is also 1, subtract the overlapping shifted rows.
+    shifted_sections = min(99, n + 1) if int(np.ceil(raw_fever_fill)) > 1 else 0
     candidate_count = shifted_sections * region_action_count
-    for action_idx in range(int(region_k_stop)):
+    for action_idx in range(region_k_stop):
         k = int(action_k[action_idx])
         region_offset = region2_offset_for_count(0, k, raw_fever_fill, n)
-        if int(region_offset) < 1:
+        if region_offset < 1:
             continue
-        section_count = max(0, n - int(region_offset) - k + 1)
+        section_count = max(0, n - region_offset - k + 1)
         candidate_count += section_count
-        if int(region_offset) == 1:
+        if region_offset == 1:
             candidate_count -= min(shifted_sections, section_count)
-    maximum = (n + 1) * max(1, region_action_count) * 2
-    if candidate_count > maximum:
+    if candidate_count > (n + 1) * max(1, region_action_count) * 2:
         raise ValueError("FG region-core candidate capacity exceeds its exhaustive bound")
     return candidate_count
 
@@ -830,68 +702,23 @@ def region_edge(n: int, activation: int, late_hit_id: int, perfect_hit_id: int, 
 
 
 @njit(cache=True, nogil=True)
-def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, lanes):
-    """The region runs of one (fill, non-Fever base) group: at a section start, an action's k forced Greats from its
-    region-2 offset (where the k-th Great of the run crosses the fill, so the run's last Great activates) and, at the
-    first 99 section starts, from the shifted-head offset 1. A run's core (_region_run_core) reads the fill only,
-    never a fever time, so every fever time of the group shares the table.
+def song_region_cores(timestamps, hit_times):
+    """Per-activation region-2 core values that depend only on the song, shared across every fill group.
 
-    No fever ends before note ceil(fill), because an activation needs that many notes of its section: the section
-    starts 1 .. ceil(fill) are never enumerated, and the table holds no head row and no shifted-head run for them.
-
-    Returns four arrays:
-    - head_starts, head_rows: per section start up to note 100 (those the head states and the first section list) its
-      valid runs in enumeration order, action ascending and the region-2 offset before the shifted-head one, as rows
-      (offset, activation, Great end, late-Great hit, Perfect hit);
-    - key_starts, key_rows: per activation its distinct runs as rows (first section start, last section start, Great
-      end, late-Great hit, Perfect hit), every section start of a row's interval holding that run. A fever time
-      finishes a run from these alone, so the reachability prepass and the body states find a run by its activation
-      instead of walking the rows of every (section start, action).
-
-    A region-2 run of activation `a` with k Greats starts at a - k + 1 in the section starting at a - offset - k + 1.
-    Its late-Great hit and the notes after it do not depend on k, so per activation they are found once, for the
-    first Great end with a valid hit, and a run is valid at once when its chart prefix is legal there (the test of
-    activation_reachable_contiguous_run, whose pieces this shares); any other run takes the general route."""
+    For each activation note: its first Great end with a valid late-Great hit (-1: none), its late-Great and Perfect
+    hit tokens, its hit timestamp (float32), whether the hit and later notes are legal, and whether the Greats before
+    it are legal."""
     n = timestamps.shape[0]
-    actions = action_k.shape[0]
-    if lanes.shape[0] != n:
-        raise ValueError("FG region-core lane rows must match n")
-    if raw_fever_fill <= 0.0 or not np.isfinite(raw_fever_fill):
-        raise ValueError("raw_fever_fill must be finite and > 0")
-    head_limit = min(n, 100)
-    head_starts = np.zeros(head_limit + 2, dtype=np.int64)
-    key_starts = np.zeros(n + 1, dtype=np.int64)
-    if raw_fever_fill > float(n):
-        return head_starts, np.empty((0, 5), dtype=np.int32), key_starts, np.empty((0, 5), dtype=np.int32)
-    perfect_floor, great_floor = hit_times.perfect_floor_timestamps, hit_times.great_floor_timestamps
-    perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
+    great_floor = hit_times.great_floor_timestamps
+    perfect_candidates = hit_times.perfect_candidate_timestamps
+    great_candidates = hit_times.great_candidate_timestamps
     late_great_floor = hit_times.late_great_floor_timestamps
-    first_later_section = int(np.ceil(raw_fever_fill)) + 1
-
-    # The actions with a region-2 run: k, the activation's distance from the section start, and its fill window.
-    run_action = np.empty(actions, dtype=np.int64)
-    run_k = np.empty(actions, dtype=np.int64)
-    run_reach = np.empty(actions, dtype=np.int64)
-    run_fills = np.empty(actions, dtype=np.bool_)
-    runs = 0
-    for action in range(region2_k_scan_stop(actions, raw_fever_fill)):
-        k = int(action_k[action])
-        offset = region2_offset_for_count(0, k, raw_fever_fill, n + k + 2)
-        if offset < 1:
-            continue
-        run_action[runs] = action
-        run_k[runs] = k
-        run_reach[runs] = offset + k - 1
-        run_fills[runs] = _fill_window_holds(raw_fever_fill, offset + k - 1, k - 1, True)
-        runs += 1
-
-    # Region-2 runs, activation by activation. keys: rows (activation, first section start, last section start,
-    # Great end, late-Great hit, Perfect hit); head_runs: the runs of the head section starts, for the head rows.
-    keys = np.empty((n + 64, 6), dtype=np.int32)
-    key_count = 0
-    head_runs = np.full(((head_limit + 1) * max(1, runs), 3), -1, dtype=np.int32)
+    core_great_end = np.full(n, -1, dtype=np.int32)
+    core_late_token = np.full(n, -1, dtype=np.int32)
+    core_perfect_token = np.full(n, -1, dtype=np.int32)
+    core_hit = np.zeros(n, dtype=np.float32)
+    core_flags = np.zeros(n, dtype=np.uint8)  # bit 1: legal, bit 2: greats_before_legal
     for activation in range(n):
-        # The first Great end with a valid late-Great hit: the hit does not depend on where the run starts.
         hit_high = great_candidates[activation]
         last_great_end = activation + 1
         while last_great_end < n and perfect_candidates[last_great_end] < hit_high:
@@ -916,6 +743,108 @@ def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, la
         _hit, _valid, perfect_token = perfect_activation_hit_for_run(
             activation, timestamps, perfect_candidates, great_candidates, activation, great_end - activation, n
         )
+        core_great_end[activation] = great_end
+        core_late_token[activation] = late_token
+        core_perfect_token[activation] = perfect_token
+        core_hit[activation] = h_a
+        core_flags[activation] = np.uint8((1 if legal else 0) | (2 if greats_before_legal else 0))
+    return SongRegionCores(core_great_end, core_late_token, core_perfect_token, core_hit, core_flags)
+
+
+@njit(cache=True, nogil=True)
+def _region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, lanes, song_cores):
+    """Compiled region-core builder reusing precomputed `song_region_cores` across all fill groups of one song.
+
+    When all region-2 runs advance `run_reach` by 1 and every activation's fast-path prefix test holds across its
+    valid run range (the 95%+ common case outside the first 100 head sections), the entire run loop collapses to one
+    O(1) key interval instead of O(K) per activation."""
+    n = timestamps.shape[0]
+    actions = action_k.shape[0]
+    if lanes.shape[0] != n:
+        raise ValueError("FG region-core lane rows must match n")
+    if raw_fever_fill <= 0.0 or not np.isfinite(raw_fever_fill):
+        raise ValueError("raw_fever_fill must be finite and > 0")
+    head_limit = min(n, 100)
+    head_starts = np.zeros(head_limit + 2, dtype=np.int64)
+    key_starts = np.zeros(n + 1, dtype=np.int64)
+    if raw_fever_fill > float(n):
+        return head_starts, np.empty((0, 5), dtype=np.int32), key_starts, np.empty((0, 5), dtype=np.int32)
+    perfect_floor = hit_times.perfect_floor_timestamps
+    perfect_candidates, great_candidates = hit_times.perfect_candidate_timestamps, hit_times.great_candidate_timestamps
+    core_great_end = song_cores.great_end
+    core_late_token = song_cores.late_token
+    core_perfect_token = song_cores.perfect_token
+    core_hit = song_cores.hit
+    core_flags = song_cores.flags
+    first_later_section = int(np.ceil(raw_fever_fill)) + 1
+
+    run_action = np.empty(actions, dtype=np.int64)
+    run_k = np.empty(actions, dtype=np.int64)
+    run_reach = np.empty(actions, dtype=np.int64)
+    run_fills = np.empty(actions, dtype=np.bool_)
+    runs = 0
+    unit_runs = True
+    for action in range(region2_k_scan_stop(actions, raw_fever_fill)):
+        k = int(action_k[action])
+        offset = region2_offset_for_count(0, k, raw_fever_fill, n + k + 2)
+        if offset < 1:
+            continue
+        reach = offset + k - 1
+        fills = _fill_window_holds(raw_fever_fill, reach, k - 1, True)
+        if not fills:
+            unit_runs = False
+        if runs > 0 and (reach != run_reach[runs - 1] + 1 or k < run_k[runs - 1]):
+            unit_runs = False
+        run_action[runs] = action
+        run_k[runs] = k
+        run_reach[runs] = reach
+        run_fills[runs] = fills
+        runs += 1
+    if runs == 0:
+        unit_runs = False
+    max_section = int(np.floor(float(n) - raw_fever_fill))
+    while max_section >= 0 and raw_fever_fill > float(n - max_section):
+        max_section -= 1
+    while max_section + 1 < n and not (raw_fever_fill > float(n - (max_section + 1))):
+        max_section += 1
+
+    keys = np.empty((n + 64, 6), dtype=np.int32)
+    key_count = 0
+    head_runs = np.full(((head_limit + 1) * max(1, runs), 3), -1, dtype=np.int32)
+    first_reach = run_reach[0] if runs > 0 else 0
+    last_k = run_k[runs - 1] if runs > 0 else 0
+    for activation in range(n):
+        great_end = int(core_great_end[activation])
+        if great_end < 0:
+            continue
+        late_token = int(core_late_token[activation])
+        perfect_token = int(core_perfect_token[activation])
+        h_a = core_hit[activation]
+        flags = core_flags[activation]
+        legal = (flags & np.uint8(1)) != 0
+        greats_before_legal = (flags & np.uint8(2)) != 0
+
+        if unit_runs and legal and (greats_before_legal or last_k < 2):
+            r_hi = activation - first_reach
+            if r_hi >= runs:
+                r_hi = runs - 1
+            r_lo = activation - first_reach - max_section
+            if r_lo < 0:
+                r_lo = 0
+            if r_lo <= r_hi:
+                min_sec = activation - run_reach[r_hi]
+                if min_sec > head_limit and not (perfect_floor[activation - run_k[r_lo]] > h_a):
+                    if key_count == keys.shape[0]:
+                        keys = _rows_ensure(keys, key_count, 1)
+                    keys[key_count, 0] = activation
+                    keys[key_count, 1] = min_sec
+                    keys[key_count, 2] = activation - run_reach[r_lo]
+                    keys[key_count, 3] = great_end
+                    keys[key_count, 4] = late_token
+                    keys[key_count, 5] = perfect_token
+                    key_count += 1
+                    continue
+
         open_key = -1
         for run in range(runs):
             section_start = activation - run_reach[run]
@@ -965,8 +894,6 @@ def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, la
             open_key = key_count
             key_count += 1
 
-    # The head rows, section start by section start, and the keys of the shifted-head runs (a run of the same
-    # activation at the next section start extends the key its activation made last).
     head = np.empty((256, 5), dtype=np.int32)
     head_count = 0
     last_shifted_key = np.full(n, -1, dtype=np.int32)
@@ -1028,7 +955,6 @@ def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, la
             key_count += 1
     head_starts[head_limit + 1] = head_count
 
-    # The keys by activation.
     for key in range(key_count):
         key_starts[keys[key, 0] + 1] += 1
     for activation in range(n):
@@ -1043,18 +969,22 @@ def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, la
     return head_starts, head[:head_count].copy(), key_starts, key_rows
 
 
+def region_core_table(action_k, raw_fever_fill: float, timestamps, hit_times, lanes, song_cores=None):
+    """The region runs of one (fill, non-Fever base) group: head rows for section starts <= 100 and key rows per
+    activation. Pass precomputed `song_cores` from `song_region_cores` to share per-activation work across groups."""
+    if song_cores is None:
+        song_cores = song_region_cores(timestamps, hit_times)
+    return _region_core_table(action_k, raw_fever_fill, timestamps, hit_times, lanes, song_cores)
+
+
 @njit(cache=True, nogil=True)
 def reachability_prepass(n: int, first_activations, runs, ends, forced_timing: int, region):
     """The states a play can reach at one fever time, as a mask over the fever ends 0 .. n (n is always reached), and
     the largest early-Great width of an activation that reaches one.
 
     A fever ends past its activation, so when the notes are taken in ascending order every state before a note is
-    final by the time the note is tried as an activation. Its Perfect activation is live when the first section
-    activates there (`first_activations` bit 1) or a reached state has it at one of its fill offsets (`runs`: the
-    inclusive runs of the later-section offsets); its late-Great activation likewise (bit 2, the late-Great runs);
-    a region run of it is live when a section start it holds at is enumerated: the song start, or the note after a
-    reached state. A live activation marks every end from its exit end to its early-Great reach. Reached states are
-    counted in a prefix sum, so a note costs a few lookups however many states and actions reach it.
+    final by the time the note is tried as an activation. Forward reach intervals [lo, hi] with lo > activation are
+    accumulated in O(1) via a difference array, giving strict O(n + D) work regardless of early-exit width.
     Returns (reachable, width)."""
     perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends = runs
     for run in range(perfect_run_starts.shape[0]):
@@ -1073,38 +1003,57 @@ def reachability_prepass(n: int, first_activations, runs, ends, forced_timing: i
     reachable = np.zeros(n + 1, dtype=np.bool_)
     reachable[n] = True
     reached = np.zeros(n + 2, dtype=np.int64)
+    diff = np.zeros(n + 2, dtype=np.int32)
+    cover = 0
     width = 0
     for activation in range(n):
+        cover += diff[activation]
+        if cover > 0:
+            reachable[activation] = True
         reached[activation + 1] = reached[activation] + reachable[activation]
-        live = first_activations[activation] & 1
-        for run in range(perfect_run_starts.shape[0]):
-            if live != 0:
-                break
-            newest = activation - perfect_run_starts[run]
-            if newest >= 0 and reached[newest + 1] > reached[max(0, activation - perfect_run_ends[run])]:
-                live = 1
-        if live != 0 and perfect_valid[activation] != 0:
+        perfect_reached = (first_activations[activation] & 1) != 0
+        if not perfect_reached:
+            for run in range(perfect_run_starts.shape[0]):
+                newest = activation - perfect_run_starts[run]
+                if newest >= 0 and reached[newest + 1] > reached[max(0, activation - perfect_run_ends[run])]:
+                    perfect_reached = True
+                    break
+        if perfect_reached and perfect_valid[activation] != 0:
             edge_e, eg_e = perfect_e[activation], eg_perfect_e[activation]
-            for end in range(min(perfect_exit_e[activation], edge_e), max(edge_e, eg_e) + 1):
-                reachable[end] = True
-            width = max(width, eg_e - edge_e)
+            lo = min(perfect_exit_e[activation], edge_e)
+            hi = max(edge_e, eg_e)
+            if lo > activation:
+                diff[lo] += 1
+                diff[hi + 1] -= 1
+            else:
+                for end in range(lo, hi + 1):
+                    reachable[end] = True
+            if eg_e - edge_e > width:
+                width = eg_e - edge_e
         if forced_timing == 0:
             continue
-        live = first_activations[activation] & 2
-        for run in range(late_run_starts.shape[0]):
-            if live != 0:
-                break
-            newest = activation - late_run_starts[run]
-            if newest >= 0 and reached[newest + 1] > reached[max(0, activation - late_run_ends[run])]:
-                live = 1
-        if live != 0 and late_valid[activation] != 0:
+        late_reached = (first_activations[activation] & 2) != 0
+        if not late_reached:
+            for run in range(late_run_starts.shape[0]):
+                newest = activation - late_run_starts[run]
+                if newest >= 0 and reached[newest + 1] > reached[max(0, activation - late_run_ends[run])]:
+                    late_reached = True
+                    break
+        if late_reached and late_valid[activation] != 0:
             edge_e, eg_e = late_e[activation], eg_late_e[activation]
             if perfect_valid[activation] == 0 or late_edge_extends(
                 perfect_e[activation], edge_e, eg_e, eg_perfect_e[activation]
             ):
-                for end in range(min(late_exit_e[activation], edge_e), max(edge_e, eg_e) + 1):
-                    reachable[end] = True
-                width = max(width, eg_e - edge_e)
+                lo = min(late_exit_e[activation], edge_e)
+                hi = max(edge_e, eg_e)
+                if lo > activation:
+                    diff[lo] += 1
+                    diff[hi + 1] -= 1
+                else:
+                    for end in range(lo, hi + 1):
+                        reachable[end] = True
+                if eg_e - edge_e > width:
+                    width = eg_e - edge_e
         for key in range(key_starts[activation], key_starts[activation + 1]):
             first_section = key_rows[key, _KEY_FIRST_SECTION]
             if first_section > 0 and reached[key_rows[key, _KEY_LAST_SECTION]] == reached[first_section - 1]:
@@ -1115,10 +1064,15 @@ def reachability_prepass(n: int, first_activations, runs, ends, forced_timing: i
             )
             if edge_e < 0:
                 continue
-            exit_e = perfect_exit_e[activation] if late_hit < 0 else late_exit_e[activation]
-            for end in range(min(exit_e, edge_e), eg_e + 1):
-                reachable[end] = True
-            width = max(width, eg_e - edge_e)
+            lo = min(perfect_exit_e[activation] if late_hit < 0 else late_exit_e[activation], edge_e)
+            if lo > activation:
+                diff[lo] += 1
+                diff[eg_e + 1] -= 1
+            else:
+                for end in range(lo, eg_e + 1):
+                    reachable[end] = True
+            if eg_e - edge_e > width:
+                width = eg_e - edge_e
     return reachable, width
 
 
@@ -1127,14 +1081,11 @@ def touch_body_rows(queue, heads, tails, state: int, key, pair_stamp, best_fever
     """Register the live rows [heads, tails) of every family's queue as the body candidates of `state`: per (normal
     Greats, fever Greats) pair the largest body fever, in the stamped pair table. A row holds (body fever, normal
     Greats + 2 x its reader's state, fever Greats, activation); a row whose normal Greats come out negative for this
-    state belongs to none of its plays. key = (pair radix, stamp). Returns (pairs touched, rows read).
-
-    The pack normal Greats x radix + fever Greats is injective only while fever Greats < radix: past it a pair would
-    alias another cell, a surface with the wrong Great counts that the decoder then materialises. The radix is sized
-    to the geometry's largest fever-Great count, so the check must never fire, and a build that reaches it fails."""
+    state belongs to none of its plays. key = (pair radix, stamp). Returns (pairs touched, rows read)."""
     pair_mod, stamp = key
     touched = 0
     rows = 0
+    pair_size = best_fever_by_pair.shape[0]
     for family in range(heads.shape[0]):
         for row in range(heads[family], tails[family]):
             rows += 1
@@ -1145,7 +1096,7 @@ def touch_body_rows(queue, heads, tails, state: int, key, pair_stamp, best_fever
             if fever_great < 0 or fever_great >= pair_mod:
                 raise ValueError("FG response body skyline fever-great exceeded pair radix")
             pair = normal_great * pair_mod + fever_great
-            if pair >= best_fever_by_pair.shape[0]:
+            if pair >= pair_size:
                 raise ValueError("FG response body skyline pair bound was too small")
             body_fever = queue[family, row, 0]
             if pair_stamp[pair] != stamp:
@@ -1175,6 +1126,150 @@ _HEAD_DOM_BODY_FLOOR_W = 2
 _HEAD_DOM_GREAT_FLOOR_W = 30
 
 
+# Precomputed bit-exact head combo weights (pos 0..99) and contiguous prefix sums [0, k) for _head_pattern_basis.
+def _precompute_head_basis_tables():
+    k_lo = (HEAD_DOM_C[0] - 1.0) / 100.0
+    k_hi = (HEAD_DOM_C[1] - 1.0) / 100.0
+    slo = np.empty(100, dtype=np.float64)
+    shi = np.empty(100, dtype=np.float64)
+    pref_lo = np.zeros(101, dtype=np.float64)
+    pref_hi = np.zeros(101, dtype=np.float64)
+    acc_lo = 0.0
+    acc_hi = 0.0
+    for pos in range(100):
+        v_lo = 1.0 + k_lo * float(pos + 1)
+        v_hi = 1.0 + k_hi * float(pos + 1)
+        slo[pos] = v_lo
+        shi[pos] = v_hi
+        acc_lo += v_lo
+        acc_hi += v_hi
+        pref_lo[pos + 1] = acc_lo
+        pref_hi[pos + 1] = acc_hi
+    debruijn = np.empty(64, dtype=np.int32)
+    magic = 0x03F79D71B4CB0A89
+    for bit in range(64):
+        idx = (((1 << bit) * magic) & 0xFFFFFFFFFFFFFFFF) >> 58
+        debruijn[idx] = bit
+    return slo, shi, pref_lo, pref_hi, debruijn
+
+
+_HEAD_SLO, _HEAD_SHI, _HEAD_PREF_LO, _HEAD_PREF_HI, _DEBRUIJN_CTZ64 = _precompute_head_basis_tables()
+
+
+def _precompute_cone_constants():
+    """Exact 16-corner score multipliers for the _HEAD_DOM box, plus the 4 conic-hull body corners and 16-corner sums."""
+    body_dn = np.empty(16, dtype=np.float64)
+    pen_n = np.empty(16, dtype=np.float64)
+    pen_f = np.empty(16, dtype=np.float64)
+    hb = np.empty(16, dtype=np.float64)
+    hc = np.empty(16, dtype=np.float64)
+    hd = np.empty(16, dtype=np.float64)
+    hi_c = np.empty(16, dtype=np.int8)
+    col = 0
+    for e in _HEAD_DOM_E:
+        g = e * 2.0 / 3.0 + 150.0
+        for ic in range(2):
+            c = HEAD_DOM_C[ic]
+            for f in HEAD_DOM_F:
+                for b in HEAD_DOM_B:
+                    v = e + b
+                    gv = g - v
+                    body_dn[col] = v * c * (f - 1.0)
+                    pen_n[col] = c * gv
+                    pen_f[col] = c * f * gv
+                    hb[col] = v * (f - 1.0)
+                    hc[col] = gv
+                    hd[col] = gv * (f - 1.0)
+                    hi_c[col] = ic
+                    col += 1
+    return body_dn, pen_n, pen_f, hb, hc, hd, hi_c, float(body_dn.sum()), float(pen_n.sum()), float(pen_f.sum())
+
+
+_C16_BDN, _C16_PN, _C16_PF, _C16_HB, _C16_HC, _C16_HD, _C16_HIC, _SUM16_BDN, _SUM16_PN, _SUM16_PF = (
+    _precompute_cone_constants()
+)
+# Compile-time scalar constants for the 4 conic-hull body corners (E=0, c=1.95, f in {2.95, 5.48}, b in {200, 485}):
+# every E=7600 corner is a positive linear combination of E=0 corners with weight sum 34.78 > 1 and c=2.72 scales by
+# 2.72/1.95 > 1, so dominance at corners 0..3 implies dominance at all 16 corners.
+_C0_BDN, _C1_BDN, _C2_BDN, _C3_BDN = map(float, _C16_BDN[:4])
+_C0_PN, _C1_PN, _C2_PN, _C3_PN = map(float, _C16_PN[:4])
+_C0_PF, _C1_PF, _C2_PF, _C3_PF = map(float, _C16_PF[:4])
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _ctz64(lsb: np.uint64) -> int:
+    """Bit index (0..63) of a single-bit uint64 power of two."""
+    return int(_DEBRUIJN_CTZ64[int((lsb * np.uint64(0x03F79D71B4CB0A89)) >> np.uint64(58))])
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _insertion_sort_i32(arr, count: int) -> None:
+    """Sort arr[:count] ascending in place (used for small batches <= 24 without NumPy sort dispatch)."""
+    for i in range(1, count):
+        val = arr[i]
+        j = i - 1
+        while j >= 0 and arr[j] > val:
+            arr[j + 1] = arr[j]
+            j -= 1
+        arr[j + 1] = val
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _sort_distinct_i32(arr, count: int, sort_bits) -> None:
+    """Sort `count` distinct nonnegative int32 values in `arr[:count]` ascending in place.
+
+    Uses a 64-bit word bitset (`O(count + span / 64)`, branch-free) when `count >= 12` and the span fits the
+    reusable zeroed `sort_bits` buffer within 4 words per element; otherwise insertion sort (`<= 24`) or `.sort()`."""
+    if count <= 1:
+        return
+    if count < 12:
+        _insertion_sort_i32(arr, count)
+        return
+    if sort_bits.shape[0] > 0:
+        lo = int(arr[0])
+        hi = lo
+        for i in range(1, count):
+            v = int(arr[i])
+            if v < lo:
+                lo = v
+            elif v > hi:
+                hi = v
+        nw = ((hi - lo) >> 6) + 1
+        if nw <= sort_bits.shape[0] and nw <= 4 * count:
+            for i in range(count):
+                d = int(arr[i]) - lo
+                sort_bits[d >> 6] |= np.uint64(1) << np.uint64(d & 63)
+            k = 0
+            for wi in range(nw):
+                w = sort_bits[wi]
+                if w != np.uint64(0):
+                    sort_bits[wi] = np.uint64(0)
+                    base = lo + (wi << 6)
+                    while w != np.uint64(0):
+                        lsb = w & (~w + np.uint64(1))
+                        arr[k] = np.int32(base + _ctz64(lsb))
+                        k += 1
+                        w ^= lsb
+            return
+    if count <= 24:
+        _insertion_sort_i32(arr, count)
+    else:
+        arr[:count].sort()
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _insertion_sort_order(order, keys, count: int) -> None:
+    """Sort order[:count] in place by ascending keys[order[i]]."""
+    for i in range(1, count):
+        oi = order[i]
+        ki = keys[oi]
+        j = i - 1
+        while j >= 0 and keys[order[j]] > ki:
+            order[j + 1] = order[j]
+            j -= 1
+        order[j + 1] = oi
+
+
 @njit(cache=True, nogil=True)
 def _popcount64(x):
     x = x - ((x >> np.uint64(1)) & np.uint64(0x5555555555555555))
@@ -1189,116 +1284,52 @@ def _surface_margin(left, right) -> float:
     + the body floor weight x their body-count L1 distance + the Great floor weight x the Great notes they differ on."""
     normal_greats = abs(int((np.int64(left[5]) - np.int64(left[6])) - (np.int64(right[5]) - np.int64(right[6]))))
     fever_greats = abs(int(np.int64(left[6]) - np.int64(right[6])))
+    body_term = _HEAD_DOM_BODY_FLOOR_W * abs(int(np.int64(left[4]) - np.int64(right[4]))) + (
+        _HEAD_DOM_BODY_FLOOR_W + _HEAD_DOM_GREAT_FLOOR_W
+    ) * (normal_greats + fever_greats)
+    if left[0] == right[0] and left[1] == right[1] and left[2] == right[2] and left[3] == right[3]:
+        return float(body_term)
+    g0 = left[2] ^ right[2]
+    g1 = left[3] ^ right[3]
     return float(
-        _popcount64((left[0] ^ right[0]) | (left[2] ^ right[2]))
-        + _popcount64((left[1] ^ right[1]) | (left[3] ^ right[3]))
-        + _HEAD_DOM_BODY_FLOOR_W * (abs(int(np.int64(left[4]) - np.int64(right[4]))) + normal_greats + fever_greats)
-        + _HEAD_DOM_GREAT_FLOOR_W
-        * (
-            _popcount64(left[2] ^ right[2])
-            + _popcount64(left[3] ^ right[3])
-            + normal_greats
-            + fever_greats
-        )
+        _popcount64((left[0] ^ right[0]) | g0)
+        + _popcount64((left[1] ^ right[1]) | g1)
+        + _HEAD_DOM_GREAT_FLOOR_W * (_popcount64(g0) + _popcount64(g1))
+        + body_term
     )
 
 
 @njit(cache=True, nogil=True)
-def _corner_score(basis, v, c, f, g, use_hi_c: int) -> float:
-    gv = g - v
-    body_dn = v * c * (f - 1.0)
-    pen_n = c * gv
-    pen_f = c * f * gv
-    if use_hi_c == 0:
-        head = (
-            gv * basis[_BASIS_C_LO]
-            + v * (f - 1.0) * basis[_BASIS_B_LO]
-            + gv * (f - 1.0) * basis[_BASIS_D_LO]
-        )
-    else:
-        head = (
-            gv * basis[_BASIS_C_HI]
-            + v * (f - 1.0) * basis[_BASIS_B_HI]
-            + gv * (f - 1.0) * basis[_BASIS_D_HI]
-        )
-    return (
-        head
-        + float(basis[_BASIS_BODY_FEVER]) * body_dn
-        + float(basis[_BASIS_BODY_NORMAL_GREAT]) * pen_n
-        + float(basis[_BASIS_BODY_FEVER_GREAT]) * pen_f
-    )
-
-
-@njit(cache=True, nogil=True)
-def _corner_scores(rows, terms, term_of):
-    """(m, 16) each surface row's relative score at the 16 corners of the _HEAD_DOM box (E, c, f, b, each low and high);
-    row i's head terms are terms[term_of[i]] (_head_pattern_basis's b, c, d at the low and high combo)."""
-    m = rows.shape[0]
-    scores = np.empty((m, 16), dtype=np.float64)
-    for i in range(m):
-        head = terms[term_of[i]]
-        basis = (
-            np.int64(rows[i, 4]),
-            np.int64(rows[i, 5]) - np.int64(rows[i, 6]),
-            np.int64(rows[i, 6]),
-            head[0],
-            head[1],
-            head[2],
-            head[3],
-            head[4],
-            head[5],
-        )
-        col = 0
-        for e in _HEAD_DOM_E:
-            g = e * 2.0 / 3.0 + 150.0
-            for ic in range(2):
-                for f in HEAD_DOM_F:
-                    for b in HEAD_DOM_B:
-                        scores[i, col] = _corner_score(basis, e + b, HEAD_DOM_C[ic], f, g, ic)
-                        col += 1
-    return scores
-
-
-@njit(cache=True, nogil=True)
-def _cone_kept(rows, scores):
+def _cone_kept(rows, scores, sums):
     """The rows no other row dominates (score gap >= the pair's margin at all 16 corners), by descending corner-score
-    sum. Dominance is transitive, since the margin (head-class Hamming distance + 2 x body-count L1) is a metric and
-    gaps add, and a dominator's sum exceeds the dominated row's by at least 16 margins (> 0 unless the rows are
-    identical). So in that order a dominated row always meets a kept dominator first, no kept row is ever evicted, and
-    the kept set is exactly the non-dominated rows whatever the input order. The margin is non-negative, so the
-    zero-threshold corner pre-pass rejects most pairs before the margin popcounts run."""
+    sum. Packs kept rows' 16-corner scores contiguously for L1-resident inner scans."""
     m = rows.shape[0]
-    sums = np.empty(m, dtype=np.float64)
-    for i in range(m):
-        total = 0.0
-        for corner in range(16):
-            total += scores[i, corner]
-        sums[i] = -total
     order = np.argsort(sums)
     kept_rows = np.empty(m, dtype=np.int64)
+    kept_scores = np.empty((m, 16), dtype=np.float64)
     kept_count = 0
     for pos in range(m):
         i = order[pos]
         dominated = False
         for ki in range(kept_count):
-            k = kept_rows[ki]
-            if not _scores_dominate(scores, k, i, 0.0):
-                continue
-            if _scores_dominate(scores, k, i, _surface_margin(rows[k], rows[i])):
+            min_diff = 1.0e300
+            ok = True
+            for cc in range(16):
+                d = kept_scores[ki, cc] - scores[i, cc]
+                if d < 0.0:
+                    ok = False
+                    break
+                if d < min_diff:
+                    min_diff = d
+            if ok and min_diff >= _surface_margin(rows[kept_rows[ki]], rows[i]):
                 dominated = True
                 break
         if not dominated:
             kept_rows[kept_count] = i
+            for cc in range(16):
+                kept_scores[kept_count, cc] = scores[i, cc]
             kept_count += 1
     return kept_rows[:kept_count]
-
-
-@njit(cache=True, nogil=True)
-def _scores_dominate(scores, left_idx: int, right_idx: int, margin: float) -> bool:
-    for cc in range(16):
-        if scores[left_idx, cc] - scores[right_idx, cc] < margin:
-            return False
-    return True
 
 
 @njit(cache=True, nogil=True)
@@ -1306,16 +1337,15 @@ def head_envelope_filter(frontier, lo_pos, hi_pos):
     """LOSSLESS prune of the head frontier to its cone-Pareto set -- the surfaces that are best for SOME realizable stat
     cell. The head+body score is multilinear on the _HEAD_DOM box, so its unfloored value hits its extrema at the 16 corners.
     Surface K dominates C over the WHOLE box iff unfloored score(K)-score(C) >= the per-pair floor margin at all 16 corners.
-    This is the head analog of `_body_cone_filter`: best-preserving for EVERY realizable cell, by a 16-corner proof, not
+    This is the head analog of `_body_cone_filter_buf`: best-preserving for EVERY realizable cell, by a 16-corner proof, not
     probe sampling. Composition-safe (the score is additive over disjoint edge/tail head ranges), so an envelope-minimal
     tail stays representative as the DP prepends edges."""
     m = frontier.shape[0]
     if m < 2:
         return frontier
-    # Head sums are computed once per run of rows with the same masks (same floats).
-    terms = np.empty((m, 6), dtype=np.float64)
-    term_of = np.empty(m, dtype=np.int64)
-    runs = 0
+    scores = np.empty((m, 16), dtype=np.float64)
+    sums = np.empty(m, dtype=np.float64)
+    h_corners = np.empty(16, dtype=np.float64)
     for i in range(m):
         fl, fh, gl, gh = frontier[i, 0], frontier[i, 1], frontier[i, 2], frontier[i, 3]
         if (
@@ -1325,12 +1355,22 @@ def head_envelope_filter(frontier, lo_pos, hi_pos):
             or gl != frontier[i - 1, 2]
             or gh != frontier[i - 1, 3]
         ):
-            head = _head_pattern_basis(fl, fh, gl, gh, lo_pos, hi_pos)
-            for t in range(6):
-                terms[runs, t] = head[t]
-            runs += 1
-        term_of[i] = runs - 1
-    kept_rows = _cone_kept(frontier, _corner_scores(frontier, terms, term_of))
+            b_lo, c_lo, d_lo, b_hi, c_hi, d_hi = _head_pattern_basis(fl, fh, gl, gh, lo_pos, hi_pos)
+            for col in range(16):
+                if _C16_HIC[col] == 0:
+                    h_corners[col] = _C16_HC[col] * c_lo + _C16_HB[col] * b_lo + _C16_HD[col] * d_lo
+                else:
+                    h_corners[col] = _C16_HC[col] * c_hi + _C16_HB[col] * b_hi + _C16_HD[col] * d_hi
+        bf = float(np.int64(frontier[i, 4]))
+        fg = float(np.int64(frontier[i, 6]))
+        ng = float(np.int64(frontier[i, 5]) - np.int64(frontier[i, 6]))
+        total = 0.0
+        for col in range(16):
+            val = h_corners[col] + bf * _C16_BDN[col] + ng * _C16_PN[col] + fg * _C16_PF[col]
+            scores[i, col] = val
+            total += val
+        sums[i] = -total
+    kept_rows = _cone_kept(frontier, scores, sums)
     out = np.empty((kept_rows.shape[0], 7), dtype=np.uint64)
     for ki in range(kept_rows.shape[0]):
         out[ki] = frontier[kept_rows[ki]]
@@ -1338,157 +1378,259 @@ def head_envelope_filter(frontier, lo_pos, hi_pos):
 
 
 @njit(cache=True, nogil=True)
-def _body_cone_filter(values, count: int) -> int:
-    """Drops the rows (body fever, normal Greats, fever Greats, _) of a body state's frontier that another row of it dominates
-    at every corner of the stat box. Every play through the state adds the same counts and head to both, so the dominance
-    holds for all of them. Keeps the rows' order; returns their new count."""
+def _body_cone_filter_buf(values, count: int, scores, sums, order, kept_meta, kept_mask) -> int:
+    """Zero-allocation body cone filter using the 4 conic-hull corners (E=0, c=1.95, f in {2.95, 5.48}, b in
+    {200, 485}) with register-held scalar constants and contiguous L1 kept rows. Keeps original row order."""
     if count < 2:
         return count
-    rows = np.zeros((count, 7), dtype=np.uint64)
     for i in range(count):
-        rows[i, 4] = np.uint64(values[i, 0])
-        rows[i, 5] = np.uint64(values[i, 1] + values[i, 2])
-        rows[i, 6] = np.uint64(values[i, 2])
-    kept = np.sort(_cone_kept(rows, _corner_scores(rows, np.zeros((1, 6)), np.zeros(count, np.int64))))
-    for i in range(kept.shape[0]):
-        values[i] = values[kept[i]]
-    return kept.shape[0]
+        bf = float(values[i, 0])
+        ng = float(values[i, 1])
+        fg = float(values[i, 2])
+        scores[i, 0] = bf * _C0_BDN + ng * _C0_PN + fg * _C0_PF
+        scores[i, 1] = bf * _C1_BDN + ng * _C1_PN + fg * _C1_PF
+        scores[i, 2] = bf * _C2_BDN + ng * _C2_PN + fg * _C2_PF
+        scores[i, 3] = bf * _C3_BDN + ng * _C3_PN + fg * _C3_PF
+        sums[i] = -(bf * _SUM16_BDN + ng * _SUM16_PN + fg * _SUM16_PF)
+        order[i] = i
+        kept_mask[i] = np.uint8(0)
+    if count <= 32:
+        _insertion_sort_order(order, sums, count)
+    else:
+        sorted_idx = np.argsort(sums[:count])
+        for i in range(count):
+            order[i] = sorted_idx[i]
+    kept_count = 0
+    for pos in range(count):
+        i = order[pos]
+        bf_i = values[i, 0]
+        ng_i = values[i, 1]
+        fg_i = values[i, 2]
+        a0 = scores[i, 0]
+        a1 = scores[i, 1]
+        a2 = scores[i, 2]
+        a3 = scores[i, 3]
+        dominated = False
+        for ki in range(kept_count):
+            d1 = scores[ki, 5] - a1
+            if d1 < 0.0:
+                continue
+            d0 = scores[ki, 4] - a0
+            if d0 < 0.0:
+                continue
+            d3 = scores[ki, 7] - a3
+            if d3 < 0.0:
+                continue
+            d2 = scores[ki, 6] - a2
+            if d2 < 0.0:
+                continue
+            min_d = d0 if d0 < d1 else d1
+            if d2 < min_d:
+                min_d = d2
+            if d3 < min_d:
+                min_d = d3
+            dbf = abs(kept_meta[ki, 0] - bf_i)
+            dng = abs(kept_meta[ki, 1] - ng_i)
+            dfg = abs(kept_meta[ki, 2] - fg_i)
+            if min_d >= float(2 * dbf + 32 * (dng + dfg)):
+                dominated = True
+                break
+        if not dominated:
+            scores[kept_count, 4] = a0
+            scores[kept_count, 5] = a1
+            scores[kept_count, 6] = a2
+            scores[kept_count, 7] = a3
+            kept_meta[kept_count, 0] = bf_i
+            kept_meta[kept_count, 1] = ng_i
+            kept_meta[kept_count, 2] = fg_i
+            kept_mask[i] = np.uint8(1)
+            kept_count += 1
+    out = 0
+    for i in range(count):
+        if kept_mask[i] != 0:
+            if out != i:
+                values[out, 0] = values[i, 0]
+                values[out, 1] = values[i, 1]
+                values[out, 2] = values[i, 2]
+                values[out, 3] = values[i, 3]
+            out += 1
+    return out
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _head_word_basis(fw: np.uint64, gw: np.uint64, offset: int, acc):
+    b_lo, c_lo, d_lo, b_hi, c_hi, d_hi = acc
+    w = fw | gw
+    while w != np.uint64(0):
+        lsb = w & (~w + np.uint64(1))
+        pos = offset + _ctz64(lsb)
+        slo = _HEAD_SLO[pos]
+        shi = _HEAD_SHI[pos]
+        fb = (fw & lsb) != np.uint64(0)
+        gb = (gw & lsb) != np.uint64(0)
+        if fb:
+            b_lo += slo
+            b_hi += shi
+        if gb:
+            c_lo += slo
+            c_hi += shi
+        if fb and gb:
+            d_lo += slo
+            d_hi += shi
+        w ^= lsb
+    return b_lo, c_lo, d_lo, b_hi, c_hi, d_hi
 
 
 @njit(cache=True, nogil=True)
 def _head_pattern_basis(fl, fh, gl, gh, lo_pos: int, hi_pos: int):
-    """Head-only portion of a surface's basis at the box's low and high combo, shared by every row with this mask
-    pattern."""
-    lo = lo_pos
-    hi = hi_pos
-    hlen = hi - lo
-    one = np.uint64(1)
-    k_lo = (HEAD_DOM_C[0] - 1.0) / 100.0
-    k_hi = (HEAD_DOM_C[1] - 1.0) / 100.0
-    b_lo = 0.0
-    c_lo_arr = 0.0
-    d_lo = 0.0
-    b_hi = 0.0
-    c_hi_arr = 0.0
-    d_hi = 0.0
-    for idx in range(hlen):
-        pos = lo + idx
-        if pos < 64:
-            fbit = (fl >> np.uint64(pos)) & one
-            gbit = (gl >> np.uint64(pos)) & one
-        else:
-            fbit = (fh >> np.uint64(pos - 64)) & one
-            gbit = (gh >> np.uint64(pos - 64)) & one
-        if fbit == 0 and gbit == 0:
-            continue
-        slo = 1.0 + k_lo * float(lo + idx + 1)
-        shi = 1.0 + k_hi * float(lo + idx + 1)
-        if fbit != 0:
-            b_lo += slo
-            b_hi += shi
-        if gbit != 0:
-            c_lo_arr += slo
-            c_hi_arr += shi
-        if fbit != 0 and gbit != 0:
-            d_lo += slo
-            d_hi += shi
-    return b_lo, c_lo_arr, d_lo, b_hi, c_hi_arr, d_hi
+    """Head-only portion of a surface's basis at the box's low and high combo, bit-identical to the ascending
+    bit-by-bit sum over [lo_pos, hi_pos). Prefix-only Great masks hit an O(1) precomputed prefix table; general masks
+    walk only set bits in ascending order."""
+    mlo, mhi = _range_mask(lo_pos, hi_pos, 100)
+    f0, f1 = fl & mlo, fh & mhi
+    g0, g1 = gl & mlo, gh & mhi
+    if f0 == np.uint64(0) and f1 == np.uint64(0):
+        if g0 == np.uint64(0) and g1 == np.uint64(0):
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        if lo_pos == 0:
+            if g1 == np.uint64(0) and (g0 & (g0 + np.uint64(1))) == np.uint64(0):
+                k = 64 if g0 == np.uint64(0xFFFFFFFFFFFFFFFF) else _ctz64(g0 + np.uint64(1))
+                return 0.0, _HEAD_PREF_LO[k], 0.0, 0.0, _HEAD_PREF_HI[k], 0.0
+            if g0 == np.uint64(0xFFFFFFFFFFFFFFFF) and (g1 & (g1 + np.uint64(1))) == np.uint64(0):
+                k = 64 + _ctz64(g1 + np.uint64(1))
+                return 0.0, _HEAD_PREF_LO[k], 0.0, 0.0, _HEAD_PREF_HI[k], 0.0
+    acc = _head_word_basis(f0, g0, 0, (0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    return _head_word_basis(f1, g1, 64, acc)
 
 
 @njit(cache=True, nogil=True)
-def _skyline_hulls(points, count: int, limit: int, fen_values, fen_stamps, fen_stamp: int):
-    """Each tag's skyline with per-normal-Great upper hulls, in place: `points` rows (body fever, normal Greats, fever
-    Greats, tag) come sorted by tag, normal Greats, fever Greats and then body fever descending, and a row repeating
-    the (tag, normal Greats, fever Greats) of the row before it is skipped.
+def _reduce_touched_pairs_inplace(
+    pair_mod: int, touched_pair, touched_count: int, best_fever_by_pair, fenwick, stack
+) -> int:
+    """In-place fused skyline + per-normal-Great upper-hull reduction of `touched_pair[:touched_count]` (int32 packed
+    `ng * pair_mod + fg` keys) into pre-sized `stack` (`int64[>= touched_count, 4]`: body_fever, ng, fg, 0). Returns
+    only the scalar kept row count (avoiding array-return NRT refcounting).
 
-    A point is kept iff its body fever beats every earlier point of its tag with fever Greats <= its own (stamped
-    Fenwick prefix maxima over fever Greats below `limit` - 1, one stamp per tag). Those include the kept rows of its
-    own normal-Great level, so a level's kept rows have strictly increasing body fever, and its upper hull of (body
-    fever, -fever Greats) runs incrementally on them. The Fenwick takes one update per point, kept or not, so it does
-    not depend on what the hull removes. Kept rows go to the front of `points`: a kept row never lies past its own
-    point. Returns (kept rows, the last stamp used)."""
+    Stride-1 (`pair_mod == 1`) skips division and Fenwick operations. General strides sort distinct keys via
+    `_sort_distinct_i32` (64-bit word bitset when dense, else insertion/NumPy sort) and run one fused pass."""
+    bit_values, bit_stamps, bit_stamp, sort_bits = fenwick.values, fenwick.stamps, fenwick.epoch, fenwick.sort_bits
+    if touched_count <= 0:
+        return 0
+    if touched_count == 1:
+        p0 = int(touched_pair[0])
+        ng0 = p0 if pair_mod == 1 else p0 // pair_mod
+        fg0 = 0 if pair_mod == 1 else p0 - ng0 * pair_mod
+        stack[0, 0], stack[0, 1], stack[0, 2], stack[0, 3] = best_fever_by_pair[p0], ng0, fg0, 0
+        return 1
+    _sort_distinct_i32(touched_pair, touched_count, sort_bits)
+    if pair_mod == 1:
+        kept = 0
+        best_bf = -1
+        for index in range(touched_count):
+            ng = int(touched_pair[index])
+            bf = best_fever_by_pair[ng]
+            if bf > best_bf:
+                best_bf = bf
+                stack[kept, 0] = bf
+                stack[kept, 1] = ng
+                stack[kept, 2] = 0
+                stack[kept, 3] = 0
+                kept += 1
+        return kept
+    limit = pair_mod + 1
+    if limit > bit_values.shape[0]:
+        limit = bit_values.shape[0]
+    has_fg = False
+    best_zero_bf = -1
     kept = 0
     level = -1
     level_base = 0
-    tag = -1
-    seen_level = -1
-    seen_fever_great = -1
-    for index in range(count):
-        bf, ng, fg = points[index, 0], points[index, 1], points[index, 2]
-        if points[index, 3] != tag:
-            tag = points[index, 3]
-            fen_stamp += 1
-            level = -1
-        elif ng == seen_level and fg == seen_fever_great:
-            continue
-        seen_level = ng
-        seen_fever_great = fg
+    ng = 0
+    ng_base = 0
+    next_base = pair_mod
+    for index in range(touched_count):
+        pair = int(touched_pair[index])
+        if pair >= next_base:
+            if pair < next_base + pair_mod:
+                ng += 1
+                ng_base = next_base
+                next_base += pair_mod
+            else:
+                ng = pair // pair_mod
+                ng_base = ng * pair_mod
+                next_base = ng_base + pair_mod
+        fg = pair - ng_base
+        bf = best_fever_by_pair[pair]
+        if not has_fg:
+            if fg == 0:
+                if bf > best_zero_bf:
+                    best_zero_bf = bf
+                    stack[kept, 0] = bf
+                    stack[kept, 1] = ng
+                    stack[kept, 2] = 0
+                    stack[kept, 3] = 0
+                    kept += 1
+                continue
+            has_fg = True
+            if kept > 0:
+                cursor = 1
+                while cursor < limit:
+                    bit_stamps[cursor] = bit_stamp
+                    bit_values[cursor] = best_zero_bf
+                    cursor += cursor & -cursor
+                level = stack[kept - 1, 1]
+                level_base = kept - 1
         best = -1
         cursor = fg + 1
         while cursor > 0:
-            if fen_stamps[cursor] == fen_stamp and fen_values[cursor] > best:
-                best = fen_values[cursor]
+            if bit_stamps[cursor] == bit_stamp and bit_values[cursor] > best:
+                best = bit_values[cursor]
             cursor -= cursor & -cursor
         if bf > best:
             if ng != level:
                 level = ng
                 level_base = kept
             while kept - level_base >= 2:
-                cross = (points[kept - 1, 0] - points[kept - 2, 0]) * (points[kept - 2, 2] - fg) - (
-                    points[kept - 2, 2] - points[kept - 1, 2]
-                ) * (bf - points[kept - 2, 0])
+                cross = (stack[kept - 1, 0] - stack[kept - 2, 0]) * (stack[kept - 2, 2] - fg) - (
+                    stack[kept - 2, 2] - stack[kept - 1, 2]
+                ) * (bf - stack[kept - 2, 0])
                 if cross >= 0:
                     kept -= 1
                 else:
                     break
-            points[kept, 0] = bf
-            points[kept, 1] = ng
-            points[kept, 2] = fg
-            points[kept, 3] = tag
+            stack[kept, 0] = bf
+            stack[kept, 1] = ng
+            stack[kept, 2] = fg
+            stack[kept, 3] = 0
             kept += 1
-        cursor = fg + 1
-        while cursor < limit:
-            if fen_stamps[cursor] != fen_stamp:
-                fen_stamps[cursor] = fen_stamp
-                fen_values[cursor] = bf
-            elif bf > fen_values[cursor]:
-                fen_values[cursor] = bf
-            cursor += cursor & -cursor
-    return kept, fen_stamp
+            cursor = fg + 1
+            while cursor < limit:
+                if bit_stamps[cursor] != bit_stamp:
+                    bit_stamps[cursor] = bit_stamp
+                    bit_values[cursor] = bf
+                elif bf > bit_values[cursor]:
+                    bit_values[cursor] = bf
+                cursor += cursor & -cursor
+    return kept
 
 
 @njit(cache=True, nogil=True)
 def reduce_touched_body_pairs(
     pair_mod: int, touched_pair, touched_count: int, best_fever_by_pair, bit_values, bit_stamps, bit_stamp: int, stack
 ):
-    """A body state's frontier from its touched pairs: rows (body fever, normal Greats, fever Greats, 0) in the reusable
-    `stack`, which grows as needed. Returns (stack, rows).
-
-    `touched_pair[:touched_count]` holds distinct pair indices (touch_body_rows adds a pair on its first stamp only),
-    and nothing reads their insertion order, so they are sorted in place: ascending pair index is (normal Greats,
-    fever Greats) ascending, the order `_skyline_hulls` reduces. The Fenwick spans the batch's fever-Great range and
-    is stamped `bit_stamp`.
-
-    For a fixed stat cell the body score is linear in the three counts, A x body fever - p x normal Greats - q x fever
-    Greats with A, p, q >= 0, and an early-Great extension adds points at a constant normal-Great count. So within a
-    normal-Great level the useful set is the upper hull in (body fever, -fever Greats): pruning to it loses nothing
-    for any cell, is invariant under shifts, and survives the DP adding section counts."""
+    """A body state's frontier from its touched pairs: rows (body fever, normal Greats, fever Greats, 0) in the
+    reusable `stack`, which grows as needed. Returns (stack, rows)."""
     if touched_count <= 0:
         return stack, 0
-    touched_pair[:touched_count].sort()
-    stack = _rows_ensure(stack, 0, touched_count)
-    max_fever_great = 0
-    for index in range(touched_count):
-        pair = touched_pair[index]
-        normal_great = pair // pair_mod
-        fever_great = pair - normal_great * pair_mod
-        stack[index, 0] = best_fever_by_pair[pair]
-        stack[index, 1] = normal_great
-        stack[index, 2] = fever_great
-        stack[index, 3] = 0
-        max_fever_great = max(max_fever_great, fever_great)
-    count, _stamp = _skyline_hulls(
-        stack, touched_count, min(max_fever_great + 2, bit_values.shape[0]), bit_values, bit_stamps, bit_stamp - 1
+    if touched_count > stack.shape[0]:
+        stack = _rows_ensure(stack, 0, touched_count)
+    count = _reduce_touched_pairs_inplace(
+        pair_mod,
+        touched_pair,
+        touched_count,
+        best_fever_by_pair,
+        _FenwickWorkspace(bit_values, bit_stamps, bit_stamp, np.empty(0, dtype=np.uint64)),
+        stack,
     )
     return stack, count
 
@@ -1526,9 +1668,10 @@ def _points_skyline_sorted(buf, start: int, end: int) -> int:
     dominated iff the best body fever an earlier point reaches at its fever-Great count is at least its own - one
     Fenwick prefix-maximum per row decides, and kept rows update the tree. O(m log m).
 
-    Not `_skyline_hulls`: that one prunes further to per-normal-Great upper hulls (which drops Pareto-optimal but
-    hull-interior rows) and emits hull order; callers here need the exact Pareto set in the rows' original order, so
-    this keeps the first occurrence of an exact duplicate (stable mergesort) just as `_points_append` does."""
+    Not `_reduce_touched_pairs_inplace`: that one prunes further to per-normal-Great upper hulls (which drops
+    Pareto-optimal but hull-interior rows) and emits hull order; callers here need the exact Pareto set in the rows'
+    original order, so this keeps the first occurrence of an exact duplicate (stable mergesort) just as
+    `_points_append` does."""
     m = end - start
     n_lo, n_hi = buf[start, 1], buf[start, 1]
     f_lo, f_hi = buf[start, 0], buf[start, 0]
@@ -1683,32 +1826,97 @@ def _clamped_end(n: int, activation_idx: int, raw_end_idx: int) -> int:
     return edge_e
 
 
+@njit(cache=True, nogil=True, inline="always")
+def _body_end_shifts(end: int, activation: int, edge_e: int, is_region: bool, shift):
+    """Per-end (body_fever, normal_great, fever_great) shifts for one body activation packet (`shift`: `_RegionShift`)."""
+    bf_sh = end - activation
+    if is_region:
+        fg_run_hi = end if end < shift.great_end else shift.great_end
+        overlap_fg = fg_run_hi - shift.fg_run_lo if fg_run_hi > shift.fg_run_lo else 0
+        ng_sh = shift.normal_base - overlap_fg
+        fg_sh = overlap_fg + shift.act_extra + (end - edge_e if end > edge_e else 0)
+    else:
+        ng_sh = shift.normal_base
+        fg_sh = shift.kind + (end - edge_e if end > edge_e else 0)
+    return bf_sh, ng_sh, fg_sh
+
+
+@njit(cache=True, nogil=True)
+def _body_tails_scalar(n: int, offset: int, reachable, ends, pair_epoch: int, bit_epoch: int):
+    """O(n) scalar body DP for all-Perfect zero-Great geometries (Timeline Precise and non_fever_base == 0).
+    Every body state has at most one (ng=0, fg=0) row, avoiding queue, packet, pair-table and cone allocations."""
+    perfect_valid = ends.perfect_valid
+    perfect_e = ends.perfect_e
+    perfect_exit_e = ends.perfect_exit_e
+    cap = (n - 98) if n > 100 else 1
+    body_values = np.empty((cap, 3), dtype=np.uint64)
+    body_values[0, 0] = 0
+    body_values[0, 1] = 0
+    body_values[0, 2] = 0
+    body_starts = np.zeros(n + 1, dtype=np.int32)
+    body_counts = np.zeros(n + 1, dtype=np.int32)
+    body_counts[n] = 1
+    cursor = 1
+    states = 0
+    generated = 0
+    retained = 1
+    for state in range(n - 1, 99, -1):
+        if not reachable[state]:
+            continue
+        states += 1
+        activation = state + offset
+        if activation < n and perfect_valid[activation] != 0:
+            edge_e = int(perfect_e[activation])
+            lo_e = int(perfect_exit_e[activation])
+            if edge_e < lo_e:
+                lo_e = edge_e
+            best_bf = -1
+            if lo_e == edge_e:
+                if body_counts[lo_e] > 0:
+                    best_bf = int(body_values[body_starts[lo_e], 0]) + lo_e - activation
+            else:
+                for end in range(lo_e, edge_e + 1):
+                    if body_counts[end] > 0:
+                        cand = int(body_values[body_starts[end], 0]) + end - activation
+                        if cand > best_bf:
+                            best_bf = cand
+            if best_bf >= 0:
+                generated += 1
+                body_starts[state] = cursor
+                body_values[cursor, 0] = np.uint64(best_bf)
+                body_values[cursor, 1] = np.uint64(0)
+                body_values[cursor, 2] = np.uint64(0)
+                cursor += 1
+        body_counts[state] = 1
+        retained += 1
+    return body_values, body_starts, body_counts, states, generated, retained, 1, pair_epoch, bit_epoch
+
+
 @njit(cache=True, nogil=True)
 def _body_tails(n: int, families, reachable, region, ends, scratch):
     """The tail frontier of every reachable body state, states n - 1 down to 100: rows (body fever, body Greats, fever
-    Greats) of `body_values`, addressed per state by body_starts / body_counts. State n holds the tail of a play that
-    never activates again, and a state with no candidate shares it.
-
-    A state's candidates are the packets of its families' activations (packet_families): an activation's edge at each
-    of its fever ends, joined with that end's tail frontier. A packet row (body fever, normal Greats + 2 x activation
-    + defect, fever Greats) does not depend on the state it serves, which reads its normal Greats as the second column
-    - 2 x state. So each family keeps the packets of its live window [state + first offset, state + last offset] in a
-    queue, rows (.., activation) in push order: an activation is built once, when a window first reaches it, and
-    leaves at the head when the windows have passed it. A queued row that a new row dominates is dropped: the new
-    activation is smaller, so it stays in every later window the old one is in. The queue so keeps every point of its
-    window's Pareto set.
-
-    An activation's ends are its base end, every earlier end from its exit end (the fever can end early) and every
-    later end up to its early-Great reach (the notes from the base end on join the fever as Greats). A region-2
-    activation takes its run from the region table: the late-Great run of the activation at the section start its
-    family's first offset puts it at. Where the table holds none, the run has no valid core.
-
-    The per-activation and per-row loops are written out in this function: a helper that takes arrays costs the
-    kernel several times its own work on every call.
+    Greats) of `body_values` (uint64[cap, 3]), addressed per state by `body_starts`/`body_counts` (int32[n + 1]).
+    State n holds the zero tail of a play that never activates again, and a state with no candidate shares it.
+    `scratch` is a `_BodyScratch` carrying the admitted pair/Fenwick workspaces and geometry bounds.
 
     Returns (body_values, body_starts, body_counts, states evaluated, rows generated, rows retained, the largest
-    frontier, the pair epoch, the bit epoch)."""
-    pair_mod, best_fever_by_pair, pair_stamp, touched_pair, pair_epoch, bit_values, bit_stamps, bit_epoch = scratch
+    frontier, updated pair_epoch, updated bit_epoch)."""
+    pair_mod, max_eg_width = scratch.pair_mod, scratch.max_eg_width
+    best_fever_by_pair, pair_stamp, touched_pair, pair_epoch = (
+        scratch.pairs.values, scratch.pairs.stamps, scratch.pairs.touched, scratch.pairs.epoch
+    )
+    bit_values, bit_stamps, bit_epoch, sort_bits = (
+        scratch.fenwick.values, scratch.fenwick.stamps, scratch.fenwick.epoch, scratch.fenwick.sort_bits
+    )
+    family_count = families.shape[0]
+    if (
+        family_count == 1
+        and families[0, 0] == _PERFECT_FAMILY
+        and families[0, 2] == families[0, 3]
+        and families[0, 1] == -2 * families[0, 2]
+        and max_eg_width == 0
+    ):
+        return _body_tails_scalar(n, int(families[0, 2]), reachable, ends, pair_epoch, bit_epoch)
     perfect_valid, late_valid = ends.perfect_valid, ends.late_valid
     perfect_e, late_e = ends.perfect_e, ends.late_e
     eg_perfect_e, eg_late_e = ends.eg_perfect_e, ends.eg_late_e
@@ -1724,17 +1932,24 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
     body_counts = np.zeros(n + 1, dtype=np.int32)
     body_counts[n] = 1
     cursor = 1
-    family_count = families.shape[0]
     queue = np.empty((max(1, family_count), 16, 4), dtype=np.int64)
     heads = np.zeros(max(1, family_count), dtype=np.int64)
     tails = np.zeros(max(1, family_count), dtype=np.int64)
     next_push = np.full(max(1, family_count), n - 1, dtype=np.int64)
     packet = np.empty((64, 3), dtype=np.int64)
     kept = np.empty((1024, 4), dtype=np.int64)
+    cone_cap = 64
+    cone_scores = np.empty((cone_cap, 8), dtype=np.float64)
+    cone_sums = np.empty(cone_cap, dtype=np.float64)
+    cone_order = np.empty(cone_cap, dtype=np.int64)
+    cone_meta = np.empty((cone_cap, 3), dtype=np.int64)
+    cone_mask = np.empty(cone_cap, dtype=np.uint8)
     states = 0
     generated = 0
     retained = 1
     largest = 1
+    max_queue_fg = 0
+    pair_size = best_fever_by_pair.shape[0]
     for state in range(n - 1, 99, -1):
         if not reachable[state]:
             continue
@@ -1742,7 +1957,8 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
             kind, defect, first_offset = families[family, 0], families[family, 1], families[family, 2]
             newest = state + families[family, 3]
             head = heads[family]
-            while head < tails[family] and queue[family, head, 3] > newest:
+            tail_end = tails[family]
+            while head < tail_end and queue[family, head, 3] > newest:
                 head += 1
             heads[family] = head
             first_push = min(next_push[family], newest - first_offset) + first_offset
@@ -1750,7 +1966,6 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
             for activation in range(first_push, state + first_offset - 1, -1):
                 if activation >= n:
                     continue
-                # The activation's edge: its base end, early-Great reach and earliest end.
                 run_start, great_end = 0, 0
                 if kind == _REGION_FAMILY:
                     k = 2 * first_offset + defect + 1
@@ -1787,59 +2002,101 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
                     if not late_edge_extends(perfect_e[activation], edge_e, eg_e, eg_perfect_e[activation]):
                         continue
                     lo_e = min(late_exit_e[activation], edge_e)
-                need = 0
-                for end in range(lo_e, eg_e + 1):
-                    need += body_counts[end]
-                if need <= 0:
-                    continue
+
+                if lo_e == eg_e:
+                    need = int(body_counts[lo_e])
+                    if need <= 0:
+                        continue
+                    n_ends, only_end = 1, lo_e
+                else:
+                    need, n_ends, only_end = 0, 0, lo_e
+                    for end in range(lo_e, eg_e + 1):
+                        c_end = int(body_counts[end])
+                        if c_end > 0:
+                            need += c_end
+                            n_ends += 1
+                            only_end = end
+                    if need == 0:
+                        continue
                 if need > packet.shape[0]:
                     packet = _rows_ensure(packet, 0, need)
-                # The packet: per end, its tail rows moved by the edge's counts there.
-                rows = 0
-                for end in range(lo_e, eg_e + 1):
-                    if body_counts[end] <= 0:
-                        continue
-                    if kind == _REGION_FAMILY:
-                        if end <= edge_e:
-                            edge = pack_edge(n, activation, end, run_start, great_end, activation)
-                        else:
-                            edge = pack_edge_eg(n, activation, end, run_start, great_end, activation, edge_e, end)
-                        fever = np.int64(edge[4])
-                        fever_great = np.int64(edge[6])
-                        normal = 2 * activation + (np.int64(edge[5]) - fever_great) - 2 * first_offset
-                    else:
-                        fever = end - activation
-                        fever_great = kind + max(0, end - edge_e)
-                        normal = 2 * activation + defect
-                    for tail in range(body_starts[end], body_starts[end] + body_counts[end]):
-                        tail_fever_great = np.int64(body_values[tail, 2])
-                        packet[rows, 0] = np.int64(body_values[tail, 0]) + fever
-                        packet[rows, 1] = np.int64(body_values[tail, 1]) - tail_fever_great + normal
-                        packet[rows, 2] = tail_fever_great + fever_great
-                        rows += 1
-                if lo_e < eg_e:
-                    rows = _points_skyline(packet, 0, rows)
-                # Into the family's queue: drop the rows the packet dominates, then append it.
+                is_region = kind == _REGION_FAMILY
+                if is_region:
+                    bg_lo = run_start if run_start > 100 else 100
+                    bg_hi = great_end if great_end < n else n
+                    body_great_run = bg_hi - bg_lo if bg_hi > bg_lo else 0
+                    act_extra = 1 if (activation < run_start or activation >= great_end) else 0
+                    fg_run_lo = activation if activation > run_start else run_start
+                    normal_base = 2 * activation + body_great_run - 2 * first_offset
+                else:
+                    act_extra, fg_run_lo, normal_base = 0, 0, 2 * activation + defect
+                reg_info = _RegionShift(kind, normal_base, act_extra, fg_run_lo, great_end)
+                if n_ends == 1:
+                    bf_sh, ng_sh, fg_sh = _body_end_shifts(only_end, activation, edge_e, is_region, reg_info)
+                    st = int(body_starts[only_end])
+                    for tail in range(need):
+                        tfg = np.int64(body_values[st + tail, 2])
+                        packet[tail, 0] = np.int64(body_values[st + tail, 0]) + bf_sh
+                        packet[tail, 1] = np.int64(body_values[st + tail, 1]) - tfg + ng_sh
+                        packet[tail, 2] = tfg + fg_sh
+                    rows = need
+                else:
+                    written = 0
+                    for end in range(lo_e, eg_e + 1):
+                        cnt = int(body_counts[end])
+                        if cnt <= 0:
+                            continue
+                        bf_sh, ng_sh, fg_sh = _body_end_shifts(end, activation, edge_e, is_region, reg_info)
+                        st = int(body_starts[end])
+                        for tail in range(cnt):
+                            tfg = np.int64(body_values[st + tail, 2])
+                            packet[written, 0] = np.int64(body_values[st + tail, 0]) + bf_sh
+                            packet[written, 1] = np.int64(body_values[st + tail, 1]) - tfg + ng_sh
+                            packet[written, 2] = tfg + fg_sh
+                            written += 1
+                    rows = _points_skyline(packet, 0, written)
                 write = head
-                for queued in range(head, tails[family]):
-                    dominated = False
-                    for p in range(rows):
-                        if (
-                            packet[p, 0] >= queue[family, queued, 0]
-                            and packet[p, 1] <= queue[family, queued, 1]
-                            and packet[p, 2] <= queue[family, queued, 2]
-                        ):
-                            dominated = True
-                            break
-                    if not dominated:
+                if rows == 1:
+                    p0, p1, p2 = packet[0, 0], packet[0, 1], packet[0, 2]
+                    for queued in range(head, tail_end):
+                        if p0 >= queue[family, queued, 0] and p1 <= queue[family, queued, 1] and p2 <= queue[family, queued, 2]:
+                            continue
                         if write != queued:
-                            for column in range(4):
-                                queue[family, write, column] = queue[family, queued, column]
+                            queue[family, write, 0] = queue[family, queued, 0]
+                            queue[family, write, 1] = queue[family, queued, 1]
+                            queue[family, write, 2] = queue[family, queued, 2]
+                            queue[family, write, 3] = queue[family, queued, 3]
                         write += 1
+                else:
+                    max_p0, min_p1, min_p2 = packet[0, 0], packet[0, 1], packet[0, 2]
+                    for p in range(1, rows):
+                        if packet[p, 0] > max_p0:
+                            max_p0 = packet[p, 0]
+                        if packet[p, 1] < min_p1:
+                            min_p1 = packet[p, 1]
+                        if packet[p, 2] < min_p2:
+                            min_p2 = packet[p, 2]
+                    for queued in range(head, tail_end):
+                        q0, q1, q2 = queue[family, queued, 0], queue[family, queued, 1], queue[family, queued, 2]
+                        dominated = False
+                        if q0 <= max_p0 and q1 >= min_p1 and q2 >= min_p2:
+                            for p in range(rows):
+                                if packet[p, 0] >= q0 and packet[p, 1] <= q1 and packet[p, 2] <= q2:
+                                    dominated = True
+                                    break
+                        if not dominated:
+                            if write != queued:
+                                queue[family, write, 0] = q0
+                                queue[family, write, 1] = q1
+                                queue[family, write, 2] = q2
+                                queue[family, write, 3] = queue[family, queued, 3]
+                            write += 1
                 if write + rows > queue.shape[1]:
                     for queued in range(head, write):
-                        for column in range(4):
-                            queue[family, queued - head, column] = queue[family, queued, column]
+                        queue[family, queued - head, 0] = queue[family, queued, 0]
+                        queue[family, queued - head, 1] = queue[family, queued, 1]
+                        queue[family, queued - head, 2] = queue[family, queued, 2]
+                        queue[family, queued - head, 3] = queue[family, queued, 3]
                     write -= head
                     head = 0
                     if write + rows > queue.shape[1]:
@@ -1850,34 +2107,85 @@ def _body_tails(n: int, families, reachable, region, ends, scratch):
                         grown[:, : queue.shape[1]] = queue
                         queue = grown
                 for p in range(rows):
+                    fg_p = packet[p, 2]
                     queue[family, write, 0] = packet[p, 0]
                     queue[family, write, 1] = packet[p, 1]
-                    queue[family, write, 2] = packet[p, 2]
+                    queue[family, write, 2] = fg_p
                     queue[family, write, 3] = activation
+                    if fg_p > max_queue_fg:
+                        max_queue_fg = int(fg_p)
                     write += 1
                 heads[family] = head
                 tails[family] = write
+                tail_end = write
 
         states += 1
-        pair_epoch += 1
-        touched, read = touch_body_rows(
-            queue, heads, tails, state, (pair_mod, pair_epoch), pair_stamp, best_fever_by_pair, touched_pair
-        )
-        generated += read
+        total_live = 0
+        only_fam = -1
+        for f_i in range(family_count):
+            cnt_f = tails[f_i] - heads[f_i]
+            if cnt_f > 0:
+                total_live += cnt_f
+                only_fam = f_i
         frontier = 1
-        if touched > 0:
-            bit_epoch += 1
-            kept, frontier = reduce_touched_body_pairs(
-                pair_mod, touched_pair, touched, best_fever_by_pair, bit_values, bit_stamps, bit_epoch, kept
+        if total_live == 1:
+            generated += 1
+            r_idx = heads[only_fam]
+            normal_great = queue[only_fam, r_idx, 1] - 2 * state
+            if normal_great >= 0:
+                fever_great = queue[only_fam, r_idx, 2]
+                if fever_great < 0 or fever_great >= pair_mod:
+                    raise ValueError("FG response body skyline fever-great exceeded pair radix")
+                if normal_great * pair_mod + fever_great >= pair_size:
+                    raise ValueError("FG response body skyline pair bound was too small")
+                if cursor + 1 > body_values.shape[0]:
+                    body_values = _rows_ensure(body_values, cursor, 1)
+                body_starts[state] = cursor
+                body_values[cursor, 0] = np.uint64(queue[only_fam, r_idx, 0])
+                body_values[cursor, 1] = np.uint64(normal_great + fever_great)
+                body_values[cursor, 2] = np.uint64(fever_great)
+                cursor += 1
+        elif total_live > 1:
+            pair_epoch += 1
+            live_mod = max_queue_fg + 1 if max_queue_fg < pair_mod else pair_mod
+            touched, read = touch_body_rows(
+                queue, heads, tails, state, (live_mod, pair_epoch), pair_stamp, best_fever_by_pair, touched_pair
             )
-            frontier = _body_cone_filter(kept, frontier)
-            body_values = _rows_ensure(body_values, cursor, frontier)
-            body_starts[state] = cursor
-            for row in range(frontier):
-                body_values[cursor + row, 0] = np.uint64(kept[row, 0])
-                body_values[cursor + row, 1] = np.uint64(kept[row, 1] + kept[row, 2])
-                body_values[cursor + row, 2] = np.uint64(kept[row, 2])
-            cursor += frontier
+            generated += read
+            if touched > 0:
+                if touched > kept.shape[0]:
+                    kept = _rows_ensure(kept, 0, touched)
+                if live_mod > 1:
+                    bit_epoch += 1
+                frontier = _reduce_touched_pairs_inplace(
+                    live_mod,
+                    touched_pair,
+                    touched,
+                    best_fever_by_pair,
+                    _FenwickWorkspace(bit_values, bit_stamps, bit_epoch, sort_bits),
+                    kept,
+                )
+                if frontier >= 2:
+                    if frontier > cone_cap:
+                        while cone_cap < frontier:
+                            cone_cap *= 2
+                        cone_scores = np.empty((cone_cap, 8), dtype=np.float64)
+                        cone_sums = np.empty(cone_cap, dtype=np.float64)
+                        cone_order = np.empty(cone_cap, dtype=np.int64)
+                        cone_meta = np.empty((cone_cap, 3), dtype=np.int64)
+                        cone_mask = np.empty(cone_cap, dtype=np.uint8)
+                    frontier = _body_cone_filter_buf(
+                        kept, frontier, cone_scores, cone_sums, cone_order, cone_meta, cone_mask
+                    )
+                if cursor + frontier > body_values.shape[0]:
+                    body_values = _rows_ensure(body_values, cursor, frontier)
+                body_starts[state] = cursor
+                for row in range(frontier):
+                    fg_v = kept[row, 2]
+                    body_values[cursor + row, 0] = np.uint64(kept[row, 0])
+                    body_values[cursor + row, 1] = np.uint64(kept[row, 1] + fg_v)
+                    body_values[cursor + row, 2] = np.uint64(fg_v)
+                cursor += frontier
         body_counts[state] = frontier
         retained += frontier
         largest = max(largest, frontier)
@@ -2140,18 +2448,16 @@ def _int_slot(slot_key, key: int, cap: int) -> int:
 
 
 @njit(cache=True, nogil=True)
-def _state_points(entries, count: int, n: int, head, points, slots, masks, arena):
+def _state_points(entries, count: int, n: int, head, scratch):
     """All candidate points (body fever, normal Greats, fever Greats, pattern id) of one state's activation sections.
 
-    A section whose activation and ends all lie in the body, with Great counts constant over its early ends and
-    growing one per step over its early-Great ends (only the fever window's overlap with the Great run can change
-    them), is a shift (-activation, normal Greats, fever Greats) of its windows' skylines. Such sections are grouped
-    by their window pair: each group's skylines are computed once, and a section whose shift a section of a dominating
-    pattern (or its own) dominates adds nothing. Any other section is joined end by end.
-    Returns (points, m, slots, masks, arena)."""
+    Sections whose activation and ends all lie in the body with constant Great overlap are grouped by their
+    (exit, early-Great) window pair: dominated group members are dropped in-place (insertion sort when <= 32), and
+    each window copies single-end tail slices directly or reduces multi-end slices via `_points_skyline`.
+    Returns (points, m, patterns, slots, masks, arena)."""
+    points, slots, masks, arena = scratch
     width = n + 2
     rows = max(1, count)
-    # Room for every section's pattern, so interning below never reallocates.
     cap = slots.shape[0]
     while cap < 2 * rows:
         cap *= 2
@@ -2161,8 +2467,6 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
     if masks.shape[0] < rows:
         masks = np.empty((rows, 4), dtype=np.uint64)
     patterns = 0
-    # Per section: pattern id (-1: joined end by end, -2: dropped), normal and fever Greats at the base end, next
-    # section of its group. A group is keyed by its exit window [lo, base] and early-Great window (base, eg].
     info = np.empty((rows, 4), dtype=np.int64)
     table_cap = 16
     while table_cap < 2 * rows:
@@ -2187,24 +2491,36 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
             continue
         if eg_e > base_e and max(0, min(int(eg_e), int(great_end), n) - run_lo) != overlap_base:
             continue
-        at_base = pack_edge(n, int(activation), int(base_e), int(great_start), int(great_end), int(agi))
+        if great_start < 100 and great_end > great_start:
+            great_lo, great_hi = _range_mask(int(great_start), int(great_end), n)
+        else:
+            great_lo, great_hi = np.uint64(0), np.uint64(0)
+        if 0 <= agi < 100:
+            act_lo, act_hi = _single_head_mask(int(agi), n)
+            great_lo |= act_lo
+            great_hi |= act_hi
+        bg_lo = great_start if great_start > 100 else 100
+        bg_hi = great_end if great_end < n else n
+        body_great = bg_hi - bg_lo if bg_hi > bg_lo else 0
+        edge_ng = body_great - overlap_base
+        edge_fg = overlap_base
+        if agi >= activation and agi < min(base_e, n) and (agi < great_start or agi >= great_end):
+            edge_fg += 1
         if (
             prev_pid >= 0
-            and masks[prev_pid, 0] == at_base[0]
-            and masks[prev_pid, 1] == at_base[1]
-            and masks[prev_pid, 2] == at_base[2]
-            and masks[prev_pid, 3] == at_base[3]
+            and masks[prev_pid, 0] == np.uint64(0)
+            and masks[prev_pid, 1] == np.uint64(0)
+            and masks[prev_pid, 2] == great_lo
+            and masks[prev_pid, 3] == great_hi
         ):
             pid = prev_pid
         else:
-            pid, patterns = _intern_reserved(
-                slots, masks, patterns, at_base[0], at_base[1], at_base[2], at_base[3]
-            )
+            pid, patterns = _intern_reserved(slots, masks, patterns, np.uint64(0), np.uint64(0), great_lo, great_hi)
         prev_pid = pid
         key = (lo_e * width + base_e) * width + (eg_e if eg_e > base_e else 0)
         info[idx, 0] = pid
-        info[idx, 1] = np.int64(at_base[5]) - np.int64(at_base[6])
-        info[idx, 2] = np.int64(at_base[6])
+        info[idx, 1] = edge_ng
+        info[idx, 2] = edge_fg
         info[idx, 3] = -1
         slot = _int_slot(table_key, int(key), table_cap)
         if table_key[slot] < 0:
@@ -2218,8 +2534,6 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
     m = 0
     for group in range(groups):
         first = table_head[group_slots[group]]
-        # The group's sections in ascending normal Greats: a section's dominators (activation, normal and fever
-        # Greats all <=, dominating pattern) then all sit in its prefix, so the mask check runs only for them.
         member_count = 0
         idx = first
         while idx >= 0:
@@ -2228,16 +2542,31 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
             member_count += 1
             idx = info[idx, 3]
         if member_count > 1:
-            member_order = np.argsort(member_key[:member_count])
+            if member_count <= 32:
+                for i in range(1, member_count):
+                    mi = members[i]
+                    ki = member_key[i]
+                    j = i - 1
+                    while j >= 0 and member_key[j] > ki:
+                        members[j + 1] = members[j]
+                        member_key[j + 1] = member_key[j]
+                        j -= 1
+                    members[j + 1] = mi
+                    member_key[j + 1] = ki
+            else:
+                member_order = np.argsort(member_key[:member_count])
+                tmp_members = members[:member_count].copy()
+                for i in range(member_count):
+                    members[i] = tmp_members[member_order[i]]
             for apos in range(member_count):
-                a_idx = members[member_order[apos]]
+                a_idx = members[apos]
                 if info[a_idx, 0] < 0:
                     continue
                 a_activation = entries[a_idx, 0]
                 a_normal = info[a_idx, 1]
                 a_fever = info[a_idx, 2]
                 for bpos in range(member_count):
-                    b_idx = members[member_order[bpos]]
+                    b_idx = members[bpos]
                     if info[b_idx, 1] > a_normal:
                         break
                     if (
@@ -2249,42 +2578,64 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
                     ):
                         info[a_idx, 0] = -2
                         break
-        # The group's window skylines: the exact Pareto set of every end's tail points shifted by the end (by the end
-        # on the fever-Great count too for the early-Great window), exit window rows first. A kind's rows are reduced
-        # in one `_points_skyline` pass - identical to the per-end `_points_append` fold, since a kind's dominance is
-        # confined to its own rows.
-        exit_rows = 0
+        lo_e = int(entries[first, 2])
+        base_e = int(entries[first, 1])
+        eg_e = int(entries[first, 3])
         all_rows = 0
-        for kind in range(2):
-            if kind == 0:
-                lo_e, hi_e = int(entries[first, 2]), int(entries[first, 1])
+        for half in range(2 if eg_e > base_e else 1):
+            w_lo = lo_e if half == 0 else base_e + 1
+            w_hi = base_e if half == 0 else eg_e
+            fg_base = -1 if half == 0 else base_e
+            if w_lo == w_hi:
+                need = int(body_counts[w_lo])
+                n_ends, only_end = (1, w_lo) if need > 0 else (0, w_lo)
             else:
-                lo_e, hi_e = int(entries[first, 1]) + 1, int(entries[first, 3])
-            for end_e in range(lo_e, hi_e + 1):
-                start = int(body_starts[end_e])
-                tails = int(body_counts[end_e])
-                if all_rows + tails > arena.shape[0]:
-                    arena = _rows_ensure(arena, all_rows, tails)
-                for t in range(tails):
-                    arena[all_rows, 0] = end_e + np.int64(body_values[start + t, 0])
-                    arena[all_rows, 1] = np.int64(body_values[start + t, 1]) - np.int64(body_values[start + t, 2])
-                    arena[all_rows, 2] = np.int64(body_values[start + t, 2]) + (end_e if kind == 1 else 0)
-                    all_rows += 1
-            if kind == 0:
-                exit_rows = all_rows = _points_skyline(arena, 0, all_rows)
+                need, n_ends, only_end = 0, 0, w_lo
+                for end_e in range(w_lo, w_hi + 1):
+                    tails = int(body_counts[end_e])
+                    if tails > 0:
+                        need += tails
+                        n_ends += 1
+                        only_end = end_e
+            if need <= 0:
+                continue
+            if all_rows + need > arena.shape[0]:
+                arena = _rows_ensure(arena, all_rows, need)
+            if n_ends == 1:
+                fg_sh = 0 if fg_base < 0 else only_end - fg_base
+                st = int(body_starts[only_end])
+                for tail in range(need):
+                    tfg = np.int64(body_values[st + tail, 2])
+                    arena[all_rows + tail, 0] = np.int64(body_values[st + tail, 0]) + only_end
+                    arena[all_rows + tail, 1] = np.int64(body_values[st + tail, 1]) - tfg
+                    arena[all_rows + tail, 2] = tfg + fg_sh
+                all_rows += need
             else:
-                all_rows = _points_skyline(arena, exit_rows, all_rows)
+                written = all_rows
+                for end_e in range(w_lo, w_hi + 1):
+                    tails = int(body_counts[end_e])
+                    if tails <= 0:
+                        continue
+                    fg_sh = 0 if fg_base < 0 else end_e - fg_base
+                    st = int(body_starts[end_e])
+                    for tail in range(tails):
+                        tfg = np.int64(body_values[st + tail, 2])
+                        arena[written, 0] = np.int64(body_values[st + tail, 0]) + end_e
+                        arena[written, 1] = np.int64(body_values[st + tail, 1]) - tfg
+                        arena[written, 2] = tfg + fg_sh
+                        written += 1
+                all_rows = _points_skyline(arena, all_rows, written)
         idx = first
         while idx >= 0:
             if info[idx, 0] >= 0:
-                activation, base_e = entries[idx, 0], entries[idx, 1]
+                activation = entries[idx, 0]
                 pid, ng, fg = info[idx, 0], info[idx, 1], info[idx, 2]
                 if m + all_rows > points.shape[0]:
                     points = _rows_ensure(points, m, all_rows)
                 for row in range(all_rows):
                     points[m, 0] = arena[row, 0] - activation
                     points[m, 1] = arena[row, 1] + ng
-                    points[m, 2] = arena[row, 2] + fg - (base_e if row >= exit_rows else 0)
+                    points[m, 2] = arena[row, 2] + fg
                     points[m, 3] = pid
                     m += 1
             idx = info[idx, 3]
@@ -2315,56 +2666,193 @@ def _state_points(entries, count: int, n: int, head, points, slots, masks, arena
             points, m, slots, masks, patterns = _entry_end_points(
                 points, m, slots, masks, patterns, edge, end_e, head
             )
-    return points, int(m), slots, masks, arena
+    return points, int(m), int(patterns), slots, masks, arena
 
 
 @njit(cache=True, nogil=True)
-def _points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_stamp):
-    """A state's frontier from its candidate points, by three reductions, cheapest and strongest first:
+def _reduce_overflow_bucket(bucketed, start: int, end: int, radix: int, p_max_fg: int, fenwick, p_stack):
+    """Bounded O(b) sparse fallback when a pattern bucket's dense pair extent exceeds the admitted pair workspace.
 
-    1. Each pattern's skyline with per-normal-Great upper hulls (`_skyline_hulls`, the body states' reduction, with
-       the pattern as the tag): exact, since same-pattern points share their head score and the body score is linear
-       in the three counts. The Fenwick spans the state's fever-Great range only.
-    2. The head envelope (cone) filter across patterns (`head_envelope_filter`, lossless by its 16-corner
-       proof): it compares surfaces of different head patterns, which structural dominance cannot.
-    3. The exact structural Pareto set of what remains: rows visited by body fever desc, normal Greats asc, fever
-       Greats asc, then pattern rank (Great bits minus fever bits) asc; a row is kept unless a kept row of a
-       dominating pattern (same fever/Great overlap, fever-mask superset, Great-mask subset) has normal and fever
-       Greats <= (its body fever is >= by the order). A dominator always comes first in that order and dominance is
-       transitive, so this keeps exactly the non-dominated rows.
-    No points gives the zero surface (the play that never activates) when `empty_is_zero`, else nothing. Returns
-    (frontier, Fenwick stamp)."""
-    m, n = sizes
-    lo_pos, hi_pos, empty_is_zero = head
+    Allocates only O(b) sort scratch (16 bytes per bucket point) and reuses the already-admitted Fenwick workspace
+    (length >= n + 2, with a fresh stamp), preserving fail-loud bounds and exact equivalence to
+    `_reduce_touched_pairs_inplace`."""
+    b = end - start
+    if b <= 0:
+        return p_stack, 0
+    if radix > 2_000_000:
+        raise ValueError("FG response sparse overflow radix exceeded int64 sort key")
+    bit_values, bit_stamps, bit_stamp = fenwick.values, fenwick.stamps, fenwick.epoch
+    if p_max_fg + 1 >= bit_values.shape[0] or p_max_fg + 1 >= bit_stamps.shape[0]:
+        raise ValueError("FG response sparse overflow Fenwick bound was too small")
+    keys = np.empty(b, dtype=np.int64)
+    for k in range(b):
+        src = start + k
+        keys[k] = (bucketed[src, 1] * radix + bucketed[src, 2]) * radix + (radix - 1 - bucketed[src, 0])
+    order = np.argsort(keys)
+    if b > p_stack.shape[0]:
+        p_stack = _rows_ensure(p_stack, 0, b)
+    limit = p_max_fg + 2
+    kept = 0
+    level = -1
+    level_base = 0
+    seen_ng = -1
+    seen_fg = -1
+    for pos in range(b):
+        src = start + order[pos]
+        bf, ng, fg = bucketed[src, 0], bucketed[src, 1], bucketed[src, 2]
+        if ng == seen_ng and fg == seen_fg:
+            continue
+        seen_ng, seen_fg = ng, fg
+        best = -1
+        cursor = fg + 1
+        while cursor > 0:
+            if bit_stamps[cursor] == bit_stamp and bit_values[cursor] > best:
+                best = bit_values[cursor]
+            cursor -= cursor & -cursor
+        if bf > best:
+            if ng != level:
+                level = ng
+                level_base = kept
+            while kept - level_base >= 2:
+                cross = (p_stack[kept - 1, 0] - p_stack[kept - 2, 0]) * (p_stack[kept - 2, 2] - fg) - (
+                    p_stack[kept - 2, 2] - p_stack[kept - 1, 2]
+                ) * (bf - p_stack[kept - 2, 0])
+                if cross >= 0:
+                    kept -= 1
+                else:
+                    break
+            p_stack[kept, 0], p_stack[kept, 1], p_stack[kept, 2], p_stack[kept, 3] = bf, ng, fg, 0
+            kept += 1
+            cursor = fg + 1
+            while cursor < limit:
+                if bit_stamps[cursor] != bit_stamp:
+                    bit_stamps[cursor] = bit_stamp
+                    bit_values[cursor] = bf
+                elif bf > bit_values[cursor]:
+                    bit_values[cursor] = bf
+                cursor += cursor & -cursor
+    return p_stack, kept
+
+
+@njit(cache=True, nogil=True)
+def _points_frontier(points, masks, bounds, fenwick, pairs):
+    """A state's frontier (uint64[k, 7]) from its candidate points (`int64[>= m, 4]`: body_fever, ng, fg, pattern_id)
+    and interned head masks (`uint64[>= patterns, 4]`), bounded by `_FrontierBounds` using `_FenwickWorkspace` and
+    `_PairWorkspace`:
+
+    1. Counting-sort by integer pattern id (O(m + P)), then per-pattern skyline + upper hulls: singletons emit directly;
+       buckets `b >= 2` stamp into the admitted pair workspace with compact stride `p_max_fg + 1` and reduce via
+       `_reduce_touched_pairs_inplace`, falling back to bounded O(b) sparse `_reduce_overflow_bucket` if the pair extent
+       exceeds the admitted workspace.
+    2. The head envelope (cone) filter across patterns (`head_envelope_filter`, lossless by its 16-corner proof).
+    3. The exact structural Pareto set of what remains, chained by fever/Great overlap pair.
+    No points gives the zero surface when `bounds.empty_is_zero`, else nothing.
+    Returns (frontier uint64[k, 7], updated pair_epoch, updated fen_stamp)."""
+    m, n, patterns = bounds.m, bounds.n, bounds.patterns
+    lo_pos, hi_pos, empty_is_zero = bounds.lo_pos, bounds.hi_pos, bounds.empty_is_zero
+    fen_values, fen_stamps, fen_stamp, sort_bits = fenwick.values, fenwick.stamps, fenwick.epoch, fenwick.sort_bits
+    pair_values, pair_stamps, pair_touched, pair_epoch = pairs.values, pairs.stamps, pairs.touched, pairs.epoch
     if m == 0:
-        return np.zeros((1 if empty_is_zero else 0, 7), dtype=np.uint64), fen_stamp
+        return np.zeros((1 if empty_is_zero else 0, 7), dtype=np.uint64), pair_epoch, fen_stamp
     radix = n + 1
-    keys = np.empty(m, dtype=np.int64)
-    max_fg = 0
+    pair_size = pair_values.shape[0]
+    pair_ok = pair_size <= 2147483647
+    pat_count = np.zeros(patterns, dtype=np.int64)
+    pat_max_ng = np.zeros(patterns, dtype=np.int64)
+    pat_max_fg = np.zeros(patterns, dtype=np.int64)
     for idx in range(m):
         bf, ng, fg = points[idx, 0], points[idx, 1], points[idx, 2]
         if bf < 0 or ng < 0 or fg < 0 or bf >= radix or ng >= radix or fg >= radix:
             raise ValueError("FG response candidate body counts out of range")
-        keys[idx] = ((points[idx, 3] * radix + ng) * radix + fg) * radix + (radix - 1 - bf)
-        max_fg = max(max_fg, fg)
-    order = np.argsort(keys)
-    stack = np.empty((m, 4), dtype=np.int64)
-    for pos in range(m):
-        idx = order[pos]
-        for col in range(4):
-            stack[pos, col] = points[idx, col]
-    count, fen_stamp = _skyline_hulls(
-        stack, m, min(max_fg + 2, fen_values.shape[0]), fen_values, fen_stamps, fen_stamp
-    )
-    frontier = np.empty((count, 7), dtype=np.uint64)
-    for k in range(count):
-        p = stack[k, 3]
-        for col in range(4):
-            frontier[k, col] = masks[p, col]
-        frontier[k, 4] = np.uint64(stack[k, 0])
-        frontier[k, 6] = np.uint64(stack[k, 2])
-        frontier[k, 5] = np.uint64(stack[k, 1]) + frontier[k, 6]
-    frontier = head_envelope_filter(frontier, lo_pos, hi_pos)
+        pid = points[idx, 3]
+        pat_count[pid] += 1
+        if ng > pat_max_ng[pid]:
+            pat_max_ng[pid] = ng
+        if fg > pat_max_fg[pid]:
+            pat_max_fg[pid] = fg
+    pat_off = np.empty(patterns + 1, dtype=np.int64)
+    pat_off[0] = 0
+    for p in range(patterns):
+        pat_off[p + 1] = pat_off[p] + pat_count[p]
+    pat_cur = pat_off[:patterns].copy()
+    bucketed = np.empty((m, 3), dtype=np.int64)
+    for idx in range(m):
+        pid = points[idx, 3]
+        pos = pat_cur[pid]
+        pat_cur[pid] = pos + 1
+        bucketed[pos, 0] = points[idx, 0]
+        bucketed[pos, 1] = points[idx, 1]
+        bucketed[pos, 2] = points[idx, 2]
+
+    frontier = np.empty((m, 7), dtype=np.uint64)
+    out_count = 0
+    p_stack = np.empty((64, 4), dtype=np.int64)
+    for p in range(patterns):
+        start = pat_off[p]
+        end = pat_off[p + 1]
+        b = end - start
+        if b == 0:
+            continue
+        m0, m1, m2, m3 = masks[p, 0], masks[p, 1], masks[p, 2], masks[p, 3]
+        if b == 1:
+            p_stack[0, 0], p_stack[0, 1], p_stack[0, 2] = bucketed[start, 0], bucketed[start, 1], bucketed[start, 2]
+            kept_p = 1
+        else:
+            p_max_fg = pat_max_fg[p]
+            p_stride = p_max_fg + 1
+            need_pairs = (pat_max_ng[p] + 1) * p_stride
+            use_dense = need_pairs <= pair_size and pair_ok
+            if p_stride > 1 or not use_dense:
+                fen_stamp += 1
+                if fen_stamp > (1 << 30):
+                    fen_stamps[:] = 0
+                    fen_stamp = 1
+            if use_dense:
+                pair_epoch += 1
+                if pair_epoch > (1 << 30):
+                    pair_stamps[:] = 0
+                    pair_epoch = 1
+                u = 0
+                for src in range(start, end):
+                    bf = bucketed[src, 0]
+                    pair = bucketed[src, 1] * p_stride + bucketed[src, 2]
+                    if pair_stamps[pair] != pair_epoch:
+                        pair_stamps[pair] = pair_epoch
+                        pair_values[pair] = bf
+                        pair_touched[u] = pair
+                        u += 1
+                    elif bf > pair_values[pair]:
+                        pair_values[pair] = bf
+                if u > p_stack.shape[0]:
+                    p_stack = _rows_ensure(p_stack, 0, u)
+                kept_p = _reduce_touched_pairs_inplace(
+                    p_stride,
+                    pair_touched,
+                    u,
+                    pair_values,
+                    _FenwickWorkspace(fen_values, fen_stamps, fen_stamp, sort_bits),
+                    p_stack,
+                )
+            else:
+                p_stack, kept_p = _reduce_overflow_bucket(
+                    bucketed,
+                    start,
+                    end,
+                    radix,
+                    p_max_fg,
+                    _FenwickWorkspace(fen_values, fen_stamps, fen_stamp, sort_bits),
+                    p_stack,
+                )
+        for k in range(kept_p):
+            frontier[out_count, 0], frontier[out_count, 1] = m0, m1
+            frontier[out_count, 2], frontier[out_count, 3] = m2, m3
+            frontier[out_count, 4] = np.uint64(p_stack[k, 0])
+            fg_v = np.uint64(p_stack[k, 2])
+            frontier[out_count, 5] = np.uint64(p_stack[k, 1]) + fg_v
+            frontier[out_count, 6] = fg_v
+            out_count += 1
+
+    frontier = head_envelope_filter(frontier[:out_count], lo_pos, hi_pos)
     rows = frontier.shape[0]
     rank_keys = np.empty(rows, dtype=np.int64)
     for k in range(rows):
@@ -2380,10 +2868,6 @@ def _points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_sta
             ((radix - 1 - np.int64(row[4])) * radix + (np.int64(row[5]) - np.int64(row[6]))) * radix + np.int64(row[6])
         ) * 257 + rank
     rank_order = np.argsort(rank_keys)
-    # A dominator shares the candidate's fever/Great overlap pair (fever mask & Great mask, lo and hi words), so kept
-    # rows are chained by that pair and a candidate scans only its own pair's chain instead of every kept row.
-    # Invariant: every kept row hangs on exactly the chain of the slot holding its pair key; group_next links kept
-    # positions, and an unused slot's head is always -1.
     group_cap = 16
     while group_cap < 2 * rows:
         group_cap *= 2
@@ -2428,7 +2912,7 @@ def _points_frontier(points, masks, sizes, head, fen_values, fen_stamps, fen_sta
     out = np.empty((kept_count, 7), dtype=np.uint64)
     for kk in range(kept_count):
         out[kk] = frontier[kept[kk]]
-    return out, fen_stamp
+    return out, pair_epoch, fen_stamp
 
 
 @njit(cache=True, nogil=True)
@@ -2442,17 +2926,11 @@ def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: in
     n, action_count = sizes
     later_fill, first_fill, later_forced, first_forced, later_activation_forced, first_activation_forced = actions
     families, first_activations = group
-    pair_values, pair_stamps, pair_touched, bit_values, bit_stamps, pair_epoch, bit_epoch = workspace
+    pair_values, pair_stamps, pair_touched, bit_values, bit_stamps, pair_epoch, bit_epoch, sort_bits = workspace
     reachable, max_eg_width = reachability_prepass(n, first_activations, runs, ends, forced_timing, region)
-    # The pair radix: a pair packs (normal Greats, fever Greats) as normal Greats x pair_mod + fever Greats, injective
-    # while fever Greats < pair_mod. A play's body fever Greats are at most one boundary Great and max_eg_width early
-    # Greats per section, over at most section_bound sections, and never more than n.
     section_bound = n // max(1, int(later_fill[0]) if action_count > 0 else 1) + 4
     pair_mod = min(n + 1, section_bound * (1 + max_eg_width) + 1)
     pair_size = (n + 1) * pair_mod
-    # The host sizes a thread's pair workspace for the song's largest radix (producer_reducer.pair_mod_bound) and its
-    # Fenwick for n + 2 (a head state's fever Greats reach n). A smaller workspace would be sliced short below and
-    # written past its end: it fails here instead.
     if (
         pair_values.shape[0] < pair_size
         or pair_stamps.shape[0] < pair_size
@@ -2461,9 +2939,6 @@ def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: in
         or bit_stamps.shape[0] < n + 2
     ):
         raise ValueError("FG first-frontier stamp workspace is undersized for this geometry's pair radix")
-    # A workspace cell counts as written when its stamp equals the current epoch, and epochs only grow, so the cells of
-    # earlier geometries stay invisible, as the cells of earlier states do. The slices give every bound read from a
-    # shape (the pair guard, the Fenwick's limit) this geometry's own size.
     (
         body_values,
         body_starts,
@@ -2480,28 +2955,20 @@ def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: in
         reachable,
         region,
         ends,
-        (
+        _BodyScratch(
             pair_mod,
-            pair_values[:pair_size],
-            pair_stamps[:pair_size],
-            pair_touched[:pair_size],
-            pair_epoch,
-            bit_values[: pair_mod + 1],
-            bit_stamps[: pair_mod + 1],
-            bit_epoch,
+            max_eg_width,
+            _PairWorkspace(pair_values[:pair_size], pair_stamps[:pair_size], pair_touched[:pair_size], pair_epoch),
+            _FenwickWorkspace(bit_values[: pair_mod + 1], bit_stamps[: pair_mod + 1], bit_epoch, sort_bits),
         ),
     )
 
     head_limit = min(n, 100)
-    # The head states' frontiers live in one row store, addressed per state by (start, count); a state's rows are
-    # final before an earlier state joins against them (states run descending), and an unreachable state has none.
     head_pool = np.empty((256, 7), dtype=np.uint64)
     head_pool_cursor = 0
     head_state_start = np.zeros(max(1, head_limit), dtype=np.int64)
     head_state_count = np.zeros(max(1, head_limit), dtype=np.int64)
     head = _HeadTables(body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit)
-    # Scratch every state of this build reuses: activation sections, candidate points, the head-mask pattern table and
-    # the window skyline arena. The states' Fenwick is the bit workspace, its epoch carried on from the body tails.
     entries = np.empty((256, 7), dtype=np.int64)
     points = np.empty((1024, 4), dtype=np.int64)
     slots = np.full(1024, -1, dtype=np.int64)
@@ -2534,17 +3001,16 @@ def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: in
             entries, count = _region2_entries(
                 entries, count, n, 0 if first else state + 1, region, ends.perfect_exit_e, ends.late_exit_e
             )
-        points, m, slots, masks, arena = _state_points(entries, count, n, head, points, slots, masks, arena)
+        points, m, patterns, slots, masks, arena = _state_points(
+            entries, count, n, head, (points, slots, masks, arena)
+        )
         generated_surfaces += m
-        # A first section whose activations all lie in the body keeps no surface when none reaches it.
-        frontier, bit_epoch = _points_frontier(
+        frontier, pair_epoch, bit_epoch = _points_frontier(
             points,
             masks,
-            (m, n),
-            (state, head_limit, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
-            bit_values,
-            bit_stamps,
-            bit_epoch,
+            _FrontierBounds(m, n, patterns, state, head_limit, not (first and action_count > 0 and int(first_fill[0]) >= 100)),
+            _FenwickWorkspace(bit_values, bit_stamps, bit_epoch, sort_bits),
+            _PairWorkspace(pair_values, pair_stamps, pair_touched, pair_epoch),
         )
         retained_total += len(frontier)
         if len(frontier) > max_state_frontier:
@@ -2552,8 +3018,8 @@ def _frontier_of_fever_time(sizes, actions, runs, group, ends, forced_timing: in
         if first:
             first_frontier = frontier
             break
-        head_pool = _rows_ensure(head_pool, head_pool_cursor, len(frontier))
-        # The row store may have grown.
+        if head_pool_cursor + len(frontier) > head_pool.shape[0]:
+            head_pool = _rows_ensure(head_pool, head_pool_cursor, len(frontier))
         head = _HeadTables(
             body_values, body_starts, body_counts, head_pool, head_state_start, head_state_count, head_limit
         )
@@ -2595,7 +3061,6 @@ def frontiers_of_fever_times(sizes, actions, runs, ends, fever, regions, workspa
     families = packet_families(
         sizes, raw_fever_fill, (action_k, later_fill, later_forced, later_activation_forced), forced_timing
     )
-    # The first section's activations: bit 1 where a Perfect activates, bit 2 where a late Great may.
     first_activations = np.zeros(n, dtype=np.int8)
     for action in range(action_count):
         fill = first_fill[action]
@@ -2606,8 +3071,15 @@ def frontiers_of_fever_times(sizes, actions, runs, ends, fever, regions, workspa
     count = fever_rows.shape[0]
     offsets = np.zeros(count + 1, dtype=np.int64)
     stats = np.empty((count, 4), dtype=np.int64)
+    sort_bits = np.zeros(1024, dtype=np.uint64)
     frontiers = []
     for index in range(count):
+        if pair_epoch > (1 << 30):
+            w1[:] = 0
+            pair_epoch = 0
+        if bit_epoch > (1 << 30):
+            w4[:] = 0
+            bit_epoch = 0
         row = fever_rows[index]
         frontier, states, generated, retained, largest, pair_epoch, bit_epoch = _frontier_of_fever_time(
             (n, action_count),
@@ -2626,7 +3098,7 @@ def frontiers_of_fever_times(sizes, actions, runs, ends, fever, regions, workspa
             ),
             forced_timing,
             RegionTables(head_starts, head_rows, key_starts, key_rows, perfect_ends[row], great_ends[row]),
-            (w0, w1, w2, w3, w4, pair_epoch, bit_epoch),
+            (w0, w1, w2, w3, w4, pair_epoch, bit_epoch, sort_bits),
         )
         frontiers.append(frontier)
         offsets[index + 1] = offsets[index] + frontier.shape[0]

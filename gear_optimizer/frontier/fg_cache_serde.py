@@ -23,9 +23,19 @@ def _frontier_segment_ids(frontiers: tuple[FgResponseFrontierResult, ...]) -> tu
     segment."""
     unique_frontier_indices: list[int] = []
     segment_id_by_frontier = np.empty((len(frontiers),), dtype=np.int32)
+    by_exact: dict[bytes, int] = {}
     by_digest: dict[tuple[int, bytes], list[int]] = {}
     for idx, frontier in enumerate(frontiers):
         rows = frontier.first_frontier.numba_rows()
+        if rows.nbytes <= 256:
+            raw = rows.tobytes()
+            segment_id = by_exact.get(raw, -1)
+            if segment_id < 0:
+                segment_id = len(unique_frontier_indices)
+                unique_frontier_indices.append(idx)
+                by_exact[raw] = segment_id
+            segment_id_by_frontier[idx] = segment_id
+            continue
         digest = (int(rows.shape[0]), hashlib.blake2b(rows.view(np.uint8), digest_size=16).digest())
         segment_id = -1
         for candidate in by_digest.get(digest, ()):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from gear_optimizer.core.jit_setup import jit
+
 
 SURFACE_ROW_COLUMNS = 4
 SURFACE_PATTERN_COLUMNS = 10
@@ -54,14 +56,99 @@ def surface_head_greats(pattern_words: np.ndarray) -> np.ndarray:
     return np.stack((count(great & ~fever), count(great & fever)), axis=1).astype(np.int32)
 
 
+@jit(nopython=True, cache=True, nogil=True, inline="always")
+def _hash_8u32(table: np.ndarray, idx: int) -> np.uint64:
+    w0 = np.uint64(table[idx, 0]) | (np.uint64(table[idx, 1]) << np.uint64(32))
+    w1 = np.uint64(table[idx, 2]) | (np.uint64(table[idx, 3]) << np.uint64(32))
+    w2 = np.uint64(table[idx, 4]) | (np.uint64(table[idx, 5]) << np.uint64(32))
+    w3 = np.uint64(table[idx, 6]) | (np.uint64(table[idx, 7]) << np.uint64(32))
+    h = w0 * np.uint64(0x9E3779B97F4A7C15)
+    h = (h ^ (h >> np.uint64(29)) ^ w1) * np.uint64(0xBF58476D1CE4E5B9)
+    h = (h ^ (h >> np.uint64(31)) ^ w2) * np.uint64(0x94D049BB133111EB)
+    h = (h ^ (h >> np.uint64(29)) ^ w3) * np.uint64(0x9E3779B97F4A7C15)
+    return h ^ (h >> np.uint64(32))
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _intern_head_words_numba(surface_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """O(R) open-addressing hash interning of the 8-word head masks in `surface_rows[:, :8]`."""
+    n = surface_rows.shape[0]
+    raw_pid = np.empty(n, dtype=np.uint32)
+    cap = 64
+    slots = np.full(cap, -1, dtype=np.int32)
+    uniq = np.empty((32, 8), dtype=np.uint32)
+    count = 0
+    for i in range(n):
+        h = _hash_8u32(surface_rows, i)
+        mask = cap - 1
+        slot = np.int64(h & np.uint64(mask))
+        while True:
+            pid = int(slots[slot])
+            if pid < 0:
+                if 2 * (count + 1) > cap:
+                    cap *= 2
+                    mask = cap - 1
+                    slots = np.full(cap, -1, dtype=np.int32)
+                    for prev in range(count):
+                        ps = np.int64(_hash_8u32(uniq, prev) & np.uint64(mask))
+                        while slots[ps] >= 0:
+                            ps = (ps + 1) & mask
+                        slots[ps] = np.int32(prev)
+                    slot = np.int64(h & np.uint64(mask))
+                    while slots[slot] >= 0:
+                        slot = (slot + 1) & mask
+                if count >= uniq.shape[0]:
+                    grown = np.empty((2 * uniq.shape[0], 8), dtype=np.uint32)
+                    grown[:count] = uniq[:count]
+                    uniq = grown
+                for c in range(8):
+                    uniq[count, c] = surface_rows[i, c]
+                slots[slot] = np.int32(count)
+                raw_pid[i] = np.uint32(count)
+                count += 1
+                break
+            same = True
+            for c in range(8):
+                if uniq[pid, c] != surface_rows[i, c]:
+                    same = False
+                    break
+            if same:
+                raw_pid[i] = np.uint32(pid)
+                break
+            slot = (slot + 1) & mask
+    return raw_pid, uniq[:count].copy()
+
+
+@jit(nopython=True, cache=True, nogil=True)
+def _pack_row_refs_numba(surface_rows: np.ndarray, raw_pid: np.ndarray, inv_rank: np.ndarray) -> np.ndarray:
+    n = surface_rows.shape[0]
+    row_refs = np.empty((n, SURFACE_ROW_COLUMNS), dtype=np.uint32)
+    for i in range(n):
+        row_refs[i, 0] = inv_rank[raw_pid[i]]
+        row_refs[i, 1] = surface_rows[i, 8]
+        row_refs[i, 2] = surface_rows[i, 9]
+        row_refs[i, 3] = surface_rows[i, 10]
+    return row_refs
+
+
 def intern_surface_row_words(surface_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """(n, 11) uint32 surface rows with their head words interned, every logical row kept in producer order: (row
-    references, unique words). ``np.unique(..., axis=0)`` owns the pattern IDs, so their lexicographic order is the
-    persisted one."""
-    unique_words, inverse = np.unique(surface_rows[:, :8], axis=0, return_inverse=True)
-    row_refs = np.empty((surface_rows.shape[0], SURFACE_ROW_COLUMNS), dtype=np.uint32)
-    row_refs[:, 0] = inverse
-    row_refs[:, 1:4] = surface_rows[:, 8:11]
+    references, unique words). Unique words are sorted lexicographically so persisted pattern IDs match
+    ``np.unique(..., axis=0)`` in O(R + P log P) instead of O(R log R)."""
+    rows = np.ascontiguousarray(surface_rows, dtype=np.uint32)
+    if rows.shape[0] == 0:
+        return np.empty((0, SURFACE_ROW_COLUMNS), dtype=np.uint32), np.empty((0, 8), dtype=np.uint32)
+    raw_pid, uniq_raw = _intern_head_words_numba(rows)
+    n_uniq = uniq_raw.shape[0]
+    if n_uniq <= 1:
+        unique_words = uniq_raw
+        inv_rank = np.zeros(n_uniq, dtype=np.uint32)
+    else:
+        order = np.lexsort(tuple(uniq_raw[:, c] for c in range(7, -1, -1)))
+        unique_words = np.ascontiguousarray(uniq_raw[order])
+        inv_rank = np.empty(n_uniq, dtype=np.uint32)
+        inv_rank[order] = np.arange(n_uniq, dtype=np.uint32)
+    row_refs = _pack_row_refs_numba(rows, raw_pid, inv_rank)
     return row_refs, unique_words
 
 

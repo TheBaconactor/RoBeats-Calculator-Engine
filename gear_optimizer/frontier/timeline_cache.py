@@ -61,6 +61,7 @@ _FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v12"
 _TIMELINE_DP_SOURCES = (
     Path(__file__).resolve().parent / "timeline_producer.py",
     Path(__file__).resolve().parent / "timeline_cache_serde.py",
+    Path(__file__).resolve().parent / "fg_cache_patterns.py",
     Path(__file__).resolve().parents[1] / "solver" / "fever_timeline.py",
     *FRONTIER_PRODUCER_SOURCES,
 )
@@ -81,6 +82,12 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     "exact-frontier-v12+logic-b91994c1695a": (
         "exact-frontier-v12+logic-1d9452c7fd66",
         "exact-frontier-v12+logic-5f4d8f2f18e7",
+    ),
+    # Lossless frontier kernel & fixed-timing optimizations (activation-only surface grid, O(G^2) surface interning,
+    # vectorized surface_head_coeffs, scalar zero-Great body DP) changed no persisted byte: 16 gate charts + 20 catalog
+    # charts (up to 7,027 notes) match 82c968dfb744.
+    "exact-frontier-v12+logic-ee8cdeed4425": (
+        "exact-frontier-v12+logic-82c968dfb744",
     ),
 }
 

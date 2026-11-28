@@ -57,6 +57,12 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
         "fg-response-frontier-visible-first-v32+logic-980404610015",
         "fg-response-frontier-visible-first-v32+logic-74ca016777d4",
     ),
+    # Lossless frontier kernel & serde optimizations (song-invariant region cores, O(n + D) reachability diff-array,
+    # 4-corner body cone filter, 64-bit bitset pair sort, compact pair stride, O(R + P log P) head-pattern interning)
+    # changed no persisted byte: 16 gate charts + 20 catalog charts (up to 7,027 notes) match d4d4a2f1c587.
+    "fg-response-frontier-visible-first-v32+logic-14c56cb38e4e": (
+        "fg-response-frontier-visible-first-v32+logic-d4d4a2f1c587",
+    ),
 }
 
 
